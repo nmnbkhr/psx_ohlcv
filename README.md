@@ -1,0 +1,382 @@
+# psx_ohlcv
+
+PSX OHLCV data fetcher and sync tool for Pakistan Stock Exchange.
+
+## Setup (WSL with Conda)
+
+```bash
+conda create -n psx python=3.11 -y
+conda activate psx
+pip install -U pip
+pip install -e ".[dev]"
+```
+
+## CLI Usage
+
+### Symbol Management
+
+```bash
+# Refresh symbols from PSX market-watch
+psxsync symbols refresh
+
+# Show all symbols as CSV
+psxsync symbols show --as csv
+
+# Get symbols as comma-separated string (useful for scripting)
+psxsync symbols string
+psxsync symbols string --limit 200
+```
+
+### Data Synchronization
+
+```bash
+# Sync EOD data for all active symbols
+psxsync sync --all
+
+# Sync with symbol refresh first
+psxsync sync --all --refresh-symbols
+
+# Incremental sync (only fetch data newer than existing)
+psxsync sync --all --incremental
+
+# Custom HTTP settings
+psxsync sync --all --max-retries 5 --timeout 60 --delay-min 0.5 --delay-max 1.0
+```
+
+### Sync Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--incremental` | off | Only sync data newer than max date in DB per symbol |
+| `--max-retries` | 3 | HTTP retry attempts |
+| `--delay-min` | 0.3 | Min delay between requests (seconds) |
+| `--delay-max` | 0.7 | Max delay between requests (seconds) |
+| `--timeout` | 30 | HTTP request timeout (seconds) |
+
+### Intraday Data
+
+```bash
+# Sync intraday data for a symbol
+psxsync intraday sync --symbol OGDC
+
+# Sync with full refresh (non-incremental)
+psxsync intraday sync --symbol HBL --no-incremental
+
+# Limit rows fetched
+psxsync intraday sync --symbol MCB --max-rows 1000
+
+# Show intraday data for a symbol
+psxsync intraday show --symbol OGDC
+
+# Show with custom limit
+psxsync intraday show --symbol HBL --limit 500
+```
+
+**Intraday Sync Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--symbol` | required | Stock symbol to sync |
+| `--no-incremental` | off | Fetch all data (ignore last sync state) |
+| `--max-rows` | 2000 | Maximum rows to fetch from API |
+
+**Note:** Intraday data source is `dps.psx.com.pk/timeseries/int/{SYMBOL}`. This is an undocumented endpoint and may change without notice.
+
+### Market Summary (Historical)
+
+Download and parse historical market summary files from PSX DPS:
+
+```bash
+# Download a single day
+psxsync market-summary day --date 2025-01-15
+
+# Download a date range
+psxsync market-summary range --start 2025-01-01 --end 2025-01-15
+
+# Download last N days (relative to today)
+psxsync market-summary last --days 30
+
+# Force re-download (overwrite existing)
+psxsync market-summary range --start 2025-01-01 --end 2025-01-15 --force
+
+# Include weekends (default: skip Sat/Sun)
+psxsync market-summary last --days 30 --include-weekends
+
+# Retry failed downloads (dates that had errors)
+psxsync market-summary retry-failed
+
+# Retry missing downloads (dates that returned 404)
+psxsync market-summary retry-missing
+```
+
+**Market Summary Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--date` | required (day) | Date in YYYY-MM-DD format |
+| `--start` | required (range) | Start date (YYYY-MM-DD) |
+| `--end` | required (range) | End date (YYYY-MM-DD) |
+| `--days` | required (last) | Number of days to look back |
+| `--include-weekends` | off | Include Saturday and Sunday |
+| `--force` | off | Re-download even if CSV exists |
+| `--keep-raw` | off | Keep extracted raw files |
+| `--out-dir` | data/market_summary | Output directory |
+
+**Data Source:** `https://dps.psx.com.pk/download/mkt_summary/YYYY-MM-DD.Z`
+
+**Output:**
+- CSV files saved to `data/market_summary/csv/{date}.csv`
+- Each CSV contains: symbol, sector_code, company_name, open, high, low, close, volume, prev_close
+
+**Features:**
+- Resumable: skips existing CSVs (use `--force` to re-download)
+- Weekend skipping: excludes Sat/Sun by default (trading days only)
+- 404 handling: logs "not found" for holidays without failing
+- Session reuse: efficient HTTP connection pooling for batch downloads
+
+### Company Analytics
+
+Fetch company profiles and quote snapshots from DPS company pages:
+
+```bash
+# Refresh company profile and key people
+psxsync company refresh --symbol OGDC
+
+# Take a quote snapshot (price, change, OHLCV, ranges)
+psxsync company snapshot --symbol OGDC
+
+# Snapshot multiple symbols
+psxsync company snapshot --symbols "OGDC,HBL,PSO"
+
+# Continuous monitoring (quotes every 60 seconds)
+psxsync company listen --symbol OGDC --interval 60
+
+# Monitor multiple symbols
+psxsync company listen --symbols "OGDC,HBL,PSO" --interval 30
+
+# Show stored company data
+psxsync company show --symbol OGDC
+psxsync company show --symbol OGDC --what profile
+psxsync company show --symbol OGDC --what people
+psxsync company show --symbol OGDC --what quotes
+```
+
+**Company Data Stored:**
+
+| Table | Data |
+|-------|------|
+| `company_profile` | Company name, sector, description, address, website, registrar, auditor |
+| `company_key_people` | CEO, Chairman, CFO, Company Secretary, etc. |
+| `company_quote_snapshots` | Time-series of price, change, OHLCV, day/52-week/circuit ranges |
+
+**Listen Mode:**
+- Fetches quotes at specified interval (default: 60 seconds)
+- Smart-save: skips insert if data unchanged (based on hash)
+- Press Ctrl+C to stop
+
+### Master Symbol Data
+
+Refresh symbols from the authoritative PSX listed companies file:
+
+```bash
+# Refresh symbols from official listed_cmp.lst.Z file
+psxsync master refresh
+
+# Mark symbols not in master file as inactive
+psxsync master refresh --deactivate-missing
+
+# List all symbols
+psxsync master list
+psxsync master list --active-only
+
+# Export to CSV
+psxsync master export --out symbols.csv
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success (at least one symbol synced) |
+| 1 | Configuration or setup error |
+| 2 | All symbols failed |
+
+## Scheduling
+
+For automated daily syncs, see [scripts/cron_example.md](scripts/cron_example.md):
+- Cron setup for Asia/Karachi timezone (18:00 PKT, after market close)
+- Systemd user service for WSL2
+- Log rotation configuration
+
+**Quick cron example:**
+
+```cron
+# Daily sync at 18:00 PKT (Monday-Friday)
+0 18 * * 1-5 cd /path/to/psx_ohlcv && conda run -n psx python -m psx_ohlcv.cli sync --all --incremental
+```
+
+## Data Storage
+
+All data is stored in `/mnt/e/psxdata/` (E: drive in WSL):
+
+```text
+/mnt/e/psxdata/
+├── psx.sqlite       # SQLite database
+├── logs/
+│   └── psxsync.log  # Application logs
+└── docs/
+    ├── DESIGN.md    # Architecture documentation
+    └── SESSION_LOG.md  # Development session log
+```
+
+Override with `--db /path/to/custom.sqlite` if needed.
+
+## Logging
+
+Logs are written to `/mnt/e/psxdata/logs/psxsync.log` with automatic rotation:
+
+- Max file size: 5 MB
+- Backup count: 3 files
+
+## Web UI (Streamlit)
+
+A lightweight Streamlit dashboard for exploring data and running syncs:
+
+```bash
+# Install with UI dependencies
+pip install -e ".[ui]"
+
+# Run the dashboard (from project directory)
+cd /home/adnoman/psx_ohlcv
+conda activate psx
+streamlit run src/psx_ohlcv/ui/app.py
+
+# Or use make
+make ui
+```
+
+**Access:** http://localhost:8501
+
+**Pages:**
+- **📊 Dashboard** - KPIs, recent sync runs, data quality info
+- **📈 Candlestick Explorer** - OHLCV charts with volume, CSV export
+- **⏱ Intraday Trend** - Live intraday price trends and volume charts
+- **📊 Regular Market** - Live market data from PSX market-watch
+- **📚 History** - Historical market trends, symbol history, sector performance
+- **🧵 Symbols** - Browse, search, export symbols
+- **🔄 Sync Monitor** - Run syncs, view status and failures
+- **⚙️ Settings** - Config display (read-only)
+
+### History Page
+
+The History page provides historical analysis of market data from stored snapshots:
+
+**Market History Tab:**
+- Market breadth over time (gainers/losers/unchanged)
+- Total volume trends
+- Recent market analytics table
+
+**Symbol History Tab:**
+- Price trends for any symbol
+- Volume history
+- Optional candlestick view when OHLC data available
+- Snapshot data table
+
+**Sector History Tab:**
+- Sector performance (avg change %) over time
+- Sector volume trends
+- Top performers in selected sector
+
+**Time Range Options:**
+- Last 1 Hour
+- Last 3 Hours
+- Today
+- Last 5 Days
+- All Data
+
+**Populating History Data:**
+
+History data comes from stored snapshots. To populate:
+
+```bash
+# Run continuous market monitoring (recommended)
+psxsync regular-market listen --interval 60
+
+# Or fetch snapshots periodically via UI "Fetch Market Data" button
+```
+
+Each fetch creates:
+- Market analytics snapshot (gainers/losers/volume)
+- Symbol snapshots (price/volume per symbol)
+- Sector rollups (per-sector aggregates)
+
+### Runtime Behavior
+
+**Sync from UI:**
+- The "Run Full Sync" button executes a blocking sync operation
+- UI shows a spinner/status indicator while sync runs
+- Typical runtime: 5-15 minutes for ~500 symbols (depends on network)
+- Results display with success/error colors and expandable failure table
+
+**Important:** The UI blocks during sync - do not close the browser tab.
+
+### CLI vs UI: When to Use Which
+
+| Use Case | Recommended | Reason |
+|----------|-------------|--------|
+| **Daily automated sync** | CLI + cron | Headless, scriptable, logging |
+| **One-time manual sync** | UI | Visual feedback, no terminal needed |
+| **Debugging sync failures** | CLI | Better error output, logs |
+| **Exploring data/charts** | UI | Interactive visualization |
+| **Exporting CSV data** | UI | Click-to-download |
+| **Checking sync history** | Either | Both show sync_runs table |
+| **Production/server** | CLI | No browser required |
+
+**Rule of thumb:** Use CLI for automation and debugging, UI for exploration and manual operations.
+
+## Data Quality Note
+
+The PSX DPS API (`dps.psx.com.pk/timeseries/eod/{symbol}`) returns data in the format:
+`[timestamp, close, volume, open]`
+
+**Important:** The API does **NOT** provide actual high/low prices. Our implementation derives them as:
+- `high = max(open, close)`
+- `low = min(open, close)`
+
+This means intraday price extremes are not captured. For technical analysis requiring true high/low values, consider premium data providers like EODHD or Twelve Data.
+
+| Field | Source |
+|-------|--------|
+| Open | Direct from API |
+| Close | Direct from API |
+| Volume | Direct from API |
+| High | Derived: max(open, close) |
+| Low | Derived: min(open, close) |
+
+## Development
+
+```bash
+make install     # Install package with dev dependencies
+make install-ui  # Install with dev + UI dependencies
+make test        # Run tests
+make lint        # Run ruff linter
+make run-demo    # Run demo script
+make ui          # Launch Streamlit dashboard
+```
+
+## Documentation
+
+See `/mnt/e/psxdata/docs/` for:
+
+- [DESIGN.md](/mnt/e/psxdata/docs/DESIGN.md) - Architecture, schema, API endpoints
+- [SESSION_LOG.md](/mnt/e/psxdata/docs/SESSION_LOG.md) - Development session log
+
+## Data Licensing Notice
+
+**PSX Market Data:** The data fetched by this tool originates from the Pakistan Stock Exchange (PSX) via their DPS portal (`dps.psx.com.pk`). This data is intended for personal, educational, and internal analytics purposes only.
+
+**Commercial Redistribution:** If you intend to redistribute PSX market data commercially (e.g., in a paid app, API service, or data product), you must obtain appropriate licensing from PSX. Contact PSX directly for licensing terms:
+- Website: https://www.psx.com.pk
+- Market Data Services: https://www.psx.com.pk/psx/market-data-services
+
+**Disclaimer:** This tool is provided as-is for internal use. The authors are not responsible for any misuse of PSX data or violations of PSX's terms of service.
