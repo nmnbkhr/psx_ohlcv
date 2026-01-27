@@ -2298,6 +2298,21 @@ def company_analytics_page():
     # Use unified data as the primary data source
     data = unified_data
 
+    # Header with company name and data freshness
+    company_name = data.get("company_name", symbol)
+    snapshot_date = data.get("snapshot_date", "")
+    scraped_at = data.get("scraped_at", "")[:16] if data.get("scraped_at") else ""
+
+    header_col1, header_col2 = st.columns([3, 1])
+    with header_col1:
+        st.markdown(f"### {company_name}")
+        st.caption(f"Sector: {data.get('sector_name', 'N/A')}")
+    with header_col2:
+        if snapshot_date:
+            st.caption(f"Data as of: {snapshot_date}")
+        if scraped_at:
+            st.caption(f"Last updated: {scraped_at}")
+
     st.subheader("📊 Current Quote")
 
     if data:
@@ -2618,6 +2633,66 @@ def company_analytics_page():
         with st.expander("More Details"):
             st.markdown(f"**Registrar:** {profile.get('registrar', 'N/A')}")
             st.markdown(f"**Last Updated:** {data.get('scraped_at', 'N/A')}")
+
+    # ----- Trading Sessions (Multi-Market) -----
+    trading_sessions = data.get("trading_sessions", {})
+    trading_data = data.get("trading_data", {})
+    if trading_sessions or trading_data:
+        st.markdown("---")
+        st.subheader("📈 Trading Sessions")
+
+        # Combine today's sessions and snapshot trading data
+        all_markets = set(list(trading_sessions.keys()) + list(trading_data.keys()))
+
+        if all_markets:
+            market_tabs = st.tabs(sorted(all_markets))
+            for i, market in enumerate(sorted(all_markets)):
+                with market_tabs[i]:
+                    session = trading_sessions.get(market, {}) or trading_data.get(market, {})
+                    if session:
+                        mcols = st.columns(5)
+                        with mcols[0]:
+                            st.metric("Open", f"Rs. {session.get('open', 0):,.2f}" if session.get('open') else "N/A")
+                        with mcols[1]:
+                            st.metric("High", f"Rs. {session.get('high', 0):,.2f}" if session.get('high') else "N/A")
+                        with mcols[2]:
+                            st.metric("Low", f"Rs. {session.get('low', 0):,.2f}" if session.get('low') else "N/A")
+                        with mcols[3]:
+                            st.metric("Close", f"Rs. {session.get('close', 0):,.2f}" if session.get('close') else "N/A")
+                        with mcols[4]:
+                            vol = session.get('volume', 0)
+                            if vol:
+                                vol_str = f"{vol:,.0f}" if vol < 1000000 else f"{vol/1000000:.2f}M"
+                            else:
+                                vol_str = "N/A"
+                            st.metric("Volume", vol_str)
+                    else:
+                        st.info(f"No data for {market}")
+        else:
+            st.info("No trading session data available.")
+
+    # ----- Recent Announcements -----
+    announcements = data.get("announcements", [])
+    if announcements:
+        st.markdown("---")
+        st.subheader("📣 Recent Announcements")
+
+        # Show count
+        st.caption(f"Showing {len(announcements)} most recent announcements")
+
+        for ann in announcements[:5]:
+            with st.expander(f"{ann.get('announcement_date', 'N/A')} - {ann.get('announcement_type', 'News')}"):
+                st.markdown(f"**{ann.get('title', 'No title')}**")
+                if ann.get("content"):
+                    st.markdown(ann.get("content", "")[:500] + "..." if len(ann.get("content", "")) > 500 else ann.get("content", ""))
+
+        if len(announcements) > 5:
+            with st.expander(f"View all {len(announcements)} announcements"):
+                ann_df = pd.DataFrame(announcements)
+                display_cols = ["announcement_date", "announcement_type", "title"]
+                available_cols = [c for c in display_cols if c in ann_df.columns]
+                if available_cols:
+                    st.dataframe(ann_df[available_cols], use_container_width=True, hide_index=True)
 
     # ----- Charts -----
     st.subheader("📈 Charts")
