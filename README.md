@@ -334,6 +334,81 @@ Each fetch creates:
 
 **Rule of thumb:** Use CLI for automation and debugging, UI for exploration and manual operations.
 
+## AI Insights (LLM-Powered Analysis)
+
+The AI Insights feature provides LLM-powered market analysis using OpenAI's GPT-5.2 model.
+
+### Configuration
+
+Set your OpenAI API key as an environment variable:
+
+```bash
+# Linux/macOS/WSL
+export OPENAI_API_KEY="sk-your-api-key-here"
+
+# Or add to your .bashrc / .zshrc for persistence
+echo 'export OPENAI_API_KEY="sk-your-api-key-here"' >> ~/.bashrc
+```
+
+**Security:** Never commit API keys to version control. The key is read from the environment only.
+
+### Accessing AI Insights
+
+1. Start the Streamlit UI: `streamlit run src/psx_ohlcv/ui/app.py`
+2. Navigate to "🤖 AI Insights" in the sidebar
+3. Select an analysis mode and configure parameters
+4. Click "Generate Insight"
+
+### Analysis Modes
+
+| Mode | Description | Data Used |
+|------|-------------|-----------|
+| **Company Summary** | Comprehensive company analysis with price history, key metrics | EOD OHLCV, company profile, quote snapshots |
+| **Intraday Commentary** | Real-time trading pattern analysis | Intraday bars (last 500 points) |
+| **Market Summary** | Sector-level market overview | Market analytics, sector rollups |
+| **History Analysis** | Multi-day trend analysis for a symbol | EOD OHLCV history (configurable days) |
+
+### Data Caveats
+
+**IMPORTANT:** The LLM is explicitly instructed about data limitations:
+
+1. **Derived High/Low Values:** For EOD data from the PSX timeseries API, high and low prices are derived as `max(open, close)` and `min(open, close)`. True intraday extremes are not captured. The LLM will warn users about this limitation in its analysis.
+
+2. **Data Freshness:** Analysis is only as current as your last data sync. Always run syncs before generating insights for up-to-date analysis.
+
+3. **No Invented Numbers:** The LLM is instructed to never fabricate statistics, prices, or metrics. If data is missing, it will state "data not available."
+
+### Cost Control Tips
+
+AI Insights uses the OpenAI API which has associated costs. To minimize expenses:
+
+1. **Caching Enabled (Default):** Responses are cached for 6 hours. Identical queries use cached results.
+
+2. **Cache Management:**
+   - View cache stats in the sidebar
+   - Clear cache when needed (e.g., after major data updates)
+   - Cache invalidates automatically when underlying data changes
+
+3. **Data Bounding:**
+   - Maximum 2000 rows per query
+   - Large datasets are automatically downsampled to 300-800 rows
+   - Use shorter date ranges for history analysis
+
+4. **Best Practices:**
+   - Review the data preview before generating (to ensure you're querying what you want)
+   - Use Company mode for single-stock deep dives
+   - Use Market mode for broad overviews (less data, lower cost)
+
+### Prompt Engineering
+
+Every prompt sent to the LLM includes:
+
+- **Data Used Section:** Explicit listing of what data was provided
+- **Hard Rules:** No invented numbers, acknowledge data gaps, cite sources
+- **PSX Caveats:** Warning about derived high/low, data limitations
+
+This ensures consistent, honest, and transparent AI-generated insights.
+
 ## Data Quality Note
 
 The PSX DPS API (`dps.psx.com.pk/timeseries/eod/{symbol}`) returns data in the format:
