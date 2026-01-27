@@ -2217,28 +2217,32 @@ def company_analytics_page():
         track_symbol_search(con, symbol, "Company Analytics")
         st.session_state.last_searched_symbol = symbol
 
-    # Action buttons
-    col1, col2, col3 = st.columns([1, 1, 2])
-    with col1:
-        refresh_profile = st.button(
-            "🔄 Refresh Profile",
-            help="Fetch and update company profile from PSX",
-        )
-    with col2:
-        take_snapshot = st.button(
-            "📸 Snapshot Now",
-            help="Take a quote snapshot and compute signals",
-        )
+    # Single refresh button - fetches all data from PSX
+    refresh_data = st.button(
+        "🔄 Refresh Data",
+        type="primary",
+        help="Fetch latest quotes, trading data, announcements, and financials from PSX",
+    )
 
-    # Handle refresh profile (now uses deep scraper for unified data)
-    if refresh_profile:
-        track_button_click(con, "Refresh Profile", "Company Analytics", symbol)
-        with st.spinner(f"Deep scraping {symbol}..."):
+    if refresh_data:
+        track_button_click(con, "Refresh Data", "Company Analytics", symbol)
+        with st.spinner(f"Fetching data for {symbol}..."):
             try:
                 from psx_ohlcv.sources.deep_scraper import deep_scrape_symbol
                 result = deep_scrape_symbol(con, symbol, save_raw_html=False)
                 if result.get("success"):
-                    msg = f"Data updated for {symbol}"
+                    # Build summary message
+                    parts = []
+                    if result.get("snapshot_saved"):
+                        parts.append("Quote")
+                    if result.get("trading_sessions_saved", 0) > 0:
+                        parts.append(f"{result['trading_sessions_saved']} markets")
+                    if result.get("announcements_saved", 0) > 0:
+                        parts.append(f"{result['announcements_saved']} announcements")
+                    if result.get("equity_saved"):
+                        parts.append("Equity")
+
+                    msg = f"Updated: {', '.join(parts)}" if parts else "Data refreshed"
                     track_refresh(con, "deep_scrape", symbol, "Company Analytics", True, {
                         "snapshot_saved": result.get("snapshot_saved"),
                         "trading_sessions": result.get("trading_sessions_saved", 0),
@@ -2249,31 +2253,9 @@ def company_analytics_page():
                 else:
                     err = result.get("error", "Unknown error")
                     track_refresh(con, "deep_scrape", symbol, "Company Analytics", False, {"error": err})
-                    st.error(f"Failed to fetch data: {err}")
+                    st.error(f"Failed: {err}")
             except Exception as e:
                 track_refresh(con, "deep_scrape", symbol, "Company Analytics", False, {"error": str(e)})
-                st.error(f"Error: {e}")
-
-    # Handle take snapshot
-    if take_snapshot:
-        track_button_click(con, "Snapshot Now", "Company Analytics", symbol)
-        with st.spinner(f"Taking snapshot for {symbol}..."):
-            try:
-                from psx_ohlcv.sources.company_page import take_quote_snapshot
-                result = take_quote_snapshot(con, symbol, compute_signals=True)
-                if result.get("success"):
-                    if result.get("inserted"):
-                        track_refresh(con, "snapshot", symbol, "Company Analytics", True)
-                        st.success(f"Snapshot taken for {symbol}")
-                    elif result.get("skipped"):
-                        track_refresh(con, "snapshot", symbol, "Company Analytics", True, {"skipped": True})
-                        st.info(f"Snapshot skipped (no change) for {symbol}")
-                    st.rerun()
-                else:
-                    track_refresh(con, "snapshot", symbol, "Company Analytics", False)
-                    st.error(f"Snapshot failed: {result.get('error', 'Unknown error')}")
-            except Exception as e:
-                track_refresh(con, "snapshot", symbol, "Company Analytics", False, {"error": str(e)})
                 st.error(f"Error: {e}")
 
     st.markdown("---")
@@ -2290,7 +2272,7 @@ def company_analytics_page():
     if not unified_data:
         st.warning(
             f"No data found for {symbol}. "
-            "Click 'Refresh Profile' to fetch data from PSX."
+            "Click 'Refresh Data' to fetch from PSX."
         )
         render_footer()
         return

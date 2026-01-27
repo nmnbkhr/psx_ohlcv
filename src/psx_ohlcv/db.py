@@ -4018,27 +4018,37 @@ def get_company_unified(
     # Build unified response
     quote_data = snapshot.get("quote_data", {})
     trading_data = snapshot.get("trading_data", {})
+    equity_data = snapshot.get("equity_data", {})
     reg_trading = trading_data.get("REG", {}) if trading_data else {}
+
+    # Get price for calculations
+    price = reg_trading.get("close") or quote_data.get("close")
+    total_shares = equity_structure.get("outstanding_shares") or equity_data.get("outstanding_shares")
+
+    # Calculate market cap if not available
+    market_cap = equity_structure.get("market_cap") or equity_data.get("market_cap")
+    if (not market_cap or market_cap == 0) and price and total_shares:
+        market_cap = price * total_shares
 
     result = {
         # Core info
         "symbol": symbol,
-        "company_name": snapshot.get("company_name"),
+        "company_name": snapshot.get("company_name") or quote_data.get("company_name"),
         "sector_code": snapshot.get("sector_code"),
-        "sector_name": snapshot.get("sector_name"),
+        "sector_name": snapshot.get("sector_name") or quote_data.get("sector_name"),
         "snapshot_date": snapshot.get("snapshot_date"),
         "scraped_at": snapshot.get("scraped_at"),
 
         # Current quote (from snapshot or trading session)
-        "price": reg_trading.get("close") or quote_data.get("close"),
+        "price": price,
         "open": reg_trading.get("open") or quote_data.get("open"),
         "high": reg_trading.get("high") or quote_data.get("high"),
         "low": reg_trading.get("low") or quote_data.get("low"),
-        "close": reg_trading.get("close") or quote_data.get("close"),
+        "close": price,
         "volume": reg_trading.get("volume") or quote_data.get("volume"),
         "ldcp": reg_trading.get("ldcp") or quote_data.get("ldcp"),
-        "change": quote_data.get("change"),
-        "change_pct": reg_trading.get("change_percent") or quote_data.get("change_pct"),
+        "change": quote_data.get("change_value") or quote_data.get("change"),
+        "change_pct": reg_trading.get("change_percent") or quote_data.get("change_percent") or quote_data.get("change_pct"),
 
         # Ranges
         "day_range_low": reg_trading.get("day_range_low") or quote_data.get("day_range_low"),
@@ -4050,7 +4060,7 @@ def get_company_unified(
 
         # Valuation
         "pe_ratio": reg_trading.get("pe_ratio_ttm") or quote_data.get("pe_ratio"),
-        "market_cap": equity_structure.get("market_cap"),
+        "market_cap": market_cap,
 
         # Performance
         "ytd_change_pct": reg_trading.get("ytd_change"),
@@ -4061,9 +4071,9 @@ def get_company_unified(
         "variance": reg_trading.get("var_percent"),
 
         # Equity
-        "total_shares": equity_structure.get("outstanding_shares"),
-        "free_float_shares": equity_structure.get("free_float_shares"),
-        "free_float_pct": equity_structure.get("free_float_percent"),
+        "total_shares": total_shares,
+        "free_float_shares": equity_structure.get("free_float_shares") or equity_data.get("free_float_shares"),
+        "free_float_pct": equity_structure.get("free_float_percent") or equity_data.get("free_float_percent"),
 
         # Full data objects
         "quote_data": quote_data,
