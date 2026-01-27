@@ -88,6 +88,233 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# =============================================================================
+# TRADING UI DESIGN SYSTEM
+# Professional trading terminal aesthetic with trader-centric UX
+# =============================================================================
+
+TRADING_CSS = """
+<style>
+/* === Color Palette === */
+:root {
+    --gain-color: #00C853;
+    --loss-color: #FF1744;
+    --neutral-color: #78909C;
+    --accent-color: #2196F3;
+    --warning-color: #FFC107;
+    --bg-card: rgba(255, 255, 255, 0.02);
+    --border-color: rgba(255, 255, 255, 0.1);
+}
+
+/* === Typography for Numbers === */
+.stMetric [data-testid="stMetricValue"] {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
+    font-weight: 600;
+}
+
+/* === Metric Cards Enhancement === */
+[data-testid="stMetric"] {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 12px 16px;
+}
+
+/* === Price Change Colors === */
+.price-up { color: #00C853 !important; }
+.price-down { color: #FF1744 !important; }
+.price-neutral { color: #78909C !important; }
+
+/* === Data Tables === */
+.stDataFrame {
+    font-family: 'JetBrains Mono', 'SF Mono', monospace;
+    font-size: 13px;
+}
+
+/* === Section Headers === */
+.section-header {
+    border-left: 4px solid #2196F3;
+    padding-left: 12px;
+    margin: 24px 0 16px 0;
+}
+
+/* === KPI Row === */
+.kpi-row {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+/* === Ticker Tape Style === */
+.ticker-item {
+    display: inline-block;
+    padding: 4px 12px;
+    margin: 2px 4px;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 13px;
+}
+.ticker-up { background: rgba(0, 200, 83, 0.15); border: 1px solid rgba(0, 200, 83, 0.3); }
+.ticker-down { background: rgba(255, 23, 68, 0.15); border: 1px solid rgba(255, 23, 68, 0.3); }
+
+/* === Market Status Badge === */
+.market-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+}
+.market-open { background: rgba(0, 200, 83, 0.2); color: #00C853; }
+.market-closed { background: rgba(255, 23, 68, 0.2); color: #FF1744; }
+
+/* === Compact Info Cards === */
+.info-card {
+    background: linear-gradient(135deg, rgba(33, 150, 243, 0.1) 0%, rgba(33, 150, 243, 0.05) 100%);
+    border: 1px solid rgba(33, 150, 243, 0.2);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 16px;
+}
+
+/* === Sidebar Styling === */
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, rgba(0,0,0,0.02) 0%, rgba(0,0,0,0.05) 100%);
+}
+
+/* === Button Improvements === */
+.stButton > button {
+    border-radius: 6px;
+    font-weight: 500;
+    transition: all 0.2s ease;
+}
+
+/* === Progress Bars === */
+.stProgress > div > div {
+    border-radius: 4px;
+}
+
+/* === Expander Headers === */
+.streamlit-expanderHeader {
+    font-weight: 600;
+    font-size: 14px;
+}
+
+/* === Tab Styling === */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 8px;
+}
+.stTabs [data-baseweb="tab"] {
+    border-radius: 6px 6px 0 0;
+    padding: 8px 16px;
+}
+
+/* === Announcement Cards === */
+.announcement-card {
+    border-left: 3px solid #FFC107;
+    padding-left: 12px;
+    margin: 8px 0;
+}
+
+/* === Hide Streamlit Branding === */
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+</style>
+"""
+
+# Inject custom CSS
+st.markdown(TRADING_CSS, unsafe_allow_html=True)
+
+
+def format_price_change(value: float, include_sign: bool = True) -> str:
+    """Format price change with color indicator."""
+    if value > 0:
+        sign = "+" if include_sign else ""
+        return f'<span class="price-up">{sign}{value:.2f}%</span>'
+    elif value < 0:
+        return f'<span class="price-down">{value:.2f}%</span>'
+    else:
+        return f'<span class="price-neutral">0.00%</span>'
+
+
+def format_volume(volume: float) -> str:
+    """Format volume with appropriate suffix."""
+    if volume >= 1e9:
+        return f"{volume/1e9:.2f}B"
+    elif volume >= 1e6:
+        return f"{volume/1e6:.2f}M"
+    elif volume >= 1e3:
+        return f"{volume/1e3:.1f}K"
+    else:
+        return f"{volume:,.0f}"
+
+
+def format_price(price: float, currency: str = "Rs.") -> str:
+    """Format price with currency."""
+    if price >= 1000:
+        return f"{currency} {price:,.2f}"
+    else:
+        return f"{currency} {price:.2f}"
+
+
+def render_market_status_badge():
+    """Render market open/closed badge."""
+    if is_market_closed():
+        st.markdown(
+            '<span class="market-status market-closed">● Market Closed</span>',
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            '<span class="market-status market-open">● Market Open</span>',
+            unsafe_allow_html=True
+        )
+
+
+def render_ticker_tape(symbols_data: list[dict]):
+    """Render a horizontal ticker tape of symbols with changes."""
+    html_parts = []
+    for item in symbols_data[:10]:
+        symbol = item.get("symbol", "")
+        change = item.get("change_pct", 0) or 0
+        css_class = "ticker-up" if change >= 0 else "ticker-down"
+        sign = "+" if change >= 0 else ""
+        html_parts.append(
+            f'<span class="ticker-item {css_class}">'
+            f'<b>{symbol}</b> {sign}{change:.2f}%</span>'
+        )
+    st.markdown(" ".join(html_parts), unsafe_allow_html=True)
+
+
+def render_price_card(
+    label: str,
+    price: float,
+    change: float = None,
+    change_pct: float = None,
+    subtitle: str = None
+):
+    """Render a price card with change indicator."""
+    change_html = ""
+    if change_pct is not None:
+        color = "#00C853" if change_pct >= 0 else "#FF1744"
+        sign = "+" if change_pct >= 0 else ""
+        change_html = f' <span style="color: {color}; font-size: 14px;">({sign}{change_pct:.2f}%)</span>'
+
+    st.markdown(
+        f"""
+        <div style="padding: 12px; background: rgba(255,255,255,0.02); border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);">
+            <div style="font-size: 12px; color: #888; margin-bottom: 4px;">{label}</div>
+            <div style="font-size: 24px; font-weight: 600; font-family: monospace;">
+                Rs. {price:,.2f}{change_html}
+            </div>
+            {f'<div style="font-size: 11px; color: #666; margin-top: 4px;">{subtitle}</div>' if subtitle else ''}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
 # Exports directory
 EXPORTS_DIR = DATA_ROOT / "exports"
 
@@ -262,82 +489,110 @@ def render_footer():
 # -----------------------------------------------------------------------------
 def dashboard():
     """Main dashboard with KPIs, market breadth, and top movers."""
-    st.title("📊 Dashboard")
 
     try:
         con = get_connection()
 
-        # Data freshness badge
-        days_old, latest_date = get_data_freshness(con)
-        badge_color, badge_text = get_freshness_badge(days_old)
+        # =================================================================
+        # HEADER: Title + Market Status + Data Freshness
+        # =================================================================
+        header_col1, header_col2, header_col3 = st.columns([2, 1, 1])
 
-        # Freshness indicator in header
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            if badge_color == "green":
-                st.success(f"📅 Data: **{badge_text}** (Latest: {latest_date})")
-            elif badge_color == "orange":
-                st.warning(f"📅 Data: **{badge_text}** (Latest: {latest_date})")
-            elif badge_color == "red":
-                st.error(f"📅 Data: **{badge_text}** (Latest: {latest_date})")
-            else:
-                st.info("📅 Data Freshness: No data yet")
+        with header_col1:
+            st.markdown("## 📊 Market Dashboard")
+            st.caption("Pakistan Stock Exchange • Real-time Analytics")
 
-        with col2:
-            if is_market_closed() and days_old is not None and days_old >= 1:
-                st.info("🔒 Market closed")
+        with header_col2:
+            # Market Status Badge
+            render_market_status_badge()
+
+        with header_col3:
+            # Data Freshness
+            days_old, latest_date = get_data_freshness(con)
+            badge_color, badge_text = get_freshness_badge(days_old)
+            if latest_date:
+                freshness_color = "#00C853" if badge_color == "green" else "#FFC107" if badge_color == "orange" else "#FF1744"
+                st.markdown(
+                    f'<div style="text-align: right; font-size: 12px;">'
+                    f'<span style="color: {freshness_color};">●</span> Data: {badge_text}<br>'
+                    f'<span style="color: #888;">As of {latest_date}</span></div>',
+                    unsafe_allow_html=True
+                )
 
         st.markdown("---")
 
-        # KPI Cards
-        col1, col2, col3, col4 = st.columns(4)
+        # =================================================================
+        # PRIMARY KPIs ROW - Key metrics traders care about
+        # =================================================================
+        kpi_col1, kpi_col2, kpi_col3, kpi_col4, kpi_col5 = st.columns(5)
 
-        # Total symbols - use query helper
-        symbols = get_symbols_list(con, is_active_only=True)
-        symbols_count = len(symbols)
-        col1.metric(
-            "Total Symbols",
-            symbols_count,
-            help="Number of active symbols being tracked"
-        )
-
-        # Last sync time
-        last_sync = con.execute("""
-            SELECT ended_at FROM sync_runs
-            WHERE ended_at IS NOT NULL
-            ORDER BY ended_at DESC LIMIT 1
+        # Get deep data stats
+        deep_stats = con.execute("""
+            SELECT
+                COUNT(DISTINCT symbol) as deep_symbols,
+                MAX(snapshot_date) as latest_snapshot
+            FROM company_snapshots
         """).fetchone()
-        if last_sync and last_sync["ended_at"]:
-            col2.metric(
-                "Last Sync",
-                last_sync["ended_at"][:16],
-                help="Timestamp of the most recent sync operation"
+        deep_count = deep_stats["deep_symbols"] if deep_stats else 0
+
+        # Get trading session stats
+        session_stats = con.execute("""
+            SELECT
+                SUM(volume) as total_volume,
+                SUM(turnover) as total_turnover,
+                COUNT(DISTINCT symbol) as active_symbols
+            FROM trading_sessions
+            WHERE session_date = (SELECT MAX(session_date) FROM trading_sessions)
+            AND market_type = 'REG'
+        """).fetchone()
+
+        total_vol = session_stats["total_volume"] if session_stats else 0
+        active_count = session_stats["active_symbols"] if session_stats else 0
+
+        with kpi_col1:
+            st.metric(
+                "🏢 Companies",
+                f"{deep_count:,}",
+                help="Companies with deep data profiles"
             )
-        else:
-            col2.metric("Last Sync", "Never", help="No sync has been run yet")
 
-        # Rows ingested
-        eod_count = con.execute("SELECT COUNT(*) FROM eod_ohlcv").fetchone()[0]
-        col3.metric(
-            "Total OHLCV Rows",
-            f"{eod_count:,}",
-            help="Total number of daily price records in the database"
-        )
+        with kpi_col2:
+            st.metric(
+                "📈 Active Today",
+                f"{active_count:,}",
+                help="Symbols traded today"
+            )
 
-        # Failed symbols (last run)
-        last_failed = con.execute("""
-            SELECT symbols_failed FROM sync_runs
-            WHERE ended_at IS NOT NULL
-            ORDER BY ended_at DESC LIMIT 1
-        """).fetchone()
-        failed_count = last_failed["symbols_failed"] if last_failed else 0
-        col4.metric(
-            "Failed (Last Run)",
-            failed_count,
-            help="Number of symbols that failed during the last sync"
-        )
+        with kpi_col3:
+            vol_str = format_volume(total_vol) if total_vol else "N/A"
+            st.metric(
+                "📊 Total Volume",
+                vol_str,
+                help="Combined volume across all symbols"
+            )
 
-        st.markdown("---")
+        with kpi_col4:
+            # EOD data coverage
+            eod_count = con.execute("SELECT COUNT(*) FROM eod_ohlcv").fetchone()[0]
+            st.metric(
+                "📅 Historical Days",
+                f"{eod_count:,}",
+                help="Total OHLCV records in database"
+            )
+
+        with kpi_col5:
+            # Announcements today
+            ann_count = con.execute("""
+                SELECT COUNT(*) FROM corporate_announcements
+                WHERE announcement_date = date('now')
+            """).fetchone()[0]
+            st.metric(
+                "📣 Announcements",
+                f"{ann_count}",
+                help="Corporate announcements today"
+            )
+
+        st.markdown("")  # Spacing
 
         # =====================================================================
         # PSX-Style Trading Segments Summary
@@ -2322,60 +2577,66 @@ def history_page():
 # -----------------------------------------------------------------------------
 def company_analytics_page():
     """Company Analytics page for deep-dive into individual stocks."""
-    st.title("🏢 Company Analytics")
 
     con = get_connection()
-
-    # Track page visit
     track_page_visit(con, "Company Analytics")
 
-    # Symbol selection
-    st.subheader("Select Symbol")
-
-    # Get symbols with profiles for suggestions
-    symbols_with_profiles = get_symbols_with_profiles(con)
+    # =================================================================
+    # SEARCH BAR - Bloomberg Terminal Style
+    # =================================================================
     all_symbols = get_symbols_list(con)
-
-    # Check if we have a symbol passed via session state
+    symbols_with_profiles = get_symbols_with_profiles(con)
     default_symbol = st.session_state.get("company_symbol", "")
 
-    col1, col2 = st.columns([3, 1])
-    with col1:
+    # Compact search bar
+    search_col1, search_col2, search_col3 = st.columns([4, 1, 1])
+
+    with search_col1:
         symbol = st.text_input(
-            "Enter Symbol",
+            "🔍 Search Symbol",
             value=default_symbol,
-            placeholder="e.g., OGDC, PPL, PSO",
-            help="Enter a PSX stock symbol",
+            placeholder="Enter symbol (e.g., OGDC, HBL, ENGRO)",
+            label_visibility="collapsed",
         ).strip().upper()
 
-    with col2:
-        st.markdown("<br>", unsafe_allow_html=True)
-        if symbols_with_profiles:
-            st.caption(f"{len(symbols_with_profiles)} symbols have profiles")
+    with search_col2:
+        refresh_data = st.button("🔄 Refresh", type="primary", use_container_width=True)
 
-    # Show symbol suggestions
+    with search_col3:
+        st.caption(f"{len(symbols_with_profiles)} companies")
+
+    # Symbol suggestions
     if symbol and len(symbol) >= 1:
-        matching = [s for s in all_symbols if s.startswith(symbol)][:10]
+        matching = [s for s in all_symbols if s.startswith(symbol)][:8]
         if matching and symbol not in matching:
-            st.caption(f"Did you mean: {', '.join(matching)}")
+            suggestion_html = " ".join([
+                f'<span style="background: rgba(33,150,243,0.1); padding: 2px 8px; '
+                f'border-radius: 4px; margin: 2px; font-size: 12px;">{s}</span>'
+                for s in matching
+            ])
+            st.markdown(f"Suggestions: {suggestion_html}", unsafe_allow_html=True)
 
     if not symbol:
-        st.info("Enter a symbol to view company analytics.")
+        # Welcome screen when no symbol
+        st.markdown("---")
+        st.markdown("""
+        <div style="text-align: center; padding: 60px 20px;">
+            <h2 style="color: #2196F3;">🏢 Company Analytics</h2>
+            <p style="color: #888; font-size: 16px;">
+                Enter a symbol above to view comprehensive company data<br>
+                including quotes, trading sessions, announcements, and financials.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
         render_footer()
         return
 
-    # Track symbol search (only if symbol changed)
+    # Track search
     if st.session_state.get("last_searched_symbol") != symbol:
         track_symbol_search(con, symbol, "Company Analytics")
         st.session_state.last_searched_symbol = symbol
 
-    # Single refresh button - fetches all data from PSX
-    refresh_data = st.button(
-        "🔄 Refresh Data",
-        type="primary",
-        help="Fetch latest quotes, trading data, announcements, and financials from PSX",
-    )
-
+    # Handle refresh
     if refresh_data:
         track_button_click(con, "Refresh Data", "Company Analytics", symbol)
         with st.spinner(f"Fetching data for {symbol}..."):
@@ -2383,7 +2644,6 @@ def company_analytics_page():
                 from psx_ohlcv.sources.deep_scraper import deep_scrape_symbol
                 result = deep_scrape_symbol(con, symbol, save_raw_html=False)
                 if result.get("success"):
-                    # Build summary message
                     parts = []
                     if result.get("snapshot_saved"):
                         parts.append("Quote")
@@ -2391,351 +2651,186 @@ def company_analytics_page():
                         parts.append(f"{result['trading_sessions_saved']} markets")
                     if result.get("announcements_saved", 0) > 0:
                         parts.append(f"{result['announcements_saved']} announcements")
-                    if result.get("equity_saved"):
-                        parts.append("Equity")
-
-                    msg = f"Updated: {', '.join(parts)}" if parts else "Data refreshed"
-                    track_refresh(con, "deep_scrape", symbol, "Company Analytics", True, {
-                        "snapshot_saved": result.get("snapshot_saved"),
-                        "trading_sessions": result.get("trading_sessions_saved", 0),
-                        "announcements": result.get("announcements_saved", 0),
-                    })
-                    st.success(msg)
+                    track_refresh(con, "deep_scrape", symbol, "Company Analytics", True, {})
+                    st.success(f"✓ Updated: {', '.join(parts)}" if parts else "✓ Refreshed")
                     st.rerun()
                 else:
-                    err = result.get("error", "Unknown error")
-                    track_refresh(con, "deep_scrape", symbol, "Company Analytics", False, {"error": err})
-                    st.error(f"Failed: {err}")
+                    st.error(f"Failed: {result.get('error', 'Unknown error')}")
             except Exception as e:
-                track_refresh(con, "deep_scrape", symbol, "Company Analytics", False, {"error": str(e)})
                 st.error(f"Error: {e}")
 
     st.markdown("---")
 
-    # Fetch unified data from Deep Data tables (hybrid model)
+    # =================================================================
+    # FETCH DATA
+    # =================================================================
     from psx_ohlcv.db import get_company_unified
     unified_data = get_company_unified(con, symbol)
-
-    # Also get signals and quote stats (these are computed locally)
     signals = get_company_latest_signals(con, symbol)
     quote_stats = get_company_quote_stats(con, symbol)
 
-    # Check if we have any data
     if not unified_data:
-        st.warning(
-            f"No data found for {symbol}. "
-            "Click 'Refresh Data' to fetch from PSX."
-        )
+        st.markdown(f"""
+        <div style="text-align: center; padding: 40px; background: rgba(255,193,7,0.1);
+                    border: 1px solid rgba(255,193,7,0.3); border-radius: 8px;">
+            <h3>No data for {symbol}</h3>
+            <p>Click <b>Refresh</b> to fetch data from PSX</p>
+        </div>
+        """, unsafe_allow_html=True)
         render_footer()
         return
 
-    # Use unified data as the primary data source
     data = unified_data
 
-    # Header with company name and data freshness
+    # =================================================================
+    # COMPANY HEADER - Prominent Display
+    # =================================================================
     company_name = data.get("company_name", symbol)
+    sector_name = data.get("sector_name", "")
     snapshot_date = data.get("snapshot_date", "")
-    scraped_at = data.get("scraped_at", "")[:16] if data.get("scraped_at") else ""
+    price = data.get("price")
+    change = data.get("change") or 0
+    change_pct = data.get("change_pct") or 0
 
-    header_col1, header_col2 = st.columns([3, 1])
-    with header_col1:
-        st.markdown(f"### {company_name}")
-        st.caption(f"Sector: {data.get('sector_name', 'N/A')}")
-    with header_col2:
-        if snapshot_date:
-            st.caption(f"Data as of: {snapshot_date}")
-        if scraped_at:
-            st.caption(f"Last updated: {scraped_at}")
+    # Determine color based on change
+    price_color = "#00C853" if change_pct >= 0 else "#FF1744"
+    change_sign = "+" if change_pct >= 0 else ""
+    arrow = "▲" if change_pct > 0 else "▼" if change_pct < 0 else "●"
 
-    st.subheader("📊 Current Quote")
+    st.markdown(f"""
+    <div style="display: flex; justify-content: space-between; align-items: flex-start;
+                padding: 16px 0; border-bottom: 1px solid rgba(255,255,255,0.1);">
+        <div>
+            <div style="font-size: 28px; font-weight: 700;">{symbol}</div>
+            <div style="font-size: 14px; color: #888;">{company_name}</div>
+            <div style="font-size: 12px; color: #666; margin-top: 4px;">
+                {sector_name} • Data as of {snapshot_date}
+            </div>
+        </div>
+        <div style="text-align: right;">
+            <div style="font-size: 32px; font-weight: 700; font-family: monospace;">
+                Rs. {price:,.2f}
+            </div>
+            <div style="font-size: 18px; color: {price_color}; font-family: monospace;">
+                {arrow} {change_sign}{change:.2f} ({change_sign}{change_pct:.2f}%)
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    if data:
-        kpi_cols = st.columns(5)
+    st.markdown("")  # Spacing
 
-        with kpi_cols[0]:
-            price = data.get("price")
-            st.metric(
-                "Price",
-                f"Rs. {price:,.2f}" if price else "N/A",
-            )
+    # Quick Stats Row
+    qs_col1, qs_col2, qs_col3, qs_col4, qs_col5, qs_col6 = st.columns(6)
 
-        with kpi_cols[1]:
-            change_pct = data.get("change_pct")
-            if change_pct is not None:
-                st.metric(
-                    "Change %",
-                    f"{change_pct:+.2f}%",
-                    delta=f"{change_pct:+.2f}%",
-                    delta_color="normal",
-                )
-            else:
-                st.metric("Change %", "N/A")
+    with qs_col1:
+        vol = data.get("volume") or 0
+        st.metric("Volume", format_volume(vol))
 
-        with kpi_cols[2]:
-            volume = data.get("volume")
-            if volume:
-                if volume >= 1_000_000:
-                    vol_str = f"{volume/1_000_000:.2f}M"
-                elif volume >= 1_000:
-                    vol_str = f"{volume/1_000:.1f}K"
-                else:
-                    vol_str = f"{volume:,}"
-                st.metric("Volume", vol_str)
-            else:
-                st.metric("Volume", "N/A")
+    with qs_col2:
+        ldcp = data.get("ldcp")
+        st.metric("LDCP", f"Rs. {ldcp:,.2f}" if ldcp else "N/A")
 
-        with kpi_cols[3]:
-            ldcp = data.get("ldcp")
-            st.metric("LDCP", f"Rs. {ldcp:,.2f}" if ldcp else "N/A")
-
-        with kpi_cols[4]:
-            market_mode = data.get("market_mode", "")
-            st.metric("Market Mode", market_mode or "N/A")
-
-        # ----- Bid/Ask Spread -----
-        bid_price = data.get("bid_price")
-        ask_price = data.get("ask_price")
-        if bid_price or ask_price:
-            st.markdown("---")
-            st.subheader("📈 Bid/Ask Spread")
-            spread_cols = st.columns(4)
-
-            with spread_cols[0]:
-                bp = f"Rs. {bid_price:,.2f}" if bid_price else "N/A"
-                bs = data.get("bid_size")
-                bs_str = f" ({bs:,})" if bs else ""
-                st.metric("Bid", f"{bp}{bs_str}")
-
-            with spread_cols[1]:
-                ap = f"Rs. {ask_price:,.2f}" if ask_price else "N/A"
-                asiz = data.get("ask_size")
-                as_str = f" ({asiz:,})" if asiz else ""
-                st.metric("Ask", f"{ap}{as_str}")
-
-            with spread_cols[2]:
-                if bid_price and ask_price:
-                    spread = ask_price - bid_price
-                    spread_pct = (spread / bid_price) * 100 if bid_price > 0 else 0
-                    st.metric("Spread", f"Rs. {spread:.2f} ({spread_pct:.2f}%)")
-                else:
-                    st.metric("Spread", "N/A")
-
-            with spread_cols[3]:
-                as_of = data.get("as_of") or data.get("updated_at", "")
-                if as_of:
-                    st.metric("As Of", as_of[:19] if len(as_of) > 19 else as_of)
-                else:
-                    st.metric("As Of", "N/A")
-
-        # ----- Performance & Valuation Metrics -----
+    with qs_col3:
         pe = data.get("pe_ratio")
-        mktcap = data.get("market_cap")
+        st.metric("P/E Ratio", f"{pe:.2f}" if pe else "N/A")
+
+    with qs_col4:
+        mc = data.get("market_cap")
+        if mc:
+            mc_str = f"Rs. {mc/1e9:.1f}B" if mc >= 1e9 else f"Rs. {mc/1e6:.1f}M"
+        else:
+            mc_str = "N/A"
+        st.metric("Market Cap", mc_str)
+
+    with qs_col5:
         ytd = data.get("ytd_change_pct")
-        oneyear = data.get("one_year_change_pct")
+        if ytd:
+            st.metric("YTD", f"{ytd:+.1f}%", delta=f"{ytd:+.1f}%")
+        else:
+            st.metric("YTD", "N/A")
 
-        if pe or mktcap or ytd or oneyear:
-            st.markdown("---")
-            st.subheader("📊 Performance & Valuation")
-            perf_cols = st.columns(4)
+    with qs_col6:
+        y1 = data.get("one_year_change_pct")
+        if y1:
+            st.metric("1Y Change", f"{y1:+.1f}%", delta=f"{y1:+.1f}%")
+        else:
+            st.metric("1Y Change", "N/A")
 
-            with perf_cols[0]:
-                st.metric("P/E Ratio", f"{pe:.2f}" if pe else "N/A")
+    # =================================================================
+    # DETAILED QUOTE SECTION
+    # =================================================================
+    st.markdown("---")
+    st.markdown("#### 📊 Quote Details")
 
-            with perf_cols[1]:
-                if mktcap:
-                    if mktcap >= 1_000_000:
-                        mc_str = f"Rs. {mktcap/1_000_000:.2f}T"
-                    elif mktcap >= 1_000:
-                        mc_str = f"Rs. {mktcap/1_000:.2f}B"
-                    else:
-                        mc_str = f"Rs. {mktcap:.2f}M"
-                    st.metric("Market Cap", mc_str)
-                else:
-                    st.metric("Market Cap", "N/A")
-
-            with perf_cols[2]:
-                if ytd is not None:
-                    st.metric(
-                        "YTD Change",
-                        f"{ytd:+.2f}%",
-                        delta=f"{ytd:+.2f}%",
-                        delta_color="normal",
-                    )
-                else:
-                    st.metric("YTD Change", "N/A")
-
-            with perf_cols[3]:
-                if oneyear is not None:
-                    st.metric(
-                        "1-Year Change",
-                        f"{oneyear:+.2f}%",
-                        delta=f"{oneyear:+.2f}%",
-                        delta_color="normal",
-                    )
-                else:
-                    st.metric("1-Year Change", "N/A")
-
-        # ----- Equity Structure -----
-        total_shares = data.get("total_shares")
-        free_float = data.get("free_float_shares")
-        ff_pct = data.get("free_float_pct")
-
-        if total_shares or free_float:
-            st.markdown("---")
-            st.subheader("🏦 Equity Structure")
-            eq_cols = st.columns(4)
-
-            with eq_cols[0]:
-                if total_shares:
-                    if total_shares >= 1_000_000_000:
-                        ts_str = f"{total_shares/1_000_000_000:.2f}B"
-                    elif total_shares >= 1_000_000:
-                        ts_str = f"{total_shares/1_000_000:.2f}M"
-                    else:
-                        ts_str = f"{total_shares:,}"
-                    st.metric("Total Shares", ts_str)
-                else:
-                    st.metric("Total Shares", "N/A")
-
-            with eq_cols[1]:
-                if free_float:
-                    if free_float >= 1_000_000_000:
-                        ff_str = f"{free_float/1_000_000_000:.2f}B"
-                    elif free_float >= 1_000_000:
-                        ff_str = f"{free_float/1_000_000:.2f}M"
-                    else:
-                        ff_str = f"{free_float:,}"
-                    pct_str = f" ({ff_pct:.1f}%)" if ff_pct else ""
-                    st.metric("Free Float", f"{ff_str}{pct_str}")
-                else:
-                    st.metric("Free Float", "N/A")
-
-            with eq_cols[2]:
-                haircut = data.get("haircut")
-                st.metric("Haircut", f"{haircut:.2f}%" if haircut else "N/A")
-
-            with eq_cols[3]:
-                var = data.get("variance")
-                st.metric("VAR", f"{var:.2f}" if var else "N/A")
-
-    else:
-        st.info("No quote data available. Click 'Refresh Profile' to fetch data.")
-
-    # ----- Range Displays -----
     if data:
-        st.markdown("---")
-        st.subheader("📏 Price Ranges")
+        # Bid/Ask and Ranges in a cleaner layout
+        detail_col1, detail_col2, detail_col3 = st.columns(3)
 
-        range_cols = st.columns(3)
-
-        with range_cols[0]:
+        with detail_col1:
             st.markdown("**Day Range**")
             day_low = data.get("day_range_low")
             day_high = data.get("day_range_high")
-            price = data.get("price")
-            if day_low and day_high and price:
-                pos_day = signals.get("pos_day", "null")
-                try:
-                    pos_pct = float(pos_day) * 100
-                    st.progress(min(1.0, max(0.0, float(pos_day))))
-                    st.caption(
-                        f"Rs. {day_low:,.2f} - Rs. {day_high:,.2f} ({pos_pct:.1f}%)"
-                    )
-                except (ValueError, TypeError):
-                    st.caption(f"Rs. {day_low:,.2f} - Rs. {day_high:,.2f}")
+            if day_low and day_high:
+                current = data.get("price", 0)
+                if day_high > day_low:
+                    pct = (current - day_low) / (day_high - day_low)
+                    st.progress(min(1.0, max(0.0, pct)))
+                st.caption(f"Rs. {day_low:,.2f} — Rs. {day_high:,.2f}")
             else:
                 st.caption("N/A")
 
-        with range_cols[1]:
+        with detail_col2:
             st.markdown("**52-Week Range**")
             wk52_low = data.get("wk52_low")
             wk52_high = data.get("wk52_high")
-            if wk52_low and wk52_high and price:
-                pos_52w = signals.get("pos_52w", "null")
-                try:
-                    pos_pct = float(pos_52w) * 100
-                    st.progress(min(1.0, max(0.0, float(pos_52w))))
-                    st.caption(
-                        f"Rs. {wk52_low:,.2f} - Rs. {wk52_high:,.2f} ({pos_pct:.1f}%)"
-                    )
-                except (ValueError, TypeError):
-                    st.caption(f"Rs. {wk52_low:,.2f} - Rs. {wk52_high:,.2f}")
+            if wk52_low and wk52_high:
+                current = data.get("price", 0)
+                if wk52_high > wk52_low:
+                    pct = (current - wk52_low) / (wk52_high - wk52_low)
+                    st.progress(min(1.0, max(0.0, pct)))
+                st.caption(f"Rs. {wk52_low:,.2f} — Rs. {wk52_high:,.2f}")
             else:
                 st.caption("N/A")
 
-        with range_cols[2]:
+        with detail_col3:
             st.markdown("**Circuit Breaker**")
             circuit_low = data.get("circuit_low")
             circuit_high = data.get("circuit_high")
             if circuit_low and circuit_high:
-                prox_low = signals.get("circuit_prox_low_pct", "null")
-                prox_high = signals.get("circuit_prox_high_pct", "null")
-                st.caption(
-                    f"Lower: Rs. {circuit_low:,.2f} | Upper: Rs. {circuit_high:,.2f}"
-                )
-                try:
-                    prox_low_val = float(prox_low)
-                    prox_high_val = float(prox_high)
-                    st.caption(
-                        f"Proximity: ↓{prox_low_val:.2f}% | ↑{prox_high_val:.2f}%"
-                    )
-                except (ValueError, TypeError):
-                    pass
+                st.caption(f"Lower: Rs. {circuit_low:,.2f}")
+                st.caption(f"Upper: Rs. {circuit_high:,.2f}")
             else:
                 st.caption("N/A")
 
-    # ----- Signals Panel -----
-    st.subheader("🚦 Signals")
+        # Equity Structure Row
+        st.markdown("")
+        eq_col1, eq_col2, eq_col3, eq_col4 = st.columns(4)
 
-    if signals:
-        signal_summary = signals.get("signal_summary", "none")
-        has_signals = signal_summary and signal_summary != "none"
-        triggered = signal_summary.split(",") if has_signals else []
+        with eq_col1:
+            total_shares = data.get("total_shares")
+            if total_shares:
+                ts_str = f"{total_shares/1e9:.2f}B" if total_shares >= 1e9 else f"{total_shares/1e6:.0f}M"
+                st.metric("Total Shares", ts_str)
+            else:
+                st.metric("Total Shares", "N/A")
 
-        if triggered:
-            st.markdown("**Triggered Signals:**")
-            signal_cols = st.columns(len(triggered))
-            signal_colors = {
-                "near_52w_high": "🟢",
-                "near_52w_low": "🔴",
-                "near_day_high": "🟢",
-                "near_day_low": "🔴",
-                "volume_spike": "🟡",
-                "near_circuit_high": "⚠️",
-                "near_circuit_low": "⚠️",
-            }
-            signal_labels = {
-                "near_52w_high": "Near 52W High",
-                "near_52w_low": "Near 52W Low",
-                "near_day_high": "Near Day High",
-                "near_day_low": "Near Day Low",
-                "volume_spike": "Volume Spike",
-                "near_circuit_high": "Near Circuit High",
-                "near_circuit_low": "Near Circuit Low",
-            }
-            for i, sig in enumerate(triggered):
-                with signal_cols[i]:
-                    emoji = signal_colors.get(sig, "🔵")
-                    label = signal_labels.get(sig, sig)
-                    st.info(f"{emoji} {label}")
-        else:
-            st.info("No signals currently triggered.")
+        with eq_col2:
+            ff = data.get("free_float_shares")
+            ff_pct = data.get("free_float_pct")
+            if ff:
+                ff_str = f"{ff/1e6:.0f}M ({ff_pct:.1f}%)" if ff_pct else f"{ff/1e6:.0f}M"
+                st.metric("Free Float", ff_str)
+            else:
+                st.metric("Free Float", "N/A")
 
-        # Show volume metrics
-        with st.expander("Volume Analysis"):
-            rel_vol = signals.get("rel_volume", "null")
-            try:
-                rel_vol_val = float(rel_vol)
-                st.metric(
-                    "Relative Volume",
-                    f"{rel_vol_val:.2f}x",
-                    help="Volume vs 20-day median",
-                )
-            except (ValueError, TypeError):
-                st.metric("Relative Volume", "N/A")
+        with eq_col3:
+            haircut = data.get("haircut")
+            st.metric("Haircut", f"{haircut:.1f}%" if haircut else "N/A")
 
-    else:
-        st.info("No signals computed. Click 'Snapshot Now' to compute signals.")
+        with eq_col4:
+            var = data.get("variance")
+            st.metric("VAR", f"{var:.1f}%" if var else "N/A")
 
     # ----- Company Profile -----
     profile = data.get("profile_data", {})
