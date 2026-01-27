@@ -915,57 +915,59 @@ def dashboard():
 # -----------------------------------------------------------------------------
 def candlestick_explorer():
     """Candlestick chart explorer with SMA overlays."""
-    st.title("📈 Candlestick Explorer")
 
     try:
         con = get_connection()
 
-        # Load symbols from DB (include inactive symbols that may have historical data)
-        symbols = get_symbols_list(con, is_active_only=False)
+        # =================================================================
+        # HEADER
+        # =================================================================
+        header_col1, header_col2 = st.columns([3, 1])
+        with header_col1:
+            st.markdown("## 📈 Candlestick Explorer")
+            st.caption("Technical analysis with OHLCV charts and moving averages")
+        with header_col2:
+            render_market_status_badge()
 
+        # Load symbols
+        symbols = get_symbols_list(con, is_active_only=False)
         if not symbols:
             st.warning("No symbols found. Run `psxsync symbols refresh` first.")
             render_footer()
             return
 
-        # Data freshness badge
-        days_old, latest_date = get_data_freshness(con)
-        badge_color, badge_text = get_freshness_badge(days_old)
+        st.markdown("---")
 
-        # Controls row
-        col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+        # =================================================================
+        # CONTROLS - Compact toolbar style
+        # =================================================================
+        ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4 = st.columns([3, 1, 1, 1])
 
-        with col1:
+        with ctrl_col1:
             selected = st.selectbox(
-                "Select Symbol",
+                "Symbol",
                 symbols,
                 index=0,
-                help="Choose a symbol to explore its price history"
+                label_visibility="collapsed",
+                help="Choose a symbol to explore"
             )
 
-        with col2:
+        with ctrl_col2:
             range_options = {"1M": 30, "3M": 90, "6M": 180, "1Y": 365, "All": None}
             range_choice = st.selectbox(
-                "Time Range",
+                "Range",
                 list(range_options.keys()),
                 index=3,
-                help="Select the time period to display"
+                label_visibility="collapsed"
             )
 
-        with col3:
-            show_sma = st.checkbox(
-                "Show SMA", value=True, help="Show SMA(20) and SMA(50)"
-            )
+        with ctrl_col3:
+            show_sma = st.checkbox("SMA", value=True, help="Show SMA(20) and SMA(50)")
 
-        with col4:
-            if badge_color == "green":
-                st.success(f"📅 {badge_text}")
-            elif badge_color == "orange":
-                st.warning(f"📅 {badge_text}")
-            elif badge_color == "red":
-                st.error(f"📅 {badge_text}")
-            else:
-                st.info("📅 No data")
+        with ctrl_col4:
+            days_old, latest_date = get_data_freshness(con)
+            if latest_date:
+                st.caption(f"📅 {latest_date}")
 
         # Calculate date range
         end_date = datetime.now().strftime("%Y-%m-%d")
@@ -1085,12 +1087,15 @@ def candlestick_explorer():
 # -----------------------------------------------------------------------------
 def intraday_trend_page():
     """Intraday price trend visualization and sync."""
-    st.title("⏱ Intraday Trend")
-
-    st.markdown("""
-    View intraday price movements for a symbol. This page fetches live intraday
-    data from PSX and displays price trends and volume throughout the trading day.
-    """)
+    # =================================================================
+    # HEADER
+    # =================================================================
+    header_col1, header_col2 = st.columns([3, 1])
+    with header_col1:
+        st.markdown("## ⏱ Intraday Trend")
+        st.caption("Live intraday price movements and volume throughout the trading day")
+    with header_col2:
+        render_market_status_badge()
 
     # Initialize session state for intraday sync
     if "intraday_sync_result" not in st.session_state:
@@ -1405,12 +1410,15 @@ def intraday_trend_page():
 # -----------------------------------------------------------------------------
 def regular_market_page():
     """Regular market watch - live market data display."""
-    st.title("📊 Regular Market Watch")
-
-    st.markdown("""
-    View live market data from PSX. This page displays the current state of the
-    regular market including prices, changes, and volume for all symbols.
-    """)
+    # =================================================================
+    # HEADER
+    # =================================================================
+    header_col1, header_col2 = st.columns([3, 1])
+    with header_col1:
+        st.markdown("## 📊 Regular Market Watch")
+        st.caption("Live market data • Prices, changes, and volume for all symbols")
+    with header_col2:
+        render_market_status_badge()
 
     try:
         from psx_ohlcv.analytics import compute_all_analytics
@@ -1767,7 +1775,15 @@ def regular_market_page():
 # -----------------------------------------------------------------------------
 def symbols_page():
     """Browse and manage all symbols."""
-    st.title("🧵 Symbols")
+    # =================================================================
+    # HEADER
+    # =================================================================
+    header_col1, header_col2 = st.columns([3, 1])
+    with header_col1:
+        st.markdown("## 🧵 Symbols")
+        st.caption("Master list of all PSX-listed securities")
+    with header_col2:
+        render_market_status_badge()
 
     try:
         con = get_connection()
@@ -1869,7 +1885,11 @@ def schema_page():
     """Display database schema documentation and SQL creation scripts."""
     from psx_ohlcv.db import SCHEMA_SQL
 
-    st.title("📋 Database Schema")
+    # =================================================================
+    # HEADER
+    # =================================================================
+    st.markdown("## 📋 Database Schema")
+    st.caption("Table structure, SQL scripts, and data dictionary")
 
     con = get_connection()
     track_page_visit(con, "Schema")
@@ -2108,7 +2128,11 @@ LIMIT 30;
 # -----------------------------------------------------------------------------
 def settings_page():
     """Display configuration (read-only)."""
-    st.title("⚙️ Settings")
+    # =================================================================
+    # HEADER
+    # =================================================================
+    st.markdown("## ⚙️ Settings")
+    st.caption("System configuration (read-only)")
 
     st.info("Settings are read-only. Use CLI flags or edit config to change.")
 
@@ -2212,12 +2236,15 @@ def history_page():
         get_ohlcv_symbol_stats,
     )
 
-    st.title("📚 History")
-
-    st.markdown("""
-    Explore historical OHLCV (Open, High, Low, Close, Volume) data synced from PSX.
-    This is daily end-of-day data populated by running `psxsync sync --all`.
-    """)
+    # =================================================================
+    # HEADER
+    # =================================================================
+    header_col1, header_col2 = st.columns([3, 1])
+    with header_col1:
+        st.markdown("## 📚 Historical Data")
+        st.caption("End-of-day OHLCV data synced from PSX")
+    with header_col2:
+        render_market_status_badge()
 
     con = get_connection()
 
@@ -3164,8 +3191,15 @@ def company_analytics_page():
 # -----------------------------------------------------------------------------
 def deep_data_page():
     """Bloomberg-style deep data scraping and analysis page."""
-    st.title("Deep Data (Quant)")
-    st.caption("Comprehensive company data scraping - Bloomberg-style quant analysis")
+    # =================================================================
+    # HEADER
+    # =================================================================
+    header_col1, header_col2 = st.columns([3, 1])
+    with header_col1:
+        st.markdown("## 🔬 Deep Data (Quant)")
+        st.caption("Bloomberg-style comprehensive company data scraping and analysis")
+    with header_col2:
+        render_market_status_badge()
 
     con = get_connection()
     track_page_visit(con, "Deep Data (Quant)")
@@ -3752,15 +3786,24 @@ def market_summary_page():
         init_market_summary_tracking,
     )
 
-    st.title("📥 Market Summary")
+    # =================================================================
+    # HEADER
+    # =================================================================
+    header_col1, header_col2 = st.columns([3, 1])
+    with header_col1:
+        st.markdown("## 📥 Market Summary")
+        st.caption("Download daily OHLCV files from PSX DPS")
+    with header_col2:
+        render_market_status_badge()
 
-    st.markdown("""
-    Download daily market summary files from PSX DPS. These files contain
-    complete market data (OHLCV + company info) for all traded symbols in a
-    single compressed file per day.
+    with st.expander("ℹ️ About Market Summary Files"):
+        st.markdown("""
+        Download daily market summary files from PSX DPS. These files contain
+        complete market data (OHLCV + company info) for all traded symbols in a
+        single compressed file per day.
 
-    **Source:** `https://dps.psx.com.pk/download/mkt_summary/{date}.Z`
-    """)
+        **Source:** `https://dps.psx.com.pk/download/mkt_summary/{date}.Z`
+        """)
 
     con = get_connection()
 
@@ -4086,7 +4129,15 @@ def market_summary_page():
 # -----------------------------------------------------------------------------
 def sync_monitor():
     """Monitor sync operations and run sync from UI."""
-    st.title("🔄 Sync Monitor")
+    # =================================================================
+    # HEADER
+    # =================================================================
+    header_col1, header_col2 = st.columns([3, 1])
+    with header_col1:
+        st.markdown("## 🔄 Sync Monitor")
+        st.caption("Data synchronization control center")
+    with header_col2:
+        render_market_status_badge()
 
     # Initialize session state for sync
     if "sync_result" not in st.session_state:
