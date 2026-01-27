@@ -5,9 +5,20 @@ Run with: streamlit run src/psx_ohlcv/ui/app.py
 """
 
 from datetime import datetime, timedelta
+import sys
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+
+# Add src to path to allow running directly without installation
+try:
+    # Navigate up from src/psx_ohlcv/ui/app.py to src/
+    src_path = Path(__file__).resolve().parents[2]
+    if str(src_path) not in sys.path:
+        sys.path.insert(0, str(src_path))
+except Exception:
+    pass
 
 from psx_ohlcv import init_schema
 from psx_ohlcv.analytics import (
@@ -2985,6 +2996,136 @@ def deep_data_page():
                     with st.expander("View Errors"):
                         for err in summary["errors"]:
                             st.error(f"{err['symbol']}: {err['error']}")
+
+        st.divider()
+
+        # ---------------------------------------------------------------------
+        # Bulk Fetch All Symbols from Database
+        # ---------------------------------------------------------------------
+        st.subheader("Bulk Fetch All Symbols")
+        st.markdown("""
+        Fetch deep data for **all active symbols** from the symbols table.
+        This will scrape comprehensive data for every listed company.
+        """)
+
+        # Get count of active symbols
+        active_count = con.execute(
+            "SELECT COUNT(*) FROM symbols WHERE is_active = 1"
+        ).fetchone()[0]
+
+        # Get count of symbols already scraped today
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        scraped_today = con.execute(
+            "SELECT COUNT(DISTINCT symbol) FROM company_snapshots WHERE snapshot_date = ?",
+            (today_str,)
+        ).fetchone()[0]
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Active Symbols", active_count)
+        col2.metric("Scraped Today", scraped_today)
+        col3.metric("Remaining", active_count - scraped_today)
+
+        # Options
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            bulk_delay = st.slider("Request Delay (sec)", 0.5, 5.0, 1.5, 0.5,
+                key="bulk_delay", help="Delay between requests to avoid rate limiting")
+        with col2:
+            skip_scraped = st.checkbox("Skip Already Scraped Today", value=True,
+                help="Skip symbols already scraped today")
+        with col3:
+            bulk_save_html = st.checkbox("Save Raw HTML", value=False, key="bulk_html")
+
+        # Limit option
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            use_limit = st.checkbox("Limit Symbols", value=True,
+                help="Limit number of symbols to scrape (useful for testing)")
+        with col2:
+            if use_limit:
+                symbol_limit = st.number_input("Max Symbols", min_value=1, max_value=active_count,
+                    value=min(50, active_count), step=10)
+            else:
+                symbol_limit = active_count
+
+        if st.button("🌐 Fetch All Symbols", type="primary", key="bulk_fetch_all"):
+            # Get all active symbols
+            if skip_scraped:
+                # Get symbols not scraped today
+                query = """
+                    SELECT s.symbol FROM symbols s
+                    WHERE s.is_active = 1
+                    AND s.symbol NOT IN (
+                        SELECT DISTINCT symbol FROM company_snapshots
+                        WHERE snapshot_date = ?
+                    )
+                    ORDER BY s.symbol
+                """
+                symbols_to_scrape = [r[0] for r in con.execute(query, (today_str,)).fetchall()]
+            else:
+                query = "SELECT symbol FROM symbols WHERE is_active = 1 ORDER BY symbol"
+                symbols_to_scrape = [r[0] for r in con.execute(query).fetchall()]
+
+            # Apply limit
+            if use_limit:
+                symbols_to_scrape = symbols_to_scrape[:symbol_limit]
+
+            if not symbols_to_scrape:
+                st.warning("No symbols to scrape. All active symbols may already be scraped today.")
+            else:
+                st.info(f"Starting bulk scrape of {len(symbols_to_scrape)} symbols...")
+
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+
+                success_count = 0
+                fail_count = 0
+
+                def bulk_progress_callback(current, total, symbol, result):
+                    nonlocal success_count, fail_count
+                    progress_bar.progress(current / total)
+                    if result.get("success"):
+                        success_count += 1
+                        status = "✅"
+                    else:
+                        fail_count += 1
+                        status = "❌"
+                    status_text.text(f"{status} [{current}/{total}] {symbol} | ✅ {success_count} | ❌ {fail_count}")
+
+                track_button_click(con, "Bulk Fetch All", "Deep Data",
+                    metadata={"count": len(symbols_to_scrape), "date": today_str})
+
+                with st.spinner(f"Bulk scraping {len(symbols_to_scrape)} symbols..."):
+                    summary = deep_scrape_batch(
+                        con, symbols_to_scrape,
+                        delay=bulk_delay,
+                        save_raw_html=bulk_save_html,
+                        progress_callback=bulk_progress_callback
+                    )
+
+                progress_bar.progress(1.0)
+                status_text.empty()
+
+                # Show final summary
+                st.success(f"Bulk scrape completed for {today_str}!")
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Total", summary["total"])
+                col2.metric("Completed", summary["completed"], delta_color="normal")
+                col3.metric("Failed", summary["failed"], delta_color="inverse")
+
+                # Calculate total records saved
+                total_sessions = sum(r.get("trading_sessions_saved", 0) for r in summary.get("results", []) if r.get("success"))
+                total_announcements = sum(r.get("announcements_saved", 0) for r in summary.get("results", []) if r.get("success"))
+                col4.metric("Trading Sessions", total_sessions)
+
+                st.caption(f"Announcements captured: {total_announcements}")
+
+                if summary.get("errors"):
+                    with st.expander(f"View {len(summary['errors'])} Errors"):
+                        for err in summary["errors"][:50]:  # Show max 50 errors
+                            st.error(f"{err['symbol']}: {err['error']}")
+                        if len(summary["errors"]) > 50:
+                            st.warning(f"... and {len(summary['errors']) - 50} more errors")
 
     # -------------------------------------------------------------------------
     # Tab 2: Company Snapshot Viewer
