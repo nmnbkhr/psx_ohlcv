@@ -339,6 +339,158 @@ def dashboard():
 
         st.markdown("---")
 
+        # =====================================================================
+        # PSX-Style Trading Segments Summary
+        # =====================================================================
+        try:
+            # Get trading segments data from today's sessions
+            segments_query = """
+                SELECT
+                    market_type,
+                    COUNT(*) as symbols,
+                    SUM(volume) as total_volume,
+                    AVG(volume) as avg_volume
+                FROM trading_sessions
+                WHERE session_date = (SELECT MAX(session_date) FROM trading_sessions)
+                GROUP BY market_type
+                ORDER BY total_volume DESC
+            """
+            segments_df = pd.read_sql_query(segments_query, con)
+
+            if not segments_df.empty:
+                st.subheader("📊 Trading Segments")
+
+                market_labels = {
+                    "REG": "Regular Market",
+                    "FUT": "Deliverable Futures",
+                    "CSF": "Cash Settled Futures",
+                    "ODL": "Odd Lot"
+                }
+
+                seg_cols = st.columns(len(segments_df))
+                for i, row in segments_df.iterrows():
+                    with seg_cols[i]:
+                        market = row["market_type"]
+                        label = market_labels.get(market, market)
+                        vol = row["total_volume"]
+                        count = row["symbols"]
+
+                        # Format volume
+                        if vol >= 1e9:
+                            vol_str = f"{vol/1e9:.2f}B"
+                        elif vol >= 1e6:
+                            vol_str = f"{vol/1e6:.2f}M"
+                        else:
+                            vol_str = f"{vol:,.0f}"
+
+                        st.metric(
+                            label,
+                            vol_str,
+                            f"{count} symbols",
+                            help=f"Total volume in {label}"
+                        )
+
+                st.markdown("---")
+        except Exception:
+            pass
+
+        # =====================================================================
+        # Volume Leaders & 52-Week Range Indicators
+        # =====================================================================
+        try:
+            vol_52w_cols = st.columns(2)
+
+            with vol_52w_cols[0]:
+                # Top Volume Leaders
+                volume_query = """
+                    SELECT
+                        ts.symbol,
+                        ts.volume,
+                        COALESCE(ts.close, ts.high, ts.ldcp) as price,
+                        ts.ldcp,
+                        COALESCE(ts.change_percent,
+                            CASE WHEN ts.ldcp > 0
+                                THEN ROUND((COALESCE(ts.close, ts.high) - ts.ldcp) / ts.ldcp * 100, 2)
+                                ELSE 0
+                            END
+                        ) as change_percent
+                    FROM trading_sessions ts
+                    WHERE ts.session_date = (SELECT MAX(session_date) FROM trading_sessions)
+                    AND ts.market_type = 'REG'
+                    AND ts.volume > 0
+                    ORDER BY ts.volume DESC
+                    LIMIT 5
+                """
+                vol_df = pd.read_sql_query(volume_query, con)
+
+                if not vol_df.empty:
+                    st.markdown("**📈 Volume Leaders**")
+                    for _, row in vol_df.iterrows():
+                        vol = row["volume"]
+                        vol_str = f"{vol/1e6:.2f}M" if vol >= 1e6 else f"{vol:,.0f}"
+                        change = row["change_percent"] or 0
+                        color = "🟢" if change > 0 else "🔴" if change < 0 else "⚪"
+                        st.caption(f"{color} **{row['symbol']}** - {vol_str} ({change:+.2f}%)")
+
+            with vol_52w_cols[1]:
+                # 52-Week Range Indicators (using high as current price proxy)
+                range_query = """
+                    SELECT
+                        ts.symbol,
+                        COALESCE(ts.close, ts.high, ts.ldcp) as price,
+                        ts.week_52_low,
+                        ts.week_52_high,
+                        CASE WHEN (ts.week_52_high - ts.week_52_low) > 0
+                            THEN ROUND((COALESCE(ts.close, ts.high, ts.ldcp) - ts.week_52_low) / (ts.week_52_high - ts.week_52_low) * 100, 1)
+                            ELSE 50
+                        END as position_pct
+                    FROM trading_sessions ts
+                    WHERE ts.session_date = (SELECT MAX(session_date) FROM trading_sessions)
+                    AND ts.market_type = 'REG'
+                    AND ts.week_52_high > 0
+                    AND ts.week_52_low > 0
+                    AND COALESCE(ts.close, ts.high, ts.ldcp) > 0
+                    ORDER BY position_pct DESC
+                    LIMIT 3
+                """
+                high_df = pd.read_sql_query(range_query, con)
+
+                low_query = """
+                    SELECT
+                        ts.symbol,
+                        COALESCE(ts.close, ts.high, ts.ldcp) as price,
+                        ts.week_52_low,
+                        ts.week_52_high,
+                        CASE WHEN (ts.week_52_high - ts.week_52_low) > 0
+                            THEN ROUND((COALESCE(ts.close, ts.high, ts.ldcp) - ts.week_52_low) / (ts.week_52_high - ts.week_52_low) * 100, 1)
+                            ELSE 50
+                        END as position_pct
+                    FROM trading_sessions ts
+                    WHERE ts.session_date = (SELECT MAX(session_date) FROM trading_sessions)
+                    AND ts.market_type = 'REG'
+                    AND ts.week_52_high > 0
+                    AND ts.week_52_low > 0
+                    AND COALESCE(ts.close, ts.high, ts.ldcp) > 0
+                    ORDER BY position_pct ASC
+                    LIMIT 3
+                """
+                low_df = pd.read_sql_query(low_query, con)
+
+                st.markdown("**📊 52-Week Range**")
+                if not high_df.empty:
+                    st.caption("Near 52W High:")
+                    for _, row in high_df.iterrows():
+                        st.caption(f"  🔺 **{row['symbol']}** ({row['position_pct']:.0f}% of range)")
+
+                if not low_df.empty:
+                    st.caption("Near 52W Low:")
+                    for _, row in low_df.iterrows():
+                        st.caption(f"  🔻 **{row['symbol']}** ({row['position_pct']:.0f}% of range)")
+
+            st.markdown("---")
+        except Exception:
+            pass
+
         # Market Breadth and Top Movers (from analytics tables)
         try:
             from psx_ohlcv.sources.regular_market import init_regular_market_schema
