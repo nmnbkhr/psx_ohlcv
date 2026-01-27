@@ -67,16 +67,30 @@ def run_job(job_id: str) -> None:
         return
 
     total_symbols = len(symbols)
-    total_batches = job.get("total_batches", 1)
 
-    logger.info(f"Job {job_id}: {total_symbols} symbols, {total_batches} batches")
+    # Calculate total_batches if not set or 0
+    import math
+    total_batches = job.get("total_batches") or 0
+    if total_batches == 0:
+        total_batches = math.ceil(total_symbols / batch_size)
 
-    # Update job as running with PID
-    update_job_progress(
-        con, job_id,
-        status="running",
-        pid=os.getpid(),
+    logger.info(f"Job {job_id}: {total_symbols} symbols, {total_batches} batches, batch_size={batch_size}")
+
+    # Update job as running with PID and correct counts
+    con.execute(
+        """
+        UPDATE scrape_jobs SET
+            status = 'running',
+            pid = ?,
+            symbols_requested = ?,
+            total_batches = ?,
+            batch_size = ?,
+            last_heartbeat = datetime('now')
+        WHERE job_id = ?
+        """,
+        (os.getpid(), total_symbols, total_batches, batch_size, job_id),
     )
+    con.commit()
 
     # Process in batches
     completed = 0
