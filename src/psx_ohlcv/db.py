@@ -606,14 +606,14 @@ CREATE INDEX IF NOT EXISTS idx_equity_structure_symbol
     ON equity_structure(symbol);
 
 -- =============================================================================
--- Scrape Jobs: Track scraping runs for data lineage
+-- Scrape Jobs: Track scraping runs for data lineage (with background job support)
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS scrape_jobs (
     job_id              TEXT PRIMARY KEY,
-    job_type            TEXT NOT NULL,          -- 'company_snapshot', 'market_summary', 'announcements'
+    job_type            TEXT NOT NULL,          -- 'bulk_deep_scrape', 'company_snapshot', 'market_summary'
     started_at          TEXT NOT NULL,
     ended_at            TEXT,
-    status              TEXT NOT NULL DEFAULT 'running',  -- 'running', 'completed', 'failed'
+    status              TEXT NOT NULL DEFAULT 'pending',  -- 'pending', 'running', 'completed', 'failed', 'stopped'
 
     -- Scope
     symbols_requested   INTEGER DEFAULT 0,
@@ -628,13 +628,41 @@ CREATE TABLE IF NOT EXISTS scrape_jobs (
     errors              TEXT,                   -- JSON array of errors
 
     -- Metadata
-    config              TEXT                    -- JSON: job configuration
+    config              TEXT,                   -- JSON: job configuration
+
+    -- Background Job Support
+    stop_requested      INTEGER DEFAULT 0,      -- 1 = stop requested by user
+    current_symbol      TEXT,                   -- Symbol currently being processed
+    current_batch       INTEGER DEFAULT 0,      -- Current batch number
+    total_batches       INTEGER DEFAULT 0,      -- Total number of batches
+    batch_size          INTEGER DEFAULT 50,     -- Symbols per batch
+    batch_pause_sec     INTEGER DEFAULT 30,     -- Pause between batches (seconds)
+    pid                 INTEGER,                -- Process ID of worker
+    last_heartbeat      TEXT,                   -- Last update timestamp (for monitoring)
+    notification_sent   INTEGER DEFAULT 0       -- 1 = completion notification sent
 );
 
 CREATE INDEX IF NOT EXISTS idx_scrape_jobs_status
     ON scrape_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_scrape_jobs_type
     ON scrape_jobs(job_type);
+
+-- =============================================================================
+-- Job Notifications: Store notifications for UI to display
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS job_notifications (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id              TEXT NOT NULL,
+    notification_type   TEXT NOT NULL,          -- 'completed', 'failed', 'stopped', 'progress'
+    title               TEXT NOT NULL,
+    message             TEXT,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    read_at             TEXT,                   -- NULL = unread
+    FOREIGN KEY (job_id) REFERENCES scrape_jobs(job_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_notifications_unread
+    ON job_notifications(read_at) WHERE read_at IS NULL;
 """
 
 
@@ -679,6 +707,7 @@ def init_schema(con: sqlite3.Connection) -> None:
     # Run migrations for new columns in existing tables
     _migrate_symbols_table(con)
     _migrate_eod_ohlcv_table(con)
+    _migrate_scrape_jobs_table(con)
 
 
 def _migrate_symbols_table(con: sqlite3.Connection) -> None:
@@ -720,6 +749,50 @@ def _migrate_eod_ohlcv_table(con: sqlite3.Connection) -> None:
     # Add company_name column if missing
     if "company_name" not in existing_cols:
         con.execute("ALTER TABLE eod_ohlcv ADD COLUMN company_name TEXT")
+
+    con.commit()
+
+
+def _migrate_scrape_jobs_table(con: sqlite3.Connection) -> None:
+    """Add new columns to scrape_jobs table for background job support."""
+    cursor = con.execute("PRAGMA table_info(scrape_jobs)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+
+    # New columns for background job support
+    new_columns = [
+        ("stop_requested", "INTEGER DEFAULT 0"),
+        ("current_symbol", "TEXT"),
+        ("current_batch", "INTEGER DEFAULT 0"),
+        ("total_batches", "INTEGER DEFAULT 0"),
+        ("batch_size", "INTEGER DEFAULT 50"),
+        ("batch_pause_sec", "INTEGER DEFAULT 30"),
+        ("pid", "INTEGER"),
+        ("last_heartbeat", "TEXT"),
+        ("notification_sent", "INTEGER DEFAULT 0"),
+    ]
+
+    for col_name, col_def in new_columns:
+        if col_name not in existing_cols:
+            con.execute(f"ALTER TABLE scrape_jobs ADD COLUMN {col_name} {col_def}")
+
+    # Create job_notifications table if not exists
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS job_notifications (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id              TEXT NOT NULL,
+            notification_type   TEXT NOT NULL,
+            title               TEXT NOT NULL,
+            message             TEXT,
+            created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+            read_at             TEXT,
+            FOREIGN KEY (job_id) REFERENCES scrape_jobs(job_id)
+        )
+    """)
+
+    con.execute("""
+        CREATE INDEX IF NOT EXISTS idx_job_notifications_unread
+        ON job_notifications(read_at) WHERE read_at IS NULL
+    """)
 
     con.commit()
 
@@ -3614,3 +3687,228 @@ def get_scrape_job(con: sqlite3.Connection, job_id: str) -> dict | None:
             except json.JSONDecodeError:
                 pass
     return result
+
+
+# =============================================================================
+# Background Job Management Functions
+# =============================================================================
+
+
+def create_background_job(
+    con: sqlite3.Connection,
+    job_type: str,
+    symbols: list[str],
+    batch_size: int = 50,
+    batch_pause_sec: int = 30,
+    config: dict | None = None,
+) -> str:
+    """Create a new background scrape job.
+
+    Args:
+        con: Database connection
+        job_type: Type of job ('bulk_deep_scrape', etc.)
+        symbols: List of symbols to process
+        batch_size: Symbols per batch
+        batch_pause_sec: Pause between batches
+        config: Optional configuration dict
+
+    Returns:
+        Job ID
+    """
+    import json
+    import math
+    import uuid
+
+    job_id = str(uuid.uuid4())[:8]
+    total_batches = math.ceil(len(symbols) / batch_size)
+
+    config_data = config or {}
+    config_data["symbols"] = symbols
+
+    con.execute(
+        """
+        INSERT INTO scrape_jobs (
+            job_id, job_type, started_at, status,
+            symbols_requested, batch_size, batch_pause_sec,
+            total_batches, config
+        ) VALUES (?, ?, datetime('now'), 'pending', ?, ?, ?, ?, ?)
+        """,
+        (
+            job_id,
+            job_type,
+            len(symbols),
+            batch_size,
+            batch_pause_sec,
+            total_batches,
+            json.dumps(config_data),
+        ),
+    )
+    con.commit()
+    return job_id
+
+
+def update_job_progress(
+    con: sqlite3.Connection,
+    job_id: str,
+    current_symbol: str | None = None,
+    current_batch: int | None = None,
+    symbols_completed: int | None = None,
+    symbols_failed: int | None = None,
+    records_inserted: int | None = None,
+    status: str | None = None,
+    pid: int | None = None,
+) -> None:
+    """Update job progress (called by worker)."""
+    updates = ["last_heartbeat = datetime('now')"]
+    params = []
+
+    if current_symbol is not None:
+        updates.append("current_symbol = ?")
+        params.append(current_symbol)
+    if current_batch is not None:
+        updates.append("current_batch = ?")
+        params.append(current_batch)
+    if symbols_completed is not None:
+        updates.append("symbols_completed = ?")
+        params.append(symbols_completed)
+    if symbols_failed is not None:
+        updates.append("symbols_failed = ?")
+        params.append(symbols_failed)
+    if records_inserted is not None:
+        updates.append("records_inserted = ?")
+        params.append(records_inserted)
+    if status is not None:
+        updates.append("status = ?")
+        params.append(status)
+        if status in ("completed", "failed", "stopped"):
+            updates.append("ended_at = datetime('now')")
+    if pid is not None:
+        updates.append("pid = ?")
+        params.append(pid)
+
+    params.append(job_id)
+    con.execute(
+        f"UPDATE scrape_jobs SET {', '.join(updates)} WHERE job_id = ?",
+        params,
+    )
+    con.commit()
+
+
+def request_job_stop(con: sqlite3.Connection, job_id: str) -> bool:
+    """Request a job to stop (called by UI)."""
+    con.execute(
+        "UPDATE scrape_jobs SET stop_requested = 1 WHERE job_id = ?",
+        (job_id,),
+    )
+    con.commit()
+    return True
+
+
+def is_job_stop_requested(con: sqlite3.Connection, job_id: str) -> bool:
+    """Check if stop was requested for a job (called by worker)."""
+    cur = con.execute(
+        "SELECT stop_requested FROM scrape_jobs WHERE job_id = ?",
+        (job_id,),
+    )
+    row = cur.fetchone()
+    return bool(row and row[0])
+
+
+def get_running_jobs(con: sqlite3.Connection) -> list[dict]:
+    """Get all running/pending jobs."""
+    import json
+
+    cur = con.execute(
+        """
+        SELECT * FROM scrape_jobs
+        WHERE status IN ('pending', 'running')
+        ORDER BY started_at DESC
+        """
+    )
+    jobs = []
+    for row in cur.fetchall():
+        job = dict(row)
+        for field in ("errors", "config"):
+            if job.get(field):
+                try:
+                    job[field] = json.loads(job[field])
+                except json.JSONDecodeError:
+                    pass
+        jobs.append(job)
+    return jobs
+
+
+def get_recent_jobs(con: sqlite3.Connection, limit: int = 10) -> list[dict]:
+    """Get recent jobs (all statuses)."""
+    import json
+
+    cur = con.execute(
+        """
+        SELECT * FROM scrape_jobs
+        ORDER BY started_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    jobs = []
+    for row in cur.fetchall():
+        job = dict(row)
+        for field in ("errors", "config"):
+            if job.get(field):
+                try:
+                    job[field] = json.loads(job[field])
+                except json.JSONDecodeError:
+                    pass
+        jobs.append(job)
+    return jobs
+
+
+def add_job_notification(
+    con: sqlite3.Connection,
+    job_id: str,
+    notification_type: str,
+    title: str,
+    message: str | None = None,
+) -> None:
+    """Add a notification for a job."""
+    con.execute(
+        """
+        INSERT INTO job_notifications (job_id, notification_type, title, message)
+        VALUES (?, ?, ?, ?)
+        """,
+        (job_id, notification_type, title, message),
+    )
+    con.execute(
+        "UPDATE scrape_jobs SET notification_sent = 1 WHERE job_id = ?",
+        (job_id,),
+    )
+    con.commit()
+
+
+def get_unread_notifications(con: sqlite3.Connection) -> list[dict]:
+    """Get all unread notifications."""
+    cur = con.execute(
+        """
+        SELECT n.*, j.job_type, j.symbols_completed, j.symbols_failed
+        FROM job_notifications n
+        JOIN scrape_jobs j ON n.job_id = j.job_id
+        WHERE n.read_at IS NULL
+        ORDER BY n.created_at DESC
+        """
+    )
+    return [dict(row) for row in cur.fetchall()]
+
+
+def mark_notification_read(con: sqlite3.Connection, notification_id: int) -> None:
+    """Mark a notification as read."""
+    con.execute(
+        "UPDATE job_notifications SET read_at = datetime('now') WHERE id = ?",
+        (notification_id,),
+    )
+    con.commit()
+
+
+def mark_all_notifications_read(con: sqlite3.Connection) -> None:
+    """Mark all notifications as read."""
+    con.execute("UPDATE job_notifications SET read_at = datetime('now') WHERE read_at IS NULL")
+    con.commit()

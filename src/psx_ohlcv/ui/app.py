@@ -6,6 +6,7 @@ Run with: streamlit run src/psx_ohlcv/ui/app.py
 
 from datetime import datetime, timedelta
 import sys
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -3000,132 +3001,209 @@ def deep_data_page():
         st.divider()
 
         # ---------------------------------------------------------------------
-        # Bulk Fetch All Symbols from Database
+        # Background Bulk Fetch - Runs in separate process
         # ---------------------------------------------------------------------
-        st.subheader("Bulk Fetch All Symbols")
+        st.subheader("Background Bulk Fetch")
         st.markdown("""
-        Fetch deep data for **all active symbols** from the symbols table.
-        This will scrape comprehensive data for every listed company.
+        Fetch deep data for **all active symbols** in the background.
+        The job runs in a separate process - you can navigate away and come back.
         """)
 
-        # Get count of active symbols
-        active_count = con.execute(
-            "SELECT COUNT(*) FROM symbols WHERE is_active = 1"
-        ).fetchone()[0]
+        # Import background job functions
+        from psx_ohlcv.db import (
+            create_background_job,
+            get_running_jobs,
+            get_recent_jobs,
+            request_job_stop,
+            get_unread_notifications,
+            mark_notification_read,
+            mark_all_notifications_read,
+        )
 
-        # Get count of symbols already scraped today
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        scraped_today = con.execute(
-            "SELECT COUNT(DISTINCT symbol) FROM company_snapshots WHERE snapshot_date = ?",
-            (today_str,)
-        ).fetchone()[0]
+        # Show notifications
+        notifications = get_unread_notifications(con)
+        if notifications:
+            st.markdown("#### Notifications")
+            for notif in notifications:
+                notif_type = notif.get("notification_type", "info")
+                if notif_type == "completed":
+                    st.success(f"**{notif['title']}**\n\n{notif.get('message', '')}")
+                elif notif_type == "failed":
+                    st.error(f"**{notif['title']}**\n\n{notif.get('message', '')}")
+                elif notif_type == "stopped":
+                    st.warning(f"**{notif['title']}**\n\n{notif.get('message', '')}")
+                else:
+                    st.info(f"**{notif['title']}**\n\n{notif.get('message', '')}")
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Active Symbols", active_count)
-        col2.metric("Scraped Today", scraped_today)
-        col3.metric("Remaining", active_count - scraped_today)
+            if st.button("Clear All Notifications", key="clear_notifs"):
+                mark_all_notifications_read(con)
+                st.rerun()
 
-        # Options
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            bulk_delay = st.slider("Request Delay (sec)", 0.5, 5.0, 1.5, 0.5,
-                key="bulk_delay", help="Delay between requests to avoid rate limiting")
-        with col2:
-            skip_scraped = st.checkbox("Skip Already Scraped Today", value=True,
-                help="Skip symbols already scraped today")
-        with col3:
-            bulk_save_html = st.checkbox("Save Raw HTML", value=False, key="bulk_html")
+            st.divider()
 
-        # Limit option
-        col1, col2 = st.columns([1, 2])
-        with col1:
-            use_limit = st.checkbox("Limit Symbols", value=True,
-                help="Limit number of symbols to scrape (useful for testing)")
-        with col2:
-            if use_limit:
-                symbol_limit = st.number_input("Max Symbols", min_value=1, max_value=active_count,
-                    value=min(50, active_count), step=10)
-            else:
-                symbol_limit = active_count
+        # Check for running jobs
+        running_jobs = get_running_jobs(con)
 
-        if st.button("🌐 Fetch All Symbols", type="primary", key="bulk_fetch_all"):
-            # Get all active symbols
-            if skip_scraped:
-                # Get symbols not scraped today
-                query = """
-                    SELECT s.symbol FROM symbols s
-                    WHERE s.is_active = 1
-                    AND s.symbol NOT IN (
-                        SELECT DISTINCT symbol FROM company_snapshots
-                        WHERE snapshot_date = ?
+        if running_jobs:
+            st.markdown("#### Running Jobs")
+            for job in running_jobs:
+                job_id = job["job_id"]
+                status = job["status"]
+                completed = job.get("symbols_completed", 0)
+                total = job.get("symbols_requested", 0)
+                failed = job.get("symbols_failed", 0)
+                current_symbol = job.get("current_symbol", "")
+                current_batch = job.get("current_batch", 0)
+                total_batches = job.get("total_batches", 0)
+
+                progress = completed / total if total > 0 else 0
+
+                with st.container():
+                    st.markdown(f"**Job `{job_id}`** - {status.upper()}")
+
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("Progress", f"{completed}/{total}")
+                    col2.metric("Failed", failed)
+                    col3.metric("Batch", f"{current_batch}/{total_batches}")
+                    col4.metric("Current", current_symbol or "-")
+
+                    st.progress(progress)
+
+                    col1, col2 = st.columns([1, 3])
+                    with col1:
+                        if st.button("Stop Job", key=f"stop_{job_id}", type="secondary"):
+                            request_job_stop(con, job_id)
+                            st.warning(f"Stop requested for job {job_id}")
+                            st.rerun()
+                    with col2:
+                        if st.button("Refresh", key=f"refresh_{job_id}"):
+                            st.rerun()
+
+                st.divider()
+        else:
+            # No running jobs - show start new job form
+            # Get count of active symbols
+            active_count = con.execute(
+                "SELECT COUNT(*) FROM symbols WHERE is_active = 1"
+            ).fetchone()[0]
+
+            # Get count of symbols already scraped today
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            scraped_today = con.execute(
+                "SELECT COUNT(DISTINCT symbol) FROM company_snapshots WHERE snapshot_date = ?",
+                (today_str,)
+            ).fetchone()[0]
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Active Symbols", active_count)
+            col2.metric("Scraped Today", scraped_today)
+            col3.metric("Remaining", active_count - scraped_today)
+
+            # Job configuration
+            st.markdown("#### Job Configuration")
+
+            col1, col2 = st.columns(2)
+            with col1:
+                batch_size = st.number_input("Batch Size", min_value=10, max_value=200,
+                    value=50, step=10, help="Symbols per batch")
+                request_delay = st.slider("Request Delay (sec)", 0.5, 5.0, 1.5, 0.5,
+                    help="Delay between requests")
+            with col2:
+                batch_pause = st.number_input("Batch Pause (sec)", min_value=10, max_value=120,
+                    value=30, step=10, help="Pause between batches to avoid rate limiting")
+                skip_scraped = st.checkbox("Skip Already Scraped Today", value=True)
+
+            col1, col2 = st.columns(2)
+            with col1:
+                use_limit = st.checkbox("Limit Symbols", value=False,
+                    help="Limit total symbols (useful for testing)")
+            with col2:
+                if use_limit:
+                    symbol_limit = st.number_input("Max Symbols", min_value=10,
+                        max_value=active_count, value=min(100, active_count), step=10)
+                else:
+                    symbol_limit = active_count
+
+            # Start job button
+            if st.button("Start Background Job", type="primary", key="start_bg_job"):
+                # Get symbols to scrape
+                if skip_scraped:
+                    query = """
+                        SELECT s.symbol FROM symbols s
+                        WHERE s.is_active = 1
+                        AND s.symbol NOT IN (
+                            SELECT DISTINCT symbol FROM company_snapshots
+                            WHERE snapshot_date = ?
+                        )
+                        ORDER BY s.symbol
+                    """
+                    symbols_to_scrape = [r[0] for r in con.execute(query, (today_str,)).fetchall()]
+                else:
+                    query = "SELECT symbol FROM symbols WHERE is_active = 1 ORDER BY symbol"
+                    symbols_to_scrape = [r[0] for r in con.execute(query).fetchall()]
+
+                # Apply limit
+                if use_limit:
+                    symbols_to_scrape = symbols_to_scrape[:symbol_limit]
+
+                if not symbols_to_scrape:
+                    st.warning("No symbols to scrape. All active symbols may already be scraped today.")
+                else:
+                    # Create job
+                    job_id = create_background_job(
+                        con,
+                        job_type="bulk_deep_scrape",
+                        symbols=symbols_to_scrape,
+                        batch_size=batch_size,
+                        batch_pause_sec=batch_pause,
+                        config={
+                            "request_delay": request_delay,
+                            "save_raw_html": False,
+                            "skip_scraped": skip_scraped,
+                            "date": today_str,
+                        },
                     )
-                    ORDER BY s.symbol
-                """
-                symbols_to_scrape = [r[0] for r in con.execute(query, (today_str,)).fetchall()]
-            else:
-                query = "SELECT symbol FROM symbols WHERE is_active = 1 ORDER BY symbol"
-                symbols_to_scrape = [r[0] for r in con.execute(query).fetchall()]
 
-            # Apply limit
-            if use_limit:
-                symbols_to_scrape = symbols_to_scrape[:symbol_limit]
+                    # Start worker process
+                    import subprocess
+                    import sys
 
-            if not symbols_to_scrape:
-                st.warning("No symbols to scrape. All active symbols may already be scraped today.")
-            else:
-                st.info(f"Starting bulk scrape of {len(symbols_to_scrape)} symbols...")
+                    worker_cmd = [
+                        sys.executable, "-m", "psx_ohlcv.worker", job_id
+                    ]
 
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-
-                success_count = 0
-                fail_count = 0
-
-                def bulk_progress_callback(current, total, symbol, result):
-                    nonlocal success_count, fail_count
-                    progress_bar.progress(current / total)
-                    if result.get("success"):
-                        success_count += 1
-                        status = "✅"
-                    else:
-                        fail_count += 1
-                        status = "❌"
-                    status_text.text(f"{status} [{current}/{total}] {symbol} | ✅ {success_count} | ❌ {fail_count}")
-
-                track_button_click(con, "Bulk Fetch All", "Deep Data",
-                    metadata={"count": len(symbols_to_scrape), "date": today_str})
-
-                with st.spinner(f"Bulk scraping {len(symbols_to_scrape)} symbols..."):
-                    summary = deep_scrape_batch(
-                        con, symbols_to_scrape,
-                        delay=bulk_delay,
-                        save_raw_html=bulk_save_html,
-                        progress_callback=bulk_progress_callback
+                    # Start in background (detached)
+                    subprocess.Popen(
+                        worker_cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
                     )
 
-                progress_bar.progress(1.0)
-                status_text.empty()
+                    st.success(f"Started background job `{job_id}` for {len(symbols_to_scrape)} symbols")
+                    track_button_click(con, "Start Background Job", "Deep Data",
+                        metadata={"job_id": job_id, "count": len(symbols_to_scrape)})
+                    time.sleep(1)  # Give worker time to start
+                    st.rerun()
 
-                # Show final summary
-                st.success(f"Bulk scrape completed for {today_str}!")
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("Total", summary["total"])
-                col2.metric("Completed", summary["completed"], delta_color="normal")
-                col3.metric("Failed", summary["failed"], delta_color="inverse")
+        # Show recent jobs history
+        st.markdown("#### Recent Jobs")
+        recent_jobs = get_recent_jobs(con, limit=5)
 
-                # Calculate total records saved
-                total_sessions = sum(r.get("trading_sessions_saved", 0) for r in summary.get("results", []) if r.get("success"))
-                total_announcements = sum(r.get("announcements_saved", 0) for r in summary.get("results", []) if r.get("success"))
-                col4.metric("Trading Sessions", total_sessions)
-
-                st.caption(f"Announcements captured: {total_announcements}")
-
-                if summary.get("errors"):
-                    with st.expander(f"View {len(summary['errors'])} Errors"):
-                        for err in summary["errors"][:50]:  # Show max 50 errors
-                            st.error(f"{err['symbol']}: {err['error']}")
-                        if len(summary["errors"]) > 50:
-                            st.warning(f"... and {len(summary['errors']) - 50} more errors")
+        if recent_jobs:
+            job_data = []
+            for job in recent_jobs:
+                job_data.append({
+                    "Job ID": job["job_id"],
+                    "Status": job["status"],
+                    "Completed": f"{job.get('symbols_completed', 0)}/{job.get('symbols_requested', 0)}",
+                    "Failed": job.get("symbols_failed", 0),
+                    "Started": job.get("started_at", "")[:16] if job.get("started_at") else "",
+                    "Ended": job.get("ended_at", "")[:16] if job.get("ended_at") else "-",
+                })
+            st.dataframe(job_data, use_container_width=True, hide_index=True)
+        else:
+            st.info("No jobs yet. Start a background job above.")
 
     # -------------------------------------------------------------------------
     # Tab 2: Company Snapshot Viewer

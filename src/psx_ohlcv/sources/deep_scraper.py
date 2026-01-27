@@ -106,9 +106,21 @@ def _parse_date_str(date_str: str | None) -> str | None:
 def fetch_company_html(symbol: str) -> str:
     """Fetch raw HTML from PSX company page."""
     url = DPS_COMPANY_URL.format(symbol=symbol.upper())
-    response = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
-    response.raise_for_status()
-    return response.text
+    
+    max_retries = 3
+    backoff_factor = 1.0
+    
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+            response.raise_for_status()
+            return response.text
+        except requests.RequestException:
+            if attempt == max_retries - 1:
+                raise
+            time.sleep(backoff_factor * (2 ** attempt))
+    
+    raise requests.RequestException(f"Failed to fetch {symbol} after {max_retries} attempts")
 
 
 def parse_quote_data(tree: html.HtmlElement) -> dict[str, Any]:
