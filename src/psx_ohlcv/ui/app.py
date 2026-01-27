@@ -522,6 +522,105 @@ def dashboard():
         st.markdown("---")
 
         # =================================================================
+        # KSE-100 INDEX DISPLAY - Primary Market Benchmark
+        # =================================================================
+        try:
+            # Calculate market-wide metrics as index proxy
+            # Get today's market performance
+            market_perf = con.execute("""
+                SELECT
+                    COUNT(*) as total_stocks,
+                    SUM(CASE WHEN change_percent > 0 THEN 1 ELSE 0 END) as gainers,
+                    SUM(CASE WHEN change_percent < 0 THEN 1 ELSE 0 END) as losers,
+                    SUM(CASE WHEN change_percent = 0 OR change_percent IS NULL THEN 1 ELSE 0 END) as unchanged,
+                    AVG(change_percent) as avg_change,
+                    SUM(volume) as total_volume,
+                    SUM(turnover) as total_turnover
+                FROM trading_sessions
+                WHERE session_date = (SELECT MAX(session_date) FROM trading_sessions)
+                AND market_type = 'REG'
+            """).fetchone()
+
+            if market_perf and market_perf["total_stocks"] > 0:
+                idx_col1, idx_col2, idx_col3 = st.columns([2, 1, 1])
+
+                with idx_col1:
+                    avg_change = market_perf["avg_change"] or 0
+                    gainers = market_perf["gainers"] or 0
+                    losers = market_perf["losers"] or 0
+
+                    # Color based on market direction
+                    if avg_change > 0:
+                        idx_color = "#00C853"
+                        arrow = "▲"
+                    elif avg_change < 0:
+                        idx_color = "#FF1744"
+                        arrow = "▼"
+                    else:
+                        idx_color = "#78909C"
+                        arrow = "●"
+
+                    st.markdown(f"""
+                    <div style="background: linear-gradient(135deg, rgba(33,150,243,0.1) 0%, rgba(33,150,243,0.05) 100%);
+                                border: 1px solid rgba(33,150,243,0.2); border-radius: 12px; padding: 20px;">
+                        <div style="font-size: 12px; color: #888; margin-bottom: 4px;">
+                            📊 KSE-100 Index Proxy (Market Average)
+                        </div>
+                        <div style="display: flex; align-items: baseline; gap: 12px;">
+                            <span style="font-size: 28px; font-weight: 700; color: {idx_color}; font-family: monospace;">
+                                {arrow} {avg_change:+.2f}%
+                            </span>
+                            <span style="font-size: 14px; color: #888;">
+                                Avg change across {market_perf["total_stocks"]} stocks
+                            </span>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                with idx_col2:
+                    # Market Breadth
+                    st.markdown(f"""
+                    <div style="background: rgba(255,255,255,0.02); border-radius: 8px; padding: 16px;
+                                border: 1px solid rgba(255,255,255,0.1);">
+                        <div style="font-size: 12px; color: #888; margin-bottom: 8px;">Market Breadth</div>
+                        <div style="display: flex; gap: 16px;">
+                            <div>
+                                <span style="color: #00C853; font-size: 20px; font-weight: 600;">{gainers}</span>
+                                <span style="font-size: 11px; color: #888;"> Gainers</span>
+                            </div>
+                            <div>
+                                <span style="color: #FF1744; font-size: 20px; font-weight: 600;">{losers}</span>
+                                <span style="font-size: 11px; color: #888;"> Losers</span>
+                            </div>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                with idx_col3:
+                    # Turnover
+                    turnover = market_perf["total_turnover"] or 0
+                    if turnover >= 1e9:
+                        turnover_str = f"Rs.{turnover/1e9:.2f}B"
+                    elif turnover >= 1e6:
+                        turnover_str = f"Rs.{turnover/1e6:.0f}M"
+                    else:
+                        turnover_str = f"Rs.{turnover:,.0f}"
+
+                    st.markdown(f"""
+                    <div style="background: rgba(255,255,255,0.02); border-radius: 8px; padding: 16px;
+                                border: 1px solid rgba(255,255,255,0.1);">
+                        <div style="font-size: 12px; color: #888; margin-bottom: 8px;">Total Turnover</div>
+                        <div style="font-size: 20px; font-weight: 600; font-family: monospace;">
+                            {turnover_str}
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                st.markdown("")
+        except Exception:
+            pass  # Graceful degradation if index data unavailable
+
+        # =================================================================
         # PRIMARY KPIs ROW - Key metrics traders care about
         # =================================================================
         kpi_col1, kpi_col2, kpi_col3, kpi_col4, kpi_col5 = st.columns(5)
@@ -1294,7 +1393,22 @@ def intraday_trend_page():
         change = latest["close"] - first["open"] if first["open"] else 0
         change_pct = (change / first["open"]) * 100 if first["open"] else 0
 
-        col1, col2, col3, col4, col5 = st.columns(5)
+        # Calculate VWAP (Volume Weighted Average Price)
+        # VWAP = Σ(Typical Price × Volume) / Σ(Volume)
+        df["typical_price"] = (df["high"] + df["low"] + df["close"]) / 3
+        df["tp_volume"] = df["typical_price"] * df["volume"]
+        cumulative_tp_volume = df["tp_volume"].cumsum()
+        cumulative_volume = df["volume"].cumsum()
+        df["vwap"] = cumulative_tp_volume / cumulative_volume
+        vwap = df["vwap"].iloc[-1] if not df["vwap"].empty else None
+
+        # Session stats
+        session_high = df["high"].max()
+        session_low = df["low"].min()
+        total_volume = df["volume"].sum()
+
+        # First row: Price metrics
+        col1, col2, col3, col4, col5, col6 = st.columns(6)
         change_str = f"{change:+.2f} ({change_pct:+.1f}%)"
         col1.metric(
             "Latest Close",
@@ -1303,27 +1417,41 @@ def intraday_trend_page():
             help="Most recent close price"
         )
         col2.metric(
-            "Open",
-            f"PKR {latest['open']:.2f}" if latest["open"] else "N/A",
-            help="Open price for latest bar"
+            "Session Open",
+            f"PKR {first['open']:.2f}" if first["open"] else "N/A",
+            help="Session opening price"
         )
         col3.metric(
-            "High",
-            f"PKR {latest['high']:.2f}" if latest["high"] else "N/A",
-            help="High price for latest bar"
+            "Session High",
+            f"PKR {session_high:.2f}" if session_high else "N/A",
+            help="Highest price in session"
         )
         col4.metric(
-            "Low",
-            f"PKR {latest['low']:.2f}" if latest["low"] else "N/A",
-            help="Low price for latest bar"
+            "Session Low",
+            f"PKR {session_low:.2f}" if session_low else "N/A",
+            help="Lowest price in session"
         )
         col5.metric(
-            "Volume",
-            f"{int(latest['volume']):,}" if latest["volume"] else "N/A",
-            help="Volume for latest bar"
+            "📊 VWAP",
+            f"PKR {vwap:.2f}" if vwap else "N/A",
+            help="Volume Weighted Average Price - institutional benchmark"
+        )
+        col6.metric(
+            "Total Volume",
+            format_volume(total_volume) if total_volume else "N/A",
+            help="Total session volume"
         )
 
-        st.caption(f"📍 Latest: {latest['ts']}")
+        # VWAP context
+        if vwap and latest["close"]:
+            vwap_diff = latest["close"] - vwap
+            vwap_pct = (vwap_diff / vwap) * 100
+            if vwap_diff > 0:
+                st.caption(f"📍 Latest: {latest['ts']} | Price **above** VWAP by Rs.{vwap_diff:.2f} ({vwap_pct:+.2f}%) - Bullish bias")
+            else:
+                st.caption(f"📍 Latest: {latest['ts']} | Price **below** VWAP by Rs.{abs(vwap_diff):.2f} ({vwap_pct:+.2f}%) - Bearish bias")
+        else:
+            st.caption(f"📍 Latest: {latest['ts']}")
 
         st.markdown("---")
 
@@ -1338,16 +1466,54 @@ def intraday_trend_page():
 
         st.markdown("---")
 
-        # Separate close price trend
-        st.subheader("📈 Close Price Trend")
-        fig_price = make_price_line(
-            df,
-            title=f"{selected_symbol} Close",
-            date_col="ts",
-            price_col="close",
-            height=350,
+        # Close Price Trend with VWAP overlay
+        st.subheader("📈 Price & VWAP")
+        import plotly.graph_objects as go
+
+        chart_df = df.sort_values("ts", ascending=True)
+        fig_price = go.Figure()
+
+        # Close price line
+        fig_price.add_trace(go.Scatter(
+            x=chart_df["ts"],
+            y=chart_df["close"],
+            mode="lines",
+            name="Close",
+            line={"color": "#2196F3", "width": 2},
+        ))
+
+        # VWAP line
+        fig_price.add_trace(go.Scatter(
+            x=chart_df["ts"],
+            y=chart_df["vwap"],
+            mode="lines",
+            name="VWAP",
+            line={"color": "#FF9800", "width": 2, "dash": "dash"},
+        ))
+
+        # Add horizontal line at current VWAP
+        if vwap:
+            fig_price.add_hline(
+                y=vwap,
+                line_dash="dot",
+                line_color="rgba(255,152,0,0.5)",
+                annotation_text=f"VWAP: {vwap:.2f}",
+                annotation_position="right"
+            )
+
+        fig_price.update_layout(
+            title=f"{selected_symbol} - Price vs VWAP",
+            xaxis_title="Time",
+            yaxis_title="Price (PKR)",
+            height=400,
+            hovermode="x unified",
+            legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1},
+            margin={"l": 60, "r": 20, "t": 60, "b": 60},
         )
         st.plotly_chart(fig_price, use_container_width=True)
+
+        st.caption("**VWAP** (Volume Weighted Average Price) = institutional benchmark. "
+                   "Price above VWAP suggests bullish bias; below suggests bearish bias.")
 
         # Volume chart
         st.subheader("📊 Volume")
@@ -2760,7 +2926,29 @@ def company_analytics_page():
 
     with qs_col3:
         pe = data.get("pe_ratio")
-        st.metric("P/E Ratio", f"{pe:.2f}" if pe else "N/A")
+        # Get sector P/E for comparison
+        sector_code = data.get("sector_code") or data.get("sector")
+        sector_pe_delta = None
+        if pe and sector_code:
+            try:
+                sector_pe_result = con.execute("""
+                    SELECT AVG(CAST(json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') AS REAL)) as avg_pe
+                    FROM company_snapshots cs
+                    JOIN symbols s ON cs.symbol = s.symbol
+                    WHERE s.sector = ?
+                    AND json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') > 0
+                    AND cs.snapshot_date = (SELECT MAX(snapshot_date) FROM company_snapshots cs2 WHERE cs2.symbol = cs.symbol)
+                """, (sector_code,)).fetchone()
+                if sector_pe_result and sector_pe_result["avg_pe"]:
+                    sector_avg_pe = sector_pe_result["avg_pe"]
+                    pe_diff = pe - sector_avg_pe
+                    # Negative delta is good (cheaper than sector)
+                    sector_pe_delta = f"{pe_diff:+.1f} vs sector"
+            except Exception:
+                pass
+        st.metric("P/E Ratio", f"{pe:.2f}" if pe else "N/A",
+                  delta=sector_pe_delta, delta_color="inverse" if sector_pe_delta else "off",
+                  help="Price-to-Earnings ratio. Lower may indicate undervaluation.")
 
     with qs_col4:
         mc = data.get("market_cap")
@@ -2783,6 +2971,89 @@ def company_analytics_page():
             st.metric("1Y Change", f"{y1:+.1f}%", delta=f"{y1:+.1f}%")
         else:
             st.metric("1Y Change", "N/A")
+
+    # =================================================================
+    # VALUATION COMPARISON - Sector Context
+    # =================================================================
+    pe = data.get("pe_ratio")
+    sector_code = data.get("sector_code") or data.get("sector")
+
+    if pe and sector_code:
+        try:
+            # Get sector valuation metrics
+            sector_valuation = con.execute("""
+                SELECT
+                    COUNT(*) as sector_count,
+                    AVG(CAST(json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') AS REAL)) as avg_pe,
+                    MIN(CAST(json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') AS REAL)) as min_pe,
+                    MAX(CAST(json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') AS REAL)) as max_pe
+                FROM company_snapshots cs
+                JOIN symbols s ON cs.symbol = s.symbol
+                WHERE s.sector = ?
+                AND CAST(json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') AS REAL) > 0
+                AND CAST(json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') AS REAL) < 500
+                AND cs.snapshot_date = (SELECT MAX(snapshot_date) FROM company_snapshots cs2 WHERE cs2.symbol = cs.symbol)
+            """, (sector_code,)).fetchone()
+
+            # Get percentile rank within sector
+            pe_rank = con.execute("""
+                SELECT
+                    COUNT(*) as cheaper_count,
+                    (SELECT COUNT(*) FROM company_snapshots cs2
+                     JOIN symbols s2 ON cs2.symbol = s2.symbol
+                     WHERE s2.sector = ?
+                     AND CAST(json_extract(cs2.snapshot_json, '$.fundamentals.pe_ratio') AS REAL) > 0
+                     AND CAST(json_extract(cs2.snapshot_json, '$.fundamentals.pe_ratio') AS REAL) < 500
+                     AND cs2.snapshot_date = (SELECT MAX(snapshot_date) FROM company_snapshots cs3 WHERE cs3.symbol = cs2.symbol)
+                    ) as total_count
+                FROM company_snapshots cs
+                JOIN symbols s ON cs.symbol = s.symbol
+                WHERE s.sector = ?
+                AND CAST(json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') AS REAL) > ?
+                AND CAST(json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') AS REAL) < 500
+                AND cs.snapshot_date = (SELECT MAX(snapshot_date) FROM company_snapshots cs2 WHERE cs2.symbol = cs.symbol)
+            """, (sector_code, sector_code, pe)).fetchone()
+
+            if sector_valuation and sector_valuation["sector_count"] >= 3:
+                sector_name = data.get("sector_name") or sector_code
+
+                with st.expander(f"📊 Valuation vs {sector_name} Sector", expanded=False):
+                    val_col1, val_col2, val_col3, val_col4 = st.columns(4)
+
+                    with val_col1:
+                        st.metric("Your P/E", f"{pe:.1f}")
+
+                    with val_col2:
+                        avg_pe = sector_valuation["avg_pe"]
+                        diff = pe - avg_pe
+                        st.metric("Sector Avg P/E", f"{avg_pe:.1f}",
+                                  delta=f"{diff:+.1f}", delta_color="inverse")
+
+                    with val_col3:
+                        st.metric("Sector Range",
+                                  f"{sector_valuation['min_pe']:.0f} - {sector_valuation['max_pe']:.0f}")
+
+                    with val_col4:
+                        if pe_rank and pe_rank["total_count"] > 0:
+                            cheaper = pe_rank["cheaper_count"]
+                            total = pe_rank["total_count"]
+                            percentile = (cheaper / total) * 100
+                            st.metric("Cheaper Than", f"{percentile:.0f}% of sector",
+                                      help="Percentage of sector stocks with higher P/E (more expensive)")
+
+                    # Visual comparison
+                    if sector_valuation["max_pe"] > sector_valuation["min_pe"]:
+                        pe_position = (pe - sector_valuation["min_pe"]) / (sector_valuation["max_pe"] - sector_valuation["min_pe"])
+                        pe_position = min(1.0, max(0.0, pe_position))
+                        st.progress(pe_position)
+                        if pe_position < 0.33:
+                            st.caption("✅ **Value Zone** - P/E in lower third of sector range")
+                        elif pe_position < 0.67:
+                            st.caption("⚪ **Fair Value** - P/E in middle of sector range")
+                        else:
+                            st.caption("⚠️ **Premium Valuation** - P/E in upper third of sector range")
+        except Exception:
+            pass
 
     # =================================================================
     # DETAILED QUOTE SECTION
@@ -3187,22 +3458,22 @@ def company_analytics_page():
 
 
 # -----------------------------------------------------------------------------
-# Page: Deep Data (Quant) - Bloomberg-Style Company Data
+# Page: Data Acquisition - Bulk Data Scraping & Collection
 # -----------------------------------------------------------------------------
-def deep_data_page():
-    """Bloomberg-style deep data scraping and analysis page."""
+def data_acquisition_page():
+    """Bulk data acquisition and scraping page."""
     # =================================================================
     # HEADER
     # =================================================================
     header_col1, header_col2 = st.columns([3, 1])
     with header_col1:
-        st.markdown("## 🔬 Deep Data (Quant)")
-        st.caption("Bloomberg-style comprehensive company data scraping and analysis")
+        st.markdown("## 📥 Data Acquisition")
+        st.caption("Bulk data collection from PSX • Company profiles, financials & announcements")
     with header_col2:
         render_market_status_badge()
 
     con = get_connection()
-    track_page_visit(con, "Deep Data (Quant)")
+    track_page_visit(con, "Data Acquisition")
 
     # Tabs for different sections
     tab1, tab2, tab3, tab4 = st.tabs([
@@ -3242,7 +3513,7 @@ def deep_data_page():
 
         if st.button("🔬 Deep Scrape", type="primary", disabled=not symbol_input):
             with st.spinner(f"Deep scraping {symbol_input}..."):
-                track_button_click(con, "Deep Scrape", "Deep Data", symbol_input)
+                track_button_click(con, "Deep Scrape", "Data Acquisition", symbol_input)
                 result = deep_scrape_symbol(con, symbol_input, save_raw_html=save_html)
 
             if result.get("success"):
@@ -3293,7 +3564,7 @@ def deep_data_page():
                     status_text.text(f"{status} [{current}/{total}] {symbol}")
 
                 with st.spinner("Batch scraping in progress..."):
-                    track_button_click(con, "Batch Scrape", "Deep Data", metadata={"count": len(symbols)})
+                    track_button_click(con, "Batch Scrape", "Data Acquisition", metadata={"count": len(symbols)})
                     summary = deep_scrape_batch(
                         con, symbols,
                         delay=delay,
@@ -3498,7 +3769,7 @@ def deep_data_page():
                     )
 
                     st.success(f"Started background job `{job_id}` for {len(symbols_to_scrape)} symbols")
-                    track_button_click(con, "Start Background Job", "Deep Data",
+                    track_button_click(con, "Start Background Job", "Data Acquisition",
                         metadata={"job_id": job_id, "count": len(symbols_to_scrape)})
                     time.sleep(1)  # Give worker time to start
                     st.rerun()
@@ -3540,7 +3811,7 @@ def deep_data_page():
             selected_symbol = st.selectbox("Select Symbol", symbol_list)
 
             if selected_symbol:
-                track_symbol_search(con, selected_symbol, "Deep Data - Snapshot")
+                track_symbol_search(con, selected_symbol, "Data Acquisition - Snapshot")
                 snapshot = get_company_snapshot(con, selected_symbol)
 
                 if snapshot:
@@ -3764,6 +4035,457 @@ def deep_data_page():
             )
         else:
             st.info("No announcements found. Use 'Scrape Company' to capture data.")
+
+    render_footer()
+
+
+# -----------------------------------------------------------------------------
+# Page: Factor Analysis - Quantitative Factor Rankings & Analysis
+# -----------------------------------------------------------------------------
+def factor_analysis_page():
+    """Quantitative factor analysis and stock rankings."""
+    # =================================================================
+    # HEADER
+    # =================================================================
+    header_col1, header_col2 = st.columns([3, 1])
+    with header_col1:
+        st.markdown("## 📊 Factor Analysis")
+        st.caption("Quantitative factor rankings • Value, Momentum, Quality & Volatility")
+    with header_col2:
+        render_market_status_badge()
+
+    con = get_connection()
+    track_page_visit(con, "Factor Analysis")
+
+    # Check data availability
+    snapshot_count = con.execute(
+        "SELECT COUNT(DISTINCT symbol) FROM company_snapshots"
+    ).fetchone()[0]
+
+    if snapshot_count < 10:
+        st.warning(
+            f"Only {snapshot_count} companies with data. "
+            "Go to **Data Acquisition** to scrape more companies for meaningful factor analysis."
+        )
+
+    st.markdown("---")
+
+    # Tabs for different analyses
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📈 Factor Rankings",
+        "🔄 Factor Correlations",
+        "📊 Sector Exposure",
+        "⚠️ Risk Metrics"
+    ])
+
+    # =========================================================================
+    # Tab 1: Factor Rankings
+    # =========================================================================
+    with tab1:
+        st.subheader("Multi-Factor Stock Rankings")
+        st.markdown("""
+        Stocks ranked by composite factor score combining **Value**, **Momentum**,
+        **Quality**, and **Volatility** factors.
+        """)
+
+        # Factor weights
+        st.markdown("#### Factor Weights")
+        weight_cols = st.columns(4)
+        with weight_cols[0]:
+            w_value = st.slider("Value", 0.0, 1.0, 0.25, 0.05, key="w_value")
+        with weight_cols[1]:
+            w_momentum = st.slider("Momentum", 0.0, 1.0, 0.25, 0.05, key="w_momentum")
+        with weight_cols[2]:
+            w_quality = st.slider("Quality", 0.0, 1.0, 0.25, 0.05, key="w_quality")
+        with weight_cols[3]:
+            w_volatility = st.slider("Low Volatility", 0.0, 1.0, 0.25, 0.05, key="w_volatility")
+
+        # Normalize weights
+        total_weight = w_value + w_momentum + w_quality + w_volatility
+        if total_weight > 0:
+            w_value /= total_weight
+            w_momentum /= total_weight
+            w_quality /= total_weight
+            w_volatility /= total_weight
+
+        st.caption(f"Normalized: Value={w_value:.0%}, Momentum={w_momentum:.0%}, Quality={w_quality:.0%}, LowVol={w_volatility:.0%}")
+
+        st.markdown("---")
+
+        # Build factor data
+        try:
+            # Get latest snapshot data for each company
+            factor_query = """
+                WITH latest_snapshots AS (
+                    SELECT
+                        cs.symbol,
+                        cs.snapshot_date,
+                        json_extract(cs.snapshot_json, '$.quote_data.current') as price,
+                        json_extract(cs.snapshot_json, '$.quote_data.ldcp') as ldcp,
+                        json_extract(cs.snapshot_json, '$.quote_data.volume') as volume,
+                        json_extract(cs.snapshot_json, '$.quote_data.high') as high,
+                        json_extract(cs.snapshot_json, '$.quote_data.low') as low,
+                        json_extract(cs.snapshot_json, '$.quote_data.week_52_low') as wk52_low,
+                        json_extract(cs.snapshot_json, '$.quote_data.week_52_high') as wk52_high,
+                        json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') as pe_ratio,
+                        json_extract(cs.snapshot_json, '$.fundamentals.price_to_book') as pb_ratio,
+                        json_extract(cs.snapshot_json, '$.fundamentals.dividend_yield') as div_yield,
+                        json_extract(cs.snapshot_json, '$.fundamentals.eps') as eps,
+                        json_extract(cs.snapshot_json, '$.equity_structure.market_cap') as market_cap,
+                        s.sector as sector_code,
+                        s.name as company_name
+                    FROM company_snapshots cs
+                    JOIN symbols s ON cs.symbol = s.symbol
+                    WHERE cs.snapshot_date = (
+                        SELECT MAX(snapshot_date) FROM company_snapshots cs2
+                        WHERE cs2.symbol = cs.symbol
+                    )
+                    AND s.is_active = 1
+                ),
+                price_history AS (
+                    SELECT
+                        symbol,
+                        (SELECT close FROM eod_ohlcv e2 WHERE e2.symbol = eod_ohlcv.symbol ORDER BY date DESC LIMIT 1) as latest_close,
+                        (SELECT close FROM eod_ohlcv e3 WHERE e3.symbol = eod_ohlcv.symbol ORDER BY date DESC LIMIT 1 OFFSET 20) as close_20d_ago,
+                        (SELECT close FROM eod_ohlcv e4 WHERE e4.symbol = eod_ohlcv.symbol ORDER BY date DESC LIMIT 1 OFFSET 60) as close_60d_ago,
+                        (SELECT AVG(close) FROM (SELECT close FROM eod_ohlcv e5 WHERE e5.symbol = eod_ohlcv.symbol ORDER BY date DESC LIMIT 20)) as sma_20,
+                        (SELECT AVG(close) FROM (SELECT close FROM eod_ohlcv e6 WHERE e6.symbol = eod_ohlcv.symbol ORDER BY date DESC LIMIT 50)) as sma_50
+                    FROM eod_ohlcv
+                    GROUP BY symbol
+                )
+                SELECT
+                    ls.*,
+                    ph.latest_close,
+                    ph.close_20d_ago,
+                    ph.close_60d_ago,
+                    ph.sma_20,
+                    ph.sma_50,
+                    CASE WHEN ph.close_20d_ago > 0
+                        THEN (ph.latest_close - ph.close_20d_ago) / ph.close_20d_ago * 100
+                        ELSE 0 END as return_20d,
+                    CASE WHEN ph.close_60d_ago > 0
+                        THEN (ph.latest_close - ph.close_60d_ago) / ph.close_60d_ago * 100
+                        ELSE 0 END as return_60d
+                FROM latest_snapshots ls
+                LEFT JOIN price_history ph ON ls.symbol = ph.symbol
+                WHERE ls.price > 0
+            """
+
+            factor_df = pd.read_sql_query(factor_query, con)
+
+            if factor_df.empty:
+                st.info("No factor data available. Scrape company data first.")
+            else:
+                # Calculate factor scores (percentile ranks)
+                # Value: Lower P/E is better (invert), higher dividend yield is better
+                factor_df["pe_ratio"] = pd.to_numeric(factor_df["pe_ratio"], errors="coerce")
+                factor_df["pb_ratio"] = pd.to_numeric(factor_df["pb_ratio"], errors="coerce")
+                factor_df["div_yield"] = pd.to_numeric(factor_df["div_yield"], errors="coerce")
+                factor_df["return_20d"] = pd.to_numeric(factor_df["return_20d"], errors="coerce")
+                factor_df["return_60d"] = pd.to_numeric(factor_df["return_60d"], errors="coerce")
+                factor_df["market_cap"] = pd.to_numeric(factor_df["market_cap"], errors="coerce")
+
+                # Value Score: Low P/E + Low P/B + High Dividend Yield
+                factor_df["value_score"] = 0
+                if factor_df["pe_ratio"].notna().sum() > 5:
+                    # Invert P/E (lower is better)
+                    pe_valid = factor_df["pe_ratio"] > 0
+                    factor_df.loc[pe_valid, "value_score"] += (1 - factor_df.loc[pe_valid, "pe_ratio"].rank(pct=True)) * 0.4
+                if factor_df["pb_ratio"].notna().sum() > 5:
+                    pb_valid = factor_df["pb_ratio"] > 0
+                    factor_df.loc[pb_valid, "value_score"] += (1 - factor_df.loc[pb_valid, "pb_ratio"].rank(pct=True)) * 0.3
+                if factor_df["div_yield"].notna().sum() > 5:
+                    factor_df["value_score"] += factor_df["div_yield"].rank(pct=True).fillna(0) * 0.3
+
+                # Momentum Score: 20-day and 60-day returns
+                factor_df["momentum_score"] = 0
+                if factor_df["return_20d"].notna().sum() > 5:
+                    factor_df["momentum_score"] += factor_df["return_20d"].rank(pct=True).fillna(0) * 0.5
+                if factor_df["return_60d"].notna().sum() > 5:
+                    factor_df["momentum_score"] += factor_df["return_60d"].rank(pct=True).fillna(0) * 0.5
+
+                # Quality Score: Higher EPS, larger market cap (proxy for stability)
+                factor_df["eps"] = pd.to_numeric(factor_df["eps"], errors="coerce")
+                factor_df["quality_score"] = 0
+                if factor_df["eps"].notna().sum() > 5:
+                    eps_positive = factor_df["eps"] > 0
+                    factor_df.loc[eps_positive, "quality_score"] += factor_df.loc[eps_positive, "eps"].rank(pct=True) * 0.5
+                if factor_df["market_cap"].notna().sum() > 5:
+                    factor_df["quality_score"] += factor_df["market_cap"].rank(pct=True).fillna(0) * 0.5
+
+                # Volatility Score: Lower 52-week range is better (inverted)
+                factor_df["wk52_low"] = pd.to_numeric(factor_df["wk52_low"], errors="coerce")
+                factor_df["wk52_high"] = pd.to_numeric(factor_df["wk52_high"], errors="coerce")
+                factor_df["volatility_range"] = (factor_df["wk52_high"] - factor_df["wk52_low"]) / factor_df["wk52_low"]
+                factor_df["volatility_score"] = 0
+                if factor_df["volatility_range"].notna().sum() > 5:
+                    # Invert - lower volatility is better
+                    factor_df["volatility_score"] = 1 - factor_df["volatility_range"].rank(pct=True).fillna(0.5)
+
+                # Composite Score
+                factor_df["composite_score"] = (
+                    w_value * factor_df["value_score"].fillna(0) +
+                    w_momentum * factor_df["momentum_score"].fillna(0) +
+                    w_quality * factor_df["quality_score"].fillna(0) +
+                    w_volatility * factor_df["volatility_score"].fillna(0)
+                )
+
+                # Rank by composite score
+                factor_df["rank"] = factor_df["composite_score"].rank(ascending=False, method="min")
+                factor_df = factor_df.sort_values("composite_score", ascending=False)
+
+                # Display top stocks
+                st.markdown("#### Top Ranked Stocks")
+
+                display_cols = [
+                    "rank", "symbol", "company_name", "sector_code",
+                    "composite_score", "value_score", "momentum_score",
+                    "quality_score", "volatility_score",
+                    "pe_ratio", "return_20d", "market_cap"
+                ]
+                display_df = factor_df[display_cols].head(30).copy()
+                display_df.columns = [
+                    "Rank", "Symbol", "Company", "Sector",
+                    "Composite", "Value", "Momentum", "Quality", "LowVol",
+                    "P/E", "20D Ret%", "Mkt Cap"
+                ]
+
+                # Format market cap
+                display_df["Mkt Cap"] = display_df["Mkt Cap"].apply(
+                    lambda x: f"Rs.{x/1e9:.1f}B" if pd.notna(x) and x >= 1e9
+                    else f"Rs.{x/1e6:.0f}M" if pd.notna(x) else "N/A"
+                )
+
+                st.dataframe(
+                    display_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Rank": st.column_config.NumberColumn(format="%d"),
+                        "Composite": st.column_config.ProgressColumn(min_value=0, max_value=1, format="%.2f"),
+                        "Value": st.column_config.ProgressColumn(min_value=0, max_value=1, format="%.2f"),
+                        "Momentum": st.column_config.ProgressColumn(min_value=0, max_value=1, format="%.2f"),
+                        "Quality": st.column_config.ProgressColumn(min_value=0, max_value=1, format="%.2f"),
+                        "LowVol": st.column_config.ProgressColumn(min_value=0, max_value=1, format="%.2f"),
+                        "P/E": st.column_config.NumberColumn(format="%.1f"),
+                        "20D Ret%": st.column_config.NumberColumn(format="%.1f%%"),
+                    }
+                )
+
+                # Quick stats
+                st.markdown("---")
+                stat_cols = st.columns(4)
+                with stat_cols[0]:
+                    st.metric("Total Stocks Analyzed", len(factor_df))
+                with stat_cols[1]:
+                    avg_pe = factor_df["pe_ratio"].median()
+                    st.metric("Median P/E", f"{avg_pe:.1f}" if pd.notna(avg_pe) else "N/A")
+                with stat_cols[2]:
+                    avg_momentum = factor_df["return_20d"].median()
+                    st.metric("Median 20D Return", f"{avg_momentum:+.1f}%" if pd.notna(avg_momentum) else "N/A")
+                with stat_cols[3]:
+                    value_stocks = len(factor_df[factor_df["value_score"] > 0.7])
+                    st.metric("High Value Stocks", value_stocks)
+
+        except Exception as e:
+            st.error(f"Error calculating factors: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+
+    # =========================================================================
+    # Tab 2: Factor Correlations
+    # =========================================================================
+    with tab2:
+        st.subheader("Factor Correlation Matrix")
+        st.markdown("""
+        Correlation between different factors. Low correlation means
+        factors provide diversified signals.
+        """)
+
+        try:
+            if 'factor_df' in dir() and not factor_df.empty:
+                corr_cols = ["value_score", "momentum_score", "quality_score", "volatility_score"]
+                corr_matrix = factor_df[corr_cols].corr()
+
+                # Rename for display
+                corr_matrix.index = ["Value", "Momentum", "Quality", "LowVol"]
+                corr_matrix.columns = ["Value", "Momentum", "Quality", "LowVol"]
+
+                import plotly.express as px
+                fig = px.imshow(
+                    corr_matrix,
+                    text_auto=".2f",
+                    color_continuous_scale="RdBu_r",
+                    zmin=-1, zmax=1,
+                    title="Factor Correlation Matrix"
+                )
+                fig.update_layout(height=400)
+                st.plotly_chart(fig, use_container_width=True)
+
+                st.markdown("""
+                **Interpretation:**
+                - Values close to **+1.0** = highly correlated (redundant signals)
+                - Values close to **-1.0** = negatively correlated (hedging signals)
+                - Values close to **0** = uncorrelated (diversifying signals)
+                """)
+            else:
+                st.info("Run Factor Rankings first to see correlations.")
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+    # =========================================================================
+    # Tab 3: Sector Exposure
+    # =========================================================================
+    with tab3:
+        st.subheader("Factor Exposure by Sector")
+        st.markdown("Average factor scores by sector to identify sector biases.")
+
+        try:
+            if 'factor_df' in dir() and not factor_df.empty:
+                # Get sector names
+                sector_map = get_sector_names(con)
+
+                sector_exposure = factor_df.groupby("sector_code").agg({
+                    "value_score": "mean",
+                    "momentum_score": "mean",
+                    "quality_score": "mean",
+                    "volatility_score": "mean",
+                    "symbol": "count"
+                }).reset_index()
+                sector_exposure.columns = ["Sector Code", "Value", "Momentum", "Quality", "LowVol", "Count"]
+                sector_exposure["Sector"] = sector_exposure["Sector Code"].map(sector_map).fillna(sector_exposure["Sector Code"])
+                sector_exposure = sector_exposure.sort_values("Count", ascending=False)
+
+                st.dataframe(
+                    sector_exposure[["Sector", "Count", "Value", "Momentum", "Quality", "LowVol"]],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Value": st.column_config.ProgressColumn(min_value=0, max_value=1, format="%.2f"),
+                        "Momentum": st.column_config.ProgressColumn(min_value=0, max_value=1, format="%.2f"),
+                        "Quality": st.column_config.ProgressColumn(min_value=0, max_value=1, format="%.2f"),
+                        "LowVol": st.column_config.ProgressColumn(min_value=0, max_value=1, format="%.2f"),
+                    }
+                )
+
+                # Bar chart
+                import plotly.express as px
+                melt_df = sector_exposure.melt(
+                    id_vars=["Sector"],
+                    value_vars=["Value", "Momentum", "Quality", "LowVol"],
+                    var_name="Factor",
+                    value_name="Score"
+                )
+                fig = px.bar(
+                    melt_df.head(40),  # Top 10 sectors x 4 factors
+                    x="Sector",
+                    y="Score",
+                    color="Factor",
+                    barmode="group",
+                    title="Factor Scores by Sector"
+                )
+                fig.update_layout(height=400, xaxis_tickangle=-45)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Run Factor Rankings first to see sector exposure.")
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+    # =========================================================================
+    # Tab 4: Risk Metrics
+    # =========================================================================
+    with tab4:
+        st.subheader("Portfolio Risk Metrics")
+        st.markdown("""
+        Risk analysis for top-ranked stocks. Essential for position sizing
+        and portfolio construction.
+        """)
+
+        try:
+            if 'factor_df' in dir() and not factor_df.empty:
+                # Get top 20 stocks
+                top_stocks = factor_df.head(20)["symbol"].tolist()
+
+                # Calculate volatility from EOD data
+                risk_query = """
+                    SELECT
+                        symbol,
+                        COUNT(*) as trading_days,
+                        AVG(close) as avg_price,
+                        MIN(close) as min_price,
+                        MAX(close) as max_price,
+                        (MAX(close) - MIN(close)) / AVG(close) * 100 as range_pct
+                    FROM eod_ohlcv
+                    WHERE symbol IN ({})
+                    AND date >= date('now', '-90 days')
+                    GROUP BY symbol
+                """.format(",".join([f"'{s}'" for s in top_stocks]))
+
+                risk_df = pd.read_sql_query(risk_query, con)
+
+                if not risk_df.empty:
+                    # Merge with factor data
+                    risk_df = risk_df.merge(
+                        factor_df[["symbol", "composite_score", "market_cap"]],
+                        on="symbol",
+                        how="left"
+                    )
+
+                    st.markdown("#### Top 20 Stocks - Risk Profile")
+                    risk_df["market_cap_str"] = risk_df["market_cap"].apply(
+                        lambda x: f"Rs.{x/1e9:.1f}B" if pd.notna(x) and x >= 1e9
+                        else f"Rs.{x/1e6:.0f}M" if pd.notna(x) else "N/A"
+                    )
+
+                    st.dataframe(
+                        risk_df[["symbol", "trading_days", "avg_price", "range_pct", "composite_score", "market_cap_str"]].rename(columns={
+                            "symbol": "Symbol",
+                            "trading_days": "Days",
+                            "avg_price": "Avg Price",
+                            "range_pct": "90D Range%",
+                            "composite_score": "Score",
+                            "market_cap_str": "Mkt Cap"
+                        }),
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Avg Price": st.column_config.NumberColumn(format="Rs.%.2f"),
+                            "90D Range%": st.column_config.NumberColumn(format="%.1f%%"),
+                            "Score": st.column_config.ProgressColumn(min_value=0, max_value=1, format="%.2f"),
+                        }
+                    )
+
+                    # Summary metrics
+                    st.markdown("---")
+                    st.markdown("#### Portfolio Summary (Equal-Weight Top 20)")
+
+                    metric_cols = st.columns(4)
+                    with metric_cols[0]:
+                        avg_range = risk_df["range_pct"].mean()
+                        st.metric("Avg 90D Range", f"{avg_range:.1f}%")
+                    with metric_cols[1]:
+                        total_mktcap = risk_df["market_cap"].sum()
+                        st.metric("Total Mkt Cap", f"Rs.{total_mktcap/1e9:.0f}B" if total_mktcap else "N/A")
+                    with metric_cols[2]:
+                        avg_score = risk_df["composite_score"].mean()
+                        st.metric("Avg Score", f"{avg_score:.2f}")
+                    with metric_cols[3]:
+                        st.metric("Stocks", len(risk_df))
+
+                    st.markdown("""
+                    ---
+                    **Risk Notes:**
+                    - 90D Range% shows price volatility - higher = riskier
+                    - Consider position sizing inversely to volatility
+                    - PSX circuit breakers limit daily moves to ±7.5%
+                    - Thin liquidity stocks may have execution slippage
+                    """)
+                else:
+                    st.info("Insufficient price history for risk analysis.")
+            else:
+                st.info("Run Factor Rankings first to see risk metrics.")
+        except Exception as e:
+            st.error(f"Error: {e}")
 
     render_footer()
 
@@ -4391,7 +5113,8 @@ def main():
         "⏱ Intraday Trend",
         "📊 Regular Market",
         "🏢 Company Analytics",
-        "🔬 Deep Data (Quant)",
+        "📥 Data Acquisition",
+        "📊 Factor Analysis",
         "📚 History",
         "📥 Market Summary",
         "🧵 Symbols",
@@ -4446,8 +5169,10 @@ def main():
         regular_market_page()
     elif page == "🏢 Company Analytics":
         company_analytics_page()
-    elif page == "🔬 Deep Data (Quant)":
-        deep_data_page()
+    elif page == "📥 Data Acquisition":
+        data_acquisition_page()
+    elif page == "📊 Factor Analysis":
+        factor_analysis_page()
     elif page == "📚 History":
         history_page()
     elif page == "📥 Market Summary":
