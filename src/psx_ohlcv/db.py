@@ -3912,3 +3912,207 @@ def mark_all_notifications_read(con: sqlite3.Connection) -> None:
     """Mark all notifications as read."""
     con.execute("UPDATE job_notifications SET read_at = datetime('now') WHERE read_at IS NULL")
     con.commit()
+
+
+# =============================================================================
+# Unified Data Access (Hybrid Model)
+# =============================================================================
+
+
+def get_company_unified(
+    con: sqlite3.Connection,
+    symbol: str,
+    include_history: bool = False,
+) -> dict | None:
+    """Get unified company data from Deep Data tables.
+
+    This is the primary function for accessing company data in the hybrid model.
+    It reads from company_snapshots, trading_sessions, and corporate_announcements.
+
+    Args:
+        con: Database connection
+        symbol: Stock symbol
+        include_history: If True, include historical snapshots
+
+    Returns:
+        Dict with unified company data or None if not found
+    """
+    import json
+    from datetime import datetime
+
+    symbol = symbol.upper()
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # Get latest snapshot
+    cur = con.execute(
+        """
+        SELECT * FROM company_snapshots
+        WHERE symbol = ?
+        ORDER BY snapshot_date DESC, scraped_at DESC
+        LIMIT 1
+        """,
+        (symbol,),
+    )
+    snapshot_row = cur.fetchone()
+
+    if not snapshot_row:
+        return None
+
+    snapshot = dict(snapshot_row)
+
+    # Parse JSON fields
+    json_fields = [
+        "quote_data", "equity_data", "profile_data", "financials_data",
+        "ratios_data", "trading_data", "futures_data", "announcements_data"
+    ]
+    for field in json_fields:
+        if snapshot.get(field):
+            try:
+                snapshot[field] = json.loads(snapshot[field])
+            except json.JSONDecodeError:
+                snapshot[field] = {}
+
+    # Get today's trading sessions (all market types)
+    cur = con.execute(
+        """
+        SELECT * FROM trading_sessions
+        WHERE symbol = ? AND session_date = ?
+        ORDER BY market_type
+        """,
+        (symbol, today),
+    )
+    trading_rows = cur.fetchall()
+    trading_sessions = {}
+    for row in trading_rows:
+        session = dict(row)
+        market_type = session.get("market_type", "REG")
+        contract = session.get("contract_month", "")
+        key = f"{market_type}_{contract}" if contract else market_type
+        trading_sessions[key] = session
+
+    # Get recent announcements
+    cur = con.execute(
+        """
+        SELECT * FROM corporate_announcements
+        WHERE symbol = ?
+        ORDER BY announcement_date DESC
+        LIMIT 20
+        """,
+        (symbol,),
+    )
+    announcements = [dict(row) for row in cur.fetchall()]
+
+    # Get equity structure
+    cur = con.execute(
+        """
+        SELECT * FROM equity_structure
+        WHERE symbol = ?
+        ORDER BY as_of_date DESC
+        LIMIT 1
+        """,
+        (symbol,),
+    )
+    equity_row = cur.fetchone()
+    equity_structure = dict(equity_row) if equity_row else {}
+
+    # Build unified response
+    quote_data = snapshot.get("quote_data", {})
+    trading_data = snapshot.get("trading_data", {})
+    reg_trading = trading_data.get("REG", {}) if trading_data else {}
+
+    result = {
+        # Core info
+        "symbol": symbol,
+        "company_name": snapshot.get("company_name"),
+        "sector_code": snapshot.get("sector_code"),
+        "sector_name": snapshot.get("sector_name"),
+        "snapshot_date": snapshot.get("snapshot_date"),
+        "scraped_at": snapshot.get("scraped_at"),
+
+        # Current quote (from snapshot or trading session)
+        "price": reg_trading.get("close") or quote_data.get("close"),
+        "open": reg_trading.get("open") or quote_data.get("open"),
+        "high": reg_trading.get("high") or quote_data.get("high"),
+        "low": reg_trading.get("low") or quote_data.get("low"),
+        "close": reg_trading.get("close") or quote_data.get("close"),
+        "volume": reg_trading.get("volume") or quote_data.get("volume"),
+        "ldcp": reg_trading.get("ldcp") or quote_data.get("ldcp"),
+        "change": quote_data.get("change"),
+        "change_pct": reg_trading.get("change_percent") or quote_data.get("change_pct"),
+
+        # Ranges
+        "day_range_low": reg_trading.get("day_range_low") or quote_data.get("day_range_low"),
+        "day_range_high": reg_trading.get("day_range_high") or quote_data.get("day_range_high"),
+        "wk52_low": reg_trading.get("week_52_low") or quote_data.get("wk52_low"),
+        "wk52_high": reg_trading.get("week_52_high") or quote_data.get("wk52_high"),
+        "circuit_low": reg_trading.get("circuit_low") or quote_data.get("circuit_low"),
+        "circuit_high": reg_trading.get("circuit_high") or quote_data.get("circuit_high"),
+
+        # Valuation
+        "pe_ratio": reg_trading.get("pe_ratio_ttm") or quote_data.get("pe_ratio"),
+        "market_cap": equity_structure.get("market_cap"),
+
+        # Performance
+        "ytd_change_pct": reg_trading.get("ytd_change"),
+        "one_year_change_pct": reg_trading.get("year_1_change"),
+
+        # Risk
+        "haircut": reg_trading.get("haircut_percent"),
+        "variance": reg_trading.get("var_percent"),
+
+        # Equity
+        "total_shares": equity_structure.get("outstanding_shares"),
+        "free_float_shares": equity_structure.get("free_float_shares"),
+        "free_float_pct": equity_structure.get("free_float_percent"),
+
+        # Full data objects
+        "quote_data": quote_data,
+        "trading_data": trading_data,
+        "equity_data": snapshot.get("equity_data", {}),
+        "profile_data": snapshot.get("profile_data", {}),
+        "financials_data": snapshot.get("financials_data", {}),
+        "ratios_data": snapshot.get("ratios_data", {}),
+        "futures_data": snapshot.get("futures_data", {}),
+
+        # Live trading sessions (today)
+        "trading_sessions": trading_sessions,
+
+        # Announcements
+        "announcements": announcements,
+        "announcements_count": len(announcements),
+
+        # Equity structure
+        "equity_structure": equity_structure,
+    }
+
+    # Include historical snapshots if requested
+    if include_history:
+        cur = con.execute(
+            """
+            SELECT snapshot_date, scraped_at,
+                   json_extract(quote_data, '$.close') as close,
+                   json_extract(quote_data, '$.volume') as volume
+            FROM company_snapshots
+            WHERE symbol = ?
+            ORDER BY snapshot_date DESC
+            LIMIT 30
+            """,
+            (symbol,),
+        )
+        result["history"] = [dict(row) for row in cur.fetchall()]
+
+    return result
+
+
+def get_unified_symbols_list(con: sqlite3.Connection) -> list[str]:
+    """Get list of symbols available in Deep Data tables."""
+    cur = con.execute(
+        "SELECT DISTINCT symbol FROM company_snapshots ORDER BY symbol"
+    )
+    return [row[0] for row in cur.fetchall()]
+
+
+def get_unified_symbol_count(con: sqlite3.Connection) -> int:
+    """Get count of symbols in Deep Data tables."""
+    cur = con.execute("SELECT COUNT(DISTINCT symbol) FROM company_snapshots")
+    return cur.fetchone()[0]

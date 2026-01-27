@@ -39,10 +39,7 @@ from psx_ohlcv.config import (
 )
 from psx_ohlcv.db import get_sector_map
 from psx_ohlcv.query import (
-    get_company_latest_quote,
     get_company_latest_signals,
-    get_company_people,
-    get_company_profile,
     get_company_quote_stats,
     get_company_quotes,
     get_intraday_latest,
@@ -2233,30 +2230,28 @@ def company_analytics_page():
             help="Take a quote snapshot and compute signals",
         )
 
-    # Handle refresh profile (now uses comprehensive fundamentals)
+    # Handle refresh profile (now uses deep scraper for unified data)
     if refresh_profile:
         track_button_click(con, "Refresh Profile", "Company Analytics", symbol)
-        with st.spinner(f"Fetching fundamentals for {symbol}..."):
+        with st.spinner(f"Deep scraping {symbol}..."):
             try:
-                from psx_ohlcv.sources.company_page import refresh_fundamentals
-                result = refresh_fundamentals(con, symbol, save_history=True)
+                from psx_ohlcv.sources.deep_scraper import deep_scrape_symbol
+                result = deep_scrape_symbol(con, symbol, save_raw_html=False)
                 if result.get("success"):
-                    msg = f"Fundamentals updated for {symbol}"
-                    if result.get("history_saved"):
-                        msg += " (history saved)"
-                    track_refresh(con, "fundamentals", symbol, "Company Analytics", True, {
-                        "financials_count": result.get("financials_count", 0),
-                        "ratios_count": result.get("ratios_count", 0),
-                        "payouts_count": result.get("payouts_count", 0),
+                    msg = f"Data updated for {symbol}"
+                    track_refresh(con, "deep_scrape", symbol, "Company Analytics", True, {
+                        "snapshot_saved": result.get("snapshot_saved"),
+                        "trading_sessions": result.get("trading_sessions_saved", 0),
+                        "announcements": result.get("announcements_saved", 0),
                     })
                     st.success(msg)
                     st.rerun()
                 else:
                     err = result.get("error", "Unknown error")
-                    track_refresh(con, "fundamentals", symbol, "Company Analytics", False, {"error": err})
-                    st.error(f"Failed to fetch fundamentals: {err}")
+                    track_refresh(con, "deep_scrape", symbol, "Company Analytics", False, {"error": err})
+                    st.error(f"Failed to fetch data: {err}")
             except Exception as e:
-                track_refresh(con, "fundamentals", symbol, "Company Analytics", False, {"error": str(e)})
+                track_refresh(con, "deep_scrape", symbol, "Company Analytics", False, {"error": str(e)})
                 st.error(f"Error: {e}")
 
     # Handle take snapshot
@@ -2283,19 +2278,16 @@ def company_analytics_page():
 
     st.markdown("---")
 
-    # Fetch data - use new fundamentals table if available, fallback to old tables
-    from psx_ohlcv.db import get_company_fundamentals
-    fundamentals = get_company_fundamentals(con, symbol)
+    # Fetch unified data from Deep Data tables (hybrid model)
+    from psx_ohlcv.db import get_company_unified
+    unified_data = get_company_unified(con, symbol)
 
-    # Also get data from old tables for backwards compatibility
-    profile = get_company_profile(con, symbol)
-    latest_quote = get_company_latest_quote(con, symbol)
+    # Also get signals and quote stats (these are computed locally)
     signals = get_company_latest_signals(con, symbol)
-    people = get_company_people(con, symbol)
     quote_stats = get_company_quote_stats(con, symbol)
 
     # Check if we have any data
-    if not fundamentals and not profile and not latest_quote:
+    if not unified_data:
         st.warning(
             f"No data found for {symbol}. "
             "Click 'Refresh Profile' to fetch data from PSX."
@@ -2303,9 +2295,8 @@ def company_analytics_page():
         render_footer()
         return
 
-    # ----- KPI Cards -----
-    # Use fundamentals if available, otherwise fall back to latest_quote
-    data = fundamentals or latest_quote or {}
+    # Use unified data as the primary data source
+    data = unified_data
 
     st.subheader("📊 Current Quote")
 
@@ -2597,29 +2588,17 @@ def company_analytics_page():
     else:
         st.info("No signals computed. Click 'Snapshot Now' to compute signals.")
 
-    # ----- Key People -----
-    if not people.empty:
-        st.subheader("👥 Key People")
-        st.dataframe(
-            people[["name", "role"]],
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "name": st.column_config.TextColumn("Name"),
-                "role": st.column_config.TextColumn("Role"),
-            },
-        )
-
     # ----- Company Profile -----
-    if profile:
+    profile = data.get("profile_data", {})
+    if profile or data.get("company_name"):
         st.subheader("🏢 Company Profile")
 
         profile_cols = st.columns(2)
         with profile_cols[0]:
-            st.markdown(f"**Company Name:** {profile.get('company_name', 'N/A')}")
-            st.markdown(f"**Sector:** {profile.get('sector', 'N/A')}")
+            st.markdown(f"**Company Name:** {data.get('company_name') or profile.get('company_name', 'N/A')}")
+            st.markdown(f"**Sector:** {data.get('sector_name') or profile.get('sector', 'N/A')}")
             st.markdown(f"**Listed In:** {profile.get('listed_in', 'N/A')}")
-            shares = profile.get("shares_outstanding")
+            shares = data.get("total_shares") or profile.get("shares_outstanding")
             if shares:
                 st.markdown(f"**Shares Outstanding:** {shares:,}")
             else:
@@ -2638,7 +2617,7 @@ def company_analytics_page():
         # Additional info in expander
         with st.expander("More Details"):
             st.markdown(f"**Registrar:** {profile.get('registrar', 'N/A')}")
-            st.markdown(f"**Last Updated:** {profile.get('scraped_at', 'N/A')}")
+            st.markdown(f"**Last Updated:** {data.get('scraped_at', 'N/A')}")
 
     # ----- Charts -----
     st.subheader("📈 Charts")
