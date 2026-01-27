@@ -78,6 +78,7 @@ from psx_ohlcv.db import (
     get_company_snapshot,
     get_trading_sessions,
     get_corporate_announcements,
+    get_latest_kse100,
 )
 
 # Page config - must be first Streamlit command
@@ -525,8 +526,10 @@ def dashboard():
         # KSE-100 INDEX DISPLAY - Primary Market Benchmark
         # =================================================================
         try:
-            # Calculate market-wide metrics as index proxy
-            # Get today's market performance
+            # Try to get real KSE-100 index data first
+            kse100_data = get_latest_kse100(con)
+
+            # Get market breadth data regardless
             market_perf = con.execute("""
                 SELECT
                     COUNT(*) as total_stocks,
@@ -541,7 +544,125 @@ def dashboard():
                 AND market_type = 'REG'
             """).fetchone()
 
-            if market_perf and market_perf["total_stocks"] > 0:
+            if kse100_data:
+                # ===== REAL KSE-100 DATA =====
+                idx_col1, idx_col2, idx_col3 = st.columns([2, 1, 1])
+
+                with idx_col1:
+                    value = kse100_data.get("value", 0)
+                    change = kse100_data.get("change", 0) or 0
+                    change_pct = kse100_data.get("change_pct", 0) or 0
+
+                    # Color based on change
+                    if change > 0:
+                        idx_color = "#00C853"
+                        arrow = "▲"
+                        change_sign = "+"
+                    elif change < 0:
+                        idx_color = "#FF1744"
+                        arrow = "▼"
+                        change_sign = ""
+                    else:
+                        idx_color = "#78909C"
+                        arrow = "●"
+                        change_sign = ""
+
+                    st.markdown(f"""
+                    <div style="background: linear-gradient(135deg, rgba(33,150,243,0.15) 0%, rgba(33,150,243,0.05) 100%);
+                                border: 1px solid rgba(33,150,243,0.3); border-radius: 12px; padding: 20px;">
+                        <div style="font-size: 12px; color: #888; margin-bottom: 4px;">
+                            📊 KSE-100 Index
+                        </div>
+                        <div style="display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;">
+                            <span style="font-size: 32px; font-weight: 700; font-family: monospace;">
+                                {value:,.2f}
+                            </span>
+                            <span style="font-size: 18px; font-weight: 600; color: {idx_color}; font-family: monospace;">
+                                {arrow} {change_sign}{change:,.2f} ({change_sign}{change_pct:.2f}%)
+                            </span>
+                        </div>
+                        <div style="font-size: 11px; color: #666; margin-top: 8px;">
+                            Date: {kse100_data.get("index_date", "N/A")}
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                with idx_col2:
+                    # Index Details - High/Low/Volume
+                    high = kse100_data.get("high")
+                    low = kse100_data.get("low")
+                    volume = kse100_data.get("volume")
+                    vol_str = f"{volume/1e6:.0f}M" if volume and volume >= 1e6 else (f"{volume:,}" if volume else "N/A")
+
+                    st.markdown(f"""
+                    <div style="background: rgba(255,255,255,0.02); border-radius: 8px; padding: 16px;
+                                border: 1px solid rgba(255,255,255,0.1);">
+                        <div style="font-size: 12px; color: #888; margin-bottom: 8px;">Today's Range</div>
+                        <div style="font-family: monospace; font-size: 14px;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                                <span style="color: #888;">High:</span>
+                                <span style="color: #00C853;">{high:,.2f if high else 'N/A'}</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                                <span style="color: #888;">Low:</span>
+                                <span style="color: #FF1744;">{low:,.2f if low else 'N/A'}</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between;">
+                                <span style="color: #888;">Volume:</span>
+                                <span>{vol_str}</span>
+                            </div>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                with idx_col3:
+                    # 52-Week Range and YTD
+                    week_52_low = kse100_data.get("week_52_low")
+                    week_52_high = kse100_data.get("week_52_high")
+                    ytd_pct = kse100_data.get("ytd_change_pct")
+                    one_year_pct = kse100_data.get("one_year_change_pct")
+
+                    ytd_color = "#00C853" if ytd_pct and ytd_pct > 0 else "#FF1744" if ytd_pct and ytd_pct < 0 else "#888"
+                    yr_color = "#00C853" if one_year_pct and one_year_pct > 0 else "#FF1744" if one_year_pct and one_year_pct < 0 else "#888"
+
+                    st.markdown(f"""
+                    <div style="background: rgba(255,255,255,0.02); border-radius: 8px; padding: 16px;
+                                border: 1px solid rgba(255,255,255,0.1);">
+                        <div style="font-size: 12px; color: #888; margin-bottom: 8px;">Performance</div>
+                        <div style="font-family: monospace; font-size: 14px;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                                <span style="color: #888;">YTD:</span>
+                                <span style="color: {ytd_color};">{ytd_pct:+.2f}%</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                                <span style="color: #888;">1-Year:</span>
+                                <span style="color: {yr_color};">{one_year_pct:+.2f}%</span>
+                            </div>
+                            <div style="font-size: 11px; color: #666; margin-top: 6px;">
+                                52W: {week_52_low:,.0f if week_52_low else 'N/A'} - {week_52_high:,.0f if week_52_high else 'N/A'}
+                            </div>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                # Show market breadth below if available
+                if market_perf and market_perf["total_stocks"] > 0:
+                    gainers = market_perf["gainers"] or 0
+                    losers = market_perf["losers"] or 0
+                    turnover = market_perf["total_turnover"] or 0
+                    turnover_str = f"Rs.{turnover/1e9:.2f}B" if turnover >= 1e9 else f"Rs.{turnover/1e6:.0f}M" if turnover >= 1e6 else f"Rs.{turnover:,.0f}"
+
+                    st.markdown(f"""
+                    <div style="display: flex; gap: 24px; margin-top: 12px; font-size: 13px;">
+                        <span style="color: #888;">Market Breadth:</span>
+                        <span style="color: #00C853;">{gainers} Gainers</span>
+                        <span style="color: #FF1744;">{losers} Losers</span>
+                        <span style="color: #888; margin-left: auto;">Turnover: {turnover_str}</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+            elif market_perf and market_perf["total_stocks"] > 0:
+                # ===== FALLBACK: PROXY DATA =====
                 idx_col1, idx_col2, idx_col3 = st.columns([2, 1, 1])
 
                 with idx_col1:
@@ -4115,32 +4236,39 @@ def factor_analysis_page():
         # Build factor data
         try:
             # Get latest snapshot data for each company
+            # Schema: quote_data, trading_data, equity_data, financials_data, ratios_data (all JSON)
             factor_query = """
                 WITH latest_snapshots AS (
                     SELECT
                         cs.symbol,
                         cs.snapshot_date,
-                        json_extract(cs.snapshot_json, '$.quote_data.current') as price,
-                        json_extract(cs.snapshot_json, '$.quote_data.ldcp') as ldcp,
-                        json_extract(cs.snapshot_json, '$.quote_data.volume') as volume,
-                        json_extract(cs.snapshot_json, '$.quote_data.high') as high,
-                        json_extract(cs.snapshot_json, '$.quote_data.low') as low,
-                        json_extract(cs.snapshot_json, '$.quote_data.week_52_low') as wk52_low,
-                        json_extract(cs.snapshot_json, '$.quote_data.week_52_high') as wk52_high,
-                        json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') as pe_ratio,
-                        json_extract(cs.snapshot_json, '$.fundamentals.price_to_book') as pb_ratio,
-                        json_extract(cs.snapshot_json, '$.fundamentals.dividend_yield') as div_yield,
-                        json_extract(cs.snapshot_json, '$.fundamentals.eps') as eps,
-                        json_extract(cs.snapshot_json, '$.equity_structure.market_cap') as market_cap,
-                        s.sector as sector_code,
-                        s.name as company_name
+                        cs.company_name,
+                        cs.sector_name as sector_code,
+                        -- From quote_data: close price
+                        json_extract(cs.quote_data, '$.close') as price,
+                        -- From trading_data (REG segment): volume, high, low, 52-week, P/E
+                        json_extract(cs.trading_data, '$.REG.ldcp') as ldcp,
+                        json_extract(cs.trading_data, '$.REG.volume') as volume,
+                        json_extract(cs.trading_data, '$.REG.high') as high,
+                        json_extract(cs.trading_data, '$.REG.low') as low,
+                        json_extract(cs.trading_data, '$.REG.week_52_low') as wk52_low,
+                        json_extract(cs.trading_data, '$.REG.week_52_high') as wk52_high,
+                        json_extract(cs.trading_data, '$.REG.pe_ratio_ttm') as pe_ratio,
+                        json_extract(cs.trading_data, '$.REG.ytd_change') as ytd_change,
+                        json_extract(cs.trading_data, '$.REG.year_1_change') as year_1_change,
+                        -- From equity_data: market cap
+                        json_extract(cs.equity_data, '$.market_cap') as market_cap,
+                        json_extract(cs.equity_data, '$.free_float_percent') as free_float_pct,
+                        -- From financials_data: EPS (latest annual)
+                        json_extract(cs.financials_data, '$.annual[0].eps') as eps,
+                        -- From ratios_data: profit margins
+                        json_extract(cs.ratios_data, '$.annual[0].net_profit_margin') as net_margin,
+                        json_extract(cs.ratios_data, '$.annual[0].eps_growth') as eps_growth
                     FROM company_snapshots cs
-                    JOIN symbols s ON cs.symbol = s.symbol
                     WHERE cs.snapshot_date = (
                         SELECT MAX(snapshot_date) FROM company_snapshots cs2
                         WHERE cs2.symbol = cs.symbol
                     )
-                    AND s.is_active = 1
                 ),
                 price_history AS (
                     SELECT
@@ -4176,42 +4304,45 @@ def factor_analysis_page():
             if factor_df.empty:
                 st.info("No factor data available. Scrape company data first.")
             else:
-                # Calculate factor scores (percentile ranks)
-                # Value: Lower P/E is better (invert), higher dividend yield is better
+                # Convert numeric columns
                 factor_df["pe_ratio"] = pd.to_numeric(factor_df["pe_ratio"], errors="coerce")
-                factor_df["pb_ratio"] = pd.to_numeric(factor_df["pb_ratio"], errors="coerce")
-                factor_df["div_yield"] = pd.to_numeric(factor_df["div_yield"], errors="coerce")
                 factor_df["return_20d"] = pd.to_numeric(factor_df["return_20d"], errors="coerce")
                 factor_df["return_60d"] = pd.to_numeric(factor_df["return_60d"], errors="coerce")
                 factor_df["market_cap"] = pd.to_numeric(factor_df["market_cap"], errors="coerce")
+                factor_df["eps"] = pd.to_numeric(factor_df["eps"], errors="coerce")
+                factor_df["net_margin"] = pd.to_numeric(factor_df["net_margin"], errors="coerce")
+                factor_df["ytd_change"] = pd.to_numeric(factor_df["ytd_change"], errors="coerce")
 
-                # Value Score: Low P/E + Low P/B + High Dividend Yield
+                # Value Score: Low P/E + High Net Margin (profitable at low valuation)
                 factor_df["value_score"] = 0
                 if factor_df["pe_ratio"].notna().sum() > 5:
                     # Invert P/E (lower is better)
                     pe_valid = factor_df["pe_ratio"] > 0
-                    factor_df.loc[pe_valid, "value_score"] += (1 - factor_df.loc[pe_valid, "pe_ratio"].rank(pct=True)) * 0.4
-                if factor_df["pb_ratio"].notna().sum() > 5:
-                    pb_valid = factor_df["pb_ratio"] > 0
-                    factor_df.loc[pb_valid, "value_score"] += (1 - factor_df.loc[pb_valid, "pb_ratio"].rank(pct=True)) * 0.3
-                if factor_df["div_yield"].notna().sum() > 5:
-                    factor_df["value_score"] += factor_df["div_yield"].rank(pct=True).fillna(0) * 0.3
+                    factor_df.loc[pe_valid, "value_score"] += (1 - factor_df.loc[pe_valid, "pe_ratio"].rank(pct=True)) * 0.6
+                if factor_df["net_margin"].notna().sum() > 5:
+                    # Higher net margin is better
+                    margin_valid = factor_df["net_margin"] > 0
+                    factor_df.loc[margin_valid, "value_score"] += factor_df.loc[margin_valid, "net_margin"].rank(pct=True) * 0.4
 
-                # Momentum Score: 20-day and 60-day returns
+                # Momentum Score: 20-day, 60-day returns, and YTD change
                 factor_df["momentum_score"] = 0
                 if factor_df["return_20d"].notna().sum() > 5:
-                    factor_df["momentum_score"] += factor_df["return_20d"].rank(pct=True).fillna(0) * 0.5
+                    factor_df["momentum_score"] += factor_df["return_20d"].rank(pct=True).fillna(0) * 0.4
                 if factor_df["return_60d"].notna().sum() > 5:
-                    factor_df["momentum_score"] += factor_df["return_60d"].rank(pct=True).fillna(0) * 0.5
+                    factor_df["momentum_score"] += factor_df["return_60d"].rank(pct=True).fillna(0) * 0.4
+                if factor_df["ytd_change"].notna().sum() > 5:
+                    factor_df["momentum_score"] += factor_df["ytd_change"].rank(pct=True).fillna(0) * 0.2
 
-                # Quality Score: Higher EPS, larger market cap (proxy for stability)
-                factor_df["eps"] = pd.to_numeric(factor_df["eps"], errors="coerce")
+                # Quality Score: Higher EPS + larger market cap + higher margins
                 factor_df["quality_score"] = 0
                 if factor_df["eps"].notna().sum() > 5:
                     eps_positive = factor_df["eps"] > 0
-                    factor_df.loc[eps_positive, "quality_score"] += factor_df.loc[eps_positive, "eps"].rank(pct=True) * 0.5
+                    factor_df.loc[eps_positive, "quality_score"] += factor_df.loc[eps_positive, "eps"].rank(pct=True) * 0.4
                 if factor_df["market_cap"].notna().sum() > 5:
-                    factor_df["quality_score"] += factor_df["market_cap"].rank(pct=True).fillna(0) * 0.5
+                    factor_df["quality_score"] += factor_df["market_cap"].rank(pct=True).fillna(0) * 0.3
+                if factor_df["net_margin"].notna().sum() > 5:
+                    margin_valid = factor_df["net_margin"] > 0
+                    factor_df.loc[margin_valid, "quality_score"] += factor_df.loc[margin_valid, "net_margin"].rank(pct=True) * 0.3
 
                 # Volatility Score: Lower 52-week range is better (inverted)
                 factor_df["wk52_low"] = pd.to_numeric(factor_df["wk52_low"], errors="coerce")
@@ -4480,6 +4611,43 @@ def factor_analysis_page():
                     - PSX circuit breakers limit daily moves to ±7.5%
                     - Thin liquidity stocks may have execution slippage
                     """)
+
+                    # KSE-100 Benchmark Comparison
+                    st.markdown("---")
+                    st.markdown("#### Benchmark Comparison")
+
+                    kse100 = get_latest_kse100(con)
+                    if kse100:
+                        bench_cols = st.columns([2, 1, 1])
+                        with bench_cols[0]:
+                            kse_value = kse100.get("value", 0)
+                            kse_change = kse100.get("change_pct", 0) or 0
+                            kse_color = "#00C853" if kse_change >= 0 else "#FF1744"
+
+                            st.markdown(f"""
+                            <div style="background: rgba(33,150,243,0.1); border-radius: 8px; padding: 12px;
+                                        border: 1px solid rgba(33,150,243,0.2);">
+                                <div style="font-size: 11px; color: #888;">KSE-100 Index</div>
+                                <div style="font-family: monospace; font-size: 18px; font-weight: 600;">
+                                    {kse_value:,.2f}
+                                    <span style="color: {kse_color}; font-size: 14px;">({kse_change:+.2f}%)</span>
+                                </div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        with bench_cols[1]:
+                            ytd = kse100.get("ytd_change_pct")
+                            if ytd:
+                                ytd_color = "#00C853" if ytd >= 0 else "#FF1744"
+                                st.metric("Index YTD", f"{ytd:+.2f}%", delta_color="off")
+                        with bench_cols[2]:
+                            one_yr = kse100.get("one_year_change_pct")
+                            if one_yr:
+                                st.metric("Index 1-Year", f"{one_yr:+.2f}%", delta_color="off")
+
+                        st.caption("Compare factor portfolio performance against KSE-100 benchmark to measure alpha generation.")
+                    else:
+                        st.info("No KSE-100 benchmark data available. Scrape index data to enable benchmark comparison.")
+
                 else:
                     st.info("Insufficient price history for risk analysis.")
             else:

@@ -663,6 +663,92 @@ CREATE TABLE IF NOT EXISTS job_notifications (
 
 CREATE INDEX IF NOT EXISTS idx_job_notifications_unread
     ON job_notifications(read_at) WHERE read_at IS NULL;
+
+-- =============================================================================
+-- PSX INDICES: KSE-100, KSE-30, KMI-30, and other market indices
+-- Stores daily index values with full statistics
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS psx_indices (
+    index_code          TEXT NOT NULL,              -- 'KSE100', 'KSE30', 'KMI30', etc.
+    index_date          TEXT NOT NULL,              -- YYYY-MM-DD
+    index_time          TEXT,                       -- HH:MM:SS when captured
+
+    -- Core values
+    value               REAL NOT NULL,              -- Current index value
+    change              REAL,                       -- Point change
+    change_pct          REAL,                       -- Percentage change
+
+    -- OHLV for the day
+    open                REAL,
+    high                REAL,
+    low                 REAL,
+    volume              INTEGER,                    -- Total market volume
+
+    -- References
+    previous_close      REAL,
+
+    -- Extended stats
+    ytd_change_pct      REAL,                       -- Year-to-date change
+    one_year_change_pct REAL,                       -- 1-year change
+    week_52_low         REAL,
+    week_52_high        REAL,
+
+    -- Metadata
+    trades              INTEGER,                    -- Number of trades
+    market_cap          REAL,                       -- Total market cap (if available)
+    turnover            REAL,                       -- Total turnover in PKR
+
+    scraped_at          TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY (index_code, index_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_psx_indices_code
+    ON psx_indices(index_code);
+CREATE INDEX IF NOT EXISTS idx_psx_indices_date
+    ON psx_indices(index_date);
+
+-- =============================================================================
+-- PSX MARKET SUMMARY: Daily market-wide statistics
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS psx_market_stats (
+    stat_date           TEXT NOT NULL,              -- YYYY-MM-DD
+    stat_time           TEXT,                       -- HH:MM:SS when captured
+    board_type          TEXT NOT NULL DEFAULT 'MAIN',  -- 'MAIN', 'GEM', 'DEBT'
+
+    -- Trading segments summary
+    reg_trades          INTEGER,
+    reg_volume          INTEGER,
+    reg_value           REAL,
+    reg_state           TEXT,
+
+    fut_trades          INTEGER,
+    fut_volume          INTEGER,
+    fut_value           REAL,
+    fut_state           TEXT,
+
+    csf_trades          INTEGER,
+    csf_volume          INTEGER,
+    csf_value           REAL,
+    csf_state           TEXT,
+
+    odl_trades          INTEGER,
+    odl_volume          INTEGER,
+    odl_value           REAL,
+    odl_state           TEXT,
+
+    squareup_trades     INTEGER,
+    squareup_volume     INTEGER,
+    squareup_value      REAL,
+    squareup_state      TEXT,
+
+    scraped_at          TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY (stat_date, board_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_psx_market_stats_date
+    ON psx_market_stats(stat_date);
 """
 
 
@@ -4126,3 +4212,177 @@ def get_unified_symbol_count(con: sqlite3.Connection) -> int:
     """Get count of symbols in Deep Data tables."""
     cur = con.execute("SELECT COUNT(DISTINCT symbol) FROM company_snapshots")
     return cur.fetchone()[0]
+
+
+# =============================================================================
+# PSX Index Functions
+# =============================================================================
+
+
+def get_latest_kse100(con: sqlite3.Connection) -> dict | None:
+    """
+    Get the latest KSE-100 index data.
+
+    Returns:
+        Dict with index data or None if not available
+    """
+    try:
+        cur = con.execute("""
+            SELECT * FROM psx_indices
+            WHERE index_code = 'KSE100'
+            ORDER BY index_date DESC, index_time DESC
+            LIMIT 1
+        """)
+        row = cur.fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def get_latest_index(con: sqlite3.Connection, index_code: str = "KSE100") -> dict | None:
+    """
+    Get the latest data for any index.
+
+    Args:
+        con: Database connection
+        index_code: Index code (KSE100, KSE30, KMI30, etc.)
+
+    Returns:
+        Dict with index data or None
+    """
+    try:
+        cur = con.execute("""
+            SELECT * FROM psx_indices
+            WHERE index_code = ?
+            ORDER BY index_date DESC, index_time DESC
+            LIMIT 1
+        """, (index_code,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def get_all_latest_indices(con: sqlite3.Connection) -> list[dict]:
+    """
+    Get latest data for all indices.
+
+    Returns:
+        List of dicts with index data
+    """
+    try:
+        cur = con.execute("""
+            SELECT * FROM psx_indices pi
+            WHERE (index_code, index_date, index_time) IN (
+                SELECT index_code, MAX(index_date), MAX(index_time)
+                FROM psx_indices
+                GROUP BY index_code
+            )
+            ORDER BY
+                CASE index_code
+                    WHEN 'KSE100' THEN 1
+                    WHEN 'KSE30' THEN 2
+                    WHEN 'KMI30' THEN 3
+                    ELSE 4
+                END
+        """)
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def get_index_history(
+    con: sqlite3.Connection,
+    index_code: str = "KSE100",
+    days: int = 30
+) -> list[dict]:
+    """
+    Get index history for a specified number of days.
+
+    Args:
+        con: Database connection
+        index_code: Index code
+        days: Number of days of history
+
+    Returns:
+        List of dicts with daily index values
+    """
+    try:
+        cur = con.execute("""
+            SELECT DISTINCT index_date, value, change, change_pct, high, low, volume
+            FROM psx_indices
+            WHERE index_code = ?
+            ORDER BY index_date DESC
+            LIMIT ?
+        """, (index_code, days))
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def get_latest_market_stats(con: sqlite3.Connection) -> dict | None:
+    """
+    Get the latest market stats (trading segments).
+
+    Returns:
+        Dict with segment data or None
+    """
+    try:
+        cur = con.execute("""
+            SELECT * FROM psx_market_stats
+            ORDER BY stat_date DESC, stat_time DESC
+            LIMIT 1
+        """)
+        row = cur.fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def upsert_index_data(con: sqlite3.Connection, index_data: dict) -> bool:
+    """
+    Insert or update index data.
+
+    Args:
+        con: Database connection
+        index_data: Dict with index_code, index_date, value, etc.
+
+    Returns:
+        True if successful
+    """
+    try:
+        con.execute("""
+            INSERT OR REPLACE INTO psx_indices (
+                index_code, index_date, index_time,
+                value, change, change_pct,
+                open, high, low, volume,
+                previous_close,
+                ytd_change_pct, one_year_change_pct,
+                week_52_low, week_52_high,
+                trades, market_cap, turnover,
+                scraped_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        """, (
+            index_data.get("index_code"),
+            index_data.get("index_date"),
+            index_data.get("index_time"),
+            index_data.get("value"),
+            index_data.get("change"),
+            index_data.get("change_pct"),
+            index_data.get("open"),
+            index_data.get("high"),
+            index_data.get("low"),
+            index_data.get("volume"),
+            index_data.get("previous_close"),
+            index_data.get("ytd_change_pct"),
+            index_data.get("one_year_change_pct"),
+            index_data.get("week_52_low"),
+            index_data.get("week_52_high"),
+            index_data.get("trades"),
+            index_data.get("market_cap"),
+            index_data.get("turnover"),
+        ))
+        con.commit()
+        return True
+    except Exception:
+        return False
