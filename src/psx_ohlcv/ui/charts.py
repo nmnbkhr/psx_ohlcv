@@ -15,13 +15,16 @@ MIN_CANDLESTICK_HEIGHT = 650  # Higher minimum for candlestick pages
 VOLUME_ROW_HEIGHT_RATIO = 0.25
 PRICE_ROW_HEIGHT_RATIO = 0.75
 
-# Color scheme
-COLOR_BULLISH = "#26a69a"  # Green for price increases
-COLOR_BEARISH = "#ef5350"  # Red for price decreases
-COLOR_SMA_20 = "#ff9800"   # Orange for 20-period SMA
-COLOR_SMA_50 = "#9c27b0"   # Purple for 50-period SMA
-COLOR_VOLUME = "#17becf"   # Cyan for volume bars
-COLOR_GRID = "rgba(128, 128, 128, 0.2)"
+# Color scheme - Professional trading terminal palette
+COLOR_BULLISH = "#00C853"  # Bright green for price increases
+COLOR_BEARISH = "#FF1744"  # Bright red for price decreases
+COLOR_BULLISH_LIGHT = "rgba(0, 200, 83, 0.15)"  # Light green for fills
+COLOR_BEARISH_LIGHT = "rgba(255, 23, 68, 0.15)"  # Light red for fills
+COLOR_SMA_20 = "#FF9800"   # Orange for 20-period SMA
+COLOR_SMA_50 = "#9C27B0"   # Purple for 50-period SMA
+COLOR_VOLUME = "#2196F3"   # Blue for volume bars
+COLOR_GRID = "rgba(128, 128, 128, 0.15)"
+COLOR_NEUTRAL = "#78909C"  # Gray for unchanged
 
 # Font settings
 FONT_FAMILY = "Arial, sans-serif"
@@ -343,14 +346,20 @@ def make_volume_chart(
     if df.empty:
         fig = go.Figure()
         fig.add_annotation(
-            text="No data available",
+            text="No volume data",
             xref="paper",
             yref="paper",
             x=0.5,
             y=0.5,
             showarrow=False,
+            font=dict(size=14, color="#888"),
         )
-        fig.update_layout(height=height, title="Volume")
+        fig.update_layout(
+            height=height,
+            title=dict(text="Volume", font=dict(size=FONT_SIZE_TITLE, color="#E0E0E0")),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+        )
         return fig
 
     df = df.sort_values(date_col).copy()
@@ -372,19 +381,37 @@ def make_volume_chart(
             y=df["volume"],
             name="Volume",
             marker_color=colors,
-            opacity=0.8,
-            hovertemplate="%{x}<br>Volume: %{y:,.0f}<extra></extra>",
+            opacity=0.85,
+            hovertemplate="<b>%{x}</b><br>Volume: %{y:,.0f}<extra></extra>",
         )
     )
 
     fig.update_layout(
         height=height,
-        title=dict(text="Volume", font=dict(size=FONT_SIZE_TITLE)),
+        title=dict(
+            text="Volume",
+            font=dict(size=FONT_SIZE_TITLE, color="#E0E0E0"),
+            x=0.5,
+            xanchor="center",
+        ),
         margin=dict(l=70, r=50, t=50, b=50),
-        yaxis=dict(title="Volume", gridcolor=COLOR_GRID, showgrid=True),
-        xaxis=dict(title="Date", gridcolor=COLOR_GRID, showgrid=True),
+        yaxis=dict(
+            title="",
+            gridcolor=COLOR_GRID,
+            showgrid=True,
+            tickfont=dict(color="#888"),
+        ),
+        xaxis=dict(
+            title="",
+            gridcolor=COLOR_GRID,
+            showgrid=True,
+            tickfont=dict(color="#888"),
+        ),
         showlegend=False,
         font=dict(family=FONT_FAMILY, size=FONT_SIZE_TICK),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        bargap=0.2,
     )
 
     return fig
@@ -407,37 +434,79 @@ def make_market_breadth_chart(
     Returns:
         Plotly Figure object.
     """
+    total = gainers + losers + unchanged
+    if total == 0:
+        # Empty state
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No trading data",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+            font=dict(size=14, color="#888"),
+        )
+        fig.update_layout(height=height)
+        return fig
+
     labels = ["Gainers", "Losers", "Unchanged"]
     values = [gainers, losers, unchanged]
-    colors = [COLOR_BULLISH, COLOR_BEARISH, "#757575"]
+    colors = [COLOR_BULLISH, COLOR_BEARISH, COLOR_NEUTRAL]
+
+    # Calculate net sentiment
+    net = gainers - losers
+    sentiment = "Bullish" if net > 0 else "Bearish" if net < 0 else "Neutral"
+    sentiment_color = COLOR_BULLISH if net > 0 else COLOR_BEARISH if net < 0 else COLOR_NEUTRAL
 
     fig = go.Figure(
         data=[
             go.Pie(
                 labels=labels,
                 values=values,
-                hole=0.4,
-                marker=dict(colors=colors),
-                textinfo="label+percent",
-                textfont=dict(size=FONT_SIZE_TICK),
-                hovertemplate="%{label}: %{value} (%{percent})<extra></extra>",
+                hole=0.5,  # Larger hole for center annotation
+                marker=dict(
+                    colors=colors,
+                    line=dict(color='rgba(255,255,255,0.1)', width=2)
+                ),
+                textinfo="value",
+                textfont=dict(size=FONT_SIZE_TICK + 2, color="white"),
+                hovertemplate="<b>%{label}</b><br>%{value} stocks<br>%{percent}<extra></extra>",
+                pull=[0.02 if v == max(values) else 0 for v in values],  # Pull out the largest
             )
         ]
     )
 
+    # Add center annotation with sentiment
+    fig.add_annotation(
+        text=f"<b>{sentiment}</b><br><span style='font-size:11px'>Net: {net:+d}</span>",
+        x=0.5,
+        y=0.5,
+        font=dict(size=14, color=sentiment_color),
+        showarrow=False,
+    )
+
     fig.update_layout(
         height=height,
-        title=dict(text="Market Breadth", font=dict(size=FONT_SIZE_TITLE)),
-        margin=dict(l=20, r=20, t=50, b=20),
+        title=dict(
+            text="Market Breadth",
+            font=dict(size=FONT_SIZE_TITLE, color="#E0E0E0"),
+            x=0.5,
+            xanchor="center",
+        ),
+        margin=dict(l=20, r=20, t=50, b=40),
         showlegend=True,
         legend=dict(
             orientation="h",
             yanchor="bottom",
-            y=-0.1,
+            y=-0.15,
             xanchor="center",
             x=0.5,
+            font=dict(size=11),
         ),
         font=dict(family=FONT_FAMILY, size=FONT_SIZE_TICK),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
     )
 
     return fig
@@ -467,17 +536,30 @@ def make_top_movers_chart(
     if df.empty:
         fig = go.Figure()
         fig.add_annotation(
-            text="No data available",
+            text="No movers data",
             xref="paper",
             yref="paper",
             x=0.5,
             y=0.5,
             showarrow=False,
+            font=dict(size=14, color="#888"),
         )
-        fig.update_layout(height=height, title=title)
+        fig.update_layout(
+            height=height,
+            title=dict(text=title, font=dict(size=FONT_SIZE_TITLE, color="#E0E0E0")),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+        )
         return fig
 
-    color = COLOR_BULLISH if chart_type == "gainers" else COLOR_BEARISH
+    base_color = COLOR_BULLISH if chart_type == "gainers" else COLOR_BEARISH
+    light_color = COLOR_BULLISH_LIGHT if chart_type == "gainers" else COLOR_BEARISH_LIGHT
+
+    # Create gradient effect based on magnitude
+    values = df[change_col].abs()
+    max_val = values.max() if not values.empty and values.max() > 0 else 1
+    # Opacity varies from 0.6 to 1.0 based on magnitude
+    opacities = 0.6 + (values / max_val) * 0.4
 
     fig = go.Figure()
 
@@ -486,33 +568,48 @@ def make_top_movers_chart(
             x=df[change_col],
             y=df[symbol_col],
             orientation="h",
-            marker_color=color,
+            marker=dict(
+                color=base_color,
+                opacity=opacities.tolist(),
+                line=dict(color=base_color, width=1),
+            ),
             text=[f"{v:+.2f}%" for v in df[change_col]],
             textposition="outside",
-            textfont=dict(size=FONT_SIZE_TICK),
-            hovertemplate="%{y}: %{x:+.2f}%<extra></extra>",
+            textfont=dict(size=FONT_SIZE_TICK + 1, color=base_color),
+            hovertemplate="<b>%{y}</b><br>Change: %{x:+.2f}%<extra></extra>",
         )
     )
 
     fig.update_layout(
         height=height,
-        title=dict(text=title, font=dict(size=FONT_SIZE_TITLE)),
-        margin=dict(l=70, r=80, t=50, b=50),
+        title=dict(
+            text=title,
+            font=dict(size=FONT_SIZE_TITLE, color="#E0E0E0"),
+            x=0.5,
+            xanchor="center",
+        ),
+        margin=dict(l=70, r=80, t=50, b=40),
         xaxis=dict(
-            title="Change (%)",
+            title="",
             gridcolor=COLOR_GRID,
             showgrid=True,
             zeroline=True,
-            zerolinecolor="rgba(0,0,0,0.3)",
+            zerolinecolor="rgba(255,255,255,0.2)",
+            zerolinewidth=1,
+            tickfont=dict(color="#888"),
         ),
         yaxis=dict(
             title="",
             categoryorder=(
                 "total ascending" if chart_type == "losers" else "total descending"
             ),
+            tickfont=dict(color="#E0E0E0", size=12),
         ),
         showlegend=False,
         font=dict(family=FONT_FAMILY, size=FONT_SIZE_TICK),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        bargap=0.3,
     )
 
     return fig

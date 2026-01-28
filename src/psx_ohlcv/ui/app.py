@@ -154,6 +154,91 @@ TRADING_CSS = """
 .price-down { color: #FF1744 !important; }
 .price-neutral { color: #78909C !important; }
 
+/* === Loading Skeleton Animation === */
+@keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+}
+.skeleton {
+    background: linear-gradient(90deg, rgba(255,255,255,0.05) 25%, rgba(255,255,255,0.1) 50%, rgba(255,255,255,0.05) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+    border-radius: 4px;
+}
+.skeleton-text {
+    height: 16px;
+    margin: 8px 0;
+}
+.skeleton-metric {
+    height: 32px;
+    width: 80%;
+    margin: 8px 0;
+}
+
+/* === Data Freshness Badges === */
+.data-fresh {
+    color: #00C853;
+    background: rgba(0, 200, 83, 0.1);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+}
+.data-stale {
+    color: #FFC107;
+    background: rgba(255, 193, 7, 0.1);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+}
+.data-old {
+    color: #FF1744;
+    background: rgba(255, 23, 68, 0.1);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+}
+
+/* === Warning/Info Banners === */
+.data-warning {
+    background: linear-gradient(135deg, rgba(255, 193, 7, 0.15) 0%, rgba(255, 193, 7, 0.05) 100%);
+    border: 1px solid rgba(255, 193, 7, 0.3);
+    border-left: 4px solid #FFC107;
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin: 8px 0;
+    font-size: 13px;
+}
+.data-info {
+    background: linear-gradient(135deg, rgba(33, 150, 243, 0.15) 0%, rgba(33, 150, 243, 0.05) 100%);
+    border: 1px solid rgba(33, 150, 243, 0.3);
+    border-left: 4px solid #2196F3;
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin: 8px 0;
+    font-size: 13px;
+}
+.data-error {
+    background: linear-gradient(135deg, rgba(255, 23, 68, 0.15) 0%, rgba(255, 23, 68, 0.05) 100%);
+    border: 1px solid rgba(255, 23, 68, 0.3);
+    border-left: 4px solid #FF1744;
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin: 8px 0;
+    font-size: 13px;
+}
+
+/* === Empty State === */
+.empty-state {
+    text-align: center;
+    padding: 40px 20px;
+    color: #888;
+}
+.empty-state-icon {
+    font-size: 48px;
+    margin-bottom: 16px;
+    opacity: 0.5;
+}
+
 /* === Data Tables === */
 .stDataFrame {
     font-family: 'JetBrains Mono', 'SF Mono', monospace;
@@ -343,6 +428,134 @@ def render_price_card(
         """,
         unsafe_allow_html=True
     )
+
+
+# =============================================================================
+# UI ENHANCEMENT HELPERS
+# Loading states, error messages, and data freshness indicators
+# =============================================================================
+
+def render_skeleton_loader(height: int = 100, text: str = "Loading..."):
+    """Render a skeleton loading placeholder."""
+    st.markdown(
+        f"""
+        <div class="skeleton" style="height: {height}px; display: flex; align-items: center; justify-content: center;">
+            <span style="color: #666; font-size: 13px;">{text}</span>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+def render_data_warning(message: str, icon: str = "⚠️"):
+    """Render a warning banner for data issues."""
+    st.markdown(
+        f'<div class="data-warning">{icon} {message}</div>',
+        unsafe_allow_html=True
+    )
+
+
+def render_data_info(message: str, icon: str = "ℹ️"):
+    """Render an info banner."""
+    st.markdown(
+        f'<div class="data-info">{icon} {message}</div>',
+        unsafe_allow_html=True
+    )
+
+
+def render_data_error(message: str, icon: str = "❌"):
+    """Render an error banner for failed operations."""
+    st.markdown(
+        f'<div class="data-error">{icon} {message}</div>',
+        unsafe_allow_html=True
+    )
+
+
+def render_empty_state(message: str, icon: str = "📭"):
+    """Render an empty state placeholder."""
+    st.markdown(
+        f"""
+        <div class="empty-state">
+            <div class="empty-state-icon">{icon}</div>
+            <div>{message}</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+def render_freshness_badge(days_old: int | None, date_str: str | None) -> str:
+    """Render a data freshness badge with appropriate color."""
+    if days_old is None or date_str is None:
+        return '<span class="data-old">No data</span>'
+    elif days_old == 0:
+        return f'<span class="data-fresh">✓ Today ({date_str})</span>'
+    elif days_old == 1:
+        return f'<span class="data-fresh">Yesterday ({date_str})</span>'
+    elif days_old <= 3:
+        return f'<span class="data-stale">{days_old} days old ({date_str})</span>'
+    else:
+        return f'<span class="data-old">{days_old} days old ({date_str})</span>'
+
+
+def render_section_with_loading(title: str, data_loader_func, empty_message: str = "No data available"):
+    """
+    Render a section with loading state handling.
+
+    Args:
+        title: Section title
+        data_loader_func: Function that loads and renders data, should return True if data exists
+        empty_message: Message to show if no data
+    """
+    try:
+        with st.spinner(f"Loading {title}..."):
+            has_data = data_loader_func()
+        if not has_data:
+            render_empty_state(empty_message, "📭")
+    except Exception as e:
+        render_data_error(f"Failed to load {title}: {str(e)[:100]}")
+
+
+def get_user_friendly_error(error: Exception) -> str:
+    """Convert technical errors to user-friendly messages."""
+    error_str = str(error).lower()
+
+    if "no such table" in error_str:
+        return "Database tables not initialized. Try syncing data first."
+    elif "connection" in error_str or "database" in error_str:
+        return "Unable to connect to database. Please check your settings."
+    elif "timeout" in error_str:
+        return "Request timed out. The server may be slow or unavailable."
+    elif "network" in error_str or "connection refused" in error_str:
+        return "Network error. Please check your internet connection."
+    elif "permission" in error_str:
+        return "Permission denied. Check file/folder permissions."
+    else:
+        # Return a truncated version of the original error
+        return f"An error occurred: {str(error)[:100]}"
+
+
+def check_data_staleness(con, table: str = "eod_ohlcv", date_col: str = "date") -> tuple[bool, str]:
+    """
+    Check if data in a table is stale.
+
+    Returns:
+        Tuple of (is_stale, message)
+    """
+    try:
+        result = con.execute(
+            f"SELECT MAX({date_col}) as max_date FROM {table}"
+        ).fetchone()
+        if result and result["max_date"]:
+            latest_date = datetime.strptime(str(result["max_date"])[:10], "%Y-%m-%d")
+            days_old = (datetime.now() - latest_date).days
+            if days_old > 3:
+                return True, f"Data is {days_old} days old (last: {result['max_date']})"
+            return False, ""
+        return True, "No data found in database"
+    except Exception:
+        return True, "Unable to check data freshness"
+
 
 # Exports directory
 EXPORTS_DIR = DATA_ROOT / "exports"
@@ -560,6 +773,16 @@ def dashboard():
                 )
 
         st.markdown("---")
+
+        # =================================================================
+        # DATA STALENESS WARNING
+        # =================================================================
+        is_stale, stale_msg = check_data_staleness(con)
+        if is_stale:
+            render_data_warning(
+                f"{stale_msg}. Consider syncing fresh data from the Settings page.",
+                icon="📅"
+            )
 
         # =================================================================
         # KSE-100 INDEX DISPLAY - Primary Market Benchmark
@@ -804,8 +1027,12 @@ def dashboard():
                     """, unsafe_allow_html=True)
 
                 st.markdown("")
-        except Exception:
-            pass  # Graceful degradation if index data unavailable
+        except Exception as e:
+            # Show user-friendly error instead of silent failure
+            render_data_info(
+                "Index data temporarily unavailable. Showing available market data.",
+                icon="📊"
+            )
 
         # =================================================================
         # PRIMARY KPIs ROW - Key metrics traders care about
@@ -972,6 +1199,7 @@ def dashboard():
 
                 st.markdown("---")
         except Exception:
+            # Trading segments data not critical, continue gracefully
             pass
 
         # =====================================================================
@@ -1101,6 +1329,7 @@ def dashboard():
 
             st.markdown("---")
         except Exception:
+            # Volume leaders/52-week range not critical, continue gracefully
             pass
 
         # Market Breadth and Top Movers (from analytics tables)
