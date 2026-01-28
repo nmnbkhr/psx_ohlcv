@@ -109,6 +109,34 @@ from psx_ohlcv.db import (
     get_latest_kse100,
 )
 
+# Phase 1: Instrument universe imports
+from psx_ohlcv.db import (
+    get_instruments,
+    get_ohlcv_instrument,
+)
+from psx_ohlcv.analytics_phase1 import (
+    compute_rankings,
+    get_rankings,
+    get_normalized_performance,
+    compute_all_metrics,
+)
+from psx_ohlcv.sync_instruments import sync_instruments_eod
+
+# Phase 2: FX analytics imports
+from psx_ohlcv.db import (
+    get_fx_pairs,
+    get_fx_ohlcv,
+    get_fx_latest_rate,
+    get_fx_adjusted_metrics,
+)
+from psx_ohlcv.analytics_fx import (
+    get_fx_analytics,
+    compute_and_store_fx_adjusted_metrics,
+    get_normalized_fx_performance,
+    get_fx_impact_summary,
+)
+from psx_ohlcv.sync_fx import sync_fx_pairs, seed_fx_pairs
+
 # Page config - must be first Streamlit command
 st.set_page_config(
     page_title="PSX OHLCV Explorer",
@@ -6742,6 +6770,2161 @@ def sync_monitor():
     render_footer()
 
 
+# =============================================================================
+# Phase 1: Instruments Page
+# =============================================================================
+def instruments_page():
+    """Browse and explore ETFs, REITs, and Indexes."""
+    # =================================================================
+    # HEADER
+    # =================================================================
+    header_col1, header_col2 = st.columns([3, 1])
+    with header_col1:
+        st.markdown("## 📦 Instruments Browser")
+        st.caption("ETFs, REITs, and Indexes - Phase 1 Universe")
+    with header_col2:
+        render_market_status_badge()
+
+    con = get_connection()
+
+    # Instrument Type Filter
+    col1, col2, col3 = st.columns([2, 2, 4])
+
+    with col1:
+        inst_type = st.selectbox(
+            "Instrument Type",
+            ["ALL", "ETF", "REIT", "INDEX"],
+            index=0,
+        )
+
+    with col2:
+        active_only = st.checkbox("Active Only", value=True)
+
+    # Get instruments
+    type_filter = None if inst_type == "ALL" else inst_type
+    instruments = get_instruments(con, instrument_type=type_filter, active_only=active_only)
+
+    if not instruments:
+        st.warning("No instruments found. Run `psxsync universe seed-phase1` to seed the instrument universe.")
+        render_footer()
+        return
+
+    # Summary metrics
+    etf_count = len([i for i in instruments if i.get("instrument_type") == "ETF"])
+    reit_count = len([i for i in instruments if i.get("instrument_type") == "REIT"])
+    index_count = len([i for i in instruments if i.get("instrument_type") == "INDEX"])
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Instruments", len(instruments))
+    with col2:
+        st.metric("ETFs", etf_count)
+    with col3:
+        st.metric("REITs", reit_count)
+    with col4:
+        st.metric("Indexes", index_count)
+
+    st.markdown("---")
+
+    # Instrument Table
+    st.subheader("Instrument List")
+
+    # Convert to DataFrame for display
+    df = pd.DataFrame(instruments)
+    display_cols = ["symbol", "name", "instrument_type", "source", "is_active"]
+    if all(col in df.columns for col in display_cols):
+        display_df = df[display_cols].copy()
+        display_df.columns = ["Symbol", "Name", "Type", "Source", "Active"]
+        display_df["Active"] = display_df["Active"].apply(lambda x: "✓" if x else "✗")
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # Individual Instrument Viewer
+    st.subheader("Instrument Detail")
+
+    symbol_list = [inst["symbol"] for inst in instruments]
+    selected_symbol = st.selectbox("Select Instrument", symbol_list)
+
+    if selected_symbol:
+        # Find the instrument
+        selected_inst = next((i for i in instruments if i["symbol"] == selected_symbol), None)
+
+        if selected_inst:
+            col1, col2 = st.columns([1, 2])
+
+            with col1:
+                st.markdown(f"**Symbol:** {selected_inst['symbol']}")
+                st.markdown(f"**Name:** {selected_inst.get('name', 'N/A')}")
+                st.markdown(f"**Type:** {selected_inst.get('instrument_type', 'N/A')}")
+                st.markdown(f"**Source:** {selected_inst.get('source', 'N/A')}")
+
+                # Compute metrics if available
+                instrument_id = selected_inst.get("instrument_id")
+                if instrument_id:
+                    metrics = compute_all_metrics(con, instrument_id)
+                    if "error" not in metrics:
+                        st.markdown("**Performance Metrics:**")
+                        if metrics.get("return_1m"):
+                            ret_color = "green" if metrics["return_1m"] > 0 else "red"
+                            st.markdown(f"- 1M Return: :{ret_color}[{metrics['return_1m']:.2f}%]")
+                        if metrics.get("return_3m"):
+                            ret_color = "green" if metrics["return_3m"] > 0 else "red"
+                            st.markdown(f"- 3M Return: :{ret_color}[{metrics['return_3m']:.2f}%]")
+                        if metrics.get("vol_1m"):
+                            st.markdown(f"- 30D Volatility: {metrics['vol_1m']:.2f}%")
+
+            with col2:
+                # Get OHLCV data for chart
+                instrument_id = selected_inst.get("instrument_id")
+                if instrument_id:
+                    ohlcv_df = get_ohlcv_instrument(con, instrument_id, limit=90)
+                    if not ohlcv_df.empty:
+                        ohlcv_df = ohlcv_df.sort_values("date")
+                        fig = make_price_line(
+                            ohlcv_df,
+                            date_col="date",
+                            price_col="close",
+                            title=f"{selected_symbol} - Last 90 Days"
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.info("No OHLCV data available. Run `psxsync instruments sync-eod` to sync data.")
+
+    # Sync Section
+    st.markdown("---")
+    with st.expander("Sync Instrument Data", expanded=False):
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            if st.button("Seed Universe", type="secondary", key="inst_seed"):
+                with st.spinner("Seeding instrument universe..."):
+                    from psx_ohlcv.sync_instruments import seed_phase1_universe
+                    result = seed_phase1_universe(db_path=get_db_path())
+                    st.success(
+                        f"Seeded {result.get('inserted', 0)} instruments "
+                        f"(Failed: {result.get('failed', 0)})"
+                    )
+                    st.rerun()
+
+        with col2:
+            sync_types = st.multiselect(
+                "Types to Sync",
+                ["ETF", "REIT", "INDEX"],
+                default=["ETF", "REIT", "INDEX"],
+                key="inst_sync_types"
+            )
+
+        with col3:
+            incremental = st.checkbox("Incremental", value=True, key="inst_incr")
+
+        with col4:
+            if st.button("Sync OHLCV", type="primary", key="inst_sync"):
+                if sync_types:
+                    with st.spinner(f"Syncing {', '.join(sync_types)}..."):
+                        summary = sync_instruments_eod(
+                            db_path=get_db_path(),
+                            instrument_types=sync_types,
+                            incremental=incremental,
+                        )
+                        st.success(
+                            f"Sync complete: {summary.ok} OK, "
+                            f"{summary.failed} failed, "
+                            f"{summary.rows_upserted} rows"
+                        )
+                        st.rerun()
+                else:
+                    st.warning("Select at least one instrument type to sync.")
+
+    render_footer()
+
+
+# =============================================================================
+# Phase 1: Rankings Page
+# =============================================================================
+def rankings_page():
+    """View and compare instrument performance rankings."""
+    # =================================================================
+    # HEADER
+    # =================================================================
+    header_col1, header_col2 = st.columns([3, 1])
+    with header_col1:
+        st.markdown("## 🏆 Instrument Rankings")
+        st.caption("Performance comparison for ETFs, REITs, and Indexes")
+    with header_col2:
+        render_market_status_badge()
+
+    con = get_connection()
+
+    # Filter options
+    col1, col2, col3 = st.columns([2, 2, 2])
+
+    with col1:
+        types_filter = st.multiselect(
+            "Instrument Types",
+            ["ETF", "REIT", "INDEX"],
+            default=["ETF", "REIT", "INDEX"]
+        )
+
+    with col2:
+        top_n = st.slider("Top N", min_value=5, max_value=50, value=10)
+
+    with col3:
+        compute_btn = st.button("Refresh Rankings", type="primary")
+
+    if compute_btn and types_filter:
+        with st.spinner("Computing rankings..."):
+            result = compute_rankings(
+                con,
+                as_of_date=None,  # Today
+                instrument_types=types_filter,
+                top_n=top_n,
+            )
+            if result.get("success"):
+                st.success(f"Computed rankings for {result.get('instruments_ranked', 0)} instruments")
+            else:
+                st.error(f"Error: {result.get('error', 'Unknown error')}")
+
+    st.markdown("---")
+
+    # Get rankings
+    rankings = get_rankings(
+        con,
+        as_of_date=None,  # Most recent
+        instrument_types=types_filter if types_filter else None,
+        top_n=top_n,
+    )
+
+    if not rankings:
+        st.info(
+            "No rankings found. Click 'Refresh Rankings' to compute, "
+            "or ensure instrument data is synced first."
+        )
+        render_footer()
+        return
+
+    # Rankings Table
+    st.subheader("Performance Rankings")
+
+    # Convert to DataFrame
+    rankings_df = pd.DataFrame(rankings)
+
+    # Format for display
+    display_cols = ["symbol", "name", "instrument_type", "return_1m", "return_3m", "return_6m", "return_1y", "volatility_30d"]
+    available_cols = [c for c in display_cols if c in rankings_df.columns]
+    display_df = rankings_df[available_cols].copy()
+
+    # Add rank column
+    display_df.insert(0, "Rank", range(1, len(display_df) + 1))
+
+    # Format percentages
+    pct_cols = ["return_1m", "return_3m", "return_6m", "return_1y", "volatility_30d"]
+    for col in pct_cols:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].apply(
+                lambda x: f"{x * 100:.1f}%" if pd.notna(x) else "N/A"
+            )
+
+    # Rename columns
+    col_names = {
+        "symbol": "Symbol",
+        "name": "Name",
+        "instrument_type": "Type",
+        "return_1m": "1M",
+        "return_3m": "3M",
+        "return_6m": "6M",
+        "return_1y": "1Y",
+        "volatility_30d": "Vol 30D",
+    }
+    display_df.rename(columns=col_names, inplace=True)
+
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # Performance Comparison Chart
+    st.subheader("Performance Comparison (Normalized)")
+
+    if len(rankings) >= 2:
+        # Let user select instruments to compare
+        symbols = [r.get("symbol") for r in rankings if r.get("symbol")]
+
+        if symbols:
+            selected_symbols = st.multiselect(
+                "Select instruments to compare (up to 5)",
+                symbols,
+                default=symbols[:3] if len(symbols) >= 3 else symbols,
+                max_selections=5,
+            )
+
+            if selected_symbols:
+                # Get instrument IDs for selected symbols
+                selected_ids = [
+                    r.get("instrument_id")
+                    for r in rankings
+                    if r.get("symbol") in selected_symbols
+                ]
+
+                # Get normalized performance
+                perf_df = get_normalized_performance(con, selected_ids)
+
+                if not perf_df.empty:
+                    import plotly.graph_objects as go
+
+                    fig = go.Figure()
+
+                    # Map instrument IDs to symbols for legend
+                    id_to_symbol = {
+                        r.get("instrument_id"): r.get("symbol")
+                        for r in rankings
+                    }
+
+                    for col in perf_df.columns:
+                        symbol = id_to_symbol.get(col, col)
+                        fig.add_trace(go.Scatter(
+                            x=perf_df.index,
+                            y=perf_df[col],
+                            mode="lines",
+                            name=symbol,
+                            hovertemplate=f"{symbol}: %{{y:.1f}}<extra></extra>"
+                        ))
+
+                    fig.update_layout(
+                        title="Normalized Performance (Base = 100)",
+                        xaxis_title="Date",
+                        yaxis_title="Value",
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                        height=400,
+                    )
+
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("No historical data available for selected instruments.")
+
+    # Summary Statistics
+    st.markdown("---")
+    st.subheader("Summary Statistics")
+
+    col1, col2, col3 = st.columns(3)
+
+    # Calculate summary stats
+    if "return_1m" in rankings_df.columns:
+        valid_returns = rankings_df["return_1m"].dropna()
+        if len(valid_returns) > 0:
+            with col1:
+                best = rankings_df.loc[rankings_df["return_1m"].idxmax()]
+                st.metric(
+                    "Best 1M Return",
+                    f"{best.get('symbol', 'N/A')}",
+                    f"{best.get('return_1m', 0) * 100:.1f}%"
+                )
+
+            with col2:
+                worst = rankings_df.loc[rankings_df["return_1m"].idxmin()]
+                st.metric(
+                    "Worst 1M Return",
+                    f"{worst.get('symbol', 'N/A')}",
+                    f"{worst.get('return_1m', 0) * 100:.1f}%"
+                )
+
+            with col3:
+                avg_return = valid_returns.mean() * 100
+                st.metric("Avg 1M Return", f"{avg_return:.1f}%")
+
+    # Sync Section
+    st.markdown("---")
+    with st.expander("Sync Instrument Data", expanded=False):
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            if st.button("Seed Universe", type="secondary", key="rank_seed"):
+                with st.spinner("Seeding instrument universe..."):
+                    from psx_ohlcv.sync_instruments import seed_phase1_universe
+                    result = seed_phase1_universe(db_path=get_db_path())
+                    st.success(
+                        f"Seeded {result.get('inserted', 0)} instruments"
+                    )
+                    st.rerun()
+
+        with col2:
+            if st.button("Sync All OHLCV", type="primary", key="rank_sync"):
+                with st.spinner("Syncing OHLCV data..."):
+                    summary = sync_instruments_eod(
+                        db_path=get_db_path(),
+                        instrument_types=["ETF", "REIT", "INDEX"],
+                        incremental=True,
+                    )
+                    st.success(
+                        f"Sync: {summary.ok} OK, {summary.rows_upserted} rows"
+                    )
+                    st.rerun()
+
+        with col3:
+            st.caption("1. Seed universe first")
+            st.caption("2. Sync OHLCV data")
+            st.caption("3. Refresh Rankings")
+
+    render_footer()
+
+
+# =============================================================================
+# Phase 2: FX Overview Page
+# =============================================================================
+def fx_overview_page():
+    """FX Overview - Macro context for currency analysis."""
+    # =================================================================
+    # HEADER
+    # =================================================================
+    header_col1, header_col2 = st.columns([3, 1])
+    with header_col1:
+        st.markdown("## 🌍 FX Overview")
+        st.caption("Foreign Exchange Analytics - Macro Context (Read-Only)")
+    with header_col2:
+        st.markdown(
+            '<div class="data-info">📊 Macro Context Only</div>',
+            unsafe_allow_html=True
+        )
+
+    con = get_connection()
+
+    # Get FX pairs
+    fx_pairs = get_fx_pairs(con, active_only=True)
+
+    if not fx_pairs:
+        st.warning(
+            "No FX pairs found. Run `psxsync fx seed` to seed FX pairs, "
+            "then `psxsync fx sync` to fetch data."
+        )
+        render_footer()
+        return
+
+    # Pair selector
+    col1, col2 = st.columns([2, 4])
+
+    with col1:
+        pair_names = [p["pair"] for p in fx_pairs]
+        selected_pair = st.selectbox(
+            "Select Currency Pair",
+            pair_names,
+            index=0 if "USD/PKR" in pair_names else 0,
+        )
+
+    # Get analytics for selected pair
+    analytics = get_fx_analytics(con, selected_pair)
+
+    if analytics.get("error"):
+        st.info(
+            f"No data available for {selected_pair}. "
+            "Run `psxsync fx sync` to fetch data."
+        )
+        render_footer()
+        return
+
+    # Key metrics
+    st.markdown("---")
+    st.subheader("Current Rate & Returns")
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        latest_rate = analytics.get("latest_close", 0)
+        st.metric("Latest Rate", f"{latest_rate:.4f}")
+
+    with col2:
+        ret_1w = analytics.get("return_1W", 0) or 0
+        st.metric(
+            "1 Week",
+            f"{ret_1w * 100:+.2f}%",
+            delta=f"{ret_1w * 100:+.2f}%",
+            delta_color="inverse"  # Red for appreciation (bad for PKR)
+        )
+
+    with col3:
+        ret_1m = analytics.get("return_1M", 0) or 0
+        st.metric(
+            "1 Month",
+            f"{ret_1m * 100:+.2f}%",
+            delta=f"{ret_1m * 100:+.2f}%",
+            delta_color="inverse"
+        )
+
+    with col4:
+        ret_3m = analytics.get("return_3M", 0) or 0
+        st.metric(
+            "3 Month",
+            f"{ret_3m * 100:+.2f}%",
+            delta=f"{ret_3m * 100:+.2f}%",
+            delta_color="inverse"
+        )
+
+    # Trend info
+    trend = analytics.get("trend", {})
+    if trend:
+        col1, col2 = st.columns(2)
+        with col1:
+            direction = trend.get("trend_direction", "N/A").upper()
+            strength = trend.get("trend_strength", "N/A")
+            if direction == "UP":
+                st.warning(f"📈 Trend: {direction} ({strength}) - PKR Depreciating")
+            else:
+                st.success(f"📉 Trend: {direction} ({strength}) - PKR Appreciating")
+
+        with col2:
+            vol_1m = analytics.get("vol_1M", 0) or 0
+            st.metric("30D Volatility", f"{vol_1m * 100:.2f}%")
+
+    # FX Chart
+    st.markdown("---")
+    st.subheader("FX Rate Chart")
+
+    # Date range selector
+    date_range = st.selectbox(
+        "Time Range",
+        ["30 Days", "90 Days", "180 Days", "1 Year"],
+        index=1,
+    )
+
+    days_map = {"30 Days": 30, "90 Days": 90, "180 Days": 180, "1 Year": 365}
+    days = days_map[date_range]
+
+    # Get OHLCV data
+    df = get_fx_ohlcv(con, selected_pair, limit=days)
+
+    if not df.empty:
+        df = df.sort_values("date")
+
+        import plotly.graph_objects as go
+
+        # Create candlestick chart
+        fig = go.Figure()
+
+        if len(df) <= 60:
+            # Candlestick for shorter periods
+            fig.add_trace(go.Candlestick(
+                x=df["date"],
+                open=df["open"],
+                high=df["high"],
+                low=df["low"],
+                close=df["close"],
+                name=selected_pair,
+            ))
+        else:
+            # Line chart for longer periods
+            fig.add_trace(go.Scatter(
+                x=df["date"],
+                y=df["close"],
+                mode="lines",
+                name=selected_pair,
+                line=dict(color="#2196F3", width=2),
+            ))
+
+            # Add 50-day MA
+            if len(df) >= 50:
+                df["ma50"] = df["close"].rolling(window=50).mean()
+                fig.add_trace(go.Scatter(
+                    x=df["date"],
+                    y=df["ma50"],
+                    mode="lines",
+                    name="50D MA",
+                    line=dict(color="#FFC107", width=1, dash="dash"),
+                ))
+
+        fig.update_layout(
+            title=f"{selected_pair} - {date_range}",
+            xaxis_title="Date",
+            yaxis_title="Rate",
+            height=400,
+            xaxis_rangeslider_visible=False,
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No chart data available.")
+
+    # Multi-pair comparison
+    st.markdown("---")
+    st.subheader("Multi-Pair Comparison")
+
+    if len(pair_names) >= 2:
+        compare_pairs = st.multiselect(
+            "Select pairs to compare",
+            pair_names,
+            default=pair_names[:3] if len(pair_names) >= 3 else pair_names,
+            max_selections=5,
+        )
+
+        if compare_pairs:
+            perf_df = get_normalized_fx_performance(con, compare_pairs)
+
+            if not perf_df.empty:
+                import plotly.graph_objects as go
+
+                fig = go.Figure()
+
+                for pair in compare_pairs:
+                    if pair in perf_df.columns:
+                        fig.add_trace(go.Scatter(
+                            x=perf_df.index,
+                            y=perf_df[pair],
+                            mode="lines",
+                            name=pair,
+                        ))
+
+                fig.update_layout(
+                    title="Normalized Performance (Base = 100)",
+                    xaxis_title="Date",
+                    yaxis_title="Value",
+                    height=350,
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
+
+    # Sync section
+    st.markdown("---")
+    st.subheader("Sync FX Data")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if st.button("Sync FX Rates", type="primary"):
+            with st.spinner("Syncing FX data..."):
+                summary = sync_fx_pairs(db_path=get_db_path())
+                st.success(
+                    f"Sync complete: {summary.ok} OK, "
+                    f"{summary.rows_upserted} rows"
+                )
+
+    with col2:
+        if st.button("Seed FX Pairs"):
+            result = seed_fx_pairs(db_path=get_db_path())
+            st.success(f"Seeded {result.get('inserted', 0)} pairs")
+
+    render_footer()
+
+
+# =============================================================================
+# Phase 2: FX Impact Page
+# =============================================================================
+def fx_impact_page():
+    """FX Impact - FX-adjusted equity performance analysis."""
+    # =================================================================
+    # HEADER
+    # =================================================================
+    header_col1, header_col2 = st.columns([3, 1])
+    with header_col1:
+        st.markdown("## 📊 FX Impact")
+        st.caption("FX-Adjusted Equity Performance (Read-Only Analytics)")
+    with header_col2:
+        st.markdown(
+            '<div class="data-info">📈 Analytics Only</div>',
+            unsafe_allow_html=True
+        )
+
+    con = get_connection()
+
+    # Get FX pairs
+    fx_pairs = get_fx_pairs(con, active_only=True)
+
+    if not fx_pairs:
+        st.warning("No FX pairs found. Run `psxsync fx seed` first.")
+        render_footer()
+        return
+
+    # Filters
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        pair_names = [p["pair"] for p in fx_pairs]
+        default_idx = pair_names.index("USD/PKR") if "USD/PKR" in pair_names else 0
+        selected_pair = st.selectbox(
+            "FX Pair for Adjustment",
+            pair_names,
+            index=default_idx,
+        )
+
+    with col2:
+        period = st.selectbox(
+            "Return Period",
+            ["1W", "1M", "3M"],
+            index=1,
+        )
+
+    with col3:
+        top_n = st.slider("Top N Stocks", min_value=10, max_value=50, value=20)
+
+    # Get FX analytics for context
+    fx_analytics = get_fx_analytics(con, selected_pair)
+
+    # Show FX context
+    st.markdown("---")
+    st.subheader(f"{selected_pair} Context")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        fx_return = fx_analytics.get(f"return_{period}", 0) or 0
+        st.metric(
+            f"FX Return ({period})",
+            f"{fx_return * 100:+.2f}%",
+            help="Positive = PKR depreciation"
+        )
+
+    with col2:
+        latest = fx_analytics.get("latest_close", 0)
+        st.metric("Latest Rate", f"{latest:.2f}")
+
+    with col3:
+        vol = fx_analytics.get("vol_1M", 0) or 0
+        st.metric("FX Volatility", f"{vol * 100:.1f}%")
+
+    # Explanation
+    st.markdown("""
+    **How FX-Adjusted Returns Work:**
+    - FX-Adjusted Return = Equity Return - FX Return
+    - If PKR depreciates by 2% and stock rises 5%, the USD-adjusted return is 3%
+    - This helps compare PSX returns with global benchmarks
+    """)
+
+    # Get FX-adjusted metrics
+    st.markdown("---")
+    st.subheader("FX-Adjusted Performance")
+
+    metrics = get_fx_adjusted_metrics(
+        con,
+        fx_pair=selected_pair,
+        period=period,
+        limit=top_n,
+    )
+
+    if not metrics:
+        st.info(
+            "No FX-adjusted metrics available. "
+            "Run `psxsync fx compute-adjusted` to compute."
+        )
+
+        if st.button("Compute FX-Adjusted Metrics", type="primary"):
+            with st.spinner("Computing metrics..."):
+                result = compute_and_store_fx_adjusted_metrics(
+                    con,
+                    fx_pair=selected_pair,
+                )
+                if result.get("success"):
+                    st.success(f"Computed {result.get('metrics_stored', 0)} metrics")
+                    st.rerun()
+                else:
+                    st.error(f"Error: {result.get('error')}")
+    else:
+        # Convert to DataFrame
+        df = pd.DataFrame(metrics)
+
+        # Format for display
+        display_df = df[["symbol", "equity_return", "fx_return", "fx_adjusted_return"]].copy()
+        display_df["equity_return"] = display_df["equity_return"].apply(
+            lambda x: f"{x * 100:.2f}%" if pd.notna(x) else "N/A"
+        )
+        display_df["fx_return"] = display_df["fx_return"].apply(
+            lambda x: f"{x * 100:.2f}%" if pd.notna(x) else "N/A"
+        )
+        display_df["fx_adjusted_return"] = display_df["fx_adjusted_return"].apply(
+            lambda x: f"{x * 100:.2f}%" if pd.notna(x) else "N/A"
+        )
+
+        display_df.columns = ["Symbol", f"Equity ({period})", f"FX ({period})", "Adjusted"]
+
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+        # Visualization
+        st.markdown("---")
+        st.subheader("Visual Comparison")
+
+        # Select stocks to visualize
+        symbols = df["symbol"].tolist()
+        selected_symbols = st.multiselect(
+            "Select stocks to compare",
+            symbols,
+            default=symbols[:5] if len(symbols) >= 5 else symbols,
+            max_selections=10,
+        )
+
+        if selected_symbols:
+            import plotly.graph_objects as go
+
+            filtered_df = df[df["symbol"].isin(selected_symbols)]
+
+            fig = go.Figure()
+
+            # Equity returns
+            fig.add_trace(go.Bar(
+                name=f"Equity Return ({period})",
+                x=filtered_df["symbol"],
+                y=filtered_df["equity_return"] * 100,
+                marker_color="#2196F3",
+            ))
+
+            # FX-adjusted returns
+            fig.add_trace(go.Bar(
+                name="FX-Adjusted Return",
+                x=filtered_df["symbol"],
+                y=filtered_df["fx_adjusted_return"] * 100,
+                marker_color="#4CAF50",
+            ))
+
+            fig.update_layout(
+                title=f"Equity vs FX-Adjusted Returns ({period})",
+                xaxis_title="Symbol",
+                yaxis_title="Return (%)",
+                barmode="group",
+                height=400,
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+
+        # Summary stats
+        st.markdown("---")
+        st.subheader("Summary Statistics")
+
+        col1, col2, col3 = st.columns(3)
+
+        valid_adj = df["fx_adjusted_return"].dropna()
+
+        if len(valid_adj) > 0:
+            with col1:
+                best = df.loc[df["fx_adjusted_return"].idxmax()]
+                st.metric(
+                    "Best FX-Adjusted",
+                    best["symbol"],
+                    f"{best['fx_adjusted_return'] * 100:.1f}%"
+                )
+
+            with col2:
+                worst = df.loc[df["fx_adjusted_return"].idxmin()]
+                st.metric(
+                    "Worst FX-Adjusted",
+                    worst["symbol"],
+                    f"{worst['fx_adjusted_return'] * 100:.1f}%"
+                )
+
+            with col3:
+                avg = valid_adj.mean() * 100
+                st.metric("Average Adjusted", f"{avg:.1f}%")
+
+    # Sync Section
+    st.markdown("---")
+    with st.expander("Sync FX Data & Compute Metrics", expanded=False):
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            if st.button("Seed FX Pairs", key="fxi_seed"):
+                result = seed_fx_pairs(db_path=get_db_path())
+                st.success(f"Seeded {result.get('inserted', 0)} pairs")
+                st.rerun()
+
+        with col2:
+            if st.button("Sync FX Rates", type="primary", key="fxi_sync"):
+                with st.spinner("Syncing FX data..."):
+                    summary = sync_fx_pairs(db_path=get_db_path())
+                    st.success(
+                        f"Sync: {summary.ok} OK, {summary.rows_upserted} rows"
+                    )
+                    st.rerun()
+
+        with col3:
+            if st.button("Compute FX-Adjusted Metrics", key="fxi_compute"):
+                with st.spinner("Computing FX-adjusted metrics..."):
+                    result = compute_and_store_fx_adjusted_metrics(
+                        con, fx_pair=selected_pair
+                    )
+                    if result.get("success"):
+                        st.success(
+                            f"Computed metrics for {result.get('symbols_processed', 0)} symbols"
+                        )
+                        st.rerun()
+                    else:
+                        st.error(f"Error: {result.get('error', 'Unknown')}")
+
+    render_footer()
+
+
+# =============================================================================
+# Phase 2.5: Mutual Funds Page
+# =============================================================================
+def mutual_funds_page():
+    """Mutual Funds Browser - Fund listing with filters."""
+    from psx_ohlcv.db import get_mf_nav, get_mutual_fund, get_mutual_funds
+    from psx_ohlcv.sync_mufap import get_data_summary, seed_mutual_funds, sync_mutual_funds
+
+    # =================================================================
+    # HEADER
+    # =================================================================
+    header_col1, header_col2 = st.columns([3, 1])
+    with header_col1:
+        st.markdown("## 🏦 Mutual Funds")
+        st.caption("MUFAP Fund Directory - Pakistan Mutual Funds (Read-Only Analytics)")
+    with header_col2:
+        st.markdown(
+            '<div class="data-info">📊 Analytics Only</div>',
+            unsafe_allow_html=True
+        )
+
+    con = get_connection()
+
+    # =================================================================
+    # FILTERS
+    # =================================================================
+    st.markdown("---")
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        categories = [
+            "All", "Equity", "Islamic Equity", "Money Market",
+            "Islamic Money Market", "Income", "Islamic Income",
+            "Balanced", "VPS", "Asset Allocation"
+        ]
+        category = st.selectbox("Category", categories, key="mf_category")
+        category_filter = None if category == "All" else category
+
+    with col2:
+        fund_types = ["All", "OPEN_END", "VPS", "ETF"]
+        fund_type = st.selectbox("Fund Type", fund_types, key="mf_type")
+        type_filter = None if fund_type == "All" else fund_type
+
+    with col3:
+        shariah_only = st.checkbox("Shariah-Compliant Only", key="mf_shariah")
+
+    with col4:
+        search = st.text_input("Search Fund", "", key="mf_search")
+
+    # =================================================================
+    # FUND LIST
+    # =================================================================
+    funds = get_mutual_funds(
+        con,
+        category=category_filter,
+        fund_type=type_filter,
+        is_shariah=True if shariah_only else None,
+        active_only=True,
+        search=search if search else None,
+    )
+
+    if not funds:
+        st.warning("No mutual funds found. Click 'Seed Fund Data' below to populate funds.")
+    else:
+        # Summary metrics
+        st.markdown("---")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Funds", len(funds))
+        with col2:
+            shariah_count = sum(1 for f in funds if f.get("is_shariah"))
+            st.metric("Shariah Funds", shariah_count)
+        with col3:
+            categories_set = set(f.get("category") for f in funds)
+            st.metric("Categories", len(categories_set))
+        with col4:
+            amcs = set(f.get("amc_code") for f in funds)
+            st.metric("AMCs", len(amcs))
+
+        # Fund table
+        st.subheader("Fund Directory")
+        df = pd.DataFrame(funds)
+        display_cols = ["symbol", "fund_name", "category", "amc_name", "fund_type"]
+        display_cols = [c for c in display_cols if c in df.columns]
+
+        if "is_shariah" in df.columns:
+            df["Shariah"] = df["is_shariah"].apply(lambda x: "Yes" if x else "No")
+            display_cols.append("Shariah")
+
+        st.dataframe(
+            df[display_cols].rename(columns={
+                "symbol": "Symbol",
+                "fund_name": "Fund Name",
+                "category": "Category",
+                "amc_name": "AMC",
+                "fund_type": "Type",
+            }),
+            use_container_width=True,
+            height=400,
+        )
+
+        # =================================================================
+        # FUND DETAIL
+        # =================================================================
+        st.markdown("---")
+        st.subheader("Fund Details")
+
+        fund_options = {f["symbol"]: f["fund_name"] for f in funds}
+        selected_symbol = st.selectbox(
+            "Select Fund",
+            options=list(fund_options.keys()),
+            format_func=lambda x: f"{x} - {fund_options[x][:50]}",
+            key="mf_selected",
+        )
+
+        if selected_symbol:
+            fund = next((f for f in funds if f["symbol"] == selected_symbol), None)
+            if fund:
+                fund_id = fund["fund_id"]
+
+                # Fund info
+                col1, col2 = st.columns([2, 1])
+                with col1:
+                    st.markdown(f"**{fund.get('fund_name', 'N/A')}**")
+                    st.caption(f"AMC: {fund.get('amc_name', 'N/A')}")
+
+                with col2:
+                    if fund.get("is_shariah"):
+                        st.success("Shariah-Compliant")
+                    st.caption(f"Type: {fund.get('fund_type', 'N/A')}")
+
+                # NAV data
+                nav_df = get_mf_nav(con, fund_id, limit=90)
+
+                if not nav_df.empty:
+                    # Latest NAV metrics
+                    latest = nav_df.iloc[0]
+                    col1, col2, col3, col4 = st.columns(4)
+
+                    with col1:
+                        st.metric("Latest NAV", f"Rs. {latest.get('nav', 0):.4f}")
+                    with col2:
+                        change = latest.get("nav_change_pct", 0) or 0
+                        st.metric("Daily Change", f"{change:+.2f}%")
+                    with col3:
+                        aum = latest.get("aum", 0) or 0
+                        st.metric("AUM", f"Rs. {aum:.0f}M")
+                    with col4:
+                        st.metric("Latest Date", latest.get("date", "N/A"))
+
+                    # NAV chart
+                    st.subheader("NAV History")
+                    chart_df = nav_df.sort_values("date")
+                    st.line_chart(chart_df.set_index("date")["nav"], height=300)
+                else:
+                    st.info("No NAV data available. Run 'psxsync mufap sync' to fetch NAV data.")
+
+    # =================================================================
+    # SYNC SECTION
+    # =================================================================
+    st.markdown("---")
+    with st.expander("Sync Mutual Fund Data"):
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            if st.button("Seed Fund Data", type="primary", key="mf_seed_btn"):
+                with st.spinner("Seeding mutual funds..."):
+                    result = seed_mutual_funds()
+                    st.success(
+                        f"Seeded {result.get('inserted', 0)} funds "
+                        f"(Failed: {result.get('failed', 0)})"
+                    )
+                    st.rerun()
+
+        with col2:
+            if st.button("Sync NAV Data", key="mf_sync_btn"):
+                with st.spinner("Syncing NAV data..."):
+                    summary = sync_mutual_funds(source="AUTO")
+                    st.success(
+                        f"Synced {summary.ok} funds, "
+                        f"{summary.rows_upserted} NAV records"
+                    )
+                    st.rerun()
+
+        with col3:
+            # Show summary
+            data_summary = get_data_summary()
+            st.metric("Funds in DB", data_summary.get("total_funds", 0))
+            st.metric("NAV Records", data_summary.get("total_nav_rows", 0))
+
+    render_footer()
+
+
+# =============================================================================
+# Phase 2.5: Fund Analytics Page
+# =============================================================================
+def fund_analytics_page():
+    """Fund Analytics - Performance comparison and rankings."""
+    from psx_ohlcv.analytics_mufap import (
+        compare_funds,
+        get_category_performance,
+        get_category_summary,
+        get_fund_comparison_table,
+        get_mf_analytics,
+    )
+    from psx_ohlcv.db import get_mutual_funds
+
+    # =================================================================
+    # HEADER
+    # =================================================================
+    header_col1, header_col2 = st.columns([3, 1])
+    with header_col1:
+        st.markdown("## 📊 Fund Analytics")
+        st.caption("Mutual Fund Performance Analysis (Read-Only)")
+    with header_col2:
+        st.markdown(
+            '<div class="data-info">📈 Analytics Only</div>',
+            unsafe_allow_html=True
+        )
+
+    con = get_connection()
+
+    # Check if we have data
+    funds = get_mutual_funds(con, active_only=True)
+    if not funds:
+        st.warning("No mutual funds found. Go to 'Mutual Funds' page and seed data first.")
+        render_footer()
+        return
+
+    # =================================================================
+    # CATEGORY PERFORMANCE
+    # =================================================================
+    st.markdown("---")
+    st.subheader("Category Performance")
+
+    col1, col2, col3 = st.columns([1, 1, 2])
+
+    with col1:
+        categories = [
+            "Equity", "Islamic Equity", "Money Market",
+            "Islamic Money Market", "Income", "Islamic Income",
+            "Balanced", "VPS"
+        ]
+        category = st.selectbox("Select Category", categories, key="fa_category")
+
+    with col2:
+        periods = ["1W", "1M", "3M", "6M", "1Y"]
+        period = st.selectbox("Return Period", periods, index=1, key="fa_period")
+
+    with col3:
+        # Category summary
+        summary = get_category_summary(con, category, period)
+        if not summary.get("error"):
+            col_a, col_b, col_c = st.columns(3)
+            with col_a:
+                st.metric(
+                    "Avg Return",
+                    f"{summary.get('avg_return_pct', 0):+.2f}%"
+                )
+            with col_b:
+                st.metric(
+                    "Best Fund",
+                    summary.get("best_fund_symbol", "N/A"),
+                    f"{summary.get('max_return_pct', 0):+.2f}%"
+                )
+            with col_c:
+                st.metric("Fund Count", summary.get("fund_count", 0))
+
+    # Rankings table
+    st.subheader(f"Top {category} Funds ({period})")
+    rankings = get_category_performance(con, category, period, top_n=15)
+
+    if rankings:
+        rankings_df = pd.DataFrame(rankings)
+        display_cols = ["rank", "symbol", "fund_name", "return_pct", "latest_nav"]
+        display_cols = [c for c in display_cols if c in rankings_df.columns]
+
+        if "is_shariah" in rankings_df.columns:
+            rankings_df["Shariah"] = rankings_df["is_shariah"].apply(
+                lambda x: "Yes" if x else "No"
+            )
+            display_cols.append("Shariah")
+
+        st.dataframe(
+            rankings_df[display_cols].rename(columns={
+                "rank": "Rank",
+                "symbol": "Symbol",
+                "fund_name": "Fund Name",
+                "return_pct": f"Return ({period})",
+                "latest_nav": "NAV",
+            }),
+            use_container_width=True,
+            height=400,
+        )
+    else:
+        st.info(f"No data for {category} category. Sync NAV data first.")
+
+    # =================================================================
+    # FUND COMPARISON
+    # =================================================================
+    st.markdown("---")
+    st.subheader("Fund Comparison")
+
+    fund_options = {f["fund_id"]: f"{f['symbol']} - {f['fund_name'][:40]}" for f in funds}
+
+    selected_funds = st.multiselect(
+        "Select Funds to Compare (max 5)",
+        options=list(fund_options.keys()),
+        format_func=lambda x: fund_options[x],
+        max_selections=5,
+        key="fa_compare",
+    )
+
+    if selected_funds:
+        # Comparison table
+        comparison = get_fund_comparison_table(con, selected_funds)
+
+        if comparison:
+            st.subheader("Performance Comparison")
+
+            comp_df = pd.DataFrame(comparison)
+
+            # Format returns as percentages
+            for col in ["return_1W", "return_1M", "return_3M", "return_6M", "return_1Y"]:
+                if col in comp_df.columns:
+                    comp_df[col] = comp_df[col].apply(
+                        lambda x: f"{x * 100:+.2f}%" if pd.notna(x) else "N/A"
+                    )
+
+            for col in ["vol_1M", "vol_3M"]:
+                if col in comp_df.columns:
+                    comp_df[col] = comp_df[col].apply(
+                        lambda x: f"{x * 100:.2f}%" if pd.notna(x) else "N/A"
+                    )
+
+            display_cols = [
+                "symbol", "category", "latest_nav",
+                "return_1W", "return_1M", "return_3M",
+                "vol_1M", "sharpe_ratio"
+            ]
+            display_cols = [c for c in display_cols if c in comp_df.columns]
+
+            st.dataframe(
+                comp_df[display_cols].rename(columns={
+                    "symbol": "Symbol",
+                    "category": "Category",
+                    "latest_nav": "NAV",
+                    "return_1W": "1W",
+                    "return_1M": "1M",
+                    "return_3M": "3M",
+                    "vol_1M": "Vol (1M)",
+                    "sharpe_ratio": "Sharpe",
+                }),
+                use_container_width=True,
+            )
+
+            # Normalized performance chart
+            st.subheader("Normalized Performance (Base = 100)")
+
+            days = st.slider("Chart Period (days)", 30, 365, 90, key="fa_days")
+            from datetime import datetime, timedelta
+            start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+            perf_df = compare_funds(con, selected_funds, start_date=start_date)
+
+            if not perf_df.empty:
+                st.line_chart(perf_df, height=400)
+            else:
+                st.info("Insufficient data for comparison chart.")
+
+    else:
+        st.info("Select funds above to compare their performance.")
+
+    # =================================================================
+    # INDIVIDUAL FUND ANALYTICS
+    # =================================================================
+    st.markdown("---")
+    st.subheader("Individual Fund Analytics")
+
+    selected_fund = st.selectbox(
+        "Select Fund for Detailed Analytics",
+        options=list(fund_options.keys()),
+        format_func=lambda x: fund_options[x],
+        key="fa_individual",
+    )
+
+    if selected_fund:
+        analytics = get_mf_analytics(con, selected_fund)
+
+        if not analytics.get("error"):
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.markdown(f"**{analytics.get('fund_name', 'N/A')}**")
+                st.caption(f"Category: {analytics.get('category', 'N/A')}")
+                st.caption(f"AMC: {analytics.get('amc_name', 'N/A')}")
+
+                if analytics.get("latest_nav"):
+                    st.metric("Latest NAV", f"Rs. {analytics['latest_nav']:.4f}")
+
+            with col2:
+                # Key metrics
+                metrics_data = []
+
+                for period in ["1W", "1M", "3M", "6M", "1Y"]:
+                    key = f"return_{period}"
+                    if analytics.get(key) is not None:
+                        metrics_data.append({
+                            "Period": period,
+                            "Return": f"{analytics[key] * 100:+.2f}%"
+                        })
+
+                if metrics_data:
+                    st.dataframe(
+                        pd.DataFrame(metrics_data),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+            # Risk metrics
+            col1, col2, col3, col4 = st.columns(4)
+
+            with col1:
+                vol = analytics.get("vol_1M")
+                st.metric(
+                    "Volatility (1M)",
+                    f"{vol * 100:.2f}%" if vol else "N/A"
+                )
+
+            with col2:
+                sharpe = analytics.get("sharpe_ratio")
+                st.metric("Sharpe Ratio", f"{sharpe:.2f}" if sharpe else "N/A")
+
+            with col3:
+                dd = analytics.get("max_drawdown")
+                st.metric(
+                    "Max Drawdown",
+                    f"{dd * 100:.2f}%" if dd else "N/A"
+                )
+
+            with col4:
+                exp = analytics.get("expense_ratio")
+                st.metric(
+                    "Expense Ratio",
+                    f"{exp:.2f}%" if exp else "N/A"
+                )
+
+        else:
+            st.warning(f"No analytics available: {analytics.get('error')}")
+
+    render_footer()
+
+
+# =============================================================================
+# Phase 3: Bonds Screener Page
+# =============================================================================
+def bonds_screener_page():
+    """Bonds Screener - Fixed income instruments."""
+    import pandas as pd
+
+    from psx_ohlcv.analytics_bonds import get_bond_full_analytics
+    from psx_ohlcv.db import get_bond_data_summary, get_bonds
+    from psx_ohlcv.sync_bonds import seed_bonds, sync_sample_quotes
+
+    # =================================================================
+    # HEADER
+    # =================================================================
+    header_col1, header_col2 = st.columns([3, 1])
+    with header_col1:
+        st.markdown("## 🧾 Bonds Screener")
+        st.caption("Fixed Income Analytics (Phase 3 - Read-Only)")
+    with header_col2:
+        st.markdown(
+            '<div class="data-info">📈 Analytics Only</div>',
+            unsafe_allow_html=True
+        )
+
+    con = get_connection()
+
+    # =================================================================
+    # DATA SYNC CONTROLS
+    # =================================================================
+    with st.expander("🔧 Data Management", expanded=False):
+        sync_col1, sync_col2, sync_col3 = st.columns(3)
+
+        with sync_col1:
+            if st.button("Initialize Bonds", key="bonds_init"):
+                with st.spinner("Seeding default bonds..."):
+                    result = seed_bonds()
+                    if result.get("success"):
+                        st.success(f"Seeded {result['inserted']} bonds")
+                        st.rerun()
+                    else:
+                        st.error(f"Error: {result.get('error')}")
+
+        with sync_col2:
+            days = st.number_input("Sample Days", min_value=30, max_value=365, value=90)
+            if st.button("Generate Sample Quotes", key="bonds_sample"):
+                with st.spinner("Generating sample data..."):
+                    summary = sync_sample_quotes(days=days)
+                    st.success(f"Generated {summary.rows_upserted} quotes")
+                    st.rerun()
+
+        with sync_col3:
+            summary = get_bond_data_summary(con)
+            st.metric("Total Bonds", summary.get("total_bonds", 0))
+            st.metric("Quote Rows", summary.get("total_quote_rows", 0))
+
+    # =================================================================
+    # FILTERS
+    # =================================================================
+    st.markdown("### Filters")
+    filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
+
+    with filter_col1:
+        bond_type = st.selectbox(
+            "Bond Type",
+            ["ALL", "PIB", "T-Bill", "Sukuk", "TFC", "Corporate"],
+            key="bonds_type_filter"
+        )
+
+    with filter_col2:
+        issuer = st.text_input("Issuer", "", key="bonds_issuer_filter")
+
+    with filter_col3:
+        islamic_only = st.checkbox("Islamic Only", key="bonds_islamic")
+
+    with filter_col4:
+        min_ytm = st.number_input(
+            "Min YTM (%)", min_value=0.0, max_value=30.0, value=0.0,
+            step=0.5, key="bonds_min_ytm"
+        )
+
+    # =================================================================
+    # BONDS TABLE
+    # =================================================================
+    st.markdown("### Bond Universe")
+
+    bonds = get_bonds(
+        con,
+        bond_type=None if bond_type == "ALL" else bond_type,
+        issuer=issuer if issuer else None,
+        is_islamic=True if islamic_only else None,
+        active_only=True,
+    )
+
+    if not bonds:
+        st.warning("No bonds found. Click 'Initialize Bonds' to seed default data.")
+    else:
+        # Build table with analytics
+        table_data = []
+        for bond in bonds:
+            analytics = get_bond_full_analytics(con, bond["bond_id"])
+            ytm = analytics.get("ytm")
+
+            # Apply YTM filter
+            if min_ytm > 0 and (ytm is None or ytm * 100 < min_ytm):
+                continue
+
+            coupon = bond.get("coupon_rate")
+            coupon_str = f"{coupon * 100:.1f}%" if coupon else "Zero"
+            price = analytics.get("price")
+            price_str = f"{price:.2f}" if price else "N/A"
+            mod_dur = analytics.get("modified_duration")
+            dur_str = f"{mod_dur:.2f}" if mod_dur else "N/A"
+
+            table_data.append({
+                "Symbol": bond.get("symbol"),
+                "Type": bond.get("bond_type"),
+                "Issuer": bond.get("issuer"),
+                "Coupon": coupon_str,
+                "Maturity": bond.get("maturity_date"),
+                "Price": price_str,
+                "YTM": f"{ytm * 100:.2f}%" if ytm else "N/A",
+                "Duration": dur_str,
+                "Islamic": "Yes" if bond.get("is_islamic") else "No",
+            })
+
+        if table_data:
+            df = pd.DataFrame(table_data)
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+            # =================================================================
+            # BOND DETAILS
+            # =================================================================
+            st.markdown("### Bond Details")
+
+            bond_options = {b["bond_id"]: b["symbol"] for b in bonds}
+            selected_bond = st.selectbox(
+                "Select Bond",
+                options=list(bond_options.keys()),
+                format_func=lambda x: bond_options[x],
+                key="bonds_selected"
+            )
+
+            if selected_bond:
+                analytics = get_bond_full_analytics(con, selected_bond)
+
+                col1, col2, col3, col4 = st.columns(4)
+
+                with col1:
+                    price = analytics.get("price")
+                    price_val = f"{price:.4f}" if price else "N/A"
+                    st.metric("Price", price_val)
+
+                with col2:
+                    ytm = analytics.get("ytm")
+                    ytm_val = f"{ytm * 100:.4f}%" if ytm else "N/A"
+                    st.metric("YTM", ytm_val)
+
+                with col3:
+                    dur = analytics.get("duration")
+                    dur_val = f"{dur:.4f} yrs" if dur else "N/A"
+                    st.metric("Duration", dur_val)
+
+                with col4:
+                    conv = analytics.get("convexity")
+                    conv_val = f"{conv:.4f}" if conv else "N/A"
+                    st.metric("Convexity", conv_val)
+
+                # Additional details
+                st.markdown("#### Details")
+                cpn = analytics.get("coupon_rate")
+                cpn_str = f"{cpn * 100:.2f}%" if cpn else "Zero-coupon"
+                detail_data = {
+                    "Bond ID": analytics.get("bond_id"),
+                    "Issuer": analytics.get("issuer"),
+                    "Maturity Date": analytics.get("maturity_date"),
+                    "Days to Maturity": analytics.get("days_to_maturity"),
+                    "Coupon Rate": cpn_str,
+                    "Face Value": analytics.get("face_value"),
+                    "Accrued Interest": analytics.get("accrued_interest"),
+                    "Dirty Price": analytics.get("dirty_price"),
+                }
+                st.json(detail_data)
+        else:
+            st.info("No bonds match the current filters.")
+
+    render_footer()
+
+
+# =============================================================================
+# Phase 3: Yield Curve Page
+# =============================================================================
+def yield_curve_page():
+    """Yield Curve - Interest rate term structure."""
+    import pandas as pd
+    import plotly.graph_objects as go
+
+    from psx_ohlcv.analytics_bonds import (
+        build_yield_curve,
+        interpolate_yield,
+    )
+    from psx_ohlcv.db import get_latest_yield_curve, get_yield_curve
+
+    # =================================================================
+    # HEADER
+    # =================================================================
+    st.markdown("## 📉 Yield Curve")
+    st.caption("Government Securities Term Structure (Phase 3)")
+
+    con = get_connection()
+
+    # =================================================================
+    # CONTROLS
+    # =================================================================
+    ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 2, 1])
+
+    with ctrl_col1:
+        bond_type = st.selectbox(
+            "Curve Type",
+            ["PIB", "T-Bill", "Sukuk", "ALL"],
+            key="yc_bond_type"
+        )
+
+    with ctrl_col2:
+        curve_date = st.date_input(
+            "Curve Date",
+            value=None,
+            key="yc_date"
+        )
+        curve_date_str = curve_date.strftime("%Y-%m-%d") if curve_date else None
+
+    with ctrl_col3:
+        if st.button("Build Curve", key="yc_build"):
+            with st.spinner("Building yield curve..."):
+                points = build_yield_curve(con, curve_date_str, bond_type)
+                if points:
+                    st.success(f"Built curve with {len(points)} points")
+                    st.rerun()
+                else:
+                    st.warning("No data to build curve")
+
+    # =================================================================
+    # YIELD CURVE CHART
+    # =================================================================
+    st.markdown("### Term Structure")
+
+    if curve_date_str:
+        points = get_yield_curve(con, curve_date_str, bond_type)
+    else:
+        curve_date_str, points = get_latest_yield_curve(con, bond_type)
+
+    if not points:
+        st.info("No yield curve data available. Click 'Build Curve' to generate.")
+        st.markdown("""
+        **To build a yield curve:**
+        1. First initialize bonds: `psxsync bonds init`
+        2. Generate sample quotes: `psxsync bonds load --sample`
+        3. Compute analytics: `psxsync bonds compute --curve`
+        """)
+    else:
+        st.caption(f"Curve Date: {curve_date_str}")
+
+        # Prepare data
+        df = pd.DataFrame(points)
+
+        tenor_labels = {
+            3: "3M", 6: "6M", 12: "1Y", 24: "2Y",
+            36: "3Y", 60: "5Y", 84: "7Y", 120: "10Y",
+            180: "15Y", 240: "20Y",
+        }
+        df["tenor_label"] = df["tenor_months"].apply(
+            lambda x: tenor_labels.get(x, f"{x}M")
+        )
+        df["yield_pct"] = df["yield_rate"] * 100
+
+        # Create chart
+        fig = go.Figure()
+
+        fig.add_trace(go.Scatter(
+            x=df["tenor_months"],
+            y=df["yield_pct"],
+            mode="lines+markers",
+            name=f"{bond_type} Curve",
+            line=dict(width=3, color="#1f77b4"),
+            marker=dict(size=10),
+            hovertemplate=(
+                "<b>%{text}</b><br>"
+                "Yield: %{y:.2f}%<br>"
+                "<extra></extra>"
+            ),
+            text=df["tenor_label"],
+        ))
+
+        fig.update_layout(
+            title=f"Yield Curve - {bond_type}",
+            xaxis_title="Tenor (Months)",
+            yaxis_title="Yield (%)",
+            height=400,
+            showlegend=False,
+            hovermode="x unified",
+        )
+
+        # Add tenor labels on x-axis
+        fig.update_xaxes(
+            tickmode="array",
+            tickvals=df["tenor_months"].tolist(),
+            ticktext=df["tenor_label"].tolist(),
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        # =================================================================
+        # CURVE DATA TABLE
+        # =================================================================
+        st.markdown("### Curve Points")
+
+        table_df = df[["tenor_label", "tenor_months", "yield_pct"]].copy()
+        table_df.columns = ["Tenor", "Months", "Yield (%)"]
+        table_df["Yield (%)"] = table_df["Yield (%)"].apply(lambda x: f"{x:.4f}%")
+
+        st.dataframe(table_df, use_container_width=True, hide_index=True)
+
+        # =================================================================
+        # INTERPOLATION TOOL
+        # =================================================================
+        st.markdown("### Yield Interpolation")
+
+        interp_col1, interp_col2 = st.columns([1, 2])
+
+        with interp_col1:
+            target_tenor = st.number_input(
+                "Target Tenor (months)",
+                min_value=1,
+                max_value=360,
+                value=48,
+                key="yc_target_tenor"
+            )
+
+        with interp_col2:
+            interp_yield = interpolate_yield(points, target_tenor, "LINEAR")
+            if interp_yield:
+                st.metric(
+                    f"Interpolated Yield ({target_tenor}M)",
+                    f"{interp_yield * 100:.4f}%"
+                )
+            else:
+                st.info("Cannot interpolate for this tenor")
+
+    render_footer()
+
+
+# =============================================================================
+# Phase 3: Sukuk Screener Page (Additive - separate from bonds)
+# =============================================================================
+def sukuk_screener_page():
+    """Sukuk Screener - Shariah-compliant fixed income instruments."""
+    import pandas as pd
+
+    from psx_ohlcv.analytics_sukuk import (
+        get_sukuk_analytics_full,
+        get_analytics_by_category,
+    )
+    from psx_ohlcv.db import get_sukuk_data_summary, get_sukuk_list
+    from psx_ohlcv.sync_sukuk import seed_sukuk, sync_sukuk_quotes
+
+    con = get_connection()
+
+    st.markdown("## 🕌 Sukuk Screener")
+    st.caption("Shariah-compliant fixed income (GOP Sukuk, PIBs, T-Bills)")
+
+    # =================================================================
+    # ADMIN CONTROLS (collapsed)
+    # =================================================================
+    with st.expander("⚙️ Data Management", expanded=False):
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            if st.button("Seed Sukuk Data", key="sukuk_seed"):
+                with st.spinner("Seeding sukuk instruments..."):
+                    result = seed_sukuk()
+                    if result.get("success"):
+                        st.success(f"Seeded {result['inserted']} instruments")
+                    else:
+                        st.error(f"Error: {result.get('error')}")
+                st.rerun()
+
+        with col2:
+            if st.button("Generate Sample Quotes", key="sukuk_sample"):
+                with st.spinner("Generating sample quote data..."):
+                    summary = sync_sukuk_quotes(source="SAMPLE", days=90)
+                    st.success(f"Generated {summary.rows_upserted} quotes")
+                st.rerun()
+
+        with col3:
+            summary = get_sukuk_data_summary(con)
+            st.metric("Total Instruments", summary.get("total_sukuk", 0))
+            st.metric("With Quotes", summary.get("sukuk_with_quotes", 0))
+
+    # =================================================================
+    # FILTERS
+    # =================================================================
+    st.markdown("### Filters")
+
+    filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
+
+    with filter_col1:
+        category = st.selectbox(
+            "Category",
+            ["ALL", "GOP_SUKUK", "PIB", "TBILL", "CORPORATE_SUKUK", "TFC"],
+            key="sukuk_category_filter"
+        )
+
+    with filter_col2:
+        issuer = st.text_input("Issuer", "", key="sukuk_issuer_filter")
+
+    with filter_col3:
+        shariah_only = st.checkbox("Shariah Only", key="sukuk_shariah")
+
+    with filter_col4:
+        min_ytm = st.number_input(
+            "Min YTM (%)", min_value=0.0, max_value=30.0, value=0.0,
+            step=0.5, key="sukuk_min_ytm"
+        )
+
+    # =================================================================
+    # SUKUK LIST
+    # =================================================================
+    sukuk_list = get_sukuk_list(
+        con,
+        active_only=True,
+        category=None if category == "ALL" else category,
+    )
+
+    if not sukuk_list:
+        st.warning("No sukuk found. Click 'Seed Sukuk Data' to initialize.")
+        render_footer()
+        return
+
+    # Apply filters
+    if issuer:
+        sukuk_list = [
+            s for s in sukuk_list
+            if issuer.lower() in s.get("issuer", "").lower()
+        ]
+    if shariah_only:
+        sukuk_list = [s for s in sukuk_list if s.get("shariah_compliant")]
+
+    # Get analytics for each sukuk
+    analytics_data = get_analytics_by_category(
+        category=None if category == "ALL" else category,
+        db_path=None
+    )
+
+    # Create lookup for analytics
+    analytics_lookup = {a["instrument_id"]: a for a in analytics_data}
+
+    # Apply YTM filter
+    if min_ytm > 0:
+        def check_ytm(s):
+            ytm = analytics_lookup.get(s["instrument_id"], {}).get("ytm", 0)
+            return (ytm or 0) >= min_ytm
+        sukuk_list = [s for s in sukuk_list if check_ytm(s)]
+
+    if sukuk_list:
+        # Display table
+        table_data = []
+        for sukuk in sukuk_list:
+            analytics = analytics_lookup.get(sukuk["instrument_id"], {})
+            table_data.append({
+                "ID": sukuk["instrument_id"],
+                "Name": sukuk.get("name", "")[:40],
+                "Category": sukuk.get("category", ""),
+                "Issuer": sukuk.get("issuer", "")[:20],
+                "Maturity": sukuk.get("maturity_date", ""),
+                "Coupon": f"{sukuk.get('coupon_rate', 0) or 0:.2f}%",
+                "YTM": f"{analytics.get('ytm', 0) or 0:.2f}%",
+                "Duration": f"{analytics.get('duration', 0) or 0:.2f}",
+                "Shariah": "✓" if sukuk.get("shariah_compliant") else "",
+            })
+
+        df = pd.DataFrame(table_data)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        st.markdown(f"**Total: {len(sukuk_list)} instruments**")
+
+        # =================================================================
+        # SUKUK DETAIL VIEW
+        # =================================================================
+        st.markdown("### Sukuk Details")
+
+        sukuk_options = {
+            s["instrument_id"]: s.get("name", s["instrument_id"])
+            for s in sukuk_list
+        }
+        selected_id = st.selectbox(
+            "Select Instrument",
+            options=list(sukuk_options.keys()),
+            format_func=lambda x: sukuk_options.get(x, x),
+            key="sukuk_selected"
+        )
+
+        if selected_id:
+            result = get_sukuk_analytics_full(selected_id)
+
+            if not result.get("error"):
+                sukuk = result.get("sukuk", {})
+                quote = result.get("quote", {})
+                analytics = result.get("analytics", {})
+
+                col1, col2, col3 = st.columns(3)
+
+                with col1:
+                    st.markdown("**Instrument Info**")
+                    st.write(f"**ID:** {sukuk.get('instrument_id')}")
+                    st.write(f"**Issuer:** {sukuk.get('issuer')}")
+                    st.write(f"**Category:** {sukuk.get('category')}")
+                    st.write(f"**Maturity:** {sukuk.get('maturity_date')}")
+                    shariah = "Yes ✓" if sukuk.get("shariah_compliant") else "No"
+                    st.write(f"**Shariah:** {shariah}")
+
+                with col2:
+                    st.markdown("**Pricing**")
+                    if quote:
+                        st.write(f"**Date:** {quote.get('quote_date')}")
+                        st.write(f"**Clean Price:** {quote.get('clean_price')}")
+                        st.write(f"**Dirty Price:** {quote.get('dirty_price')}")
+                        st.write(f"**YTM:** {quote.get('yield_to_maturity')}%")
+                    else:
+                        st.info("No quote data available")
+
+                with col3:
+                    st.markdown("**Analytics**")
+                    if analytics.get("yield_to_maturity"):
+                        ytm = analytics["yield_to_maturity"]
+                        st.metric("YTM", f"{ytm:.4f}%")
+                        if analytics.get("modified_duration"):
+                            mod_dur = analytics["modified_duration"]
+                            st.metric("Mod Duration", f"{mod_dur:.2f} yrs")
+                        if analytics.get("convexity"):
+                            convex = analytics["convexity"]
+                            st.metric("Convexity", f"{convex:.2f}")
+                    else:
+                        st.info("No analytics computed")
+    else:
+        st.info("No sukuk match the current filters.")
+
+    render_footer()
+
+
+# =============================================================================
+# Phase 3: Sukuk Yield Curve Page
+# =============================================================================
+def sukuk_yield_curve_page():
+    """Sukuk Yield Curve - Term structure for sukuk instruments."""
+    import pandas as pd
+    import plotly.graph_objects as go
+
+    from psx_ohlcv.analytics_sukuk import (
+        get_yield_curve_data,
+        interpolate_yield_curve,
+    )
+    from psx_ohlcv.sync_sukuk import sync_sample_yield_curves
+
+    st.markdown("## 📈 Sukuk Yield Curve")
+    st.caption("Term structure of sukuk yields (GOP Sukuk, PIB, T-Bill)")
+
+    # =================================================================
+    # CONTROLS
+    # =================================================================
+    col1, col2, col3 = st.columns([1, 1, 2])
+
+    with col1:
+        curve_name = st.selectbox(
+            "Curve",
+            ["GOP_SUKUK", "PIB", "TBILL"],
+            key="sukuk_curve_name"
+        )
+
+    with col2:
+        curve_date = st.date_input(
+            "Date (blank for latest)",
+            value=None,
+            key="sukuk_curve_date"
+        )
+
+    with col3:
+        if st.button("Generate Sample Curves", key="sukuk_gen_curves"):
+            with st.spinner("Generating yield curves..."):
+                summary = sync_sample_yield_curves(days=30)
+                st.success(f"Generated {summary.rows_upserted} curve points")
+            st.rerun()
+
+    # =================================================================
+    # YIELD CURVE CHART
+    # =================================================================
+    date_str = curve_date.isoformat() if curve_date else None
+    curve_data = get_yield_curve_data(
+        curve_name=curve_name,
+        curve_date=date_str,
+    )
+
+    points = curve_data.get("points", [])
+
+    if not points:
+        st.info("No yield curve data. Click 'Generate Sample Curves' to create.")
+        st.markdown("""
+        **To build a yield curve:**
+        1. Seed sukuk data: `psxsync sukuk seed`
+        2. Sync sample quotes: `psxsync sukuk sync --include-curves`
+        """)
+        render_footer()
+        return
+
+    # Build DataFrame
+    df = pd.DataFrame(points)
+    df["yield_pct"] = df["yield_rate"]
+
+    # Create chart
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=df["tenor_days"],
+        y=df["yield_pct"],
+        mode="lines+markers",
+        name=curve_name,
+        line=dict(width=2),
+        marker=dict(size=8),
+    ))
+
+    fig.update_layout(
+        title=f"Sukuk Yield Curve - {curve_name}",
+        xaxis_title="Tenor (Days)",
+        yaxis_title="Yield (%)",
+        height=450,
+        hovermode="x unified",
+    )
+
+    # Add tenor labels on x-axis
+    fig.update_xaxes(
+        tickmode="array",
+        tickvals=df["tenor_days"].tolist(),
+        ticktext=df["tenor_label"].tolist(),
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    # =================================================================
+    # CURVE DATA TABLE
+    # =================================================================
+    st.markdown("### Curve Points")
+
+    table_df = df[["tenor_label", "tenor_days", "yield_pct"]].copy()
+    table_df.columns = ["Tenor", "Days", "Yield (%)"]
+    table_df["Yield (%)"] = table_df["Yield (%)"].apply(lambda x: f"{x:.4f}%")
+
+    st.dataframe(table_df, use_container_width=True, hide_index=True)
+
+    # =================================================================
+    # INTERPOLATION TOOL
+    # =================================================================
+    st.markdown("### Yield Interpolation")
+
+    interp_col1, interp_col2 = st.columns([1, 2])
+
+    with interp_col1:
+        target_days = st.number_input(
+            "Target Tenor (days)",
+            min_value=1,
+            max_value=3650,
+            value=365,
+            key="sukuk_target_tenor"
+        )
+
+    with interp_col2:
+        interp_yield = interpolate_yield_curve(points, target_days)
+        if interp_yield:
+            st.metric(
+                f"Interpolated Yield ({target_days} days)",
+                f"{interp_yield:.4f}%"
+            )
+        else:
+            st.info("Cannot interpolate for this tenor")
+
+    render_footer()
+
+
+# =============================================================================
+# Phase 3: SBP Auction Archive Page
+# =============================================================================
+def sbp_auction_archive_page():
+    """SBP Auction Archive - Primary market document archive."""
+    import pandas as pd
+
+    from psx_ohlcv.sources.sbp_primary_market import (
+        get_documents_by_type,
+        get_sbp_document_urls,
+        index_documents,
+        create_sample_documents,
+        DOC_TYPES,
+        INSTRUMENT_TYPES,
+        DOCS_DIR,
+    )
+    from psx_ohlcv.sync_sukuk import index_sbp_documents
+
+    st.markdown("## 🏛️ SBP Auction Archive")
+    st.caption("State Bank of Pakistan Primary Market Document Archive")
+
+    # =================================================================
+    # ADMIN CONTROLS
+    # =================================================================
+    with st.expander("⚙️ Document Management", expanded=False):
+        col1, col2 = st.columns(2)
+
+        with col1:
+            if st.button("Create Sample Documents", key="sbp_create_samples"):
+                with st.spinner("Creating sample documents..."):
+                    created = create_sample_documents()
+                    st.success(f"Created {len(created)} sample files")
+                st.rerun()
+
+        with col2:
+            if st.button("Re-index Documents", key="sbp_reindex"):
+                with st.spinner("Indexing documents..."):
+                    result = index_sbp_documents()
+                    st.success(f"Indexed {result.get('total_documents', 0)} documents")
+                st.rerun()
+
+        st.markdown(f"**Document Directory:** `{DOCS_DIR}`")
+
+    # =================================================================
+    # SBP URLS
+    # =================================================================
+    st.markdown("### Official SBP Data Sources")
+
+    urls = get_sbp_document_urls()
+    url_data = [
+        {"Source": name.replace("_", " ").title(), "URL": url}
+        for name, url in urls.items()
+    ]
+    st.dataframe(pd.DataFrame(url_data), use_container_width=True, hide_index=True)
+
+    st.info("Download documents and place in the document directory.")
+
+    # =================================================================
+    # FILTERS
+    # =================================================================
+    st.markdown("### Document Archive")
+
+    filter_col1, filter_col2 = st.columns(2)
+
+    def fmt_inst(x):
+        return INSTRUMENT_TYPES.get(x, x) if x != "ALL" else "All Types"
+
+    def fmt_doc(x):
+        return DOC_TYPES.get(x, x) if x != "ALL" else "All Documents"
+
+    with filter_col1:
+        inst_type = st.selectbox(
+            "Instrument Type",
+            ["ALL"] + list(INSTRUMENT_TYPES.keys()),
+            format_func=fmt_inst,
+            key="sbp_inst_filter"
+        )
+
+    with filter_col2:
+        doc_type = st.selectbox(
+            "Document Type",
+            ["ALL"] + list(DOC_TYPES.keys()),
+            format_func=fmt_doc,
+            key="sbp_doc_filter"
+        )
+
+    # =================================================================
+    # DOCUMENT LIST
+    # =================================================================
+    documents = get_documents_by_type(
+        instrument_type=None if inst_type == "ALL" else inst_type,
+        doc_type=None if doc_type == "ALL" else doc_type,
+    )
+
+    if documents:
+        table_data = []
+        for doc in documents:
+            doc_type_val = doc.get("doc_type")
+            inst_type_val = doc.get("instrument_type")
+            indexed_at = doc.get("indexed_at", "")
+            table_data.append({
+                "ID": doc.get("doc_id", "")[:30],
+                "Type": DOC_TYPES.get(doc_type_val, doc_type_val),
+                "Instrument": INSTRUMENT_TYPES.get(inst_type_val, inst_type_val),
+                "Auction Date": doc.get("auction_date", ""),
+                "File": doc.get("file_name", ""),
+                "Indexed": indexed_at[:10] if indexed_at else "",
+            })
+
+        df = pd.DataFrame(table_data)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        st.markdown(f"**Total: {len(documents)} documents**")
+    else:
+        st.info("No documents found. Add SBP files and click 'Re-index'.")
+
+    # =================================================================
+    # DOCUMENT NAMING GUIDE
+    # =================================================================
+    with st.expander("📋 Document Naming Convention", expanded=False):
+        st.markdown("""
+        **Recommended file naming format:**
+        ```
+        {INSTRUMENT}_{DOCTYPE}_{DATE}.{ext}
+        ```
+
+        **Examples:**
+        - `TBILL_AUCTION_RESULT_2026-01-15.pdf`
+        - `PIB_AUCTION_RESULT_2026-01-10.xlsx`
+        - `GOP_SUKUK_YIELD_CURVE_2026-01.csv`
+
+        **Supported formats:** PDF, XLS, XLSX, CSV
+
+        **Instrument types:** TBILL, PIB, GOP_SUKUK, FRB
+
+        **Document types:** AUCTION_RESULT, AUCTION_CALENDAR, YIELD_CURVE, CUT_OFF_YIELD
+        """)
+
+    render_footer()
+
+
 # -----------------------------------------------------------------------------
 # Main App with Sidebar Navigation
 # -----------------------------------------------------------------------------
@@ -6767,6 +8950,17 @@ def main():
         "📚 History",
         "📥 Market Summary",
         "🧵 Symbols",
+        "📦 Instruments",        # Phase 1
+        "🏆 Rankings",           # Phase 1
+        "🌍 FX Overview",        # Phase 2
+        "📊 FX Impact",          # Phase 2
+        "🏦 Mutual Funds",       # Phase 2.5
+        "📊 Fund Analytics",     # Phase 2.5
+        "🧾 Bonds Screener",     # Phase 3
+        "📉 Yield Curve",        # Phase 3
+        "🕌 Sukuk Screener",     # Phase 3 (additive)
+        "📈 Sukuk Yield Curve",  # Phase 3 (additive)
+        "🏛️ SBP Archive",        # Phase 3 (additive)
         "🔄 Sync Monitor",
         "📋 Schema",
         "⚙️ Settings",
@@ -6830,6 +9024,28 @@ def main():
         market_summary_page()
     elif page == "🧵 Symbols":
         symbols_page()
+    elif page == "📦 Instruments":
+        instruments_page()
+    elif page == "🏆 Rankings":
+        rankings_page()
+    elif page == "🌍 FX Overview":
+        fx_overview_page()
+    elif page == "📊 FX Impact":
+        fx_impact_page()
+    elif page == "🏦 Mutual Funds":
+        mutual_funds_page()
+    elif page == "📊 Fund Analytics":
+        fund_analytics_page()
+    elif page == "🧾 Bonds Screener":
+        bonds_screener_page()
+    elif page == "📉 Yield Curve":
+        yield_curve_page()
+    elif page == "🕌 Sukuk Screener":
+        sukuk_screener_page()
+    elif page == "📈 Sukuk Yield Curve":
+        sukuk_yield_curve_page()
+    elif page == "🏛️ SBP Archive":
+        sbp_auction_archive_page()
     elif page == "🔄 Sync Monitor":
         sync_monitor()
     elif page == "📋 Schema":

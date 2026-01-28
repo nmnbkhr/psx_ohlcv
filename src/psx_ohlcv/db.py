@@ -915,6 +915,494 @@ CREATE TABLE IF NOT EXISTS announcements_sync_status (
 
 CREATE INDEX IF NOT EXISTS idx_announcements_sync_type
     ON announcements_sync_status(sync_type);
+
+-- =============================================================================
+-- PHASE 1: INSTRUMENTS UNIVERSE
+-- Extends instrument coverage beyond equities to include ETFs, REITs, and Indexes
+-- =============================================================================
+
+-- Master table for all tradeable instruments
+CREATE TABLE IF NOT EXISTS instruments (
+    instrument_id       TEXT PRIMARY KEY,           -- Stable ID like "PSX:OGDC" or "IDX:KSE100"
+    symbol              TEXT NOT NULL,              -- Display symbol used in DPS or internal code
+    name                TEXT,                       -- Full instrument name
+    instrument_type     TEXT NOT NULL,              -- 'EQUITY'|'ETF'|'REIT'|'INDEX'
+    exchange            TEXT NOT NULL DEFAULT 'PSX',
+    currency            TEXT NOT NULL DEFAULT 'PKR',
+    is_active           INTEGER NOT NULL DEFAULT 1,
+    source              TEXT NOT NULL,              -- 'DPS'|'MANUAL'
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+
+    UNIQUE(exchange, symbol)
+);
+
+CREATE INDEX IF NOT EXISTS idx_instruments_type
+    ON instruments(instrument_type);
+CREATE INDEX IF NOT EXISTS idx_instruments_symbol
+    ON instruments(symbol);
+CREATE INDEX IF NOT EXISTS idx_instruments_active
+    ON instruments(is_active);
+
+-- Index/ETF membership and weights (e.g., KSE-100 constituents)
+CREATE TABLE IF NOT EXISTS instrument_membership (
+    parent_instrument_id TEXT NOT NULL,             -- Index or ETF ID
+    child_instrument_id  TEXT NOT NULL,             -- Constituent instrument ID
+    weight               REAL,                      -- Weight in parent (0-1 or percentage)
+    effective_date       TEXT NOT NULL DEFAULT '',  -- Date this weight became effective
+    source               TEXT NOT NULL DEFAULT 'MANUAL',
+
+    PRIMARY KEY(parent_instrument_id, child_instrument_id, effective_date),
+    FOREIGN KEY(parent_instrument_id) REFERENCES instruments(instrument_id),
+    FOREIGN KEY(child_instrument_id) REFERENCES instruments(instrument_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_membership_parent
+    ON instrument_membership(parent_instrument_id);
+CREATE INDEX IF NOT EXISTS idx_membership_child
+    ON instrument_membership(child_instrument_id);
+
+-- OHLCV data for non-equity instruments (ETFs, REITs, Indexes)
+-- Separate from eod_ohlcv to avoid schema conflicts
+CREATE TABLE IF NOT EXISTS ohlcv_instruments (
+    instrument_id       TEXT NOT NULL,
+    date                TEXT NOT NULL,
+    open                REAL,
+    high                REAL,
+    low                 REAL,
+    close               REAL,
+    volume              INTEGER,
+    ingested_at         TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY(instrument_id, date),
+    FOREIGN KEY(instrument_id) REFERENCES instruments(instrument_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ohlcv_instruments_date
+    ON ohlcv_instruments(date);
+CREATE INDEX IF NOT EXISTS idx_ohlcv_instruments_id
+    ON ohlcv_instruments(instrument_id);
+
+-- Performance rankings for instruments (flat structure for easy querying)
+CREATE TABLE IF NOT EXISTS instrument_rankings (
+    as_of_date          TEXT NOT NULL,
+    instrument_id       TEXT NOT NULL,
+    instrument_type     TEXT NOT NULL,              -- 'ETF'|'REIT'|'INDEX'
+    return_1m           REAL,                       -- 1-month return (decimal, e.g., 0.05 = 5%)
+    return_3m           REAL,                       -- 3-month return
+    return_6m           REAL,                       -- 6-month return
+    return_1y           REAL,                       -- 1-year return
+    volatility_30d      REAL,                       -- 30-day annualized volatility
+    relative_strength   REAL,                       -- Relative strength vs KSE-100
+    computed_at         TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY(as_of_date, instrument_id),
+    FOREIGN KEY(instrument_id) REFERENCES instruments(instrument_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rankings_date
+    ON instrument_rankings(as_of_date);
+CREATE INDEX IF NOT EXISTS idx_rankings_type
+    ON instrument_rankings(instrument_type);
+CREATE INDEX IF NOT EXISTS idx_rankings_instrument
+    ON instrument_rankings(instrument_id);
+
+-- Sync tracking for instrument EOD data
+CREATE TABLE IF NOT EXISTS instruments_sync_runs (
+    run_id              TEXT PRIMARY KEY,
+    started_at          TEXT NOT NULL,
+    ended_at            TEXT,
+    instrument_types    TEXT NOT NULL,              -- Comma-separated types synced
+    instruments_total   INTEGER DEFAULT 0,
+    instruments_ok      INTEGER DEFAULT 0,
+    instruments_failed  INTEGER DEFAULT 0,
+    instruments_no_data INTEGER DEFAULT 0,          -- Instruments with no DPS data
+    rows_upserted       INTEGER DEFAULT 0
+);
+
+-- =============================================================================
+-- Phase 2: FX Analytics Tables
+-- =============================================================================
+
+-- FX currency pairs master table
+CREATE TABLE IF NOT EXISTS fx_pairs (
+    pair                TEXT PRIMARY KEY,           -- e.g. "USD/PKR"
+    base_currency       TEXT NOT NULL,              -- e.g. "USD"
+    quote_currency      TEXT NOT NULL,              -- e.g. "PKR"
+    source              TEXT NOT NULL,              -- e.g. "SBP" | "OPEN_API" | "MANUAL"
+    description         TEXT,                       -- Optional description
+    is_active           INTEGER NOT NULL DEFAULT 1,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- FX OHLCV data (daily rates)
+CREATE TABLE IF NOT EXISTS fx_ohlcv (
+    pair                TEXT NOT NULL,
+    date                TEXT NOT NULL,
+    open                REAL,
+    high                REAL,
+    low                 REAL,
+    close               REAL NOT NULL,              -- Close is required
+    volume              REAL,                       -- FX volume (may be null)
+    ingested_at         TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY(pair, date),
+    FOREIGN KEY(pair) REFERENCES fx_pairs(pair)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fx_ohlcv_pair
+    ON fx_ohlcv(pair);
+CREATE INDEX IF NOT EXISTS idx_fx_ohlcv_date
+    ON fx_ohlcv(date);
+
+-- FX-adjusted equity metrics (derived analytics)
+CREATE TABLE IF NOT EXISTS fx_adjusted_metrics (
+    as_of_date          TEXT NOT NULL,
+    symbol              TEXT NOT NULL,              -- Equity/index symbol
+    fx_pair             TEXT NOT NULL,              -- e.g. "USD/PKR"
+    equity_return       REAL,                       -- Equity return (decimal)
+    fx_return           REAL,                       -- FX return (decimal)
+    fx_adjusted_return  REAL,                       -- equity_return - fx_return
+    period              TEXT NOT NULL DEFAULT '1M', -- '1W', '1M', '3M', etc.
+    computed_at         TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY(as_of_date, symbol, fx_pair, period),
+    FOREIGN KEY(fx_pair) REFERENCES fx_pairs(pair)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fx_adjusted_date
+    ON fx_adjusted_metrics(as_of_date);
+CREATE INDEX IF NOT EXISTS idx_fx_adjusted_symbol
+    ON fx_adjusted_metrics(symbol);
+CREATE INDEX IF NOT EXISTS idx_fx_adjusted_pair
+    ON fx_adjusted_metrics(fx_pair);
+
+-- FX sync tracking
+CREATE TABLE IF NOT EXISTS fx_sync_runs (
+    run_id              TEXT PRIMARY KEY,
+    started_at          TEXT NOT NULL,
+    ended_at            TEXT,
+    pairs_synced        TEXT NOT NULL,              -- Comma-separated pairs
+    status              TEXT DEFAULT 'running',     -- 'running', 'completed', 'failed'
+    rows_upserted       INTEGER DEFAULT 0,
+    error_message       TEXT
+);
+
+-- =============================================================================
+-- Phase 2.5: MUTUAL FUND TABLES (MUFAP Integration)
+-- =============================================================================
+
+-- Mutual fund master table
+CREATE TABLE IF NOT EXISTS mutual_funds (
+    fund_id             TEXT PRIMARY KEY,           -- e.g., "MUFAP:ABL-ISF"
+    symbol              TEXT NOT NULL UNIQUE,       -- Short code e.g., "ABL-ISF"
+    fund_name           TEXT NOT NULL,
+    amc_code            TEXT NOT NULL,              -- Asset Management Company code
+    amc_name            TEXT,                       -- AMC full name
+    fund_type           TEXT NOT NULL,              -- 'OPEN_END' | 'VPS' | 'ETF'
+    category            TEXT NOT NULL,              -- 'Equity', 'Money Market', etc.
+    is_shariah          INTEGER NOT NULL DEFAULT 0, -- 1 = Shariah-compliant
+    launch_date         TEXT,                       -- Fund inception date
+    expense_ratio       REAL,                       -- Annual expense ratio (%)
+    management_fee      REAL,                       -- Management fee (%)
+    is_active           INTEGER NOT NULL DEFAULT 1,
+    source              TEXT NOT NULL DEFAULT 'MUFAP',
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_mutual_funds_category
+    ON mutual_funds(category);
+CREATE INDEX IF NOT EXISTS idx_mutual_funds_amc
+    ON mutual_funds(amc_code);
+CREATE INDEX IF NOT EXISTS idx_mutual_funds_type
+    ON mutual_funds(fund_type);
+CREATE INDEX IF NOT EXISTS idx_mutual_funds_shariah
+    ON mutual_funds(is_shariah);
+CREATE INDEX IF NOT EXISTS idx_mutual_funds_active
+    ON mutual_funds(is_active);
+
+-- Mutual fund NAV time-series
+CREATE TABLE IF NOT EXISTS mutual_fund_nav (
+    fund_id             TEXT NOT NULL,
+    date                TEXT NOT NULL,              -- YYYY-MM-DD
+    nav                 REAL NOT NULL,              -- Net Asset Value per unit
+    offer_price         REAL,                       -- Offer/Sale price
+    redemption_price    REAL,                       -- Redemption/Bid price
+    aum                 REAL,                       -- Assets Under Management (millions PKR)
+    nav_change_pct      REAL,                       -- Daily NAV change %
+    source              TEXT NOT NULL DEFAULT 'MUFAP',
+    ingested_at         TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY(fund_id, date),
+    FOREIGN KEY(fund_id) REFERENCES mutual_funds(fund_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mf_nav_date
+    ON mutual_fund_nav(date);
+CREATE INDEX IF NOT EXISTS idx_mf_nav_fund
+    ON mutual_fund_nav(fund_id);
+
+-- Mutual fund sync tracking
+CREATE TABLE IF NOT EXISTS mutual_fund_sync_runs (
+    run_id              TEXT PRIMARY KEY,
+    started_at          TEXT NOT NULL,
+    ended_at            TEXT,
+    sync_type           TEXT NOT NULL,              -- 'SEED' | 'NAV_SYNC'
+    status              TEXT NOT NULL DEFAULT 'running', -- 'running' | 'completed' | 'failed' | 'partial'
+    funds_total         INTEGER DEFAULT 0,
+    funds_ok            INTEGER DEFAULT 0,
+    rows_upserted       INTEGER DEFAULT 0,
+    error_message       TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_mf_sync_status
+    ON mutual_fund_sync_runs(status);
+
+-- =============================================================================
+-- Phase 3: BONDS/SUKUK TABLES
+-- =============================================================================
+
+-- Bond master table
+CREATE TABLE IF NOT EXISTS bonds_master (
+    bond_id             TEXT PRIMARY KEY,           -- e.g., "PIB:3Y:2026-01-15"
+    isin                TEXT UNIQUE,                -- ISIN code (nullable)
+    symbol              TEXT NOT NULL,              -- Short display name
+    issuer              TEXT NOT NULL,              -- 'GOP' | 'SBP' | corporate issuer
+    bond_type           TEXT NOT NULL,              -- 'PIB', 'T-Bill', 'Sukuk', 'TFC', 'Corporate'
+    is_islamic          INTEGER NOT NULL DEFAULT 0, -- 1 = Sukuk
+    face_value          REAL NOT NULL DEFAULT 100,  -- Usually 100
+    coupon_rate         REAL,                       -- Annual coupon rate (NULL for zero-coupon)
+    coupon_frequency    INTEGER DEFAULT 2,          -- Payments per year (2=semi-annual)
+    issue_date          TEXT,                       -- YYYY-MM-DD
+    maturity_date       TEXT NOT NULL,              -- YYYY-MM-DD
+    day_count           TEXT DEFAULT 'ACT/ACT',     -- Day count convention
+    currency            TEXT NOT NULL DEFAULT 'PKR',
+    is_active           INTEGER NOT NULL DEFAULT 1,
+    source              TEXT NOT NULL DEFAULT 'MANUAL',
+    notes               TEXT,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_bonds_type
+    ON bonds_master(bond_type);
+CREATE INDEX IF NOT EXISTS idx_bonds_issuer
+    ON bonds_master(issuer);
+CREATE INDEX IF NOT EXISTS idx_bonds_maturity
+    ON bonds_master(maturity_date);
+CREATE INDEX IF NOT EXISTS idx_bonds_islamic
+    ON bonds_master(is_islamic);
+CREATE INDEX IF NOT EXISTS idx_bonds_active
+    ON bonds_master(is_active);
+
+-- Bond quotes (price/yield observations)
+CREATE TABLE IF NOT EXISTS bond_quotes (
+    bond_id             TEXT NOT NULL,
+    date                TEXT NOT NULL,              -- YYYY-MM-DD
+    price               REAL,                       -- Clean price (% of face)
+    dirty_price         REAL,                       -- Price + accrued interest
+    ytm                 REAL,                       -- Yield to maturity (decimal)
+    bid_yield           REAL,
+    ask_yield           REAL,
+    bid_price           REAL,
+    ask_price           REAL,
+    volume              REAL,                       -- Trading volume if available
+    source              TEXT NOT NULL DEFAULT 'MANUAL',
+    ingested_at         TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY(bond_id, date),
+    FOREIGN KEY(bond_id) REFERENCES bonds_master(bond_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bond_quotes_date
+    ON bond_quotes(date);
+CREATE INDEX IF NOT EXISTS idx_bond_quotes_bond
+    ON bond_quotes(bond_id);
+
+-- Yield curve points (interpolated/fitted curve)
+CREATE TABLE IF NOT EXISTS yield_curve_points (
+    curve_date          TEXT NOT NULL,              -- YYYY-MM-DD
+    tenor_months        INTEGER NOT NULL,           -- Tenor in months (3, 6, 12, 24, 36, 60, 120)
+    yield_rate          REAL NOT NULL,              -- Yield as decimal
+    bond_type           TEXT NOT NULL DEFAULT 'PIB', -- 'PIB', 'T-Bill', 'Sukuk', 'ALL'
+    interpolation       TEXT DEFAULT 'LINEAR',      -- 'LINEAR' | 'CUBIC' | 'NS'
+    computed_at         TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY(curve_date, tenor_months, bond_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_yc_date
+    ON yield_curve_points(curve_date);
+CREATE INDEX IF NOT EXISTS idx_yc_type
+    ON yield_curve_points(bond_type);
+
+-- Bond analytics snapshots
+CREATE TABLE IF NOT EXISTS bond_analytics_snapshots (
+    bond_id             TEXT NOT NULL,
+    as_of_date          TEXT NOT NULL,
+    price               REAL,
+    ytm                 REAL,                       -- Yield to maturity
+    duration            REAL,                       -- Macaulay duration (years)
+    modified_duration   REAL,                       -- Modified duration
+    convexity           REAL,                       -- Convexity
+    accrued_interest    REAL,                       -- Accrued interest per face value
+    spread_to_benchmark REAL,                       -- Spread vs benchmark curve
+    days_to_maturity    INTEGER,
+    computed_at         TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY(bond_id, as_of_date),
+    FOREIGN KEY(bond_id) REFERENCES bonds_master(bond_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bond_analytics_date
+    ON bond_analytics_snapshots(as_of_date);
+CREATE INDEX IF NOT EXISTS idx_bond_analytics_bond
+    ON bond_analytics_snapshots(bond_id);
+
+-- Bond sync tracking
+CREATE TABLE IF NOT EXISTS bond_sync_runs (
+    run_id              TEXT PRIMARY KEY,
+    started_at          TEXT NOT NULL,
+    ended_at            TEXT,
+    sync_type           TEXT NOT NULL,              -- 'INIT' | 'LOAD_MASTER' | 'LOAD_QUOTES' | 'COMPUTE'
+    status              TEXT NOT NULL DEFAULT 'running',
+    items_total         INTEGER DEFAULT 0,
+    items_ok            INTEGER DEFAULT 0,
+    rows_upserted       INTEGER DEFAULT 0,
+    error_message       TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_bond_sync_status
+    ON bond_sync_runs(status);
+
+-- =============================================================================
+-- Phase 3: SUKUK / DEBT MARKET TABLES (Regulator-Aligned)
+-- =============================================================================
+
+-- Sukuk master table (PSX GIS + SBP instruments)
+CREATE TABLE IF NOT EXISTS sukuk_master (
+    instrument_id       TEXT PRIMARY KEY,           -- e.g., "SUKUK:GOP-IJARA-2027"
+    issuer              TEXT NOT NULL,              -- GOVT_OF_PAKISTAN or corporate
+    name                TEXT NOT NULL,
+    category            TEXT NOT NULL,              -- GOP_SUKUK | CORP_SUKUK | PIB | T-BILL
+    currency            TEXT NOT NULL DEFAULT 'PKR',
+    issue_date          TEXT,                       -- YYYY-MM-DD
+    maturity_date       TEXT NOT NULL,              -- YYYY-MM-DD
+    coupon_rate         REAL,                       -- Annual rate (decimal)
+    coupon_frequency    INTEGER,                    -- Payments per year
+    face_value          REAL DEFAULT 100.0,
+    issue_size          REAL,                       -- Total issue size
+    shariah_compliant   INTEGER DEFAULT 1,          -- 1 = Sukuk, 0 = conventional
+    is_active           INTEGER DEFAULT 1,
+    source              TEXT NOT NULL DEFAULT 'MANUAL',
+    notes               TEXT,
+    created_at          TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_sukuk_category
+    ON sukuk_master(category);
+CREATE INDEX IF NOT EXISTS idx_sukuk_issuer
+    ON sukuk_master(issuer);
+CREATE INDEX IF NOT EXISTS idx_sukuk_maturity
+    ON sukuk_master(maturity_date);
+CREATE INDEX IF NOT EXISTS idx_sukuk_active
+    ON sukuk_master(is_active);
+
+-- Sukuk quotes (price/yield observations)
+CREATE TABLE IF NOT EXISTS sukuk_quotes (
+    instrument_id       TEXT NOT NULL,
+    quote_date          TEXT NOT NULL,              -- YYYY-MM-DD
+    clean_price         REAL,                       -- Price as % of face
+    dirty_price         REAL,                       -- Clean + accrued
+    yield_to_maturity   REAL,                       -- YTM as decimal
+    bid_yield           REAL,
+    ask_yield           REAL,
+    volume              REAL,
+    source              TEXT NOT NULL DEFAULT 'MANUAL',
+    ingested_at         TEXT DEFAULT (datetime('now')),
+
+    PRIMARY KEY(instrument_id, quote_date),
+    FOREIGN KEY(instrument_id) REFERENCES sukuk_master(instrument_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sukuk_quotes_date
+    ON sukuk_quotes(quote_date);
+CREATE INDEX IF NOT EXISTS idx_sukuk_quotes_instrument
+    ON sukuk_quotes(instrument_id);
+
+-- Sukuk yield curves
+CREATE TABLE IF NOT EXISTS sukuk_yield_curve (
+    curve_name          TEXT NOT NULL,              -- PKR_GOP_SUKUK | PKR_PIB | PKR_TBILL
+    curve_date          TEXT NOT NULL,              -- YYYY-MM-DD
+    tenor_days          INTEGER NOT NULL,           -- Days to maturity
+    yield_rate          REAL NOT NULL,              -- Yield as decimal
+    source              TEXT NOT NULL DEFAULT 'SBP',
+    computed_at         TEXT DEFAULT (datetime('now')),
+
+    PRIMARY KEY(curve_name, curve_date, tenor_days)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sukuk_yc_name
+    ON sukuk_yield_curve(curve_name);
+CREATE INDEX IF NOT EXISTS idx_sukuk_yc_date
+    ON sukuk_yield_curve(curve_date);
+
+-- Sukuk analytics snapshots
+CREATE TABLE IF NOT EXISTS sukuk_analytics_snapshots (
+    instrument_id       TEXT NOT NULL,
+    as_of_date          TEXT NOT NULL,              -- YYYY-MM-DD
+    price               REAL,
+    ytm                 REAL,                       -- Yield to maturity
+    macaulay_duration   REAL,                       -- Duration in years
+    modified_duration   REAL,
+    convexity           REAL,
+    accrued_interest    REAL,
+    days_to_maturity    INTEGER,
+    computed_at         TEXT DEFAULT (datetime('now')),
+
+    PRIMARY KEY(instrument_id, as_of_date),
+    FOREIGN KEY(instrument_id) REFERENCES sukuk_master(instrument_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sukuk_analytics_date
+    ON sukuk_analytics_snapshots(as_of_date);
+CREATE INDEX IF NOT EXISTS idx_sukuk_analytics_instrument
+    ON sukuk_analytics_snapshots(instrument_id);
+
+-- SBP Primary Market Documents archive
+CREATE TABLE IF NOT EXISTS sbp_primary_market_docs (
+    doc_id              TEXT PRIMARY KEY,           -- hash(url + title)
+    category            TEXT NOT NULL,              -- T-BILL | PIB | GOP_SUKUK
+    title               TEXT NOT NULL,
+    doc_date            TEXT,                       -- YYYY-MM-DD if available
+    url                 TEXT NOT NULL,
+    local_path          TEXT,                       -- Local file path if downloaded
+    file_size           INTEGER,
+    fetched_at          TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_sbp_docs_category
+    ON sbp_primary_market_docs(category);
+CREATE INDEX IF NOT EXISTS idx_sbp_docs_date
+    ON sbp_primary_market_docs(doc_date);
+
+-- Sukuk sync tracking
+CREATE TABLE IF NOT EXISTS sukuk_sync_runs (
+    run_id              TEXT PRIMARY KEY,
+    started_at          TEXT NOT NULL,
+    ended_at            TEXT,
+    sync_type           TEXT NOT NULL,              -- INIT | LOAD_MASTER | LOAD_QUOTES | COMPUTE | SBP_REFRESH
+    status              TEXT NOT NULL DEFAULT 'running',
+    items_total         INTEGER DEFAULT 0,
+    items_ok            INTEGER DEFAULT 0,
+    rows_upserted       INTEGER DEFAULT 0,
+    error_message       TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_sukuk_sync_status
+    ON sukuk_sync_runs(status);
 """
 
 
@@ -4703,3 +5191,2282 @@ def upsert_index_data(con: sqlite3.Connection, index_data: dict) -> bool:
         return True
     except Exception:
         return False
+
+
+# =============================================================================
+# PHASE 1: INSTRUMENTS UNIVERSE FUNCTIONS
+# =============================================================================
+
+def upsert_instrument(con: sqlite3.Connection, instrument: dict) -> bool:
+    """
+    Insert or update an instrument record.
+
+    Args:
+        con: Database connection
+        instrument: Dict with instrument_id, symbol, name, instrument_type, etc.
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        con.execute("""
+            INSERT INTO instruments (
+                instrument_id, symbol, name, instrument_type,
+                exchange, currency, is_active, source,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+            ON CONFLICT(instrument_id) DO UPDATE SET
+                symbol = excluded.symbol,
+                name = excluded.name,
+                instrument_type = excluded.instrument_type,
+                exchange = excluded.exchange,
+                currency = excluded.currency,
+                is_active = excluded.is_active,
+                source = excluded.source,
+                updated_at = datetime('now')
+        """, (
+            instrument.get("instrument_id"),
+            instrument.get("symbol"),
+            instrument.get("name"),
+            instrument.get("instrument_type"),
+            instrument.get("exchange", "PSX"),
+            instrument.get("currency", "PKR"),
+            instrument.get("is_active", 1),
+            instrument.get("source", "MANUAL"),
+        ))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def upsert_instruments_batch(con: sqlite3.Connection, instruments: list[dict]) -> dict:
+    """
+    Batch upsert multiple instruments.
+
+    Args:
+        con: Database connection
+        instruments: List of instrument dicts
+
+    Returns:
+        Dict with 'inserted', 'updated', 'failed' counts
+    """
+    counts = {"inserted": 0, "updated": 0, "failed": 0}
+
+    for inst in instruments:
+        try:
+            # Check if exists
+            cur = con.execute(
+                "SELECT 1 FROM instruments WHERE instrument_id = ?",
+                (inst.get("instrument_id"),)
+            )
+            exists = cur.fetchone() is not None
+
+            if upsert_instrument(con, inst):
+                if exists:
+                    counts["updated"] += 1
+                else:
+                    counts["inserted"] += 1
+            else:
+                counts["failed"] += 1
+        except Exception:
+            counts["failed"] += 1
+
+    return counts
+
+
+def get_instruments(
+    con: sqlite3.Connection,
+    instrument_type: str | None = None,
+    active_only: bool = True
+) -> list[dict]:
+    """
+    Get instruments, optionally filtered by type.
+
+    Args:
+        con: Database connection
+        instrument_type: Filter by type ('EQUITY', 'ETF', 'REIT', 'INDEX'), or None for all
+        active_only: If True, only return active instruments
+
+    Returns:
+        List of instrument dicts
+    """
+    try:
+        query = "SELECT * FROM instruments WHERE 1=1"
+        params = []
+
+        if instrument_type:
+            query += " AND instrument_type = ?"
+            params.append(instrument_type)
+
+        if active_only:
+            query += " AND is_active = 1"
+
+        query += " ORDER BY instrument_type, symbol"
+
+        cur = con.execute(query, params)
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def get_instrument_by_id(con: sqlite3.Connection, instrument_id: str) -> dict | None:
+    """Get a single instrument by ID."""
+    try:
+        cur = con.execute(
+            "SELECT * FROM instruments WHERE instrument_id = ?",
+            (instrument_id,)
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def get_instrument_by_symbol(
+    con: sqlite3.Connection,
+    symbol: str,
+    exchange: str = "PSX"
+) -> dict | None:
+    """Get instrument by symbol and exchange."""
+    try:
+        cur = con.execute(
+            "SELECT * FROM instruments WHERE symbol = ? AND exchange = ?",
+            (symbol, exchange)
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def resolve_instrument_id(exchange: str, symbol: str) -> str:
+    """
+    Generate a standardized instrument ID.
+
+    Args:
+        exchange: Exchange code (e.g., 'PSX', 'IDX')
+        symbol: Instrument symbol
+
+    Returns:
+        Standardized ID like "PSX:HBL" or "IDX:KSE100"
+    """
+    return f"{exchange}:{symbol}"
+
+
+def upsert_ohlcv_instrument(con: sqlite3.Connection, instrument_id: str, df: pd.DataFrame) -> int:
+    """
+    Upsert OHLCV data for an instrument.
+
+    Args:
+        con: Database connection
+        instrument_id: Instrument ID
+        df: DataFrame with date, open, high, low, close, volume columns
+
+    Returns:
+        Number of rows upserted
+    """
+    if df.empty:
+        return 0
+
+    count = 0
+    for _, row in df.iterrows():
+        try:
+            con.execute("""
+                INSERT INTO ohlcv_instruments (
+                    instrument_id, date, open, high, low, close, volume, ingested_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(instrument_id, date) DO UPDATE SET
+                    open = excluded.open,
+                    high = excluded.high,
+                    low = excluded.low,
+                    close = excluded.close,
+                    volume = excluded.volume,
+                    ingested_at = datetime('now')
+            """, (
+                instrument_id,
+                row.get("date"),
+                row.get("open"),
+                row.get("high"),
+                row.get("low"),
+                row.get("close"),
+                row.get("volume"),
+            ))
+            count += 1
+        except Exception:
+            pass
+
+    con.commit()
+    return count
+
+
+def get_ohlcv_instrument(
+    con: sqlite3.Connection,
+    instrument_id: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    limit: int | None = None
+) -> pd.DataFrame:
+    """
+    Get OHLCV data for an instrument.
+
+    Args:
+        con: Database connection
+        instrument_id: Instrument ID
+        start_date: Start date (inclusive)
+        end_date: End date (inclusive)
+        limit: Max rows to return
+
+    Returns:
+        DataFrame with date, open, high, low, close, volume
+    """
+    query = "SELECT date, open, high, low, close, volume FROM ohlcv_instruments WHERE instrument_id = ?"
+    params = [instrument_id]
+
+    if start_date:
+        query += " AND date >= ?"
+        params.append(start_date)
+
+    if end_date:
+        query += " AND date <= ?"
+        params.append(end_date)
+
+    query += " ORDER BY date DESC"
+
+    if limit:
+        query += f" LIMIT {limit}"
+
+    try:
+        return pd.read_sql_query(query, con, params=params)
+    except Exception:
+        return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+
+
+def get_instrument_latest_date(con: sqlite3.Connection, instrument_id: str) -> str | None:
+    """Get the latest OHLCV date for an instrument."""
+    try:
+        cur = con.execute(
+            "SELECT MAX(date) FROM ohlcv_instruments WHERE instrument_id = ?",
+            (instrument_id,)
+        )
+        row = cur.fetchone()
+        return row[0] if row and row[0] else None
+    except Exception:
+        return None
+
+
+def upsert_instrument_ranking(con: sqlite3.Connection, ranking: dict) -> bool:
+    """
+    Insert or update an instrument ranking.
+
+    Args:
+        con: Database connection
+        ranking: Dict with as_of_date, instrument_id, instrument_type, and metrics
+
+    Returns:
+        True if successful
+    """
+    try:
+        con.execute("""
+            INSERT INTO instrument_rankings (
+                as_of_date, instrument_id, instrument_type,
+                return_1m, return_3m, return_6m, return_1y,
+                volatility_30d, relative_strength, computed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(as_of_date, instrument_id) DO UPDATE SET
+                instrument_type = excluded.instrument_type,
+                return_1m = excluded.return_1m,
+                return_3m = excluded.return_3m,
+                return_6m = excluded.return_6m,
+                return_1y = excluded.return_1y,
+                volatility_30d = excluded.volatility_30d,
+                relative_strength = excluded.relative_strength,
+                computed_at = datetime('now')
+        """, (
+            ranking.get("as_of_date"),
+            ranking.get("instrument_id"),
+            ranking.get("instrument_type"),
+            ranking.get("return_1m"),
+            ranking.get("return_3m"),
+            ranking.get("return_6m"),
+            ranking.get("return_1y"),
+            ranking.get("volatility_30d"),
+            ranking.get("relative_strength"),
+        ))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_instrument_rankings(
+    con: sqlite3.Connection,
+    as_of_date: str | None = None,
+    instrument_type: str | None = None,
+    top_n: int = 10
+) -> list[dict]:
+    """
+    Get instrument rankings.
+
+    Args:
+        con: Database connection
+        as_of_date: Date for rankings (default: most recent)
+        instrument_type: Filter by type
+        top_n: Number of top rankings to return
+
+    Returns:
+        List of ranking dicts with instrument details
+    """
+    if as_of_date:
+        date_clause = "r.as_of_date = ?"
+        params = [as_of_date]
+    else:
+        date_clause = "r.as_of_date = (SELECT MAX(as_of_date) FROM instrument_rankings)"
+        params = []
+
+    query = f"""
+        SELECT r.*, i.symbol, i.name
+        FROM instrument_rankings r
+        JOIN instruments i ON r.instrument_id = i.instrument_id
+        WHERE {date_clause}
+    """
+
+    if instrument_type:
+        query += " AND r.instrument_type = ?"
+        params.append(instrument_type)
+
+    query += " ORDER BY r.return_1m DESC NULLS LAST LIMIT ?"
+    params.append(top_n)
+
+    try:
+        cur = con.execute(query, params)
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def get_latest_ranking_date(con: sqlite3.Connection) -> str | None:
+    """Get the latest date for which rankings exist."""
+    try:
+        cur = con.execute("SELECT MAX(as_of_date) FROM instrument_rankings")
+        row = cur.fetchone()
+        return row[0] if row and row[0] else None
+    except Exception:
+        return None
+
+
+def create_instruments_sync_run(con: sqlite3.Connection, run_id: str, instrument_types: str) -> bool:
+    """Create a new sync run record."""
+    try:
+        con.execute("""
+            INSERT INTO instruments_sync_runs (run_id, started_at, instrument_types)
+            VALUES (?, datetime('now'), ?)
+        """, (run_id, instrument_types))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def update_instruments_sync_run(con: sqlite3.Connection, run_id: str, stats: dict) -> bool:
+    """Update a sync run with final stats."""
+    try:
+        con.execute("""
+            UPDATE instruments_sync_runs SET
+                ended_at = datetime('now'),
+                instruments_total = ?,
+                instruments_ok = ?,
+                instruments_failed = ?,
+                instruments_no_data = ?,
+                rows_upserted = ?
+            WHERE run_id = ?
+        """, (
+            stats.get("total", 0),
+            stats.get("ok", 0),
+            stats.get("failed", 0),
+            stats.get("no_data", 0),
+            stats.get("rows", 0),
+            run_id,
+        ))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+# =============================================================================
+# Phase 2: FX Database Functions
+# =============================================================================
+
+def upsert_fx_pair(con: sqlite3.Connection, pair_data: dict) -> bool:
+    """
+    Insert or update an FX pair.
+
+    Args:
+        con: Database connection
+        pair_data: Dict with pair, base_currency, quote_currency, source, etc.
+
+    Returns:
+        True if successful
+    """
+    try:
+        con.execute("""
+            INSERT INTO fx_pairs (
+                pair, base_currency, quote_currency, source, description,
+                is_active, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+            ON CONFLICT(pair) DO UPDATE SET
+                base_currency = excluded.base_currency,
+                quote_currency = excluded.quote_currency,
+                source = excluded.source,
+                description = excluded.description,
+                is_active = excluded.is_active,
+                updated_at = datetime('now')
+        """, (
+            pair_data.get("pair"),
+            pair_data.get("base_currency"),
+            pair_data.get("quote_currency"),
+            pair_data.get("source", "MANUAL"),
+            pair_data.get("description"),
+            pair_data.get("is_active", 1),
+        ))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_fx_pairs(
+    con: sqlite3.Connection,
+    active_only: bool = True
+) -> list[dict]:
+    """
+    Get all FX pairs.
+
+    Args:
+        con: Database connection
+        active_only: If True, only return active pairs
+
+    Returns:
+        List of pair dicts
+    """
+    query = "SELECT * FROM fx_pairs"
+    if active_only:
+        query += " WHERE is_active = 1"
+    query += " ORDER BY pair"
+
+    try:
+        cur = con.execute(query)
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def get_fx_pair(con: sqlite3.Connection, pair: str) -> dict | None:
+    """Get a single FX pair by name."""
+    try:
+        cur = con.execute("SELECT * FROM fx_pairs WHERE pair = ?", (pair,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def upsert_fx_ohlcv(
+    con: sqlite3.Connection,
+    pair: str,
+    df: "pd.DataFrame"
+) -> int:
+    """
+    Upsert FX OHLCV data.
+
+    Args:
+        con: Database connection
+        pair: FX pair (e.g., "USD/PKR")
+        df: DataFrame with date, open, high, low, close, volume columns
+
+    Returns:
+        Number of rows upserted
+    """
+    if df.empty:
+        return 0
+
+    rows = 0
+    for _, row in df.iterrows():
+        try:
+            con.execute("""
+                INSERT INTO fx_ohlcv (pair, date, open, high, low, close, volume, ingested_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(pair, date) DO UPDATE SET
+                    open = excluded.open,
+                    high = excluded.high,
+                    low = excluded.low,
+                    close = excluded.close,
+                    volume = excluded.volume,
+                    ingested_at = datetime('now')
+            """, (
+                pair,
+                row.get("date"),
+                row.get("open"),
+                row.get("high"),
+                row.get("low"),
+                row.get("close"),
+                row.get("volume"),
+            ))
+            rows += 1
+        except Exception:
+            pass
+
+    con.commit()
+    return rows
+
+
+def get_fx_ohlcv(
+    con: sqlite3.Connection,
+    pair: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    limit: int | None = None
+) -> "pd.DataFrame":
+    """
+    Get FX OHLCV data.
+
+    Args:
+        con: Database connection
+        pair: FX pair
+        start_date: Start date filter
+        end_date: End date filter
+        limit: Max rows to return
+
+    Returns:
+        DataFrame with OHLCV data
+    """
+    import pandas as pd
+
+    query = "SELECT * FROM fx_ohlcv WHERE pair = ?"
+    params = [pair]
+
+    if start_date:
+        query += " AND date >= ?"
+        params.append(start_date)
+    if end_date:
+        query += " AND date <= ?"
+        params.append(end_date)
+
+    query += " ORDER BY date DESC"
+
+    if limit:
+        query += f" LIMIT {limit}"
+
+    try:
+        return pd.read_sql_query(query, con, params=params)
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_fx_latest_date(con: sqlite3.Connection, pair: str) -> str | None:
+    """Get the latest date for an FX pair."""
+    try:
+        cur = con.execute(
+            "SELECT MAX(date) FROM fx_ohlcv WHERE pair = ?",
+            (pair,)
+        )
+        row = cur.fetchone()
+        return row[0] if row and row[0] else None
+    except Exception:
+        return None
+
+
+def get_fx_latest_rate(con: sqlite3.Connection, pair: str) -> dict | None:
+    """Get the latest FX rate for a pair."""
+    try:
+        cur = con.execute("""
+            SELECT * FROM fx_ohlcv
+            WHERE pair = ?
+            ORDER BY date DESC
+            LIMIT 1
+        """, (pair,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def upsert_fx_adjusted_metric(con: sqlite3.Connection, metric: dict) -> bool:
+    """
+    Insert or update an FX-adjusted metric.
+
+    Args:
+        con: Database connection
+        metric: Dict with as_of_date, symbol, fx_pair, equity_return, etc.
+
+    Returns:
+        True if successful
+    """
+    try:
+        con.execute("""
+            INSERT INTO fx_adjusted_metrics (
+                as_of_date, symbol, fx_pair, equity_return, fx_return,
+                fx_adjusted_return, period, computed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(as_of_date, symbol, fx_pair, period) DO UPDATE SET
+                equity_return = excluded.equity_return,
+                fx_return = excluded.fx_return,
+                fx_adjusted_return = excluded.fx_adjusted_return,
+                computed_at = datetime('now')
+        """, (
+            metric.get("as_of_date"),
+            metric.get("symbol"),
+            metric.get("fx_pair"),
+            metric.get("equity_return"),
+            metric.get("fx_return"),
+            metric.get("fx_adjusted_return"),
+            metric.get("period", "1M"),
+        ))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_fx_adjusted_metrics(
+    con: sqlite3.Connection,
+    as_of_date: str | None = None,
+    symbol: str | None = None,
+    fx_pair: str | None = None,
+    period: str | None = None,
+    limit: int = 50
+) -> list[dict]:
+    """
+    Get FX-adjusted metrics.
+
+    Args:
+        con: Database connection
+        as_of_date: Filter by date
+        symbol: Filter by symbol
+        fx_pair: Filter by FX pair
+        period: Filter by period
+        limit: Max results
+
+    Returns:
+        List of metric dicts
+    """
+    query = "SELECT * FROM fx_adjusted_metrics WHERE 1=1"
+    params = []
+
+    if as_of_date:
+        query += " AND as_of_date = ?"
+        params.append(as_of_date)
+    if symbol:
+        query += " AND symbol = ?"
+        params.append(symbol)
+    if fx_pair:
+        query += " AND fx_pair = ?"
+        params.append(fx_pair)
+    if period:
+        query += " AND period = ?"
+        params.append(period)
+
+    query += " ORDER BY as_of_date DESC, fx_adjusted_return DESC LIMIT ?"
+    params.append(limit)
+
+    try:
+        cur = con.execute(query, params)
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def record_fx_sync_run(
+    con: sqlite3.Connection,
+    run_id: str,
+    pairs: list[str]
+) -> bool:
+    """Record the start of an FX sync run."""
+    try:
+        con.execute("""
+            INSERT INTO fx_sync_runs (run_id, started_at, pairs_synced, status)
+            VALUES (?, datetime('now'), ?, 'running')
+        """, (run_id, ",".join(pairs)))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def update_fx_sync_run(
+    con: sqlite3.Connection,
+    run_id: str,
+    status: str,
+    rows_upserted: int = 0,
+    error: str | None = None
+) -> bool:
+    """Update an FX sync run."""
+    try:
+        con.execute("""
+            UPDATE fx_sync_runs SET
+                ended_at = datetime('now'),
+                status = ?,
+                rows_upserted = ?,
+                error_message = ?
+            WHERE run_id = ?
+        """, (status, rows_upserted, error, run_id))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_fx_sync_runs(con: sqlite3.Connection, limit: int = 10) -> list[dict]:
+    """Get recent FX sync runs."""
+    try:
+        cur = con.execute("""
+            SELECT * FROM fx_sync_runs
+            ORDER BY started_at DESC
+            LIMIT ?
+        """, (limit,))
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+# =============================================================================
+# Phase 2.5: Mutual Fund CRUD Functions (MUFAP Integration)
+# =============================================================================
+
+
+def upsert_mutual_fund(con: sqlite3.Connection, fund_data: dict) -> bool:
+    """
+    Insert or update a mutual fund.
+
+    Args:
+        con: Database connection
+        fund_data: Dict with fund_id, symbol, fund_name, amc_code, etc.
+
+    Returns:
+        True if successful
+    """
+    try:
+        con.execute("""
+            INSERT INTO mutual_funds (
+                fund_id, symbol, fund_name, amc_code, amc_name,
+                fund_type, category, is_shariah, launch_date,
+                expense_ratio, management_fee, is_active, source,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+            ON CONFLICT(fund_id) DO UPDATE SET
+                symbol = excluded.symbol,
+                fund_name = excluded.fund_name,
+                amc_code = excluded.amc_code,
+                amc_name = excluded.amc_name,
+                fund_type = excluded.fund_type,
+                category = excluded.category,
+                is_shariah = excluded.is_shariah,
+                launch_date = excluded.launch_date,
+                expense_ratio = excluded.expense_ratio,
+                management_fee = excluded.management_fee,
+                is_active = excluded.is_active,
+                source = excluded.source,
+                updated_at = datetime('now')
+        """, (
+            fund_data.get("fund_id"),
+            fund_data.get("symbol"),
+            fund_data.get("fund_name"),
+            fund_data.get("amc_code"),
+            fund_data.get("amc_name"),
+            fund_data.get("fund_type", "OPEN_END"),
+            fund_data.get("category"),
+            fund_data.get("is_shariah", 0),
+            fund_data.get("launch_date"),
+            fund_data.get("expense_ratio"),
+            fund_data.get("management_fee"),
+            fund_data.get("is_active", 1),
+            fund_data.get("source", "MUFAP"),
+        ))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_mutual_funds(
+    con: sqlite3.Connection,
+    category: str | None = None,
+    fund_type: str | None = None,
+    is_shariah: bool | None = None,
+    active_only: bool = True,
+    search: str | None = None,
+) -> list[dict]:
+    """
+    Get mutual funds with optional filters.
+
+    Args:
+        con: Database connection
+        category: Filter by category (e.g., 'Equity', 'Money Market')
+        fund_type: Filter by fund type ('OPEN_END', 'VPS', 'ETF')
+        is_shariah: Filter by Shariah compliance
+        active_only: If True, only return active funds
+        search: Search term for fund name or symbol
+
+    Returns:
+        List of fund dicts
+    """
+    query = "SELECT * FROM mutual_funds WHERE 1=1"
+    params = []
+
+    if category:
+        query += " AND category = ?"
+        params.append(category)
+    if fund_type:
+        query += " AND fund_type = ?"
+        params.append(fund_type)
+    if is_shariah is not None:
+        query += " AND is_shariah = ?"
+        params.append(1 if is_shariah else 0)
+    if active_only:
+        query += " AND is_active = 1"
+    if search:
+        query += " AND (fund_name LIKE ? OR symbol LIKE ?)"
+        params.extend([f"%{search}%", f"%{search}%"])
+
+    query += " ORDER BY category, fund_name"
+
+    try:
+        cur = con.execute(query, params)
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def get_mutual_fund(con: sqlite3.Connection, fund_id: str) -> dict | None:
+    """Get a single mutual fund by fund_id."""
+    try:
+        cur = con.execute("SELECT * FROM mutual_funds WHERE fund_id = ?", (fund_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def get_mutual_fund_by_symbol(con: sqlite3.Connection, symbol: str) -> dict | None:
+    """Get a single mutual fund by symbol."""
+    try:
+        cur = con.execute("SELECT * FROM mutual_funds WHERE symbol = ?", (symbol,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def upsert_mf_nav(
+    con: sqlite3.Connection,
+    fund_id: str,
+    df: "pd.DataFrame"
+) -> int:
+    """
+    Upsert mutual fund NAV data.
+
+    Args:
+        con: Database connection
+        fund_id: Mutual fund ID
+        df: DataFrame with date, nav, offer_price, redemption_price, aum, nav_change_pct
+
+    Returns:
+        Number of rows upserted
+    """
+    if df.empty:
+        return 0
+
+    rows = 0
+    for _, row in df.iterrows():
+        try:
+            con.execute("""
+                INSERT INTO mutual_fund_nav (
+                    fund_id, date, nav, offer_price, redemption_price,
+                    aum, nav_change_pct, source, ingested_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(fund_id, date) DO UPDATE SET
+                    nav = excluded.nav,
+                    offer_price = excluded.offer_price,
+                    redemption_price = excluded.redemption_price,
+                    aum = excluded.aum,
+                    nav_change_pct = excluded.nav_change_pct,
+                    source = excluded.source,
+                    ingested_at = datetime('now')
+            """, (
+                fund_id,
+                row.get("date"),
+                row.get("nav"),
+                row.get("offer_price"),
+                row.get("redemption_price"),
+                row.get("aum"),
+                row.get("nav_change_pct"),
+                row.get("source", "MUFAP"),
+            ))
+            rows += 1
+        except Exception:
+            pass
+
+    con.commit()
+    return rows
+
+
+def get_mf_nav(
+    con: sqlite3.Connection,
+    fund_id: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    limit: int | None = None
+) -> "pd.DataFrame":
+    """
+    Get mutual fund NAV data.
+
+    Args:
+        con: Database connection
+        fund_id: Mutual fund ID
+        start_date: Start date filter
+        end_date: End date filter
+        limit: Max rows to return
+
+    Returns:
+        DataFrame with NAV data
+    """
+    import pandas as pd
+
+    query = "SELECT * FROM mutual_fund_nav WHERE fund_id = ?"
+    params = [fund_id]
+
+    if start_date:
+        query += " AND date >= ?"
+        params.append(start_date)
+    if end_date:
+        query += " AND date <= ?"
+        params.append(end_date)
+
+    query += " ORDER BY date DESC"
+
+    if limit:
+        query += f" LIMIT {limit}"
+
+    try:
+        return pd.read_sql_query(query, con, params=params)
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_mf_latest_date(con: sqlite3.Connection, fund_id: str) -> str | None:
+    """Get the latest NAV date for a mutual fund."""
+    try:
+        cur = con.execute(
+            "SELECT MAX(date) FROM mutual_fund_nav WHERE fund_id = ?",
+            (fund_id,)
+        )
+        row = cur.fetchone()
+        return row[0] if row and row[0] else None
+    except Exception:
+        return None
+
+
+def get_mf_latest_nav(con: sqlite3.Connection, fund_id: str) -> dict | None:
+    """Get the latest NAV for a mutual fund."""
+    try:
+        cur = con.execute("""
+            SELECT * FROM mutual_fund_nav
+            WHERE fund_id = ?
+            ORDER BY date DESC
+            LIMIT 1
+        """, (fund_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def record_mf_sync_run(
+    con: sqlite3.Connection,
+    run_id: str,
+    sync_type: str,
+    funds_total: int = 0
+) -> bool:
+    """Record the start of a mutual fund sync run."""
+    try:
+        con.execute("""
+            INSERT INTO mutual_fund_sync_runs (
+                run_id, started_at, sync_type, status, funds_total
+            ) VALUES (?, datetime('now'), ?, 'running', ?)
+        """, (run_id, sync_type, funds_total))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def update_mf_sync_run(
+    con: sqlite3.Connection,
+    run_id: str,
+    status: str,
+    funds_ok: int = 0,
+    rows_upserted: int = 0,
+    error: str | None = None
+) -> bool:
+    """Update a mutual fund sync run."""
+    try:
+        con.execute("""
+            UPDATE mutual_fund_sync_runs SET
+                ended_at = datetime('now'),
+                status = ?,
+                funds_ok = ?,
+                rows_upserted = ?,
+                error_message = ?
+            WHERE run_id = ?
+        """, (status, funds_ok, rows_upserted, error, run_id))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_mf_sync_runs(con: sqlite3.Connection, limit: int = 10) -> list[dict]:
+    """Get recent mutual fund sync runs."""
+    try:
+        cur = con.execute("""
+            SELECT * FROM mutual_fund_sync_runs
+            ORDER BY started_at DESC
+            LIMIT ?
+        """, (limit,))
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def get_mf_data_summary(con: sqlite3.Connection) -> dict:
+    """
+    Get summary of mutual fund data in database.
+
+    Returns:
+        Dict with fund counts, date ranges, category breakdown, etc.
+    """
+    summary = {
+        "total_funds": 0,
+        "active_funds": 0,
+        "funds_with_nav": 0,
+        "total_nav_rows": 0,
+        "categories": {},
+        "fund_types": {},
+        "latest_nav_date": None,
+        "earliest_nav_date": None,
+    }
+
+    try:
+        # Total and active funds
+        cur = con.execute("SELECT COUNT(*) FROM mutual_funds")
+        summary["total_funds"] = cur.fetchone()[0]
+
+        cur = con.execute("SELECT COUNT(*) FROM mutual_funds WHERE is_active = 1")
+        summary["active_funds"] = cur.fetchone()[0]
+
+        # Funds with NAV data
+        cur = con.execute("""
+            SELECT COUNT(DISTINCT fund_id) FROM mutual_fund_nav
+        """)
+        summary["funds_with_nav"] = cur.fetchone()[0]
+
+        # Total NAV rows
+        cur = con.execute("SELECT COUNT(*) FROM mutual_fund_nav")
+        summary["total_nav_rows"] = cur.fetchone()[0]
+
+        # Category breakdown
+        cur = con.execute("""
+            SELECT category, COUNT(*) as count
+            FROM mutual_funds
+            WHERE is_active = 1
+            GROUP BY category
+            ORDER BY count DESC
+        """)
+        summary["categories"] = {row[0]: row[1] for row in cur.fetchall()}
+
+        # Fund type breakdown
+        cur = con.execute("""
+            SELECT fund_type, COUNT(*) as count
+            FROM mutual_funds
+            WHERE is_active = 1
+            GROUP BY fund_type
+            ORDER BY count DESC
+        """)
+        summary["fund_types"] = {row[0]: row[1] for row in cur.fetchall()}
+
+        # Date range
+        cur = con.execute("SELECT MAX(date), MIN(date) FROM mutual_fund_nav")
+        row = cur.fetchone()
+        if row:
+            summary["latest_nav_date"] = row[0]
+            summary["earliest_nav_date"] = row[1]
+
+    except Exception:
+        pass
+
+    return summary
+
+
+# =============================================================================
+# Phase 3: Bonds/Sukuk Functions
+# =============================================================================
+
+
+def upsert_bond(con: sqlite3.Connection, bond_data: dict) -> bool:
+    """
+    Upsert a bond into the bonds_master table.
+
+    Args:
+        con: Database connection
+        bond_data: Dict with bond fields
+
+    Returns:
+        True if successful
+    """
+    try:
+        con.execute("""
+            INSERT INTO bonds_master (
+                bond_id, isin, symbol, issuer, bond_type, is_islamic,
+                face_value, coupon_rate, coupon_frequency, issue_date,
+                maturity_date, day_count, currency, is_active, source,
+                notes, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      datetime('now'), datetime('now'))
+            ON CONFLICT(bond_id) DO UPDATE SET
+                isin = excluded.isin,
+                symbol = excluded.symbol,
+                issuer = excluded.issuer,
+                bond_type = excluded.bond_type,
+                is_islamic = excluded.is_islamic,
+                face_value = excluded.face_value,
+                coupon_rate = excluded.coupon_rate,
+                coupon_frequency = excluded.coupon_frequency,
+                issue_date = excluded.issue_date,
+                maturity_date = excluded.maturity_date,
+                day_count = excluded.day_count,
+                currency = excluded.currency,
+                is_active = excluded.is_active,
+                source = excluded.source,
+                notes = excluded.notes,
+                updated_at = datetime('now')
+        """, (
+            bond_data.get("bond_id"),
+            bond_data.get("isin"),
+            bond_data.get("symbol"),
+            bond_data.get("issuer"),
+            bond_data.get("bond_type"),
+            bond_data.get("is_islamic", 0),
+            bond_data.get("face_value", 100),
+            bond_data.get("coupon_rate"),
+            bond_data.get("coupon_frequency", 2),
+            bond_data.get("issue_date"),
+            bond_data.get("maturity_date"),
+            bond_data.get("day_count", "ACT/ACT"),
+            bond_data.get("currency", "PKR"),
+            bond_data.get("is_active", 1),
+            bond_data.get("source", "MANUAL"),
+            bond_data.get("notes"),
+        ))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_bonds(
+    con: sqlite3.Connection,
+    bond_type: str | None = None,
+    issuer: str | None = None,
+    is_islamic: bool | None = None,
+    active_only: bool = True,
+) -> list[dict]:
+    """
+    Get bonds with optional filters.
+
+    Args:
+        con: Database connection
+        bond_type: Filter by bond type
+        issuer: Filter by issuer
+        is_islamic: Filter by Islamic/conventional
+        active_only: Only return active bonds
+
+    Returns:
+        List of bond dicts
+    """
+    query = "SELECT * FROM bonds_master WHERE 1=1"
+    params = []
+
+    if active_only:
+        query += " AND is_active = 1"
+    if bond_type:
+        query += " AND bond_type = ?"
+        params.append(bond_type)
+    if issuer:
+        query += " AND issuer = ?"
+        params.append(issuer)
+    if is_islamic is not None:
+        query += " AND is_islamic = ?"
+        params.append(1 if is_islamic else 0)
+
+    query += " ORDER BY maturity_date ASC"
+
+    try:
+        cur = con.execute(query, params)
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def get_bond(con: sqlite3.Connection, bond_id: str) -> dict | None:
+    """Get a single bond by ID."""
+    try:
+        cur = con.execute(
+            "SELECT * FROM bonds_master WHERE bond_id = ?",
+            (bond_id,)
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def get_bond_by_symbol(con: sqlite3.Connection, symbol: str) -> dict | None:
+    """Get a bond by symbol."""
+    try:
+        cur = con.execute(
+            "SELECT * FROM bonds_master WHERE symbol = ?",
+            (symbol,)
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def upsert_bond_quote(con: sqlite3.Connection, quote_data: dict) -> bool:
+    """
+    Upsert a bond quote.
+
+    Args:
+        con: Database connection
+        quote_data: Dict with bond_id, date, price/yield fields
+
+    Returns:
+        True if successful
+    """
+    try:
+        con.execute("""
+            INSERT INTO bond_quotes (
+                bond_id, date, price, dirty_price, ytm,
+                bid_yield, ask_yield, bid_price, ask_price,
+                volume, source, ingested_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(bond_id, date) DO UPDATE SET
+                price = excluded.price,
+                dirty_price = excluded.dirty_price,
+                ytm = excluded.ytm,
+                bid_yield = excluded.bid_yield,
+                ask_yield = excluded.ask_yield,
+                bid_price = excluded.bid_price,
+                ask_price = excluded.ask_price,
+                volume = excluded.volume,
+                source = excluded.source,
+                ingested_at = datetime('now')
+        """, (
+            quote_data.get("bond_id"),
+            quote_data.get("date"),
+            quote_data.get("price"),
+            quote_data.get("dirty_price"),
+            quote_data.get("ytm"),
+            quote_data.get("bid_yield"),
+            quote_data.get("ask_yield"),
+            quote_data.get("bid_price"),
+            quote_data.get("ask_price"),
+            quote_data.get("volume"),
+            quote_data.get("source", "MANUAL"),
+        ))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def upsert_bond_quotes_batch(
+    con: sqlite3.Connection,
+    quotes: list[dict]
+) -> int:
+    """
+    Upsert multiple bond quotes.
+
+    Args:
+        con: Database connection
+        quotes: List of quote dicts
+
+    Returns:
+        Number of rows upserted
+    """
+    count = 0
+    for quote in quotes:
+        if upsert_bond_quote(con, quote):
+            count += 1
+    return count
+
+
+def get_bond_quotes(
+    con: sqlite3.Connection,
+    bond_id: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    limit: int | None = None,
+) -> "pd.DataFrame":
+    """
+    Get bond quotes.
+
+    Args:
+        con: Database connection
+        bond_id: Bond ID
+        start_date: Start date filter
+        end_date: End date filter
+        limit: Max rows
+
+    Returns:
+        DataFrame with quotes
+    """
+    import pandas as pd
+
+    query = "SELECT * FROM bond_quotes WHERE bond_id = ?"
+    params = [bond_id]
+
+    if start_date:
+        query += " AND date >= ?"
+        params.append(start_date)
+    if end_date:
+        query += " AND date <= ?"
+        params.append(end_date)
+
+    query += " ORDER BY date DESC"
+
+    if limit:
+        query += f" LIMIT {limit}"
+
+    try:
+        return pd.read_sql_query(query, con, params=params)
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_bond_latest_quote(con: sqlite3.Connection, bond_id: str) -> dict | None:
+    """Get the latest quote for a bond."""
+    try:
+        cur = con.execute("""
+            SELECT * FROM bond_quotes
+            WHERE bond_id = ?
+            ORDER BY date DESC
+            LIMIT 1
+        """, (bond_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def get_all_latest_quotes(
+    con: sqlite3.Connection,
+    bond_type: str | None = None,
+) -> list[dict]:
+    """Get latest quotes for all bonds with optional type filter."""
+    query = """
+        SELECT bq.*, bm.symbol, bm.issuer, bm.bond_type, bm.coupon_rate,
+               bm.maturity_date, bm.is_islamic
+        FROM bond_quotes bq
+        JOIN bonds_master bm ON bq.bond_id = bm.bond_id
+        WHERE bq.date = (
+            SELECT MAX(date) FROM bond_quotes WHERE bond_id = bq.bond_id
+        )
+        AND bm.is_active = 1
+    """
+    params = []
+
+    if bond_type:
+        query += " AND bm.bond_type = ?"
+        params.append(bond_type)
+
+    query += " ORDER BY bm.maturity_date ASC"
+
+    try:
+        cur = con.execute(query, params)
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def upsert_yield_curve_point(con: sqlite3.Connection, point_data: dict) -> bool:
+    """
+    Upsert a yield curve point.
+
+    Args:
+        con: Database connection
+        point_data: Dict with curve_date, tenor_months, yield_rate, etc.
+
+    Returns:
+        True if successful
+    """
+    try:
+        con.execute("""
+            INSERT INTO yield_curve_points (
+                curve_date, tenor_months, yield_rate, bond_type,
+                interpolation, computed_at
+            ) VALUES (?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(curve_date, tenor_months, bond_type) DO UPDATE SET
+                yield_rate = excluded.yield_rate,
+                interpolation = excluded.interpolation,
+                computed_at = datetime('now')
+        """, (
+            point_data.get("curve_date"),
+            point_data.get("tenor_months"),
+            point_data.get("yield_rate"),
+            point_data.get("bond_type", "PIB"),
+            point_data.get("interpolation", "LINEAR"),
+        ))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_yield_curve(
+    con: sqlite3.Connection,
+    curve_date: str,
+    bond_type: str = "PIB",
+) -> list[dict]:
+    """
+    Get yield curve points for a date.
+
+    Args:
+        con: Database connection
+        curve_date: Date for the curve
+        bond_type: Bond type filter
+
+    Returns:
+        List of curve points sorted by tenor
+    """
+    try:
+        cur = con.execute("""
+            SELECT * FROM yield_curve_points
+            WHERE curve_date = ? AND bond_type = ?
+            ORDER BY tenor_months ASC
+        """, (curve_date, bond_type))
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def get_latest_yield_curve(
+    con: sqlite3.Connection,
+    bond_type: str = "PIB",
+) -> tuple[str | None, list[dict]]:
+    """
+    Get the most recent yield curve.
+
+    Args:
+        con: Database connection
+        bond_type: Bond type filter
+
+    Returns:
+        Tuple of (curve_date, list of points)
+    """
+    try:
+        # Get latest date
+        cur = con.execute("""
+            SELECT MAX(curve_date) FROM yield_curve_points
+            WHERE bond_type = ?
+        """, (bond_type,))
+        row = cur.fetchone()
+        if not row or not row[0]:
+            return None, []
+
+        curve_date = row[0]
+        points = get_yield_curve(con, curve_date, bond_type)
+        return curve_date, points
+    except Exception:
+        return None, []
+
+
+def upsert_bond_analytics(con: sqlite3.Connection, analytics: dict) -> bool:
+    """
+    Upsert bond analytics snapshot.
+
+    Args:
+        con: Database connection
+        analytics: Dict with analytics fields
+
+    Returns:
+        True if successful
+    """
+    try:
+        con.execute("""
+            INSERT INTO bond_analytics_snapshots (
+                bond_id, as_of_date, price, ytm, duration,
+                modified_duration, convexity, accrued_interest,
+                spread_to_benchmark, days_to_maturity, computed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(bond_id, as_of_date) DO UPDATE SET
+                price = excluded.price,
+                ytm = excluded.ytm,
+                duration = excluded.duration,
+                modified_duration = excluded.modified_duration,
+                convexity = excluded.convexity,
+                accrued_interest = excluded.accrued_interest,
+                spread_to_benchmark = excluded.spread_to_benchmark,
+                days_to_maturity = excluded.days_to_maturity,
+                computed_at = datetime('now')
+        """, (
+            analytics.get("bond_id"),
+            analytics.get("as_of_date"),
+            analytics.get("price"),
+            analytics.get("ytm"),
+            analytics.get("duration"),
+            analytics.get("modified_duration"),
+            analytics.get("convexity"),
+            analytics.get("accrued_interest"),
+            analytics.get("spread_to_benchmark"),
+            analytics.get("days_to_maturity"),
+        ))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_bond_analytics(
+    con: sqlite3.Connection,
+    bond_id: str,
+    as_of_date: str | None = None,
+) -> dict | None:
+    """Get bond analytics snapshot."""
+    try:
+        if as_of_date:
+            cur = con.execute("""
+                SELECT * FROM bond_analytics_snapshots
+                WHERE bond_id = ? AND as_of_date = ?
+            """, (bond_id, as_of_date))
+        else:
+            cur = con.execute("""
+                SELECT * FROM bond_analytics_snapshots
+                WHERE bond_id = ?
+                ORDER BY as_of_date DESC
+                LIMIT 1
+            """, (bond_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def record_bond_sync_run(
+    con: sqlite3.Connection,
+    run_id: str,
+    sync_type: str,
+    items_total: int = 0
+) -> bool:
+    """Record the start of a bond sync run."""
+    try:
+        con.execute("""
+            INSERT INTO bond_sync_runs (
+                run_id, started_at, sync_type, status, items_total
+            ) VALUES (?, datetime('now'), ?, 'running', ?)
+        """, (run_id, sync_type, items_total))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def update_bond_sync_run(
+    con: sqlite3.Connection,
+    run_id: str,
+    status: str,
+    items_ok: int = 0,
+    rows_upserted: int = 0,
+    error: str | None = None
+) -> bool:
+    """Update a bond sync run."""
+    try:
+        con.execute("""
+            UPDATE bond_sync_runs SET
+                ended_at = datetime('now'),
+                status = ?,
+                items_ok = ?,
+                rows_upserted = ?,
+                error_message = ?
+            WHERE run_id = ?
+        """, (status, items_ok, rows_upserted, error, run_id))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_bond_sync_runs(con: sqlite3.Connection, limit: int = 10) -> list[dict]:
+    """Get recent bond sync runs."""
+    try:
+        cur = con.execute("""
+            SELECT * FROM bond_sync_runs
+            ORDER BY started_at DESC
+            LIMIT ?
+        """, (limit,))
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def get_bond_data_summary(con: sqlite3.Connection) -> dict:
+    """
+    Get summary of bond data in database.
+
+    Returns:
+        Dict with bond counts, date ranges, type breakdown, etc.
+    """
+    summary = {
+        "total_bonds": 0,
+        "active_bonds": 0,
+        "bonds_with_quotes": 0,
+        "total_quote_rows": 0,
+        "bond_types": {},
+        "issuers": {},
+        "islamic_count": 0,
+        "latest_quote_date": None,
+        "earliest_quote_date": None,
+        "yield_curve_dates": 0,
+    }
+
+    try:
+        # Total and active bonds
+        cur = con.execute("SELECT COUNT(*) FROM bonds_master")
+        summary["total_bonds"] = cur.fetchone()[0]
+
+        cur = con.execute("SELECT COUNT(*) FROM bonds_master WHERE is_active = 1")
+        summary["active_bonds"] = cur.fetchone()[0]
+
+        # Islamic bonds
+        cur = con.execute(
+            "SELECT COUNT(*) FROM bonds_master WHERE is_islamic = 1 AND is_active = 1"
+        )
+        summary["islamic_count"] = cur.fetchone()[0]
+
+        # Bonds with quotes
+        cur = con.execute("SELECT COUNT(DISTINCT bond_id) FROM bond_quotes")
+        summary["bonds_with_quotes"] = cur.fetchone()[0]
+
+        # Total quote rows
+        cur = con.execute("SELECT COUNT(*) FROM bond_quotes")
+        summary["total_quote_rows"] = cur.fetchone()[0]
+
+        # Bond type breakdown
+        cur = con.execute("""
+            SELECT bond_type, COUNT(*) as count
+            FROM bonds_master
+            WHERE is_active = 1
+            GROUP BY bond_type
+            ORDER BY count DESC
+        """)
+        summary["bond_types"] = {row[0]: row[1] for row in cur.fetchall()}
+
+        # Issuer breakdown
+        cur = con.execute("""
+            SELECT issuer, COUNT(*) as count
+            FROM bonds_master
+            WHERE is_active = 1
+            GROUP BY issuer
+            ORDER BY count DESC
+        """)
+        summary["issuers"] = {row[0]: row[1] for row in cur.fetchall()}
+
+        # Date range
+        cur = con.execute("SELECT MAX(date), MIN(date) FROM bond_quotes")
+        row = cur.fetchone()
+        if row:
+            summary["latest_quote_date"] = row[0]
+            summary["earliest_quote_date"] = row[1]
+
+        # Yield curve dates
+        cur = con.execute("SELECT COUNT(DISTINCT curve_date) FROM yield_curve_points")
+        summary["yield_curve_dates"] = cur.fetchone()[0]
+
+    except Exception:
+        pass
+
+    return summary
+
+
+# =============================================================================
+# Phase 3: Sukuk/Debt Market Functions
+# =============================================================================
+
+
+def upsert_sukuk(con: sqlite3.Connection, sukuk_data: dict) -> bool:
+    """
+    Upsert a sukuk into the sukuk_master table.
+
+    Args:
+        con: Database connection
+        sukuk_data: Dict with sukuk fields
+
+    Returns:
+        True if successful
+    """
+    try:
+        con.execute("""
+            INSERT INTO sukuk_master (
+                instrument_id, issuer, name, category, currency,
+                issue_date, maturity_date, coupon_rate, coupon_frequency,
+                face_value, issue_size, shariah_compliant, is_active,
+                source, notes, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      datetime('now'))
+            ON CONFLICT(instrument_id) DO UPDATE SET
+                issuer = excluded.issuer,
+                name = excluded.name,
+                category = excluded.category,
+                currency = excluded.currency,
+                issue_date = excluded.issue_date,
+                maturity_date = excluded.maturity_date,
+                coupon_rate = excluded.coupon_rate,
+                coupon_frequency = excluded.coupon_frequency,
+                face_value = excluded.face_value,
+                issue_size = excluded.issue_size,
+                shariah_compliant = excluded.shariah_compliant,
+                is_active = excluded.is_active,
+                source = excluded.source,
+                notes = excluded.notes
+        """, (
+            sukuk_data.get("instrument_id"),
+            sukuk_data.get("issuer"),
+            sukuk_data.get("name"),
+            sukuk_data.get("category"),
+            sukuk_data.get("currency", "PKR"),
+            sukuk_data.get("issue_date"),
+            sukuk_data.get("maturity_date"),
+            sukuk_data.get("coupon_rate"),
+            sukuk_data.get("coupon_frequency"),
+            sukuk_data.get("face_value", 100.0),
+            sukuk_data.get("issue_size"),
+            sukuk_data.get("shariah_compliant", 1),
+            sukuk_data.get("is_active", 1),
+            sukuk_data.get("source", "MANUAL"),
+            sukuk_data.get("notes"),
+        ))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_sukuk_list(
+    con: sqlite3.Connection,
+    category: str | None = None,
+    issuer: str | None = None,
+    shariah_only: bool = False,
+    active_only: bool = True,
+) -> list[dict]:
+    """
+    Get sukuk instruments with optional filters.
+
+    Args:
+        con: Database connection
+        category: Filter by category (GOP_SUKUK, PIB, T-BILL, etc.)
+        issuer: Filter by issuer
+        shariah_only: Only return Shariah-compliant instruments
+        active_only: Only return active instruments
+
+    Returns:
+        List of sukuk dicts
+    """
+    query = "SELECT * FROM sukuk_master WHERE 1=1"
+    params = []
+
+    if active_only:
+        query += " AND is_active = 1"
+    if category:
+        query += " AND category = ?"
+        params.append(category)
+    if issuer:
+        query += " AND issuer = ?"
+        params.append(issuer)
+    if shariah_only:
+        query += " AND shariah_compliant = 1"
+
+    query += " ORDER BY maturity_date ASC"
+
+    try:
+        cur = con.execute(query, params)
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def get_sukuk(con: sqlite3.Connection, instrument_id: str) -> dict | None:
+    """Get a single sukuk by instrument ID."""
+    try:
+        cur = con.execute(
+            "SELECT * FROM sukuk_master WHERE instrument_id = ?",
+            (instrument_id,)
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def upsert_sukuk_quote(con: sqlite3.Connection, quote_data: dict) -> bool:
+    """
+    Upsert a sukuk quote.
+
+    Args:
+        con: Database connection
+        quote_data: Dict with quote fields
+
+    Returns:
+        True if successful
+    """
+    try:
+        con.execute("""
+            INSERT INTO sukuk_quotes (
+                instrument_id, quote_date, clean_price, dirty_price,
+                yield_to_maturity, bid_yield, ask_yield, volume,
+                source, ingested_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(instrument_id, quote_date) DO UPDATE SET
+                clean_price = excluded.clean_price,
+                dirty_price = excluded.dirty_price,
+                yield_to_maturity = excluded.yield_to_maturity,
+                bid_yield = excluded.bid_yield,
+                ask_yield = excluded.ask_yield,
+                volume = excluded.volume,
+                source = excluded.source,
+                ingested_at = datetime('now')
+        """, (
+            quote_data.get("instrument_id"),
+            quote_data.get("quote_date"),
+            quote_data.get("clean_price"),
+            quote_data.get("dirty_price"),
+            quote_data.get("yield_to_maturity"),
+            quote_data.get("bid_yield"),
+            quote_data.get("ask_yield"),
+            quote_data.get("volume"),
+            quote_data.get("source", "MANUAL"),
+        ))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_sukuk_quotes(
+    con: sqlite3.Connection,
+    instrument_id: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    limit: int | None = None,
+) -> "pd.DataFrame":
+    """Get sukuk quotes as DataFrame."""
+    import pandas as pd
+
+    query = "SELECT * FROM sukuk_quotes WHERE instrument_id = ?"
+    params = [instrument_id]
+
+    if start_date:
+        query += " AND quote_date >= ?"
+        params.append(start_date)
+    if end_date:
+        query += " AND quote_date <= ?"
+        params.append(end_date)
+
+    query += " ORDER BY quote_date DESC"
+
+    if limit:
+        query += f" LIMIT {limit}"
+
+    try:
+        return pd.read_sql_query(query, con, params=params)
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_sukuk_latest_quote(
+    con: sqlite3.Connection,
+    instrument_id: str
+) -> dict | None:
+    """Get the latest quote for a sukuk."""
+    try:
+        cur = con.execute("""
+            SELECT * FROM sukuk_quotes
+            WHERE instrument_id = ?
+            ORDER BY quote_date DESC
+            LIMIT 1
+        """, (instrument_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def upsert_sukuk_yield_curve_point(
+    con: sqlite3.Connection,
+    point_data: dict
+) -> bool:
+    """Upsert a yield curve point."""
+    try:
+        con.execute("""
+            INSERT INTO sukuk_yield_curve (
+                curve_name, curve_date, tenor_days, yield_rate,
+                source, computed_at
+            ) VALUES (?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(curve_name, curve_date, tenor_days) DO UPDATE SET
+                yield_rate = excluded.yield_rate,
+                source = excluded.source,
+                computed_at = datetime('now')
+        """, (
+            point_data.get("curve_name"),
+            point_data.get("curve_date"),
+            point_data.get("tenor_days"),
+            point_data.get("yield_rate"),
+            point_data.get("source", "SBP"),
+        ))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_sukuk_yield_curve(
+    con: sqlite3.Connection,
+    curve_name: str,
+    curve_date: str,
+) -> list[dict]:
+    """Get yield curve points for a specific curve and date."""
+    try:
+        cur = con.execute("""
+            SELECT * FROM sukuk_yield_curve
+            WHERE curve_name = ? AND curve_date = ?
+            ORDER BY tenor_days ASC
+        """, (curve_name, curve_date))
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def get_sukuk_latest_yield_curve(
+    con: sqlite3.Connection,
+    curve_name: str,
+    curve_date: str | None = None,
+) -> list[dict]:
+    """
+    Get yield curve for a curve name.
+
+    Args:
+        con: Database connection
+        curve_name: Name of the curve (e.g., 'GOP_SUKUK')
+        curve_date: Specific date (None = latest available)
+
+    Returns:
+        List of curve point dicts
+    """
+    try:
+        if curve_date is None:
+            # Get latest date
+            cur = con.execute("""
+                SELECT MAX(curve_date) FROM sukuk_yield_curve
+                WHERE curve_name = ?
+            """, (curve_name,))
+            row = cur.fetchone()
+            if not row or not row[0]:
+                return []
+            curve_date = row[0]
+
+        points = get_sukuk_yield_curve(con, curve_name, curve_date)
+        return points
+    except Exception:
+        return []
+
+
+def get_available_curve_dates(
+    con: sqlite3.Connection,
+    curve_name: str,
+    limit: int = 30,
+) -> list[str]:
+    """Get available curve dates for a curve name."""
+    try:
+        cur = con.execute("""
+            SELECT DISTINCT curve_date FROM sukuk_yield_curve
+            WHERE curve_name = ?
+            ORDER BY curve_date DESC
+            LIMIT ?
+        """, (curve_name, limit))
+        return [row[0] for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def upsert_sukuk_analytics(con: sqlite3.Connection, analytics: dict) -> bool:
+    """Upsert sukuk analytics snapshot."""
+    try:
+        con.execute("""
+            INSERT INTO sukuk_analytics_snapshots (
+                instrument_id, as_of_date, price, ytm,
+                macaulay_duration, modified_duration, convexity,
+                accrued_interest, days_to_maturity, computed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(instrument_id, as_of_date) DO UPDATE SET
+                price = excluded.price,
+                ytm = excluded.ytm,
+                macaulay_duration = excluded.macaulay_duration,
+                modified_duration = excluded.modified_duration,
+                convexity = excluded.convexity,
+                accrued_interest = excluded.accrued_interest,
+                days_to_maturity = excluded.days_to_maturity,
+                computed_at = datetime('now')
+        """, (
+            analytics.get("instrument_id"),
+            analytics.get("as_of_date"),
+            analytics.get("price"),
+            analytics.get("ytm"),
+            analytics.get("macaulay_duration"),
+            analytics.get("modified_duration"),
+            analytics.get("convexity"),
+            analytics.get("accrued_interest"),
+            analytics.get("days_to_maturity"),
+        ))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_sukuk_analytics(
+    con: sqlite3.Connection,
+    instrument_id: str,
+    as_of_date: str | None = None,
+) -> dict | None:
+    """Get sukuk analytics snapshot."""
+    try:
+        if as_of_date:
+            cur = con.execute("""
+                SELECT * FROM sukuk_analytics_snapshots
+                WHERE instrument_id = ? AND as_of_date = ?
+            """, (instrument_id, as_of_date))
+        else:
+            cur = con.execute("""
+                SELECT * FROM sukuk_analytics_snapshots
+                WHERE instrument_id = ?
+                ORDER BY as_of_date DESC
+                LIMIT 1
+            """, (instrument_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def upsert_sbp_document(con: sqlite3.Connection, doc_data: dict) -> bool:
+    """Upsert an SBP primary market document."""
+    try:
+        con.execute("""
+            INSERT INTO sbp_primary_market_docs (
+                doc_id, category, title, doc_date, url,
+                local_path, file_size, fetched_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(doc_id) DO UPDATE SET
+                category = excluded.category,
+                title = excluded.title,
+                doc_date = excluded.doc_date,
+                url = excluded.url,
+                local_path = excluded.local_path,
+                file_size = excluded.file_size,
+                fetched_at = datetime('now')
+        """, (
+            doc_data.get("doc_id"),
+            doc_data.get("category"),
+            doc_data.get("title"),
+            doc_data.get("doc_date"),
+            doc_data.get("url"),
+            doc_data.get("local_path"),
+            doc_data.get("file_size"),
+        ))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_sbp_documents(
+    con: sqlite3.Connection,
+    category: str | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    """Get SBP primary market documents."""
+    query = "SELECT * FROM sbp_primary_market_docs WHERE 1=1"
+    params = []
+
+    if category:
+        query += " AND category = ?"
+        params.append(category)
+
+    query += " ORDER BY doc_date DESC, fetched_at DESC"
+    query += f" LIMIT {limit}"
+
+    try:
+        cur = con.execute(query, params)
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def record_sukuk_sync_run(
+    con: sqlite3.Connection,
+    run_id: str,
+    sync_type: str,
+    items_total: int = 0
+) -> bool:
+    """Record the start of a sukuk sync run."""
+    try:
+        con.execute("""
+            INSERT INTO sukuk_sync_runs (
+                run_id, started_at, sync_type, status, items_total
+            ) VALUES (?, datetime('now'), ?, 'running', ?)
+        """, (run_id, sync_type, items_total))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def update_sukuk_sync_run(
+    con: sqlite3.Connection,
+    run_id: str,
+    status: str,
+    items_ok: int = 0,
+    rows_upserted: int = 0,
+    error: str | None = None
+) -> bool:
+    """Update a sukuk sync run."""
+    try:
+        con.execute("""
+            UPDATE sukuk_sync_runs SET
+                ended_at = datetime('now'),
+                status = ?,
+                items_ok = ?,
+                rows_upserted = ?,
+                error_message = ?
+            WHERE run_id = ?
+        """, (status, items_ok, rows_upserted, error, run_id))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_sukuk_sync_runs(con: sqlite3.Connection, limit: int = 10) -> list[dict]:
+    """Get recent sukuk sync runs."""
+    try:
+        cur = con.execute("""
+            SELECT * FROM sukuk_sync_runs
+            ORDER BY started_at DESC
+            LIMIT ?
+        """, (limit,))
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def get_sukuk_data_summary(con: sqlite3.Connection) -> dict:
+    """
+    Get summary of sukuk data in database.
+
+    Returns:
+        Dict with sukuk counts, date ranges, category breakdown, etc.
+    """
+    summary = {
+        "total_instruments": 0,
+        "active_instruments": 0,
+        "shariah_compliant": 0,
+        "instruments_with_quotes": 0,
+        "total_quote_rows": 0,
+        "categories": {},
+        "issuers": {},
+        "latest_quote_date": None,
+        "earliest_quote_date": None,
+        "yield_curves": 0,
+        "sbp_documents": 0,
+    }
+
+    try:
+        # Total and active instruments
+        cur = con.execute("SELECT COUNT(*) FROM sukuk_master")
+        summary["total_instruments"] = cur.fetchone()[0]
+
+        cur = con.execute(
+            "SELECT COUNT(*) FROM sukuk_master WHERE is_active = 1"
+        )
+        summary["active_instruments"] = cur.fetchone()[0]
+
+        # Shariah compliant
+        cur = con.execute(
+            "SELECT COUNT(*) FROM sukuk_master WHERE shariah_compliant = 1"
+        )
+        summary["shariah_compliant"] = cur.fetchone()[0]
+
+        # Instruments with quotes
+        cur = con.execute(
+            "SELECT COUNT(DISTINCT instrument_id) FROM sukuk_quotes"
+        )
+        summary["instruments_with_quotes"] = cur.fetchone()[0]
+
+        # Total quote rows
+        cur = con.execute("SELECT COUNT(*) FROM sukuk_quotes")
+        summary["total_quote_rows"] = cur.fetchone()[0]
+
+        # Category breakdown
+        cur = con.execute("""
+            SELECT category, COUNT(*) as count
+            FROM sukuk_master
+            WHERE is_active = 1
+            GROUP BY category
+            ORDER BY count DESC
+        """)
+        summary["categories"] = {row[0]: row[1] for row in cur.fetchall()}
+
+        # Issuer breakdown
+        cur = con.execute("""
+            SELECT issuer, COUNT(*) as count
+            FROM sukuk_master
+            WHERE is_active = 1
+            GROUP BY issuer
+            ORDER BY count DESC
+        """)
+        summary["issuers"] = {row[0]: row[1] for row in cur.fetchall()}
+
+        # Date range
+        cur = con.execute(
+            "SELECT MAX(quote_date), MIN(quote_date) FROM sukuk_quotes"
+        )
+        row = cur.fetchone()
+        if row:
+            summary["latest_quote_date"] = row[0]
+            summary["earliest_quote_date"] = row[1]
+
+        # Yield curve count
+        cur = con.execute(
+            "SELECT COUNT(DISTINCT curve_name || curve_date) FROM sukuk_yield_curve"
+        )
+        summary["yield_curves"] = cur.fetchone()[0]
+
+        # SBP documents
+        cur = con.execute("SELECT COUNT(*) FROM sbp_primary_market_docs")
+        summary["sbp_documents"] = cur.fetchone()[0]
+
+    except Exception:
+        pass
+
+    return summary

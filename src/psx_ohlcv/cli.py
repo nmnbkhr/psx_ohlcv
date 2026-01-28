@@ -10,6 +10,22 @@ from .analytics import (
     get_current_market_with_sectors,
     init_analytics_schema,
 )
+from .analytics_fx import (
+    compute_and_store_fx_adjusted_metrics,
+    get_fx_analytics,
+)
+from .analytics_phase1 import compute_rankings, get_rankings
+from .analytics_sukuk import (
+    compare_sukuk,
+    get_sukuk_analytics_full,
+    get_yield_curve_data,
+)
+from .analytics_sukuk import (
+    compute_and_store_analytics as compute_sukuk_analytics,
+)
+from .analytics_sukuk import (
+    get_analytics_by_category as get_sukuk_by_category,
+)
 from .config import DATA_ROOT, DEFAULT_DB_PATH, SyncConfig, setup_logging
 from .db import connect, init_schema
 from .query import (
@@ -20,11 +36,31 @@ from .query import (
     get_symbols_string,
 )
 from .range_utils import parse_date, resolve_range
+from .services.announcements_service import (
+    read_status as read_announcements_status,
+)
+from .services.announcements_service import (
+    start_service_background as start_announcements_service,
+)
+from .services.announcements_service import (
+    stop_service as stop_announcements_service,
+)
+from .sources.announcements import (
+    fetch_announcements,
+    fetch_company_payouts,
+    fetch_corporate_events,
+    save_announcement,
+    save_corporate_event,
+    save_dividend_payout,
+)
 from .sources.company_page import (
     listen_quotes,
     refresh_company_profile,
     take_quote_snapshot,
 )
+
+# Phase 1: Instrument universe imports
+from .sources.instrument_universe import seed_universe
 from .sources.listed_companies import (
     export_master_csv,
     get_master_symbols,
@@ -46,19 +82,41 @@ from .sources.sectors import (
     refresh_sectors,
 )
 from .sync import SyncSummary, sync_all, sync_intraday, sync_intraday_bulk
-from .services.announcements_service import (
-    read_status as read_announcements_status,
-    run_service as run_announcements_service,
-    start_service_background as start_announcements_service,
-    stop_service as stop_announcements_service,
+
+# Phase 2: FX imports
+from .sync_fx import (
+    get_fx_data_summary,
+    seed_fx_pairs,
+    sync_fx_pairs,
 )
-from .sources.announcements import (
-    fetch_announcements,
-    fetch_corporate_events,
-    fetch_company_payouts,
-    save_announcement,
-    save_corporate_event,
-    save_dividend_payout,
+from .sync_fx import (
+    get_sync_status as get_fx_sync_status,
+)
+from .sync_instruments import (
+    get_sync_status as get_instruments_sync_status,
+)
+from .sync_instruments import (
+    sync_instruments_eod,
+    sync_single_instrument,
+)
+from .sync_sukuk import (
+    get_data_summary as get_sukuk_data_summary,
+)
+from .sync_sukuk import (
+    get_sync_status as get_sukuk_sync_status,
+)
+
+# Phase 3: Sukuk imports
+from .sync_sukuk import (
+    index_sbp_documents,
+    load_sukuk_csv,
+    load_yield_curve_csv,
+    seed_sukuk,
+    sync_sample_yield_curves,
+    sync_sukuk_quotes,
+)
+from .sync_sukuk import (
+    load_quotes_csv as load_sukuk_quotes_csv,
 )
 
 # Exit codes
@@ -767,6 +825,737 @@ def main(argv: list[str] | None = None) -> int:
         "status", help="Show announcements sync status and stats"
     )
 
+    # =========================================================================
+    # Phase 1: universe command - instrument universe management
+    # =========================================================================
+    universe_parser = subparsers.add_parser(
+        "universe",
+        help="Manage instrument universe (Phase 1: ETFs, REITs, Indexes)"
+    )
+    universe_sub = universe_parser.add_subparsers(
+        dest="universe_command", required=True
+    )
+
+    # universe seed-phase1 - seed instruments from config file
+    universe_seed_parser = universe_sub.add_parser(
+        "seed-phase1",
+        help="Seed instruments table from universe_phase1.json config"
+    )
+    universe_seed_parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to universe config JSON (default: DATA_ROOT/universe_phase1.json)",
+    )
+    universe_seed_parser.add_argument(
+        "--include-equities",
+        action="store_true",
+        help="Also seed equity symbols from symbols table",
+    )
+
+    # universe list - list instruments
+    universe_list_parser = universe_sub.add_parser(
+        "list", help="List instruments in universe"
+    )
+    universe_list_parser.add_argument(
+        "--type",
+        type=str,
+        choices=["ETF", "REIT", "INDEX", "EQUITY", "ALL"],
+        default="ALL",
+        help="Filter by instrument type (default: ALL)",
+    )
+    universe_list_parser.add_argument(
+        "--out",
+        type=str,
+        choices=["csv", "table"],
+        default="table",
+        help="Output format (default: table)",
+    )
+    universe_list_parser.add_argument(
+        "--active-only",
+        action="store_true",
+        help="Show only active instruments",
+    )
+
+    # universe add - add a single instrument
+    universe_add_parser = universe_sub.add_parser(
+        "add", help="Add a new instrument to universe"
+    )
+    universe_add_parser.add_argument(
+        "--type",
+        type=str,
+        choices=["ETF", "REIT", "INDEX"],
+        required=True,
+        help="Instrument type",
+    )
+    universe_add_parser.add_argument(
+        "--symbol",
+        type=str,
+        required=True,
+        help="Instrument symbol (e.g., NIUETF)",
+    )
+    universe_add_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Instrument name (e.g., 'NIT Islamic Equity Fund')",
+    )
+    universe_add_parser.add_argument(
+        "--source",
+        type=str,
+        choices=["DPS", "MANUAL"],
+        default="DPS",
+        help="Data source (default: DPS)",
+    )
+
+    # =========================================================================
+    # Phase 1: instruments command - instrument data operations
+    # =========================================================================
+    instruments_parser = subparsers.add_parser(
+        "instruments",
+        help="Instrument data operations (Phase 1: sync EOD, rankings)"
+    )
+    instruments_sub = instruments_parser.add_subparsers(
+        dest="instruments_command", required=True
+    )
+
+    # instruments sync-eod - sync EOD data for instruments
+    inst_sync_parser = instruments_sub.add_parser(
+        "sync-eod",
+        help="Sync EOD OHLCV data for non-equity instruments"
+    )
+    inst_sync_parser.add_argument(
+        "--types",
+        type=str,
+        default="ETF,REIT,INDEX",
+        help="Comma-separated instrument types (default: ETF,REIT,INDEX)",
+    )
+    inst_sync_parser.add_argument(
+        "--symbol",
+        type=str,
+        default=None,
+        help="Sync single instrument by symbol",
+    )
+    inst_sync_parser.add_argument(
+        "--incremental",
+        action="store_true",
+        default=True,
+        help="Only fetch data newer than existing (default: True)",
+    )
+    inst_sync_parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Full refresh (ignore existing data)",
+    )
+    inst_sync_parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Limit number of instruments to sync (for testing)",
+    )
+
+    # instruments rankings - compute and display rankings
+    inst_rankings_parser = instruments_sub.add_parser(
+        "rankings",
+        help="Compute and display instrument performance rankings"
+    )
+    inst_rankings_parser.add_argument(
+        "--as-of",
+        type=str,
+        default=None,
+        help="Compute rankings as of date (YYYY-MM-DD, default: today)",
+    )
+    inst_rankings_parser.add_argument(
+        "--types",
+        type=str,
+        default="ETF,REIT,INDEX",
+        help="Comma-separated instrument types (default: ETF,REIT,INDEX)",
+    )
+    inst_rankings_parser.add_argument(
+        "--top",
+        type=int,
+        default=10,
+        help="Show top N instruments (default: 10)",
+    )
+    inst_rankings_parser.add_argument(
+        "--compute",
+        action="store_true",
+        help="Force recompute rankings (even if already stored)",
+    )
+    inst_rankings_parser.add_argument(
+        "--out",
+        type=str,
+        choices=["csv", "table"],
+        default="table",
+        help="Output format (default: table)",
+    )
+
+    # instruments sync-status - show recent sync runs
+    instruments_sub.add_parser(
+        "sync-status",
+        help="Show recent instrument sync runs"
+    )
+
+    # =========================================================================
+    # Phase 2: fx command - FX analytics
+    # =========================================================================
+    fx_parser = subparsers.add_parser(
+        "fx",
+        help="FX (Foreign Exchange) analytics (Phase 2: macro context)"
+    )
+    fx_sub = fx_parser.add_subparsers(
+        dest="fx_command", required=True
+    )
+
+    # fx seed - seed default FX pairs
+    fx_sub.add_parser(
+        "seed",
+        help="Seed default FX pairs (USD/PKR, EUR/PKR, GBP/PKR, etc.)"
+    )
+
+    # fx sync - sync FX OHLCV data
+    fx_sync_parser = fx_sub.add_parser(
+        "sync",
+        help="Sync FX OHLCV data for pairs"
+    )
+    fx_sync_parser.add_argument(
+        "--pairs",
+        type=str,
+        default=None,
+        help="Comma-separated pairs to sync (default: all active)",
+    )
+    fx_sync_parser.add_argument(
+        "--incremental",
+        action="store_true",
+        default=True,
+        help="Only fetch data newer than existing (default: True)",
+    )
+    fx_sync_parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Full refresh (ignore existing data)",
+    )
+    fx_sync_parser.add_argument(
+        "--source",
+        type=str,
+        choices=["AUTO", "SBP", "OPEN_API", "SAMPLE"],
+        default="AUTO",
+        help="Data source (default: AUTO)",
+    )
+
+    # fx show - show FX rate and analytics
+    fx_show_parser = fx_sub.add_parser(
+        "show",
+        help="Show FX rate and analytics for a pair"
+    )
+    fx_show_parser.add_argument(
+        "--pair",
+        type=str,
+        required=True,
+        help="FX pair (e.g., USD/PKR)",
+    )
+
+    # fx compute-adjusted - compute FX-adjusted equity metrics
+    fx_adjusted_parser = fx_sub.add_parser(
+        "compute-adjusted",
+        help="Compute FX-adjusted metrics for equities"
+    )
+    fx_adjusted_parser.add_argument(
+        "--as-of",
+        type=str,
+        default=None,
+        help="Date for metrics (YYYY-MM-DD, default: today)",
+    )
+    fx_adjusted_parser.add_argument(
+        "--pair",
+        type=str,
+        default="USD/PKR",
+        help="FX pair for adjustment (default: USD/PKR)",
+    )
+    fx_adjusted_parser.add_argument(
+        "--symbols",
+        type=str,
+        default=None,
+        help="Comma-separated symbols (default: all with recent data)",
+    )
+
+    # fx status - show FX data summary
+    fx_sub.add_parser(
+        "status",
+        help="Show FX data summary and sync status"
+    )
+
+    # =========================================================================
+    # Phase 2.5: mufap command - Mutual Fund analytics (MUFAP Integration)
+    # =========================================================================
+    mufap_parser = subparsers.add_parser(
+        "mufap",
+        help="Mutual Fund analytics (Phase 2.5: MUFAP data integration)"
+    )
+    mufap_sub = mufap_parser.add_subparsers(
+        dest="mufap_command", required=True
+    )
+
+    # mufap seed - seed mutual fund master data
+    mufap_seed_parser = mufap_sub.add_parser(
+        "seed",
+        help="Seed mutual fund master data from MUFAP"
+    )
+    mufap_seed_parser.add_argument(
+        "--category",
+        type=str,
+        default=None,
+        help="Filter by category (Equity, Money Market, Income, etc.)",
+    )
+    mufap_seed_parser.add_argument(
+        "--no-vps",
+        action="store_true",
+        help="Exclude VPS (Voluntary Pension Scheme) funds",
+    )
+    mufap_seed_parser.add_argument(
+        "--source",
+        type=str,
+        choices=["MUFAP", "SAMPLE"],
+        default="MUFAP",
+        help="Data source (default: MUFAP)",
+    )
+
+    # mufap sync - sync NAV data
+    mufap_sync_parser = mufap_sub.add_parser(
+        "sync",
+        help="Sync NAV data for mutual funds"
+    )
+    mufap_sync_parser.add_argument(
+        "--funds",
+        type=str,
+        default=None,
+        help="Comma-separated fund IDs to sync (default: all active)",
+    )
+    mufap_sync_parser.add_argument(
+        "--category",
+        type=str,
+        default=None,
+        help="Filter by category code",
+    )
+    mufap_sync_parser.add_argument(
+        "--incremental",
+        action="store_true",
+        default=True,
+        help="Only fetch data newer than existing (default: True)",
+    )
+    mufap_sync_parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Full refresh (ignore existing data)",
+    )
+    mufap_sync_parser.add_argument(
+        "--source",
+        type=str,
+        choices=["AUTO", "MUFAP", "SAMPLE"],
+        default="AUTO",
+        help="Data source (default: AUTO)",
+    )
+
+    # mufap show - show fund analytics
+    mufap_show_parser = mufap_sub.add_parser(
+        "show",
+        help="Show analytics for a mutual fund"
+    )
+    mufap_show_parser.add_argument(
+        "--fund",
+        type=str,
+        required=True,
+        help="Fund ID or symbol (e.g., ABL-ISF)",
+    )
+
+    # mufap list - list funds
+    mufap_list_parser = mufap_sub.add_parser(
+        "list",
+        help="List mutual funds"
+    )
+    mufap_list_parser.add_argument(
+        "--category",
+        type=str,
+        default=None,
+        help="Filter by category",
+    )
+    mufap_list_parser.add_argument(
+        "--type",
+        type=str,
+        choices=["OPEN_END", "VPS", "ETF", "ALL"],
+        default="ALL",
+        help="Filter by fund type",
+    )
+    mufap_list_parser.add_argument(
+        "--shariah-only",
+        action="store_true",
+        help="Show only Shariah-compliant funds",
+    )
+
+    # mufap rankings - show category rankings
+    mufap_rankings_parser = mufap_sub.add_parser(
+        "rankings",
+        help="Show fund performance rankings by category"
+    )
+    mufap_rankings_parser.add_argument(
+        "--category",
+        type=str,
+        required=True,
+        help="Category (Equity, Money Market, Income, etc.)",
+    )
+    mufap_rankings_parser.add_argument(
+        "--period",
+        type=str,
+        choices=["1W", "1M", "3M", "6M", "1Y"],
+        default="1M",
+        help="Return period (default: 1M)",
+    )
+    mufap_rankings_parser.add_argument(
+        "--top",
+        type=int,
+        default=10,
+        help="Show top N funds (default: 10)",
+    )
+
+    # mufap status - show sync status
+    mufap_sub.add_parser(
+        "status",
+        help="Show mutual fund data summary and sync status"
+    )
+
+    # =========================================================================
+    # Phase 3: bonds command - Bonds/Sukuk analytics
+    # =========================================================================
+    bonds_parser = subparsers.add_parser(
+        "bonds",
+        help="Bonds/Sukuk analytics (Phase 3: Fixed income)"
+    )
+    bonds_sub = bonds_parser.add_subparsers(
+        dest="bonds_command", required=True
+    )
+
+    # bonds init - initialize bond tables and seed default bonds
+    bonds_init_parser = bonds_sub.add_parser(
+        "init",
+        help="Initialize bond tables and seed default bonds"
+    )
+    bonds_init_parser.add_argument(
+        "--type",
+        type=str,
+        choices=["PIB", "T-Bill", "Sukuk", "TFC", "ALL"],
+        default="ALL",
+        help="Filter by bond type (default: ALL)",
+    )
+    bonds_init_parser.add_argument(
+        "--no-islamic",
+        action="store_true",
+        help="Exclude Islamic sukuk",
+    )
+
+    # bonds load - load bond data from CSV
+    bonds_load_parser = bonds_sub.add_parser(
+        "load",
+        help="Load bond data from CSV file"
+    )
+    bonds_load_parser.add_argument(
+        "--master",
+        type=str,
+        default=None,
+        help="Path to bond master CSV file",
+    )
+    bonds_load_parser.add_argument(
+        "--quotes",
+        type=str,
+        default=None,
+        help="Path to bond quotes CSV file",
+    )
+    bonds_load_parser.add_argument(
+        "--sample",
+        action="store_true",
+        help="Generate sample quote data",
+    )
+    bonds_load_parser.add_argument(
+        "--days",
+        type=int,
+        default=90,
+        help="Days of sample data to generate (default: 90)",
+    )
+
+    # bonds compute - compute analytics
+    bonds_compute_parser = bonds_sub.add_parser(
+        "compute",
+        help="Compute bond analytics (YTM, duration, convexity)"
+    )
+    bonds_compute_parser.add_argument(
+        "--bonds",
+        type=str,
+        default=None,
+        help="Comma-separated bond IDs (default: all active)",
+    )
+    bonds_compute_parser.add_argument(
+        "--as-of",
+        type=str,
+        default=None,
+        help="Calculation date (default: today)",
+    )
+    bonds_compute_parser.add_argument(
+        "--curve",
+        action="store_true",
+        help="Also build yield curve",
+    )
+
+    # bonds list - list bonds
+    bonds_list_parser = bonds_sub.add_parser(
+        "list",
+        help="List bonds"
+    )
+    bonds_list_parser.add_argument(
+        "--type",
+        type=str,
+        choices=["PIB", "T-Bill", "Sukuk", "TFC", "Corporate", "ALL"],
+        default="ALL",
+        help="Filter by bond type",
+    )
+    bonds_list_parser.add_argument(
+        "--issuer",
+        type=str,
+        default=None,
+        help="Filter by issuer",
+    )
+    bonds_list_parser.add_argument(
+        "--islamic-only",
+        action="store_true",
+        help="Show only Islamic sukuk",
+    )
+
+    # bonds quote - show bond quote/analytics
+    bonds_quote_parser = bonds_sub.add_parser(
+        "quote",
+        help="Show bond quote and analytics"
+    )
+    bonds_quote_parser.add_argument(
+        "--bond",
+        type=str,
+        required=True,
+        help="Bond ID or symbol",
+    )
+
+    # bonds curve - show yield curve
+    bonds_curve_parser = bonds_sub.add_parser(
+        "curve",
+        help="Show yield curve"
+    )
+    bonds_curve_parser.add_argument(
+        "--type",
+        type=str,
+        choices=["PIB", "T-Bill", "Sukuk", "ALL"],
+        default="PIB",
+        help="Bond type for curve (default: PIB)",
+    )
+    bonds_curve_parser.add_argument(
+        "--date",
+        type=str,
+        default=None,
+        help="Curve date (default: latest)",
+    )
+
+    # bonds status - show data status
+    bonds_sub.add_parser(
+        "status",
+        help="Show bond data summary and sync status"
+    )
+
+    # =========================================================================
+    # Phase 3: sukuk command - Sukuk/Debt Market analytics (additive)
+    # =========================================================================
+    sukuk_parser = subparsers.add_parser(
+        "sukuk",
+        help="Sukuk/Debt Market analytics (Phase 3: Fixed income - PSX GIS & SBP)"
+    )
+    sukuk_sub = sukuk_parser.add_subparsers(
+        dest="sukuk_command", required=True
+    )
+
+    # sukuk seed - seed sukuk master data
+    sukuk_seed_parser = sukuk_sub.add_parser(
+        "seed",
+        help="Seed sukuk master data (GOP Sukuk, PIB, T-Bills, etc.)"
+    )
+    sukuk_seed_parser.add_argument(
+        "--category",
+        type=str,
+        choices=["GOP_SUKUK", "PIB", "TBILL", "CORPORATE_SUKUK", "TFC", "ALL"],
+        default="ALL",
+        help="Filter by category (default: ALL)",
+    )
+    sukuk_seed_parser.add_argument(
+        "--shariah-only",
+        action="store_true",
+        help="Include only shariah-compliant instruments",
+    )
+
+    # sukuk sync - sync quotes and yield curves
+    sukuk_sync_parser = sukuk_sub.add_parser(
+        "sync",
+        help="Sync sukuk quotes and yield curves"
+    )
+    sukuk_sync_parser.add_argument(
+        "--instruments",
+        type=str,
+        default=None,
+        help="Comma-separated instrument IDs (default: all)",
+    )
+    sukuk_sync_parser.add_argument(
+        "--source",
+        type=str,
+        choices=["SAMPLE", "CSV"],
+        default="SAMPLE",
+        help="Data source (default: SAMPLE)",
+    )
+    sukuk_sync_parser.add_argument(
+        "--days",
+        type=int,
+        default=90,
+        help="Days of data for sample generation (default: 90)",
+    )
+    sukuk_sync_parser.add_argument(
+        "--include-curves",
+        action="store_true",
+        help="Also generate yield curve data",
+    )
+
+    # sukuk load - load from CSV files
+    sukuk_load_parser = sukuk_sub.add_parser(
+        "load",
+        help="Load sukuk data from CSV files"
+    )
+    sukuk_load_parser.add_argument(
+        "--master",
+        type=str,
+        default=None,
+        help="Path to sukuk master CSV file",
+    )
+    sukuk_load_parser.add_argument(
+        "--quotes",
+        type=str,
+        default=None,
+        help="Path to sukuk quotes CSV file",
+    )
+    sukuk_load_parser.add_argument(
+        "--curve",
+        type=str,
+        default=None,
+        help="Path to yield curve CSV file",
+    )
+
+    # sukuk compute - compute analytics
+    sukuk_compute_parser = sukuk_sub.add_parser(
+        "compute",
+        help="Compute sukuk analytics (YTM, duration, convexity)"
+    )
+    sukuk_compute_parser.add_argument(
+        "--instruments",
+        type=str,
+        default=None,
+        help="Comma-separated instrument IDs (default: all active)",
+    )
+    sukuk_compute_parser.add_argument(
+        "--as-of",
+        type=str,
+        default=None,
+        help="Calculation date (default: today)",
+    )
+
+    # sukuk list - list sukuk instruments
+    sukuk_list_parser = sukuk_sub.add_parser(
+        "list",
+        help="List sukuk instruments"
+    )
+    sukuk_list_parser.add_argument(
+        "--category",
+        type=str,
+        choices=["GOP_SUKUK", "PIB", "TBILL", "CORPORATE_SUKUK", "TFC", "ALL"],
+        default="ALL",
+        help="Filter by category",
+    )
+    sukuk_list_parser.add_argument(
+        "--issuer",
+        type=str,
+        default=None,
+        help="Filter by issuer",
+    )
+    sukuk_list_parser.add_argument(
+        "--shariah-only",
+        action="store_true",
+        help="Show only shariah-compliant instruments",
+    )
+
+    # sukuk show - show sukuk details and analytics
+    sukuk_show_parser = sukuk_sub.add_parser(
+        "show",
+        help="Show sukuk details and analytics"
+    )
+    sukuk_show_parser.add_argument(
+        "--instrument",
+        type=str,
+        required=True,
+        help="Instrument ID",
+    )
+
+    # sukuk curve - show yield curve
+    sukuk_curve_parser = sukuk_sub.add_parser(
+        "curve",
+        help="Show sukuk yield curve"
+    )
+    sukuk_curve_parser.add_argument(
+        "--name",
+        type=str,
+        choices=["GOP_SUKUK", "PIB", "TBILL"],
+        default="GOP_SUKUK",
+        help="Curve name (default: GOP_SUKUK)",
+    )
+    sukuk_curve_parser.add_argument(
+        "--date",
+        type=str,
+        default=None,
+        help="Curve date (default: latest)",
+    )
+
+    # sukuk sbp - index SBP documents
+    sukuk_sbp_parser = sukuk_sub.add_parser(
+        "sbp",
+        help="Index SBP primary market documents"
+    )
+    sukuk_sbp_parser.add_argument(
+        "--docs-dir",
+        type=str,
+        default=None,
+        help="Directory containing SBP documents",
+    )
+    sukuk_sbp_parser.add_argument(
+        "--create-samples",
+        action="store_true",
+        help="Create sample placeholder documents",
+    )
+
+    # sukuk compare - compare multiple instruments
+    sukuk_compare_parser = sukuk_sub.add_parser(
+        "compare",
+        help="Compare multiple sukuk instruments"
+    )
+    sukuk_compare_parser.add_argument(
+        "--instruments",
+        type=str,
+        required=True,
+        help="Comma-separated instrument IDs to compare",
+    )
+
+    # sukuk status - show data status
+    sukuk_sub.add_parser(
+        "status",
+        help="Show sukuk data summary and sync status"
+    )
+
     args = parser.parse_args(argv)
 
     try:
@@ -792,6 +1581,22 @@ def main(argv: list[str] | None = None) -> int:
             return handle_company(args)
         elif args.command == "announcements":
             return handle_announcements(args)
+        # Phase 1 commands
+        elif args.command == "universe":
+            return handle_universe(args)
+        elif args.command == "instruments":
+            return handle_instruments(args)
+        # Phase 2 commands
+        elif args.command == "fx":
+            return handle_fx(args)
+        # Phase 2.5 commands
+        elif args.command == "mufap":
+            return handle_mufap(args)
+        # Phase 3 commands
+        elif args.command == "bonds":
+            return handle_bonds(args)
+        elif args.command == "sukuk":
+            return handle_sukuk(args)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         return 130
@@ -2161,7 +2966,7 @@ def handle_company_deep_scrape(args: argparse.Namespace) -> int:
         return EXIT_ERROR
 
     print(f"Deep scraping {len(symbols)} symbol(s)...")
-    print(f"Data: trading, profile, financials, ratios, announcements, payouts")
+    print("Data: trading, profile, financials, ratios, announcements, payouts")
     print("-" * 60)
 
     con = connect(args.db)
@@ -2176,7 +2981,7 @@ def handle_company_deep_scrape(args: argparse.Namespace) -> int:
 
         if result.get("success"):
             print(f"\n{symbols[0]} - Deep scrape complete:")
-            print(f"  Snapshot:     saved")
+            print("  Snapshot:     saved")
             print(f"  Trading:      {result.get('trading_sessions_saved', 0)} market type(s)")
             print(f"  Announcements: {result.get('announcements_saved', 0)}")
             print(f"  Equity:       {'saved' if result.get('equity_saved') else 'n/a'}")
@@ -2201,7 +3006,7 @@ def handle_company_deep_scrape(args: argparse.Namespace) -> int:
         con.close()
 
         print("-" * 60)
-        print(f"Deep scrape complete:")
+        print("Deep scrape complete:")
         print(f"  Total:     {summary['total']}")
         print(f"  Completed: {summary['completed']}")
         print(f"  Failed:    {summary['failed']}")
@@ -2230,6 +3035,7 @@ def handle_company_import_payouts(args: argparse.Namespace) -> int:
         5. Run: psxsync company import-payouts --symbol SYMBOL --file path/to/saved.html
     """
     from pathlib import Path
+
     from lxml import html as lxml_html
 
     from .db import upsert_company_payouts
@@ -2298,7 +3104,7 @@ def handle_company_fetch_dividends(args: argparse.Namespace) -> int:
     from .sources.deep_scraper import scrape_psx_financial_announcements
 
     print("Fetching dividend announcements from PSX...")
-    print(f"Source: https://www.psx.com.pk/psx/announcement/financial-announcements")
+    print("Source: https://www.psx.com.pk/psx/announcement/financial-announcements")
     print("-" * 60)
 
     con = connect(args.db)
@@ -2308,7 +3114,7 @@ def handle_company_fetch_dividends(args: argparse.Namespace) -> int:
     con.close()
 
     if result["success"]:
-        print(f"\nDividend Fetch Complete:")
+        print("\nDividend Fetch Complete:")
         print(f"  Announcements found: {result['total_announcements']}")
         print(f"  Payouts saved:       {result['payouts_saved']}")
 
@@ -2401,7 +3207,7 @@ def handle_announcements_sync(args: argparse.Namespace) -> int:
                         if save_dividend_payout(con, payout):
                             stats["dividends"] += 1
                     stats["symbols_processed"] += 1
-                except Exception as e:
+                except Exception:
                     pass  # Skip failed symbols silently
             print(f"  Dividend payouts: {stats['dividends']} saved from {stats['symbols_processed']} symbols")
 
@@ -2467,6 +3273,1589 @@ def handle_announcements_status(args: argparse.Namespace) -> int:
     print(f"  Announcements:     {status.announcements_synced}")
     print(f"  Events:            {status.events_synced}")
     print(f"  Dividends:         {status.dividends_synced}")
+
+    return EXIT_SUCCESS
+
+
+# =============================================================================
+# Phase 1: Universe command handlers
+# =============================================================================
+
+def handle_universe(args: argparse.Namespace) -> int:
+    """Handle universe subcommands."""
+    if args.universe_command == "seed-phase1":
+        return handle_universe_seed(args)
+    elif args.universe_command == "list":
+        return handle_universe_list(args)
+    elif args.universe_command == "add":
+        return handle_universe_add(args)
+    return EXIT_ERROR
+
+
+def handle_universe_seed(args: argparse.Namespace) -> int:
+    """Handle universe seed-phase1 command."""
+    print("Seeding instrument universe (Phase 1)...")
+    print("-" * 50)
+
+    con = connect(args.db)
+    init_schema(con)
+
+    config_path = args.config
+    include_equities = args.include_equities
+
+    result = seed_universe(
+        con,
+        config_path=config_path,
+        include_equities=include_equities,
+    )
+    con.close()
+
+    # Get counts from result
+    totals = result.get("totals", {})
+    indexes = result.get("indexes", {})
+    etfs = result.get("etfs", {})
+    reits = result.get("reits", {})
+    equities = result.get("equities", {})
+
+    total_count = totals.get("inserted", 0) + totals.get("updated", 0)
+
+    print("\nUniverse Seed Complete")
+    print("=" * 50)
+    idx_count = indexes.get("inserted", 0) + indexes.get("updated", 0)
+    etf_count = etfs.get("inserted", 0) + etfs.get("updated", 0)
+    reit_count = reits.get("inserted", 0) + reits.get("updated", 0)
+    print(f"  Indexes seeded:  {idx_count}")
+    print(f"  ETFs seeded:     {etf_count}")
+    print(f"  REITs seeded:    {reit_count}")
+    if include_equities:
+        equity_count = equities.get("inserted", 0) + equities.get("updated", 0)
+        print(f"  Equities seeded: {equity_count}")
+    print(f"  Total:           {total_count}")
+    return EXIT_SUCCESS
+
+
+def handle_universe_list(args: argparse.Namespace) -> int:
+    """Handle universe list command."""
+    from .db import get_instruments
+
+    con = connect(args.db)
+    init_schema(con)
+
+    # Get instruments
+    inst_type = None if args.type == "ALL" else args.type
+    active_only = args.active_only
+
+    instruments = get_instruments(con, instrument_type=inst_type, active_only=active_only)
+    con.close()
+
+    if not instruments:
+        print("No instruments found.", file=sys.stderr)
+        print("Run 'psxsync universe seed-phase1' to seed instruments.", file=sys.stderr)
+        return EXIT_ERROR
+
+    if args.out == "csv":
+        print("instrument_id,symbol,name,type,source,is_active")
+        for inst in instruments:
+            print(
+                f"{inst['instrument_id']},"
+                f"{inst['symbol']},"
+                f"\"{inst['name'] or ''}\","
+                f"{inst['instrument_type']},"
+                f"{inst['source']},"
+                f"{inst['is_active']}"
+            )
+    else:
+        # Table format
+        print(f"{'SYMBOL':<12} {'NAME':<35} {'TYPE':<8} {'SOURCE':<8} {'ACTIVE'}")
+        print("-" * 75)
+        for inst in instruments:
+            name = (inst["name"] or "")[:35]
+            active = "Yes" if inst["is_active"] else "No"
+            print(
+                f"{inst['symbol']:<12} {name:<35} "
+                f"{inst['instrument_type']:<8} {inst['source']:<8} {active}"
+            )
+        print(f"\nTotal: {len(instruments)} instruments")
+
+    return EXIT_SUCCESS
+
+
+def handle_universe_add(args: argparse.Namespace) -> int:
+    """Handle universe add command."""
+    from .db import upsert_instrument
+
+    symbol = args.symbol.upper()
+    inst_type = args.type
+    name = args.name
+    source = args.source
+
+    print(f"Adding instrument: {symbol} ({inst_type})")
+
+    con = connect(args.db)
+    init_schema(con)
+
+    # Create instrument ID based on type
+    if inst_type == "INDEX":
+        instrument_id = f"IDX:{symbol}"
+    else:
+        instrument_id = f"PSX:{symbol}"
+
+    instrument = {
+        "instrument_id": instrument_id,
+        "symbol": symbol,
+        "name": name,
+        "instrument_type": inst_type,
+        "exchange": "PSX",
+        "currency": "PKR",
+        "is_active": 1,
+        "source": source,
+    }
+
+    try:
+        upsert_instrument(con, instrument)
+        con.close()
+
+        print("\nInstrument Added")
+        print("=" * 50)
+        print(f"  ID:     {instrument_id}")
+        print(f"  Symbol: {symbol}")
+        print(f"  Name:   {name}")
+        print(f"  Type:   {inst_type}")
+        print(f"  Source: {source}")
+        return EXIT_SUCCESS
+    except Exception as e:
+        con.close()
+        print(f"Error: {e}", file=sys.stderr)
+        return EXIT_ERROR
+
+
+# =============================================================================
+# Phase 1: Instruments command handlers
+# =============================================================================
+
+def handle_instruments(args: argparse.Namespace) -> int:
+    """Handle instruments subcommands."""
+    if args.instruments_command == "sync-eod":
+        return handle_instruments_sync_eod(args)
+    elif args.instruments_command == "rankings":
+        return handle_instruments_rankings(args)
+    elif args.instruments_command == "sync-status":
+        return handle_instruments_sync_status(args)
+    return EXIT_ERROR
+
+
+def handle_instruments_sync_eod(args: argparse.Namespace) -> int:
+    """Handle instruments sync-eod command."""
+    setup_logging()
+
+    # Single symbol mode
+    if args.symbol:
+        symbol = args.symbol.upper()
+        incremental = not args.full
+        mode_str = "incremental" if incremental else "full"
+
+        print(f"Syncing EOD data for {symbol} ({mode_str} mode)...")
+
+        rows, error = sync_single_instrument(
+            symbol=symbol,
+            db_path=args.db,
+            incremental=incremental,
+        )
+
+        if error:
+            print(f"Error: {error}", file=sys.stderr)
+            return EXIT_ERROR
+
+        print(f"\nSync Complete: {symbol}")
+        print(f"  Rows upserted: {rows}")
+        return EXIT_SUCCESS
+
+    # Multi-instrument mode
+    types_list = [t.strip().upper() for t in args.types.split(",")]
+    incremental = not args.full
+    mode_str = "incremental" if incremental else "full"
+
+    print(f"Syncing EOD data for instruments ({mode_str} mode)...")
+    print(f"  Types: {', '.join(types_list)}")
+    if args.limit:
+        print(f"  Limit: {args.limit}")
+    print("-" * 50)
+
+    def progress_callback(current, total, symbol):
+        print(f"  [{current}/{total}] {symbol}")
+
+    summary = sync_instruments_eod(
+        db_path=args.db,
+        instrument_types=types_list,
+        incremental=incremental,
+        limit=args.limit,
+        progress_callback=progress_callback,
+    )
+
+    print("\nInstrument EOD Sync Summary")
+    print("=" * 50)
+    print(f"  Total:         {summary.total}")
+    print(f"  OK:            {summary.ok}")
+    print(f"  No data:       {summary.no_data}")
+    print(f"  Failed:        {summary.failed}")
+    print(f"  Rows upserted: {summary.rows_upserted}")
+
+    if summary.errors:
+        print("\nErrors:")
+        for symbol, error in summary.errors[:10]:
+            print(f"  {symbol}: {error}")
+        if len(summary.errors) > 10:
+            print(f"  ... and {len(summary.errors) - 10} more")
+
+    return EXIT_SUCCESS if summary.ok > 0 else EXIT_ERROR
+
+
+def handle_instruments_rankings(args: argparse.Namespace) -> int:
+    """Handle instruments rankings command."""
+    from datetime import date
+
+    types_list = [t.strip().upper() for t in args.types.split(",")]
+    as_of = args.as_of or date.today().isoformat()
+    top_n = args.top
+    force_compute = args.compute
+
+    print(f"Instrument Rankings (as of {as_of})")
+    print(f"  Types: {', '.join(types_list)}")
+    print("-" * 60)
+
+    con = connect(args.db)
+    init_schema(con)
+
+    # Check if we need to compute rankings
+    if force_compute:
+        print("Computing rankings...")
+        result = compute_rankings(con, as_of_date=as_of, instrument_types=types_list)
+        if not result["success"]:
+            print(f"Error: {result.get('error')}", file=sys.stderr)
+            con.close()
+            return EXIT_ERROR
+        print(f"  Computed rankings for {result.get('instruments_ranked', 0)} instruments")
+
+    # Get rankings
+    rankings = get_rankings(con, as_of_date=as_of, instrument_types=types_list, top_n=top_n)
+    con.close()
+
+    if not rankings:
+        print("\nNo rankings found.")
+        print("Run 'psxsync instruments rankings --compute' to compute rankings.")
+        return EXIT_SUCCESS
+
+    if args.out == "csv":
+        print("rank,symbol,name,type,return_1m,return_3m,return_6m,return_1y,volatility_30d,relative_strength")
+        for r in rankings:
+            print(
+                f"{r.get('rank', '')},"
+                f"{r['symbol']},"
+                f"\"{r.get('name', '')}\","
+                f"{r.get('instrument_type', '')},"
+                f"{r.get('return_1m', ''):.4f},"
+                f"{r.get('return_3m', ''):.4f},"
+                f"{r.get('return_6m', ''):.4f},"
+                f"{r.get('return_1y', ''):.4f},"
+                f"{r.get('volatility_30d', ''):.4f},"
+                f"{r.get('relative_strength', ''):.4f}"
+            )
+    else:
+        # Table format
+        print(
+            f"{'#':<4} {'SYMBOL':<12} {'TYPE':<6} "
+            f"{'1M':>8} {'3M':>8} {'6M':>8} {'1Y':>8} {'VOL30':>8} {'RS':>6}"
+        )
+        print("-" * 80)
+        for i, r in enumerate(rankings, 1):
+            ret_1m = f"{r.get('return_1m', 0) * 100:.1f}%" if r.get('return_1m') else "N/A"
+            ret_3m = f"{r.get('return_3m', 0) * 100:.1f}%" if r.get('return_3m') else "N/A"
+            ret_6m = f"{r.get('return_6m', 0) * 100:.1f}%" if r.get('return_6m') else "N/A"
+            ret_1y = f"{r.get('return_1y', 0) * 100:.1f}%" if r.get('return_1y') else "N/A"
+            vol = f"{r.get('volatility_30d', 0) * 100:.1f}%" if r.get('volatility_30d') else "N/A"
+            rs = f"{r.get('relative_strength', 0):.2f}" if r.get('relative_strength') else "N/A"
+            print(
+                f"{i:<4} {r['symbol']:<12} {r.get('instrument_type', ''):<6} "
+                f"{ret_1m:>8} {ret_3m:>8} {ret_6m:>8} {ret_1y:>8} {vol:>8} {rs:>6}"
+            )
+
+        print(f"\nShowing top {len(rankings)} instruments")
+
+    return EXIT_SUCCESS
+
+
+def handle_instruments_sync_status(args: argparse.Namespace) -> int:
+    """Handle instruments sync-status command."""
+    runs = get_instruments_sync_status(args.db)
+
+    if not runs:
+        print("No sync runs found.")
+        return EXIT_SUCCESS
+
+    print("Recent Instrument Sync Runs")
+    print("=" * 70)
+    print(f"{'RUN ID':<10} {'TYPES':<20} {'STATUS':<10} {'STARTED':<20}")
+    print("-" * 70)
+
+    for run in runs:
+        print(
+            f"{run['run_id']:<10} "
+            f"{run.get('instrument_types', ''):<20} "
+            f"{run.get('status', ''):<10} "
+            f"{run.get('started_at', '')[:19]:<20}"
+        )
+
+    return EXIT_SUCCESS
+
+
+# =============================================================================
+# Phase 2: FX command handlers
+# =============================================================================
+
+def handle_fx(args: argparse.Namespace) -> int:
+    """Handle fx subcommands."""
+    if args.fx_command == "seed":
+        return handle_fx_seed(args)
+    elif args.fx_command == "sync":
+        return handle_fx_sync(args)
+    elif args.fx_command == "show":
+        return handle_fx_show(args)
+    elif args.fx_command == "compute-adjusted":
+        return handle_fx_compute_adjusted(args)
+    elif args.fx_command == "status":
+        return handle_fx_status(args)
+    return EXIT_ERROR
+
+
+def handle_fx_seed(args: argparse.Namespace) -> int:
+    """Handle fx seed command."""
+    print("Seeding FX pairs (Phase 2)...")
+    print("-" * 50)
+
+    result = seed_fx_pairs(db_path=args.db)
+
+    print("\nFX Seed Complete")
+    print("=" * 50)
+    print(f"  Pairs seeded: {result.get('inserted', 0)}")
+    print(f"  Failed:       {result.get('failed', 0)}")
+    print(f"  Total:        {result.get('total', 0)}")
+
+    return EXIT_SUCCESS
+
+
+def handle_fx_sync(args: argparse.Namespace) -> int:
+    """Handle fx sync command."""
+    # Parse pairs
+    pairs = None
+    if args.pairs:
+        pairs = [p.strip() for p in args.pairs.split(",")]
+
+    incremental = not args.full
+    mode_str = "incremental" if incremental else "full"
+
+    print(f"Syncing FX data ({mode_str} mode)...")
+    if pairs:
+        print(f"  Pairs: {', '.join(pairs)}")
+    else:
+        print("  Pairs: all active")
+    print(f"  Source: {args.source}")
+    print("-" * 50)
+
+    def progress_callback(current, total, pair):
+        print(f"  [{current}/{total}] {pair}")
+
+    summary = sync_fx_pairs(
+        pairs=pairs,
+        db_path=args.db,
+        incremental=incremental,
+        source=args.source,
+        progress_callback=progress_callback,
+    )
+
+    print("\nFX Sync Summary")
+    print("=" * 50)
+    print(f"  Total:         {summary.total}")
+    print(f"  OK:            {summary.ok}")
+    print(f"  No data:       {summary.no_data}")
+    print(f"  Failed:        {summary.failed}")
+    print(f"  Rows upserted: {summary.rows_upserted}")
+
+    if summary.errors:
+        print("\nErrors:")
+        for pair, error in summary.errors[:5]:
+            print(f"  {pair}: {error}")
+
+    return EXIT_SUCCESS if summary.ok > 0 else EXIT_ERROR
+
+
+def handle_fx_show(args: argparse.Namespace) -> int:
+    """Handle fx show command."""
+    from .db import get_fx_ohlcv, get_fx_pair
+
+    pair = args.pair.upper()
+
+    con = connect(args.db)
+    init_schema(con)
+
+    # Get pair info
+    pair_info = get_fx_pair(con, pair)
+    if not pair_info:
+        print(f"FX pair '{pair}' not found.", file=sys.stderr)
+        print("Run 'psxsync fx seed' to seed FX pairs.", file=sys.stderr)
+        con.close()
+        return EXIT_ERROR
+
+    # Get analytics
+    analytics = get_fx_analytics(con, pair)
+
+    print(f"\nFX Analytics: {pair}")
+    print("=" * 50)
+    print(f"  Description: {pair_info.get('description', 'N/A')}")
+    print(f"  Source:      {pair_info.get('source', 'N/A')}")
+    print(f"  Active:      {'Yes' if pair_info.get('is_active') else 'No'}")
+
+    if analytics.get("error"):
+        print("\n  No data available.")
+        con.close()
+        return EXIT_SUCCESS
+
+    print(f"\n  Latest Date: {analytics.get('latest_date', 'N/A')}")
+    print(f"  Latest Rate: {analytics.get('latest_close', 'N/A')}")
+
+    # Returns
+    print("\n  Returns:")
+    if analytics.get("return_1W"):
+        print(f"    1 Week:  {analytics['return_1W'] * 100:.2f}%")
+    if analytics.get("return_1M"):
+        print(f"    1 Month: {analytics['return_1M'] * 100:.2f}%")
+    if analytics.get("return_3M"):
+        print(f"    3 Month: {analytics['return_3M'] * 100:.2f}%")
+
+    # Volatility
+    print("\n  Volatility (annualized):")
+    if analytics.get("vol_1M"):
+        print(f"    1 Month: {analytics['vol_1M'] * 100:.2f}%")
+    if analytics.get("vol_3M"):
+        print(f"    3 Month: {analytics['vol_3M'] * 100:.2f}%")
+
+    # Trend
+    trend = analytics.get("trend", {})
+    if trend:
+        print("\n  Trend Analysis:")
+        print(f"    Direction:   {trend.get('trend_direction', 'N/A').upper()}")
+        print(f"    Strength:    {trend.get('trend_strength', 'N/A')}")
+        print(f"    50D MA:      {trend.get('moving_average', 'N/A')}")
+        pct = trend.get('pct_from_ma', 0) * 100
+        print(f"    From MA:     {pct:+.2f}%")
+
+    # Recent data
+    print("\n  Recent Rates:")
+    df = get_fx_ohlcv(con, pair, limit=5)
+    if not df.empty:
+        for _, row in df.iterrows():
+            print(f"    {row['date']}: {row['close']:.4f}")
+
+    con.close()
+    return EXIT_SUCCESS
+
+
+def handle_fx_compute_adjusted(args: argparse.Namespace) -> int:
+    """Handle fx compute-adjusted command."""
+    from datetime import date
+
+    as_of = args.as_of or date.today().isoformat()
+    fx_pair = args.pair
+    symbols = None
+    if args.symbols:
+        symbols = [s.strip().upper() for s in args.symbols.split(",")]
+
+    print("Computing FX-adjusted metrics")
+    print(f"  As of:   {as_of}")
+    print(f"  FX Pair: {fx_pair}")
+    if symbols:
+        print(f"  Symbols: {len(symbols)}")
+    else:
+        print("  Symbols: all with recent data")
+    print("-" * 50)
+
+    con = connect(args.db)
+    init_schema(con)
+
+    result = compute_and_store_fx_adjusted_metrics(
+        con,
+        symbols=symbols,
+        fx_pair=fx_pair,
+        as_of_date=as_of,
+    )
+
+    con.close()
+
+    if result.get("success"):
+        print("\nFX-Adjusted Metrics Complete")
+        print("=" * 50)
+        print(f"  Symbols processed: {result.get('symbols_processed', 0)}")
+        print(f"  Metrics stored:    {result.get('metrics_stored', 0)}")
+        print(f"  Metrics failed:    {result.get('metrics_failed', 0)}")
+        return EXIT_SUCCESS
+    else:
+        print(f"Error: {result.get('error')}", file=sys.stderr)
+        return EXIT_ERROR
+
+
+def handle_fx_status(args: argparse.Namespace) -> int:
+    """Handle fx status command."""
+    summary = get_fx_data_summary(args.db)
+
+    print("\nFX Data Summary")
+    print("=" * 50)
+    print(f"  Total pairs:  {summary.get('total_pairs', 0)}")
+    print(f"  Active pairs: {summary.get('active_pairs', 0)}")
+
+    print("\nPair Details:")
+    print(f"{'PAIR':<12} {'SOURCE':<10} {'ACTIVE':<8} {'LATEST':<12} {'ROWS':<8}")
+    print("-" * 55)
+
+    for pair in summary.get("pairs", []):
+        active = "Yes" if pair.get("is_active") else "No"
+        latest = pair.get("latest_date") or "N/A"
+        rows = pair.get("row_count", 0)
+        print(
+            f"{pair['pair']:<12} {pair.get('source', 'N/A'):<10} "
+            f"{active:<8} {latest:<12} {rows:<8}"
+        )
+
+    # Recent sync runs
+    runs = get_fx_sync_status(args.db)
+    if runs:
+        print("\nRecent Sync Runs:")
+        print(f"{'RUN ID':<10} {'STATUS':<12} {'ROWS':<8} {'STARTED':<20}")
+        print("-" * 55)
+        for run in runs[:5]:
+            print(
+                f"{run['run_id']:<10} "
+                f"{run.get('status', 'N/A'):<12} "
+                f"{run.get('rows_upserted', 0):<8} "
+                f"{run.get('started_at', '')[:19]:<20}"
+            )
+
+    return EXIT_SUCCESS
+
+
+# =============================================================================
+# Phase 2.5: MUFAP Handlers (Mutual Fund Analytics)
+# =============================================================================
+
+
+def handle_mufap(args: argparse.Namespace) -> int:
+    """Handle mufap subcommands."""
+    if args.mufap_command == "seed":
+        return handle_mufap_seed(args)
+    elif args.mufap_command == "sync":
+        return handle_mufap_sync(args)
+    elif args.mufap_command == "show":
+        return handle_mufap_show(args)
+    elif args.mufap_command == "list":
+        return handle_mufap_list(args)
+    elif args.mufap_command == "rankings":
+        return handle_mufap_rankings(args)
+    elif args.mufap_command == "status":
+        return handle_mufap_status(args)
+    return EXIT_ERROR
+
+
+def handle_mufap_seed(args: argparse.Namespace) -> int:
+    """Handle mufap seed command."""
+    from .sync_mufap import seed_mutual_funds
+
+    print("Seeding Mutual Funds (Phase 2.5: MUFAP Integration)...")
+    print("-" * 50)
+
+    include_vps = not getattr(args, "no_vps", False)
+
+    result = seed_mutual_funds(
+        db_path=args.db,
+        category=args.category,
+        include_vps=include_vps,
+    )
+
+    print("\nMutual Fund Seed Complete")
+    print("=" * 50)
+    print(f"  Funds seeded: {result.get('inserted', 0)}")
+    print(f"  Failed:       {result.get('failed', 0)}")
+    print(f"  Total:        {result.get('total', 0)}")
+
+    return EXIT_SUCCESS
+
+
+def handle_mufap_sync(args: argparse.Namespace) -> int:
+    """Handle mufap sync command."""
+    from .sync_mufap import sync_mutual_funds
+
+    # Parse funds
+    fund_ids = None
+    if args.funds:
+        fund_ids = [f.strip() for f in args.funds.split(",")]
+
+    incremental = not args.full
+    mode_str = "incremental" if incremental else "full"
+
+    print(f"Syncing Mutual Fund NAV data ({mode_str} mode)...")
+    if fund_ids:
+        print(f"  Funds: {', '.join(fund_ids)}")
+    else:
+        print("  Funds: all active")
+    if args.category:
+        print(f"  Category: {args.category}")
+    print(f"  Source: {args.source}")
+    print("-" * 50)
+
+    def progress_callback(current, total, fund_id):
+        print(f"  [{current}/{total}] {fund_id}")
+
+    summary = sync_mutual_funds(
+        fund_ids=fund_ids,
+        db_path=args.db,
+        incremental=incremental,
+        source=args.source,
+        category=args.category,
+        progress_callback=progress_callback,
+    )
+
+    print("\nMutual Fund Sync Summary")
+    print("=" * 50)
+    print(f"  Total:         {summary.total}")
+    print(f"  OK:            {summary.ok}")
+    print(f"  No data:       {summary.no_data}")
+    print(f"  Failed:        {summary.failed}")
+    print(f"  Rows upserted: {summary.rows_upserted}")
+
+    if summary.errors:
+        print("\nErrors:")
+        for fund_id, error in summary.errors[:5]:
+            print(f"  {fund_id}: {error}")
+
+    return EXIT_SUCCESS if summary.ok > 0 else EXIT_ERROR
+
+
+def handle_mufap_show(args: argparse.Namespace) -> int:
+    """Handle mufap show command."""
+    from .analytics_mufap import get_mf_analytics
+    from .db import get_mf_nav, get_mutual_fund, get_mutual_fund_by_symbol
+
+    fund_query = args.fund
+
+    con = connect(args.db)
+    init_schema(con)
+
+    # Try to find fund by ID or symbol
+    fund = get_mutual_fund(con, fund_query)
+    if not fund:
+        fund = get_mutual_fund_by_symbol(con, fund_query)
+    if not fund:
+        print(f"Mutual fund '{fund_query}' not found.", file=sys.stderr)
+        print("Run 'psxsync mufap seed' to seed mutual funds.", file=sys.stderr)
+        con.close()
+        return EXIT_ERROR
+
+    fund_id = fund["fund_id"]
+
+    # Get analytics
+    analytics = get_mf_analytics(con, fund_id)
+
+    print(f"\nMutual Fund Analytics: {fund.get('symbol', fund_id)}")
+    print("=" * 60)
+    print(f"  Fund Name:     {fund.get('fund_name', 'N/A')}")
+    print(f"  AMC:           {fund.get('amc_name', 'N/A')}")
+    print(f"  Category:      {fund.get('category', 'N/A')}")
+    print(f"  Fund Type:     {fund.get('fund_type', 'N/A')}")
+    print(f"  Shariah:       {'Yes' if fund.get('is_shariah') else 'No'}")
+    print(f"  Expense Ratio: {fund.get('expense_ratio', 'N/A')}%")
+
+    if analytics.get("error"):
+        print("\n  No NAV data available.")
+        con.close()
+        return EXIT_SUCCESS
+
+    print(f"\n  Latest Date:   {analytics.get('latest_date', 'N/A')}")
+    print(f"  Latest NAV:    Rs. {analytics.get('latest_nav', 'N/A')}")
+    if analytics.get("latest_aum"):
+        print(f"  AUM:           Rs. {analytics.get('latest_aum', 0):.1f}M")
+
+    # Returns
+    print("\n  Returns:")
+    for period in ["1W", "1M", "3M", "6M", "1Y"]:
+        key = f"return_{period}"
+        if analytics.get(key) is not None:
+            print(f"    {period}:  {analytics[key] * 100:+.2f}%")
+
+    # Volatility
+    if analytics.get("vol_1M") or analytics.get("vol_3M"):
+        print("\n  Volatility (annualized):")
+        if analytics.get("vol_1M"):
+            print(f"    1M:  {analytics['vol_1M'] * 100:.2f}%")
+        if analytics.get("vol_3M"):
+            print(f"    3M:  {analytics['vol_3M'] * 100:.2f}%")
+
+    # Sharpe ratio
+    if analytics.get("sharpe_ratio") is not None:
+        print(f"\n  Sharpe Ratio:  {analytics['sharpe_ratio']:.2f}")
+
+    # Max drawdown
+    if analytics.get("max_drawdown") is not None:
+        print(f"  Max Drawdown:  {analytics['max_drawdown'] * 100:.2f}%")
+
+    # Recent NAV
+    print("\n  Recent NAV:")
+    df = get_mf_nav(con, fund_id, limit=5)
+    if not df.empty:
+        for _, row in df.iterrows():
+            change = row.get("nav_change_pct", 0) or 0
+            print(f"    {row['date']}: Rs. {row['nav']:.4f} ({change:+.2f}%)")
+
+    con.close()
+    return EXIT_SUCCESS
+
+
+def handle_mufap_list(args: argparse.Namespace) -> int:
+    """Handle mufap list command."""
+    from .db import get_mutual_funds
+
+    con = connect(args.db)
+    init_schema(con)
+
+    # Parse filters
+    fund_type = None if args.type == "ALL" else args.type
+    is_shariah = True if getattr(args, "shariah_only", False) else None
+
+    funds = get_mutual_funds(
+        con,
+        category=args.category,
+        fund_type=fund_type,
+        is_shariah=is_shariah,
+        active_only=True,
+    )
+
+    if not funds:
+        print("No mutual funds found.", file=sys.stderr)
+        print("Run 'psxsync mufap seed' to seed mutual funds.", file=sys.stderr)
+        con.close()
+        return EXIT_ERROR
+
+    print(f"\nMutual Funds ({len(funds)} found)")
+    print("=" * 80)
+    print(
+        f"{'SYMBOL':<15} {'CATEGORY':<18} {'TYPE':<10} "
+        f"{'SHARIAH':<8} {'AMC':<15}"
+    )
+    print("-" * 80)
+
+    for fund in funds:
+        shariah = "Yes" if fund.get("is_shariah") else "No"
+        amc = (fund.get("amc_name") or "N/A")[:15]
+        category = (fund.get("category") or "N/A")[:18]
+        fund_type = (fund.get("fund_type") or "N/A")[:10]
+        symbol = (fund.get("symbol") or "N/A")[:15]
+        print(f"{symbol:<15} {category:<18} {fund_type:<10} {shariah:<8} {amc:<15}")
+
+    con.close()
+    return EXIT_SUCCESS
+
+
+def handle_mufap_rankings(args: argparse.Namespace) -> int:
+    """Handle mufap rankings command."""
+    from .analytics_mufap import get_category_performance, get_category_summary
+
+    con = connect(args.db)
+    init_schema(con)
+
+    category = args.category
+    period = args.period
+    top_n = args.top
+
+    # Get category summary
+    summary = get_category_summary(con, category, period)
+
+    if summary.get("error"):
+        print(f"No data for category '{category}'.", file=sys.stderr)
+        print("Run 'psxsync mufap seed' and 'psxsync mufap sync' first.", file=sys.stderr)
+        con.close()
+        return EXIT_ERROR
+
+    print(f"\nCategory Performance: {category}")
+    print("=" * 70)
+    print(f"  Period:      {period}")
+    print(f"  Fund Count:  {summary.get('fund_count', 0)}")
+    print(f"  Avg Return:  {summary.get('avg_return_pct', 0):+.2f}%")
+    print(f"  Best:        {summary.get('max_return_pct', 0):+.2f}% ({summary.get('best_fund_symbol', 'N/A')})")
+    print(f"  Worst:       {summary.get('min_return_pct', 0):+.2f}% ({summary.get('worst_fund_symbol', 'N/A')})")
+
+    # Get rankings
+    rankings = get_category_performance(con, category, period, top_n)
+
+    if rankings:
+        print(f"\nTop {len(rankings)} Funds:")
+        print("-" * 70)
+        print(f"{'RANK':<6} {'SYMBOL':<15} {'RETURN':<10} {'NAV':<12} {'SHARIAH':<8}")
+        print("-" * 70)
+
+        for r in rankings:
+            shariah = "Yes" if r.get("is_shariah") else "No"
+            nav = r.get("latest_nav")
+            nav_str = f"Rs.{nav:.2f}" if nav else "N/A"
+            print(
+                f"{r.get('rank', '-'):<6} "
+                f"{r.get('symbol', 'N/A'):<15} "
+                f"{r.get('return_pct', 0):+.2f}%{'':<4} "
+                f"{nav_str:<12} "
+                f"{shariah:<8}"
+            )
+
+    con.close()
+    return EXIT_SUCCESS
+
+
+def handle_mufap_status(args: argparse.Namespace) -> int:
+    """Handle mufap status command."""
+    from .sync_mufap import get_data_summary, get_sync_status
+
+    summary = get_data_summary(args.db)
+
+    print("\nMutual Fund Data Summary")
+    print("=" * 60)
+    print(f"  Total funds:     {summary.get('total_funds', 0)}")
+    print(f"  Active funds:    {summary.get('active_funds', 0)}")
+    print(f"  Funds with NAV:  {summary.get('funds_with_nav', 0)}")
+    print(f"  Total NAV rows:  {summary.get('total_nav_rows', 0)}")
+
+    if summary.get("latest_nav_date"):
+        print(f"  Latest NAV date: {summary['latest_nav_date']}")
+    if summary.get("earliest_nav_date"):
+        print(f"  Earliest date:   {summary['earliest_nav_date']}")
+
+    # Category breakdown
+    categories = summary.get("categories", {})
+    if categories:
+        print("\nCategory Breakdown:")
+        print(f"  {'CATEGORY':<25} {'COUNT':<8}")
+        print("  " + "-" * 35)
+        for cat, count in categories.items():
+            print(f"  {cat:<25} {count:<8}")
+
+    # Fund type breakdown
+    fund_types = summary.get("fund_types", {})
+    if fund_types:
+        print("\nFund Type Breakdown:")
+        print(f"  {'TYPE':<15} {'COUNT':<8}")
+        print("  " + "-" * 25)
+        for ft, count in fund_types.items():
+            print(f"  {ft:<15} {count:<8}")
+
+    # Recent sync runs
+    runs = get_sync_status(args.db)
+    if runs:
+        print("\nRecent Sync Runs:")
+        print(f"  {'RUN ID':<10} {'TYPE':<12} {'STATUS':<12} {'FUNDS':<8} {'ROWS':<8}")
+        print("  " + "-" * 55)
+        for run in runs[:5]:
+            print(
+                f"  {run['run_id']:<10} "
+                f"{run.get('sync_type', 'N/A'):<12} "
+                f"{run.get('status', 'N/A'):<12} "
+                f"{run.get('funds_ok', 0):<8} "
+                f"{run.get('rows_upserted', 0):<8}"
+            )
+
+    return EXIT_SUCCESS
+
+
+# =============================================================================
+# Phase 3: Bonds/Sukuk Handlers
+# =============================================================================
+
+
+def handle_bonds(args: argparse.Namespace) -> int:
+    """Handle bonds subcommands."""
+    cmd = args.bonds_command
+
+    if cmd == "init":
+        return handle_bonds_init(args)
+    elif cmd == "load":
+        return handle_bonds_load(args)
+    elif cmd == "compute":
+        return handle_bonds_compute(args)
+    elif cmd == "list":
+        return handle_bonds_list(args)
+    elif cmd == "quote":
+        return handle_bonds_quote(args)
+    elif cmd == "curve":
+        return handle_bonds_curve(args)
+    elif cmd == "status":
+        return handle_bonds_status(args)
+
+    return EXIT_ERROR
+
+
+def handle_bonds_init(args: argparse.Namespace) -> int:
+    """Handle bonds init command."""
+    from .sync_bonds import seed_bonds
+
+    bond_type = None if args.type == "ALL" else args.type
+    include_islamic = not getattr(args, "no_islamic", False)
+
+    print("Initializing bond tables and seeding default bonds...")
+
+    result = seed_bonds(
+        db_path=args.db,
+        bond_type=bond_type,
+        include_islamic=include_islamic,
+    )
+
+    if result.get("success"):
+        print(f"Inserted: {result['inserted']} bonds")
+        print(f"Failed:   {result['failed']}")
+        print(f"Total:    {result['total']}")
+        return EXIT_SUCCESS
+
+    print(f"Error: {result.get('error', 'Unknown error')}", file=sys.stderr)
+    return EXIT_ERROR
+
+
+def handle_bonds_load(args: argparse.Namespace) -> int:
+    """Handle bonds load command."""
+    from .sync_bonds import load_bonds_csv, load_quotes_csv, sync_sample_quotes
+
+    loaded_any = False
+
+    # Load master data
+    if args.master:
+        print(f"Loading bond master data from {args.master}...")
+        result = load_bonds_csv(args.master, args.db)
+        if result.get("success"):
+            print(f"  Inserted: {result['inserted']} bonds")
+            loaded_any = True
+        else:
+            print(f"  Error: {result.get('error')}", file=sys.stderr)
+
+    # Load quotes
+    if args.quotes:
+        print(f"Loading bond quotes from {args.quotes}...")
+        result = load_quotes_csv(args.quotes, args.db)
+        if result.get("success"):
+            print(f"  Upserted: {result['rows_upserted']} quotes")
+            loaded_any = True
+        else:
+            print(f"  Error: {result.get('error')}", file=sys.stderr)
+
+    # Generate sample data
+    if args.sample:
+        print(f"Generating {args.days} days of sample quote data...")
+        summary = sync_sample_quotes(db_path=args.db, days=args.days)
+        print(f"  Generated: {summary.rows_upserted} quotes")
+        print(f"  Bonds:     {summary.ok}")
+        loaded_any = True
+
+    if not loaded_any:
+        print("No data loaded. Use --master, --quotes, or --sample.", file=sys.stderr)
+        return EXIT_ERROR
+
+    return EXIT_SUCCESS
+
+
+def handle_bonds_compute(args: argparse.Namespace) -> int:
+    """Handle bonds compute command."""
+    from .analytics_bonds import build_yield_curve, compute_and_store_analytics
+
+    bond_ids = None
+    if args.bonds:
+        bond_ids = [b.strip() for b in args.bonds.split(",")]
+
+    print("Computing bond analytics...")
+    result = compute_and_store_analytics(
+        con=connect(args.db),
+        bond_ids=bond_ids,
+        as_of_date=args.as_of,
+    )
+
+    print(f"  Stored: {result.get('stored', 0)} analytics records")
+    print(f"  Failed: {result.get('failed', 0)}")
+
+    if args.curve:
+        print("\nBuilding yield curve...")
+        con = connect(args.db)
+        init_schema(con)
+        points = build_yield_curve(con, args.as_of)
+        con.close()
+        print(f"  Curve points: {len(points)}")
+
+    return EXIT_SUCCESS
+
+
+def handle_bonds_list(args: argparse.Namespace) -> int:
+    """Handle bonds list command."""
+    from .db import get_bonds
+
+    con = connect(args.db)
+    init_schema(con)
+
+    bond_type = None if args.type == "ALL" else args.type
+    is_islamic = True if getattr(args, "islamic_only", False) else None
+
+    bonds = get_bonds(
+        con,
+        bond_type=bond_type,
+        issuer=args.issuer,
+        is_islamic=is_islamic,
+        active_only=True,
+    )
+
+    if not bonds:
+        print("No bonds found.", file=sys.stderr)
+        print("Run 'psxsync bonds init' to seed default bonds.", file=sys.stderr)
+        con.close()
+        return EXIT_ERROR
+
+    print(f"\nBonds ({len(bonds)} found)")
+    print("=" * 90)
+    hdr = f"{'SYMBOL':<20} {'TYPE':<10} {'ISSUER':<8} {'COUPON':<8} {'MATURITY':<12} {'ISLAMIC'}"
+    print(hdr)
+    print("-" * 90)
+
+    for bond in bonds:
+        coupon = bond.get("coupon_rate")
+        coupon_str = f"{coupon * 100:.1f}%" if coupon else "Zero"
+        islamic = "Yes" if bond.get("is_islamic") else "No"
+        symbol = (bond.get("symbol") or "N/A")[:20]
+        btype = (bond.get("bond_type") or "N/A")[:10]
+        issuer = (bond.get("issuer") or "N/A")[:8]
+        maturity = bond.get("maturity_date", "N/A")[:12]
+        print(f"{symbol:<20} {btype:<10} {issuer:<8} {coupon_str:<8} {maturity:<12} {islamic}")
+
+    con.close()
+    return EXIT_SUCCESS
+
+
+def handle_bonds_quote(args: argparse.Namespace) -> int:
+    """Handle bonds quote command."""
+    from .analytics_bonds import get_bond_full_analytics
+    from .db import get_bond, get_bond_by_symbol
+
+    con = connect(args.db)
+    init_schema(con)
+
+    # Find bond by ID or symbol
+    bond = get_bond(con, args.bond)
+    if not bond:
+        bond = get_bond_by_symbol(con, args.bond)
+
+    if not bond:
+        print(f"Bond not found: {args.bond}", file=sys.stderr)
+        con.close()
+        return EXIT_ERROR
+
+    bond_id = bond["bond_id"]
+    analytics = get_bond_full_analytics(con, bond_id)
+
+    print(f"\nBond Analytics: {bond.get('symbol', bond_id)}")
+    print("=" * 60)
+    print(f"  Bond ID:      {bond_id}")
+    print(f"  Type:         {bond.get('bond_type')}")
+    print(f"  Issuer:       {bond.get('issuer')}")
+    print(f"  Islamic:      {'Yes' if bond.get('is_islamic') else 'No'}")
+    print(f"  Face Value:   {bond.get('face_value')}")
+    coupon = bond.get("coupon_rate")
+    print(f"  Coupon:       {coupon * 100:.2f}%" if coupon else "  Coupon:       Zero-coupon")
+    print(f"  Maturity:     {bond.get('maturity_date')}")
+
+    if analytics.get("error"):
+        print("\n  No quote data available.")
+        con.close()
+        return EXIT_SUCCESS
+
+    print(f"\n  As of Date:   {analytics.get('as_of_date', 'N/A')}")
+    print(f"  Days to Mat:  {analytics.get('days_to_maturity', 'N/A')}")
+
+    # Price and yield
+    if analytics.get("price"):
+        print(f"\n  Clean Price:  {analytics['price']:.4f}")
+    if analytics.get("dirty_price"):
+        print(f"  Dirty Price:  {analytics['dirty_price']:.4f}")
+    if analytics.get("ytm"):
+        print(f"  YTM:          {analytics['ytm'] * 100:.4f}%")
+    if analytics.get("accrued_interest"):
+        print(f"  Accrued Int:  {analytics['accrued_interest']:.4f}")
+
+    # Duration and convexity
+    if analytics.get("duration"):
+        print(f"\n  Duration:     {analytics['duration']:.4f} years")
+    if analytics.get("modified_duration"):
+        print(f"  Mod Duration: {analytics['modified_duration']:.4f}")
+    if analytics.get("convexity"):
+        print(f"  Convexity:    {analytics['convexity']:.4f}")
+
+    con.close()
+    return EXIT_SUCCESS
+
+
+def handle_bonds_curve(args: argparse.Namespace) -> int:
+    """Handle bonds curve command."""
+    from .db import get_latest_yield_curve, get_yield_curve
+
+    con = connect(args.db)
+    init_schema(con)
+
+    bond_type = args.type
+    curve_date = args.date
+
+    if curve_date:
+        points = get_yield_curve(con, curve_date, bond_type)
+    else:
+        curve_date, points = get_latest_yield_curve(con, bond_type)
+
+    if not points:
+        print(f"No yield curve data for {bond_type}.", file=sys.stderr)
+        print("Run 'psxsync bonds compute --curve' first.", file=sys.stderr)
+        con.close()
+        return EXIT_ERROR
+
+    print(f"\nYield Curve: {bond_type}")
+    print(f"Date: {curve_date}")
+    print("=" * 50)
+    print(f"{'TENOR':<12} {'YIELD':<12} {'RATE (%)':<10}")
+    print("-" * 50)
+
+    tenor_labels = {
+        3: "3M", 6: "6M", 12: "1Y", 24: "2Y",
+        36: "3Y", 60: "5Y", 84: "7Y", 120: "10Y",
+        180: "15Y", 240: "20Y",
+    }
+
+    for p in points:
+        tenor = p.get("tenor_months", 0)
+        label = tenor_labels.get(tenor, f"{tenor}M")
+        rate = p.get("yield_rate", 0)
+        print(f"{label:<12} {tenor:<12} {rate * 100:.4f}%")
+
+    con.close()
+    return EXIT_SUCCESS
+
+
+def handle_bonds_status(args: argparse.Namespace) -> int:
+    """Handle bonds status command."""
+    from .sync_bonds import get_data_summary, get_sync_status
+
+    summary = get_data_summary(args.db)
+
+    print("\nBond Data Summary")
+    print("=" * 60)
+    print(f"  Total bonds:      {summary.get('total_bonds', 0)}")
+    print(f"  Active bonds:     {summary.get('active_bonds', 0)}")
+    print(f"  Islamic (Sukuk):  {summary.get('islamic_count', 0)}")
+    print(f"  With quotes:      {summary.get('bonds_with_quotes', 0)}")
+    print(f"  Total quote rows: {summary.get('total_quote_rows', 0)}")
+    print(f"  Yield curve pts:  {summary.get('yield_curve_dates', 0)}")
+
+    if summary.get("latest_quote_date"):
+        print(f"  Latest quote:     {summary['latest_quote_date']}")
+    if summary.get("earliest_quote_date"):
+        print(f"  Earliest quote:   {summary['earliest_quote_date']}")
+
+    # Bond type breakdown
+    bond_types = summary.get("bond_types", {})
+    if bond_types:
+        print("\nBond Type Breakdown:")
+        print(f"  {'TYPE':<15} {'COUNT':<8}")
+        print("  " + "-" * 25)
+        for bt, count in bond_types.items():
+            print(f"  {bt:<15} {count:<8}")
+
+    # Issuer breakdown
+    issuers = summary.get("issuers", {})
+    if issuers:
+        print("\nIssuer Breakdown:")
+        print(f"  {'ISSUER':<15} {'COUNT':<8}")
+        print("  " + "-" * 25)
+        for issuer, count in issuers.items():
+            print(f"  {issuer:<15} {count:<8}")
+
+    # Recent sync runs
+    runs = get_sync_status(args.db)
+    if runs:
+        print("\nRecent Sync Runs:")
+        hdr = f"  {'RUN ID':<10} {'TYPE':<15} {'STATUS':<12} {'ITEMS':<8} {'ROWS':<8}"
+        print(hdr)
+        print("  " + "-" * 60)
+        for run in runs[:5]:
+            print(
+                f"  {run['run_id']:<10} "
+                f"{run.get('sync_type', 'N/A'):<15} "
+                f"{run.get('status', 'N/A'):<12} "
+                f"{run.get('items_ok', 0):<8} "
+                f"{run.get('rows_upserted', 0):<8}"
+            )
+
+    return EXIT_SUCCESS
+
+
+# =============================================================================
+# Phase 3: Sukuk Handlers (Additive - does not modify existing bonds handlers)
+# =============================================================================
+
+
+def handle_sukuk(args: argparse.Namespace) -> int:
+    """Handle sukuk subcommands."""
+    cmd = args.sukuk_command
+
+    if cmd == "seed":
+        return handle_sukuk_seed(args)
+    elif cmd == "sync":
+        return handle_sukuk_sync(args)
+    elif cmd == "load":
+        return handle_sukuk_load(args)
+    elif cmd == "compute":
+        return handle_sukuk_compute(args)
+    elif cmd == "list":
+        return handle_sukuk_list(args)
+    elif cmd == "show":
+        return handle_sukuk_show(args)
+    elif cmd == "curve":
+        return handle_sukuk_curve(args)
+    elif cmd == "sbp":
+        return handle_sukuk_sbp(args)
+    elif cmd == "compare":
+        return handle_sukuk_compare(args)
+    elif cmd == "status":
+        return handle_sukuk_status(args)
+
+    return EXIT_ERROR
+
+
+def handle_sukuk_seed(args: argparse.Namespace) -> int:
+    """Handle sukuk seed command."""
+    category = None if args.category == "ALL" else args.category
+    shariah_only = getattr(args, "shariah_only", False)
+
+    print("Seeding sukuk master data...")
+
+    result = seed_sukuk(
+        db_path=args.db,
+        category=category,
+        shariah_only=shariah_only,
+    )
+
+    if result.get("success"):
+        print(f"Inserted: {result['inserted']} instruments")
+        print(f"Failed:   {result['failed']}")
+        print(f"Total:    {result['total']}")
+        return EXIT_SUCCESS
+
+    print(f"Error: {result.get('error', 'Unknown error')}", file=sys.stderr)
+    return EXIT_ERROR
+
+
+def handle_sukuk_sync(args: argparse.Namespace) -> int:
+    """Handle sukuk sync command."""
+    instrument_ids = None
+    if args.instruments:
+        instrument_ids = [i.strip() for i in args.instruments.split(",")]
+
+    print(f"Syncing sukuk quotes (source: {args.source})...")
+
+    summary = sync_sukuk_quotes(
+        instrument_ids=instrument_ids,
+        db_path=args.db,
+        source=args.source,
+        days=args.days,
+    )
+
+    print(f"  Instruments: {summary.ok}")
+    print(f"  Quotes:      {summary.rows_upserted}")
+    print(f"  Failed:      {summary.failed}")
+
+    if getattr(args, "include_curves", False):
+        print("\nGenerating yield curves...")
+        curve_summary = sync_sample_yield_curves(db_path=args.db, days=30)
+        print(f"  Curves:  {curve_summary.ok}")
+        print(f"  Points:  {curve_summary.rows_upserted}")
+
+    return EXIT_SUCCESS
+
+
+def handle_sukuk_load(args: argparse.Namespace) -> int:
+    """Handle sukuk load command."""
+    loaded_any = False
+
+    # Load master data
+    if args.master:
+        print(f"Loading sukuk master data from {args.master}...")
+        result = load_sukuk_csv(args.master, args.db)
+        if result.get("success"):
+            print(f"  Inserted: {result['inserted']} instruments")
+            loaded_any = True
+        else:
+            print(f"  Error: {result.get('error')}", file=sys.stderr)
+
+    # Load quotes
+    if args.quotes:
+        print(f"Loading sukuk quotes from {args.quotes}...")
+        result = load_sukuk_quotes_csv(args.quotes, args.db)
+        if result.get("success"):
+            print(f"  Upserted: {result['rows_upserted']} quotes")
+            loaded_any = True
+        else:
+            print(f"  Error: {result.get('error')}", file=sys.stderr)
+
+    # Load yield curve
+    if args.curve:
+        print(f"Loading yield curve from {args.curve}...")
+        result = load_yield_curve_csv(args.curve, args.db)
+        if result.get("success"):
+            print(f"  Upserted: {result['rows_upserted']} curve points")
+            loaded_any = True
+        else:
+            print(f"  Error: {result.get('error')}", file=sys.stderr)
+
+    if not loaded_any:
+        print("No data loaded. Use --master, --quotes, or --curve.", file=sys.stderr)
+        return EXIT_ERROR
+
+    return EXIT_SUCCESS
+
+
+def handle_sukuk_compute(args: argparse.Namespace) -> int:
+    """Handle sukuk compute command."""
+    instrument_ids = None
+    if args.instruments:
+        instrument_ids = [i.strip() for i in args.instruments.split(",")]
+
+    print("Computing sukuk analytics (YTM, duration, convexity)...")
+
+    result = compute_sukuk_analytics(
+        db_path=args.db,
+        instrument_ids=instrument_ids,
+        calc_date=getattr(args, "as_of", None),
+    )
+
+    if result.get("success"):
+        print(f"Computed: {result['computed']} instruments")
+        print(f"Failed:   {result['failed']}")
+        return EXIT_SUCCESS
+
+    print(f"Error: {result.get('error', 'Unknown error')}", file=sys.stderr)
+    return EXIT_ERROR
+
+
+def handle_sukuk_list(args: argparse.Namespace) -> int:
+    """Handle sukuk list command."""
+    category = None if args.category == "ALL" else args.category
+    shariah_only = getattr(args, "shariah_only", False)
+
+    results = get_sukuk_by_category(category=category, db_path=args.db)
+
+    if shariah_only:
+        results = [r for r in results if r.get("shariah_compliant")]
+
+    if args.issuer:
+        results = [r for r in results if args.issuer.lower() in str(r.get("name", "")).lower()]
+
+    if not results:
+        print("No sukuk instruments found matching criteria.")
+        return EXIT_SUCCESS
+
+    # Print header
+    hdr = f"{'INSTRUMENT ID':<30} {'NAME':<35} {'CAT':<15} {'COUPON':<8} {'YTM':<8}"
+    print(hdr)
+    print("-" * 100)
+
+    for r in results:
+        inst_id = (r.get("instrument_id") or "")[:30]
+        name = (r.get("name") or "")[:35]
+        cat = (r.get("category") or "")[:15]
+        coupon = f"{r.get('coupon_rate', 0) or 0:.2f}%" if r.get("coupon_rate") else "N/A"
+        ytm = f"{r.get('ytm', 0) or 0:.2f}%" if r.get("ytm") else "N/A"
+        print(f"{inst_id:<30} {name:<35} {cat:<15} {coupon:<8} {ytm:<8}")
+
+    print(f"\nTotal: {len(results)} instruments")
+    return EXIT_SUCCESS
+
+
+def handle_sukuk_show(args: argparse.Namespace) -> int:
+    """Handle sukuk show command."""
+    result = get_sukuk_analytics_full(args.instrument, args.db)
+
+    if result.get("error"):
+        print(f"Error: {result['error']}", file=sys.stderr)
+        return EXIT_ERROR
+
+    sukuk = result.get("sukuk", {})
+    quote = result.get("quote", {})
+    analytics = result.get("analytics", {})
+
+    print("\nSukuk Details")
+    print("=" * 60)
+    print(f"  Instrument ID:    {sukuk.get('instrument_id')}")
+    print(f"  Name:             {sukuk.get('name')}")
+    print(f"  Issuer:           {sukuk.get('issuer')}")
+    print(f"  Category:         {sukuk.get('category')}")
+    print(f"  Maturity:         {sukuk.get('maturity_date')}")
+    print(f"  Coupon Rate:      {sukuk.get('coupon_rate', 'N/A')}%")
+    print(f"  Coupon Freq:      {sukuk.get('coupon_frequency', 2)}x per year")
+    print(f"  Face Value:       {sukuk.get('face_value', 100)}")
+    print(f"  Shariah:          {'Yes' if sukuk.get('shariah_compliant') else 'No'}")
+
+    if quote:
+        print("\nLatest Quote")
+        print("-" * 40)
+        print(f"  Date:             {quote.get('quote_date')}")
+        print(f"  Clean Price:      {quote.get('clean_price')}")
+        print(f"  Dirty Price:      {quote.get('dirty_price')}")
+        print(f"  YTM:              {quote.get('yield_to_maturity')}%")
+        print(f"  Bid Yield:        {quote.get('bid_yield')}%")
+        print(f"  Ask Yield:        {quote.get('ask_yield')}%")
+
+    if analytics.get("yield_to_maturity"):
+        print("\nAnalytics")
+        print("-" * 40)
+        print(f"  YTM:              {analytics.get('yield_to_maturity')}%")
+        print(f"  Macaulay Dur:     {analytics.get('macaulay_duration')} years")
+        print(f"  Modified Dur:     {analytics.get('modified_duration')} years")
+        print(f"  Convexity:        {analytics.get('convexity')}")
+        print(f"  Current Yield:    {analytics.get('current_yield')}%")
+        print(f"  Days to Mat:      {analytics.get('days_to_maturity')}")
+
+    return EXIT_SUCCESS
+
+
+def handle_sukuk_curve(args: argparse.Namespace) -> int:
+    """Handle sukuk curve command."""
+    result = get_yield_curve_data(
+        curve_name=args.name,
+        curve_date=args.date,
+        db_path=args.db,
+    )
+
+    if result.get("error"):
+        print(f"Error: {result['error']}", file=sys.stderr)
+        print("Tip: Run 'psxsync sukuk sync --include-curves' to generate sample curves.")
+        return EXIT_ERROR
+
+    print(f"\nYield Curve: {result.get('curve_name')}")
+    print(f"Date: {result.get('curve_date')}")
+    print("=" * 40)
+
+    points = result.get("points", [])
+    if not points:
+        print("No curve points found.")
+        return EXIT_SUCCESS
+
+    print(f"{'TENOR':<12} {'DAYS':<12} {'YIELD':<12}")
+    print("-" * 36)
+
+    for p in points:
+        print(f"{p.get('tenor_label', ''):<12} {p.get('tenor_days', 0):<12} {p.get('yield_rate', 0):.4f}%")
+
+    return EXIT_SUCCESS
+
+
+def handle_sukuk_sbp(args: argparse.Namespace) -> int:
+    """Handle sukuk sbp command - index SBP documents."""
+    from .sources.sbp_primary_market import DOCS_DIR, create_sample_documents
+
+    docs_dir = args.docs_dir or DOCS_DIR
+
+    if getattr(args, "create_samples", False):
+        print(f"Creating sample documents in {docs_dir}...")
+        created = create_sample_documents(docs_dir)
+        print(f"  Created: {len(created)} sample files")
+
+    print(f"Indexing SBP documents from {docs_dir}...")
+    result = index_sbp_documents(docs_dir=docs_dir, db_path=args.db)
+
+    print(f"  Total documents:  {result.get('total_documents', 0)}")
+    print(f"  Inserted:         {result.get('inserted', 0)}")
+    print(f"  Failed:           {result.get('failed', 0)}")
+    if result.get("index_path"):
+        print(f"  Index file:       {result['index_path']}")
+
+    return EXIT_SUCCESS
+
+
+def handle_sukuk_compare(args: argparse.Namespace) -> int:
+    """Handle sukuk compare command."""
+    instrument_ids = [i.strip() for i in args.instruments.split(",")]
+
+    if len(instrument_ids) < 2:
+        print("Error: Please provide at least 2 instrument IDs to compare.", file=sys.stderr)
+        return EXIT_ERROR
+
+    results = compare_sukuk(instrument_ids, args.db)
+
+    if not results:
+        print("No instruments found matching the provided IDs.")
+        return EXIT_ERROR
+
+    print("\nSukuk Comparison")
+    print("=" * 100)
+
+    # Header
+    hdr = f"{'INSTRUMENT':<25} {'CATEGORY':<12} {'COUPON':<8} {'YTM':<8} {'MOD DUR':<10} {'CONVEX':<10}"
+    print(hdr)
+    print("-" * 100)
+
+    for r in results:
+        inst = (r.get("instrument_id") or "")[:25]
+        cat = (r.get("category") or "")[:12]
+        coupon = f"{r.get('coupon_rate', 0) or 0:.2f}%" if r.get("coupon_rate") else "N/A"
+        ytm = f"{r.get('ytm', 0) or 0:.2f}%" if r.get("ytm") else "N/A"
+        mod_dur = f"{r.get('modified_duration', 0) or 0:.2f}" if r.get("modified_duration") else "N/A"
+        convex = f"{r.get('convexity', 0) or 0:.2f}" if r.get("convexity") else "N/A"
+        print(f"{inst:<25} {cat:<12} {coupon:<8} {ytm:<8} {mod_dur:<10} {convex:<10}")
+
+    return EXIT_SUCCESS
+
+
+def handle_sukuk_status(args: argparse.Namespace) -> int:
+    """Handle sukuk status command."""
+    summary = get_sukuk_data_summary(args.db)
+
+    print("\nSukuk Data Summary")
+    print("=" * 60)
+    print(f"  Total instruments:   {summary.get('total_sukuk', 0)}")
+    print(f"  Active instruments:  {summary.get('active_sukuk', 0)}")
+    print(f"  Shariah compliant:   {summary.get('shariah_count', 0)}")
+    print(f"  With quotes:         {summary.get('sukuk_with_quotes', 0)}")
+    print(f"  Total quote rows:    {summary.get('total_quote_rows', 0)}")
+    print(f"  Yield curve dates:   {summary.get('yield_curve_dates', 0)}")
+    print(f"  SBP documents:       {summary.get('sbp_doc_count', 0)}")
+
+    if summary.get("latest_quote_date"):
+        print(f"  Latest quote:        {summary['latest_quote_date']}")
+    if summary.get("earliest_quote_date"):
+        print(f"  Earliest quote:      {summary['earliest_quote_date']}")
+
+    # Category breakdown
+    categories = summary.get("categories", {})
+    if categories:
+        print("\nCategory Breakdown:")
+        print(f"  {'CATEGORY':<20} {'COUNT':<8}")
+        print("  " + "-" * 30)
+        for cat, count in categories.items():
+            print(f"  {cat:<20} {count:<8}")
+
+    # Recent sync runs
+    runs = get_sukuk_sync_status(args.db)
+    if runs:
+        print("\nRecent Sync Runs:")
+        hdr = f"  {'RUN ID':<10} {'TYPE':<15} {'STATUS':<12} {'ITEMS':<8} {'ROWS':<8}"
+        print(hdr)
+        print("  " + "-" * 60)
+        for run in runs[:5]:
+            print(
+                f"  {run['run_id']:<10} "
+                f"{run.get('sync_type', 'N/A'):<15} "
+                f"{run.get('status', 'N/A'):<12} "
+                f"{run.get('items_ok', 0):<8} "
+                f"{run.get('rows_upserted', 0):<8}"
+            )
 
     return EXIT_SUCCESS
 
