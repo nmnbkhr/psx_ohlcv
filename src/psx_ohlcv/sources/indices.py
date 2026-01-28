@@ -54,80 +54,85 @@ INDEX_CODES = [
 
 def fetch_indices_data(timeout: int = 30) -> list[dict[str, Any]]:
     """
-    Fetch all indices data from PSX DPS.
+    Fetch all indices data from PSX DPS timeseries API.
+
+    Uses the same endpoint as EOD stock data: /timeseries/eod/{INDEX_CODE}
+    Format: [[timestamp, value, volume, vwap], ...]
 
     Returns:
         List of dicts with index data
     """
     indices_data = []
 
-    try:
-        # Fetch the main market summary page
-        response = requests.get(
-            PSX_MARKET_SUMMARY_URL,
-            timeout=timeout,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            }
-        )
-        response.raise_for_status()
+    # Fetch data for key indices using the timeseries API
+    key_indices = ["KSE100", "KSE30", "KMI30", "ALLSHR"]
 
-        tree = html.fromstring(response.content)
-
-        # Parse indices section
-        # Looking for the indices container with tabs
-        indices_container = tree.xpath('//div[contains(@class, "indices")]')
-
-        if not indices_container:
-            # Try alternative: Look for specific index data elements
-            # KSE100 is usually prominently displayed
-            pass
-
-        # Try to get index data from data attributes or script tags
-        scripts = tree.xpath('//script[contains(text(), "KSE100") or contains(text(), "indices")]/text()')
-
-        for script in scripts:
-            # Look for JSON data embedded in scripts
-            if "indices" in script.lower() or "kse100" in script.lower():
-                logger.debug(f"Found potential index data in script")
-
-        # Parse the visible index cards/tabs
-        # Based on PSX structure, indices are shown in tab format
-        index_tabs = tree.xpath('//div[contains(@class, "tab-pane")]//div[contains(@class, "index")]')
-
-        # Alternative: try to find index data in the main summary section
-        summary_section = tree.xpath('//section[contains(@class, "summary")]')
-
-        # Extract KSE100 data from the main display
-        kse100_data = _extract_kse100_from_page(tree)
-        if kse100_data:
-            indices_data.append(kse100_data)
-
-        # Try to fetch additional indices via API
+    for index_code in key_indices:
         try:
-            api_response = requests.get(
-                f"{PSX_BASE_URL}/market-summary",
+            url = f"{PSX_BASE_URL}/timeseries/eod/{index_code}"
+            response = requests.get(
+                url,
                 timeout=timeout,
                 headers={
-                    "User-Agent": "Mozilla/5.0",
-                    "Accept": "application/json",
-                    "X-Requested-With": "XMLHttpRequest",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
                 }
             )
-            if api_response.status_code == 200:
-                # Try to parse as JSON
-                try:
-                    api_data = api_response.json()
-                    if "indices" in api_data:
-                        for idx in api_data["indices"]:
-                            indices_data.append(_normalize_index_data(idx))
-                except Exception:
-                    pass
-        except Exception:
-            pass
+            response.raise_for_status()
 
-    except Exception as e:
-        logger.error(f"Failed to fetch indices: {e}")
+            data = response.json()
+            if data.get("status") == 1 and data.get("data"):
+                # Get the most recent data point (first in the list)
+                latest = data["data"][0]
+                # Format: [timestamp, value, volume, vwap]
+                timestamp = latest[0]
+                value = latest[1]
+                volume = latest[2] if len(latest) > 2 else None
+                vwap = latest[3] if len(latest) > 3 else None
+
+                # Get previous day for change calculation
+                prev_value = None
+                if len(data["data"]) > 1:
+                    prev_value = data["data"][1][1]
+
+                # Convert timestamp to date
+                index_date = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d")
+                index_time = datetime.fromtimestamp(timestamp).strftime("%H:%M:%S")
+
+                # Calculate change
+                change = None
+                change_pct = None
+                if prev_value and value:
+                    change = value - prev_value
+                    change_pct = (change / prev_value) * 100
+
+                # Get high/low from recent data
+                high = max(d[1] for d in data["data"][:5]) if len(data["data"]) >= 5 else value
+                low = min(d[1] for d in data["data"][:5]) if len(data["data"]) >= 5 else value
+
+                indices_data.append({
+                    "index_code": index_code,
+                    "index_date": index_date,
+                    "index_time": index_time,
+                    "value": value,
+                    "change": change,
+                    "change_pct": change_pct,
+                    "open": None,
+                    "high": high,
+                    "low": low,
+                    "volume": volume,
+                    "previous_close": prev_value,
+                    "ytd_change_pct": None,
+                    "one_year_change_pct": None,
+                    "week_52_low": min(d[1] for d in data["data"]) if data["data"] else None,
+                    "week_52_high": max(d[1] for d in data["data"]) if data["data"] else None,
+                })
+
+                logger.debug(f"Fetched {index_code}: {value:,.2f}")
+
+        except requests.RequestException as e:
+            logger.warning(f"Failed to fetch {index_code}: {e}")
+        except (KeyError, IndexError, ValueError) as e:
+            logger.warning(f"Failed to parse {index_code}: {e}")
 
     return indices_data
 

@@ -12,6 +12,14 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+# Auto-refresh for live data pages
+try:
+    from streamlit_autorefresh import st_autorefresh
+    HAS_AUTOREFRESH = True
+except ImportError:
+    HAS_AUTOREFRESH = False
+    st_autorefresh = None
+
 # Add src to path to allow running directly without installation
 try:
     # Navigate up from src/psx_ohlcv/ui/app.py to src/
@@ -49,7 +57,27 @@ from psx_ohlcv.query import (
     get_symbols_string,
     get_symbols_with_profiles,
 )
-from psx_ohlcv.sync import sync_all, sync_intraday
+from psx_ohlcv.sync import sync_all, sync_intraday, sync_intraday_bulk
+from psx_ohlcv.services import (
+    is_service_running,
+    read_status as read_service_status,
+    start_service_background,
+    stop_service,
+)
+from psx_ohlcv.services.announcements_service import (
+    is_service_running as is_announcements_running,
+    read_status as read_announcements_status,
+    start_service_background as start_announcements_service,
+    stop_service as stop_announcements_service,
+)
+from psx_ohlcv.sources.announcements import (
+    fetch_announcements,
+    fetch_corporate_events,
+    fetch_company_payouts,
+    save_announcement,
+    save_corporate_event,
+    save_dividend_payout,
+)
 from psx_ohlcv.ui.charts import (
     make_candlestick,
     make_intraday_chart,
@@ -491,6 +519,14 @@ def render_footer():
 def dashboard():
     """Main dashboard with KPIs, market breadth, and top movers."""
 
+    # =================================================================
+    # AUTO-REFRESH WHEN SERVICE IS RUNNING
+    # =================================================================
+    service_running, _ = is_service_running()
+    if service_running and HAS_AUTOREFRESH and st_autorefresh:
+        # Refresh every 60 seconds (60000 ms)
+        st_autorefresh(interval=60000, limit=None, key="dashboard_autorefresh")
+
     try:
         con = get_connection()
 
@@ -508,15 +544,18 @@ def dashboard():
             render_market_status_badge()
 
         with header_col3:
-            # Data Freshness
+            # Data Freshness + Service Status
             days_old, latest_date = get_data_freshness(con)
             badge_color, badge_text = get_freshness_badge(days_old)
+            service_status = read_service_status()
             if latest_date:
                 freshness_color = "#00C853" if badge_color == "green" else "#FFC107" if badge_color == "orange" else "#FF1744"
+                sync_indicator = "🟢" if service_running else "🔴"
                 st.markdown(
                     f'<div style="text-align: right; font-size: 12px;">'
                     f'<span style="color: {freshness_color};">●</span> Data: {badge_text}<br>'
-                    f'<span style="color: #888;">As of {latest_date}</span></div>',
+                    f'<span style="color: #888;">As of {latest_date}</span><br>'
+                    f'{sync_indicator} Auto-Sync: {"ON" if service_running else "OFF"}</div>',
                     unsafe_allow_html=True
                 )
 
@@ -529,19 +568,46 @@ def dashboard():
             # Try to get real KSE-100 index data first
             kse100_data = get_latest_kse100(con)
 
-            # Get market breadth data regardless
+            # Get market breadth data - use eod_ohlcv for reliable data
             market_perf = con.execute("""
+                WITH best_date AS (
+                    SELECT date
+                    FROM eod_ohlcv
+                    GROUP BY date
+                    HAVING COUNT(DISTINCT symbol) >= 100
+                    ORDER BY date DESC
+                    LIMIT 1
+                ),
+                today AS (
+                    SELECT symbol, close, volume
+                    FROM eod_ohlcv
+                    WHERE date = (SELECT date FROM best_date)
+                ),
+                prev AS (
+                    SELECT symbol, close as prev_close
+                    FROM eod_ohlcv
+                    WHERE date = (SELECT MAX(date) FROM eod_ohlcv WHERE date < (SELECT date FROM best_date))
+                ),
+                changes AS (
+                    SELECT
+                        t.symbol,
+                        t.volume,
+                        CASE
+                            WHEN p.prev_close > 0 THEN ((t.close - p.prev_close) / p.prev_close) * 100
+                            ELSE 0
+                        END as change_percent
+                    FROM today t
+                    LEFT JOIN prev p ON t.symbol = p.symbol
+                )
                 SELECT
                     COUNT(*) as total_stocks,
-                    SUM(CASE WHEN change_percent > 0 THEN 1 ELSE 0 END) as gainers,
-                    SUM(CASE WHEN change_percent < 0 THEN 1 ELSE 0 END) as losers,
-                    SUM(CASE WHEN change_percent = 0 OR change_percent IS NULL THEN 1 ELSE 0 END) as unchanged,
-                    AVG(change_percent) as avg_change,
+                    SUM(CASE WHEN change_percent > 0.01 THEN 1 ELSE 0 END) as gainers,
+                    SUM(CASE WHEN change_percent < -0.01 THEN 1 ELSE 0 END) as losers,
+                    SUM(CASE WHEN change_percent BETWEEN -0.01 AND 0.01 THEN 1 ELSE 0 END) as unchanged,
+                    ROUND(AVG(change_percent), 2) as avg_change,
                     SUM(volume) as total_volume,
-                    SUM(turnover) as total_turnover
-                FROM trading_sessions
-                WHERE session_date = (SELECT MAX(session_date) FROM trading_sessions)
-                AND market_type = 'REG'
+                    NULL as total_turnover
+                FROM changes
             """).fetchone()
 
             if kse100_data:
@@ -755,16 +821,46 @@ def dashboard():
         """).fetchone()
         deep_count = deep_stats["deep_symbols"] if deep_stats else 0
 
-        # Get trading session stats
+        # Get trading session stats - use date with meaningful data (at least 100 symbols)
         session_stats = con.execute("""
+            WITH best_date AS (
+                SELECT session_date
+                FROM trading_sessions
+                WHERE market_type = 'REG'
+                GROUP BY session_date
+                HAVING COUNT(DISTINCT symbol) >= 100
+                ORDER BY session_date DESC
+                LIMIT 1
+            )
             SELECT
                 SUM(volume) as total_volume,
                 SUM(turnover) as total_turnover,
-                COUNT(DISTINCT symbol) as active_symbols
+                COUNT(DISTINCT symbol) as active_symbols,
+                (SELECT session_date FROM best_date) as data_date
             FROM trading_sessions
-            WHERE session_date = (SELECT MAX(session_date) FROM trading_sessions)
+            WHERE session_date = (SELECT session_date FROM best_date)
             AND market_type = 'REG'
         """).fetchone()
+
+        # Fallback to eod_ohlcv if trading_sessions has no good data
+        if not session_stats or not session_stats["active_symbols"] or session_stats["active_symbols"] < 10:
+            session_stats = con.execute("""
+                WITH best_date AS (
+                    SELECT date
+                    FROM eod_ohlcv
+                    GROUP BY date
+                    HAVING COUNT(DISTINCT symbol) >= 100
+                    ORDER BY date DESC
+                    LIMIT 1
+                )
+                SELECT
+                    SUM(volume) as total_volume,
+                    NULL as total_turnover,
+                    COUNT(DISTINCT symbol) as active_symbols,
+                    (SELECT date FROM best_date) as data_date
+                FROM eod_ohlcv
+                WHERE date = (SELECT date FROM best_date)
+            """).fetchone()
 
         total_vol = session_stats["total_volume"] if session_stats else 0
         active_count = session_stats["active_symbols"] if session_stats else 0
@@ -818,15 +914,24 @@ def dashboard():
         # PSX-Style Trading Segments Summary
         # =====================================================================
         try:
-            # Get trading segments data from today's sessions
+            # Get trading segments data - use date with meaningful data
             segments_query = """
+                WITH best_date AS (
+                    SELECT session_date
+                    FROM trading_sessions
+                    WHERE market_type = 'REG'
+                    GROUP BY session_date
+                    HAVING COUNT(DISTINCT symbol) >= 50
+                    ORDER BY session_date DESC
+                    LIMIT 1
+                )
                 SELECT
                     market_type,
                     COUNT(*) as symbols,
                     SUM(volume) as total_volume,
                     AVG(volume) as avg_volume
                 FROM trading_sessions
-                WHERE session_date = (SELECT MAX(session_date) FROM trading_sessions)
+                WHERE session_date = (SELECT session_date FROM best_date)
                 GROUP BY market_type
                 ORDER BY total_volume DESC
             """
@@ -876,24 +981,36 @@ def dashboard():
             vol_52w_cols = st.columns(2)
 
             with vol_52w_cols[0]:
-                # Top Volume Leaders
+                # Top Volume Leaders - use eod_ohlcv for more reliable data
                 volume_query = """
+                    WITH best_date AS (
+                        SELECT date
+                        FROM eod_ohlcv
+                        GROUP BY date
+                        HAVING COUNT(DISTINCT symbol) >= 100
+                        ORDER BY date DESC
+                        LIMIT 1
+                    ),
+                    today AS (
+                        SELECT symbol, close, volume
+                        FROM eod_ohlcv
+                        WHERE date = (SELECT date FROM best_date)
+                    ),
+                    prev AS (
+                        SELECT symbol, close as prev_close
+                        FROM eod_ohlcv
+                        WHERE date = (SELECT MAX(date) FROM eod_ohlcv WHERE date < (SELECT date FROM best_date))
+                    )
                     SELECT
-                        ts.symbol,
-                        ts.volume,
-                        COALESCE(ts.close, ts.high, ts.ldcp) as price,
-                        ts.ldcp,
-                        COALESCE(ts.change_percent,
-                            CASE WHEN ts.ldcp > 0
-                                THEN ROUND((COALESCE(ts.close, ts.high) - ts.ldcp) / ts.ldcp * 100, 2)
-                                ELSE 0
-                            END
-                        ) as change_percent
-                    FROM trading_sessions ts
-                    WHERE ts.session_date = (SELECT MAX(session_date) FROM trading_sessions)
-                    AND ts.market_type = 'REG'
-                    AND ts.volume > 0
-                    ORDER BY ts.volume DESC
+                        t.symbol,
+                        t.volume,
+                        t.close as price,
+                        p.prev_close as ldcp,
+                        ROUND(((t.close - p.prev_close) / p.prev_close) * 100, 2) as change_percent
+                    FROM today t
+                    LEFT JOIN prev p ON t.symbol = p.symbol
+                    WHERE t.volume > 0
+                    ORDER BY t.volume DESC
                     LIMIT 5
                 """
                 vol_df = pd.read_sql_query(volume_query, con)
@@ -908,8 +1025,18 @@ def dashboard():
                         st.caption(f"{color} **{row['symbol']}** - {vol_str} ({change:+.2f}%)")
 
             with vol_52w_cols[1]:
-                # 52-Week Range Indicators (using high as current price proxy)
+                # 52-Week Range Indicators - use date with meaningful data
                 range_query = """
+                    WITH best_date AS (
+                        SELECT session_date
+                        FROM trading_sessions
+                        WHERE market_type = 'REG'
+                        AND week_52_high > 0 AND week_52_low > 0
+                        GROUP BY session_date
+                        HAVING COUNT(DISTINCT symbol) >= 100
+                        ORDER BY session_date DESC
+                        LIMIT 1
+                    )
                     SELECT
                         ts.symbol,
                         COALESCE(ts.close, ts.high, ts.ldcp) as price,
@@ -920,7 +1047,7 @@ def dashboard():
                             ELSE 50
                         END as position_pct
                     FROM trading_sessions ts
-                    WHERE ts.session_date = (SELECT MAX(session_date) FROM trading_sessions)
+                    WHERE ts.session_date = (SELECT session_date FROM best_date)
                     AND ts.market_type = 'REG'
                     AND ts.week_52_high > 0
                     AND ts.week_52_low > 0
@@ -931,6 +1058,16 @@ def dashboard():
                 high_df = pd.read_sql_query(range_query, con)
 
                 low_query = """
+                    WITH best_date AS (
+                        SELECT session_date
+                        FROM trading_sessions
+                        WHERE market_type = 'REG'
+                        AND week_52_high > 0 AND week_52_low > 0
+                        GROUP BY session_date
+                        HAVING COUNT(DISTINCT symbol) >= 100
+                        ORDER BY session_date DESC
+                        LIMIT 1
+                    )
                     SELECT
                         ts.symbol,
                         COALESCE(ts.close, ts.high, ts.ldcp) as price,
@@ -941,7 +1078,7 @@ def dashboard():
                             ELSE 50
                         END as position_pct
                     FROM trading_sessions ts
-                    WHERE ts.session_date = (SELECT MAX(session_date) FROM trading_sessions)
+                    WHERE ts.session_date = (SELECT session_date FROM best_date)
                     AND ts.market_type = 'REG'
                     AND ts.week_52_high > 0
                     AND ts.week_52_low > 0
@@ -1308,14 +1445,35 @@ def candlestick_explorer():
 def intraday_trend_page():
     """Intraday price trend visualization and sync."""
     # =================================================================
+    # AUTO-REFRESH WHEN SERVICE IS RUNNING
+    # =================================================================
+    service_running, service_pid = is_service_running()
+    service_status = read_service_status()
+
+    # Auto-refresh every 60 seconds if service is running and autorefresh is available
+    if service_running and HAS_AUTOREFRESH and st_autorefresh:
+        # Refresh every 60 seconds (60000 ms)
+        count = st_autorefresh(interval=60000, limit=None, key="intraday_autorefresh")
+
+    # =================================================================
     # HEADER
     # =================================================================
-    header_col1, header_col2 = st.columns([3, 1])
+    header_col1, header_col2, header_col3 = st.columns([2, 1, 1])
     with header_col1:
         st.markdown("## ⏱ Intraday Trend")
         st.caption("Live intraday price movements and volume throughout the trading day")
     with header_col2:
         render_market_status_badge()
+    with header_col3:
+        # Show service status
+        if service_running:
+            st.success("🟢 Auto-Sync ON")
+            if service_status.last_run_at:
+                last_sync = service_status.last_run_at[:19]
+                st.caption(f"Last: {last_sync}")
+        else:
+            st.info("🔴 Auto-Sync OFF")
+            st.caption("Start service on Data Sync page")
 
     # Initialize session state for intraday sync
     if "intraday_sync_result" not in st.session_state:
@@ -4675,10 +4833,73 @@ def ai_insights_page():
     # =================================================================
     # HEADER
     # =================================================================
+    # Custom CSS for AI Insights page theme
+    st.markdown("""
+    <style>
+    /* Page Header Styling */
+    .ai-header {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        border-radius: 12px;
+        padding: 24px;
+        margin-bottom: 20px;
+        text-align: center;
+        box-shadow: 0 4px 20px rgba(102, 126, 234, 0.3);
+    }
+    .ai-header h1 {
+        color: white;
+        margin: 0;
+        font-size: 2em;
+    }
+    .ai-header p {
+        color: rgba(255, 255, 255, 0.85);
+        margin: 8px 0 0 0;
+    }
+
+    /* Mode Selection Cards */
+    .mode-card {
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        padding: 12px 16px;
+        margin: 4px 0;
+        transition: all 0.3s ease;
+    }
+    .mode-card:hover {
+        background: rgba(102, 126, 234, 0.1);
+        border-color: rgba(102, 126, 234, 0.3);
+    }
+    .mode-card.active {
+        background: rgba(102, 126, 234, 0.15);
+        border-color: #667eea;
+        box-shadow: 0 2px 10px rgba(102, 126, 234, 0.2);
+    }
+
+    /* Generate Button Enhancement */
+    .stButton > button[kind="primary"] {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+        border: none !important;
+        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4) !important;
+        transition: all 0.3s ease !important;
+    }
+    .stButton > button[kind="primary"]:hover {
+        box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6) !important;
+        transform: translateY(-2px);
+    }
+
+    /* Info Cards */
+    .info-card {
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        border-radius: 8px;
+        padding: 16px;
+        border-left: 3px solid #667eea;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
     header_col1, header_col2 = st.columns([3, 1])
     with header_col1:
         st.markdown("## 🤖 AI Insights")
-        st.caption("GPT-5.2 powered market analysis • Company, Intraday, Market insights")
+        st.caption("GPT-5.2 powered market analysis • Company, Intraday, Market & Historical insights")
     with header_col2:
         render_market_status_badge()
 
@@ -4732,26 +4953,58 @@ def ai_insights_page():
     # =================================================================
     # INSIGHT MODE SELECTION
     # =================================================================
-    st.subheader("Select Analysis Mode")
+    st.markdown("### 📊 Select Analysis Mode")
 
-    mode_col1, mode_col2 = st.columns([1, 2])
+    # Mode details with icons and enhanced descriptions
+    mode_details = {
+        "Company": {
+            "icon": "🏢",
+            "title": "Company Summary",
+            "desc": "Profile, latest quote, OHLCV history, financials & corporate news",
+        },
+        "Intraday": {
+            "icon": "📈",
+            "title": "Intraday Analysis",
+            "desc": "Session price/volume patterns, trading activity & momentum",
+        },
+        "Market": {
+            "icon": "🌐",
+            "title": "Market Summary",
+            "desc": "Gainers, losers, sector performance & market breadth",
+        },
+        "History": {
+            "icon": "📜",
+            "title": "Historical Analysis",
+            "desc": "Long-term OHLCV patterns, trends & technical insights",
+        },
+    }
 
-    with mode_col1:
-        insight_mode = st.radio(
-            "Mode",
-            ["Company", "Intraday", "Market", "History"],
-            help="Select the type of analysis to generate",
-            label_visibility="collapsed",
-        )
+    # Create 4 columns for mode cards
+    mode_cols = st.columns(4)
+    modes = ["Company", "Intraday", "Market", "History"]
 
-    with mode_col2:
-        mode_descriptions = {
-            "Company": "**Company Summary**: Profile, latest quote, and recent OHLCV history analysis",
-            "Intraday": "**Intraday Commentary**: Intraday price/volume patterns and session analysis",
-            "Market": "**Market Summary**: Market-wide gainers, losers, sectors, and breadth analysis",
-            "History": "**Historical Analysis**: Long-term OHLCV patterns and price trends",
-        }
-        st.markdown(mode_descriptions.get(insight_mode, ""))
+    # Use session state for mode selection
+    if "ai_insight_mode" not in st.session_state:
+        st.session_state.ai_insight_mode = "Company"
+
+    for i, mode in enumerate(modes):
+        with mode_cols[i]:
+            details = mode_details[mode]
+            is_selected = st.session_state.ai_insight_mode == mode
+            if st.button(
+                f"{details['icon']} {details['title']}",
+                key=f"mode_{mode}",
+                use_container_width=True,
+                type="primary" if is_selected else "secondary",
+            ):
+                st.session_state.ai_insight_mode = mode
+                st.rerun()
+
+    insight_mode = st.session_state.ai_insight_mode
+
+    # Show selected mode description
+    selected_details = mode_details[insight_mode]
+    st.info(f"{selected_details['icon']} **{selected_details['title']}**: {selected_details['desc']}")
 
     st.markdown("---")
 
@@ -4759,9 +5012,8 @@ def ai_insights_page():
     # MODE-SPECIFIC CONTROLS
     # =================================================================
     if insight_mode in ["Company", "Intraday", "History"]:
-        # Symbol selection
-        symbols = get_symbols_list(con)
-        symbol_options = [s["symbol"] for s in symbols] if symbols else []
+        # Symbol selection - get_symbols_list returns list of strings directly
+        symbol_options = get_symbols_list(con)
 
         if not symbol_options:
             st.warning("No symbols available. Please sync data first.")
@@ -4793,7 +5045,7 @@ def ai_insights_page():
         try:
             cur = con.execute(
                 """
-                SELECT DISTINCT DATE(timestamp) as date
+                SELECT DISTINCT DATE(ts) as date
                 FROM intraday_bars
                 WHERE symbol = ?
                 ORDER BY date DESC
@@ -4865,17 +5117,30 @@ def ai_insights_page():
     # =================================================================
     # GENERATE BUTTON AND RESULTS
     # =================================================================
-    col1, col2, col3 = st.columns([1, 1, 2])
+    st.markdown("### 🚀 Generate Analysis")
 
-    with col1:
+    gen_col1, gen_col2, gen_col3 = st.columns([2, 1, 1])
+
+    with gen_col1:
         generate_clicked = st.button(
-            "🚀 Generate Insight",
+            "✨ Generate AI Insight",
             type="primary",
             use_container_width=True,
+            help="Generate AI-powered analysis using GPT-5.2",
         )
 
-    with col2:
-        use_cache = st.checkbox("Use Cache", value=True, help="Use cached responses if available")
+    with gen_col2:
+        use_cache = st.checkbox("💾 Use Cache", value=True, help="Use cached responses if available (6hr TTL)")
+
+    with gen_col3:
+        # Show estimated tokens
+        est_tokens = {
+            "Company": "~2-3k tokens",
+            "Intraday": "~1.5-2.5k tokens",
+            "Market": "~2.5-3.5k tokens",
+            "History": "~3-4.5k tokens",
+        }
+        st.caption(f"Est: {est_tokens.get(insight_mode, '~2k tokens')}")
 
     # Generate insight when button clicked
     if generate_clicked:
@@ -5001,14 +5266,137 @@ def ai_insights_page():
                         model=response.model,
                     )
 
-                    st.info(
-                        f"Tokens used: {response.prompt_tokens} prompt + {response.completion_tokens} completion = {response.total_tokens} total"
-                    )
+                    # Show token usage in metrics
+                    token_cols = st.columns(4)
+                    with token_cols[0]:
+                        st.metric("Prompt Tokens", f"{response.prompt_tokens:,}")
+                    with token_cols[1]:
+                        st.metric("Completion", f"{response.completion_tokens:,}")
+                    with token_cols[2]:
+                        st.metric("Total", f"{response.total_tokens:,}")
+                    with token_cols[3]:
+                        est_cost = (response.prompt_tokens * 0.01 + response.completion_tokens * 0.03) / 1000
+                        st.metric("Est. Cost", f"${est_cost:.4f}")
 
-            # Display response
+            # Display response with enhanced styling
             st.markdown("---")
-            st.markdown("### 📝 AI Analysis")
+
+            # Custom CSS for AI Insights styling
+            st.markdown("""
+            <style>
+            /* AI Insights Theme Styling */
+            .ai-insights-container {
+                background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+                border-radius: 12px;
+                padding: 20px;
+                margin: 10px 0;
+            }
+
+            /* Assessment Box Styling */
+            .assessment-box {
+                background: linear-gradient(135deg, #0f3460 0%, #16213e 100%);
+                border-left: 4px solid #00d9ff;
+                border-radius: 8px;
+                padding: 16px 20px;
+                margin-bottom: 20px;
+                box-shadow: 0 4px 15px rgba(0, 217, 255, 0.1);
+            }
+            .assessment-bullish {
+                border-left-color: #00ff88;
+                box-shadow: 0 4px 15px rgba(0, 255, 136, 0.15);
+            }
+            .assessment-bearish {
+                border-left-color: #ff4757;
+                box-shadow: 0 4px 15px rgba(255, 71, 87, 0.15);
+            }
+            .assessment-neutral {
+                border-left-color: #ffa502;
+                box-shadow: 0 4px 15px rgba(255, 165, 2, 0.15);
+            }
+
+            /* Section Styling */
+            .ai-section {
+                background: rgba(255, 255, 255, 0.03);
+                border-radius: 8px;
+                padding: 16px;
+                margin: 12px 0;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+            }
+            .ai-section h2, .ai-section h3 {
+                color: #00d9ff;
+                margin-top: 0;
+            }
+
+            /* Action Items Styling */
+            .action-items {
+                background: linear-gradient(135deg, #1e3a5f 0%, #16213e 100%);
+                border-radius: 8px;
+                padding: 16px;
+                margin-top: 16px;
+                border: 1px solid rgba(0, 217, 255, 0.2);
+            }
+            .action-items li {
+                padding: 8px 0;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            }
+            .action-items li:last-child {
+                border-bottom: none;
+            }
+
+            /* Metrics Table Styling */
+            .ai-insights-container table {
+                width: 100%;
+                border-collapse: collapse;
+                margin: 12px 0;
+            }
+            .ai-insights-container th {
+                background: rgba(0, 217, 255, 0.1);
+                padding: 10px;
+                text-align: left;
+                border-bottom: 2px solid rgba(0, 217, 255, 0.3);
+            }
+            .ai-insights-container td {
+                padding: 10px;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            }
+
+            /* Blockquote Styling for Assessment */
+            .ai-insights-container blockquote {
+                background: linear-gradient(135deg, #0f3460 0%, #1a1a2e 100%);
+                border-left: 4px solid #00d9ff;
+                padding: 16px 20px;
+                margin: 16px 0;
+                border-radius: 0 8px 8px 0;
+                font-size: 1.05em;
+            }
+
+            /* Disclaimer Styling */
+            .ai-disclaimer {
+                background: rgba(255, 165, 2, 0.1);
+                border: 1px solid rgba(255, 165, 2, 0.3);
+                border-radius: 8px;
+                padding: 12px 16px;
+                margin-top: 20px;
+                font-size: 0.85em;
+                color: #ffa502;
+            }
+            </style>
+            """, unsafe_allow_html=True)
+
+            # Display header with cache status
+            header_cols = st.columns([3, 1])
+            with header_cols[0]:
+                st.markdown("### 🤖 AI Analysis")
+            with header_cols[1]:
+                if was_cached:
+                    st.markdown("🔄 *Cached*")
+                else:
+                    st.markdown("✨ *Fresh*")
+
+            # Wrap response in styled container
+            st.markdown('<div class="ai-insights-container">', unsafe_allow_html=True)
             st.markdown(response_text)
+            st.markdown('</div>', unsafe_allow_html=True)
 
             # Copy prompt button (in expander)
             with st.expander("🔧 Debug: View Full Prompt", expanded=False):
@@ -5028,7 +5416,7 @@ def ai_insights_page():
             st.error(
                 f"**LLM Module Import Error**\n\n"
                 f"Could not import LLM modules: {e}\n\n"
-                "Make sure the `openai` package is installed: `pip install openai`"
+                "Install missing dependencies: `pip install tabulate`"
             )
 
         except LLMError as e:
@@ -5043,55 +5431,64 @@ def ai_insights_page():
     # =================================================================
     # CACHE MANAGEMENT (in sidebar or expander)
     # =================================================================
-    with st.expander("💾 Cache Management", expanded=False):
-        try:
-            from psx_ohlcv.llm.cache import LLMCache, init_llm_cache_schema
+    st.markdown("---")
+    st.markdown("### ⚙️ Settings & Cache")
 
-            init_llm_cache_schema(con)
-            cache = LLMCache(con)
+    settings_cols = st.columns(2)
 
-            stats = cache.get_stats()
+    with settings_cols[0]:
+        with st.expander("💾 Cache Management", expanded=False):
+            try:
+                from psx_ohlcv.llm.cache import LLMCache, init_llm_cache_schema
 
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Cached Entries", stats.get("active_entries", 0))
-            with col2:
-                st.metric("Expired", stats.get("expired_entries", 0))
-            with col3:
-                total_tokens = stats.get("total_prompt_tokens", 0) + stats.get("total_completion_tokens", 0)
-                st.metric("Total Tokens", f"{total_tokens:,}")
+                init_llm_cache_schema(con)
+                cache = LLMCache(con)
 
-            if st.button("🗑️ Clear Expired"):
-                cleared = cache.cleanup_expired()
-                st.success(f"Cleared {cleared} expired entries")
+                stats = cache.get_stats()
 
-            if st.button("🗑️ Clear All Cache", type="secondary"):
-                cleared = cache.clear_all()
-                st.success(f"Cleared {cleared} entries")
+                cache_col1, cache_col2 = st.columns(2)
+                with cache_col1:
+                    st.metric("📦 Active", stats.get("active_entries", 0))
+                    st.metric("⏰ Expired", stats.get("expired_entries", 0))
+                with cache_col2:
+                    total_tokens = stats.get("total_prompt_tokens", 0) + stats.get("total_completion_tokens", 0)
+                    st.metric("🔢 Tokens Used", f"{total_tokens:,}")
+                    est_savings = total_tokens * 0.00002  # rough estimate
+                    st.metric("💰 Cache Savings", f"~${est_savings:.2f}")
 
-        except Exception as e:
-            st.warning(f"Cache management unavailable: {e}")
+                btn_col1, btn_col2 = st.columns(2)
+                with btn_col1:
+                    if st.button("🧹 Clear Expired", use_container_width=True):
+                        cleared = cache.cleanup_expired()
+                        st.success(f"Cleared {cleared} expired entries")
+                with btn_col2:
+                    if st.button("🗑️ Clear All", type="secondary", use_container_width=True):
+                        cleared = cache.clear_all()
+                        st.success(f"Cleared {cleared} entries")
 
-    # =================================================================
-    # COST CONTROL TIPS
-    # =================================================================
-    with st.expander("💡 Cost Control Tips", expanded=False):
-        st.markdown("""
-        **Minimize API Costs:**
+            except Exception as e:
+                st.warning(f"Cache management unavailable: {e}")
 
-        1. **Use Caching** - Enable "Use Cache" to reuse previous responses
-        2. **Shorter Time Windows** - Smaller date ranges = fewer tokens
-        3. **Fewer Top Movers** - Reduce the "Top N" for market summaries
-        4. **Batch Analysis** - Analyze multiple aspects at once instead of separate calls
+    with settings_cols[1]:
+        with st.expander("💡 Cost Control Tips", expanded=False):
+            st.markdown("""
+            **🎯 Minimize API Costs:**
 
-        **Token Estimates:**
-        - Company Summary (30 days): ~2,000-3,000 tokens
-        - Intraday Commentary: ~1,500-2,500 tokens
-        - Market Summary (10 movers): ~2,500-3,500 tokens
-        - History (90 days): ~3,000-4,500 tokens
+            | Tip | Impact |
+            |-----|--------|
+            | ✅ Use Caching | High |
+            | 📅 Shorter time windows | Medium |
+            | 📊 Fewer top movers | Low |
+            | 🔄 Batch analysis | Medium |
 
-        Cache TTL is 6 hours by default.
-        """)
+            **📈 Token Estimates:**
+            - Company (30d): ~2-3k tokens
+            - Intraday: ~1.5-2.5k tokens
+            - Market (10): ~2.5-3.5k tokens
+            - History (90d): ~3-4.5k tokens
+
+            *Cache TTL: 6 hours*
+            """)
 
     render_footer()
 
@@ -5565,6 +5962,422 @@ def sync_monitor():
 
             finally:
                 st.session_state.sync_running = False
+
+    # =========================================================================
+    # BULK INTRADAY SYNC SECTION
+    # =========================================================================
+    st.markdown("---")
+    st.subheader("📈 Bulk Intraday Sync")
+
+    # Initialize session state for intraday bulk sync
+    if "intraday_bulk_result" not in st.session_state:
+        st.session_state.intraday_bulk_result = None
+    if "intraday_bulk_running" not in st.session_state:
+        st.session_state.intraday_bulk_running = False
+
+    # -------------------------------------------------------------------------
+    # BACKGROUND SERVICE STATUS
+    # -------------------------------------------------------------------------
+    service_running, service_pid = is_service_running()
+    service_status = read_service_status()
+
+    # Service status display
+    st.markdown("#### Background Service")
+    if service_running:
+        st.success(f"🟢 **Service Running** (PID: {service_pid})")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Mode", service_status.mode.capitalize())
+        col2.metric("Interval", f"{service_status.interval_seconds}s")
+        col3.metric("Total Runs", service_status.total_runs)
+        col4.metric("Rows Synced", f"{service_status.rows_upserted:,}")
+
+        # Progress info
+        if service_status.current_symbol:
+            st.info(f"📊 Currently syncing: **{service_status.current_symbol}** ({service_status.progress:.1f}%)")
+        elif service_status.next_run_at:
+            st.info(f"⏰ Next run at: {service_status.next_run_at}")
+
+        # Last run result
+        if service_status.last_run_at:
+            result_icon = "✅" if service_status.last_run_result == "success" else "⚠️" if service_status.last_run_result == "partial" else "❌"
+            st.caption(f"Last run: {service_status.last_run_at} - {result_icon} {service_status.symbols_synced} OK, {service_status.symbols_failed} failed")
+
+        # Stop button
+        if st.button("🛑 Stop Service", type="primary", key="btn_stop_service"):
+            success, msg = stop_service()
+            if success:
+                st.success(msg)
+                st.rerun()
+            else:
+                st.error(msg)
+    else:
+        st.warning("🔴 **Service Stopped**")
+
+        # Service configuration
+        col1, col2 = st.columns(2)
+        with col1:
+            service_mode = st.selectbox(
+                "Sync Mode",
+                options=["incremental", "full"],
+                index=0,
+                help="Incremental: only new data. Full: refresh all.",
+                key="service_mode"
+            )
+            service_interval = st.number_input(
+                "Interval (seconds)",
+                min_value=60,
+                max_value=3600,
+                value=300,
+                step=60,
+                help="Time between sync runs (default: 300 = 5 minutes)",
+                key="service_interval"
+            )
+
+        with col2:
+            st.caption("CLI equivalent:")
+            st.code(
+                f"python -m psx_ohlcv.services.intraday_service start "
+                f"--mode {service_mode} --interval {service_interval}",
+                language="bash"
+            )
+            st.caption("Cron example (every 5 min during market hours):")
+            st.code("*/5 9-15 * * 1-5 psxsync intraday sync-all -q", language="bash")
+
+        # Start button
+        if st.button("▶️ Start Background Service", type="primary", key="btn_start_service"):
+            success, msg = start_service_background(
+                mode=service_mode,
+                interval_seconds=service_interval,
+            )
+            if success:
+                st.success(msg)
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error(msg)
+
+    st.markdown("---")
+
+    # -------------------------------------------------------------------------
+    # ONE-TIME SYNC (runs in Streamlit, not as background service)
+    # -------------------------------------------------------------------------
+    st.markdown("#### One-Time Sync")
+    st.caption("Run a single sync operation (blocks UI until complete)")
+
+    col1, col2 = st.columns([1, 1])
+
+    with col1:
+        intraday_incremental = st.checkbox(
+            "Incremental mode (only new data)",
+            value=True,
+            help="Only fetch data newer than last sync (faster)",
+            disabled=st.session_state.intraday_bulk_running,
+            key="intraday_bulk_incremental"
+        )
+        intraday_limit = st.number_input(
+            "Limit symbols (0 = all)",
+            min_value=0,
+            max_value=500,
+            value=0,
+            help="Limit number of symbols to sync (0 for all)",
+            disabled=st.session_state.intraday_bulk_running,
+            key="intraday_bulk_limit"
+        )
+
+    with col2:
+        cli_flags = ""
+        if not intraday_incremental:
+            cli_flags += " --no-incremental"
+        if intraday_limit > 0:
+            cli_flags += f" --limit {intraday_limit}"
+        st.caption("Equivalent CLI command:")
+        st.code(f"psxsync intraday sync-all{cli_flags}", language="bash")
+
+    # Bulk Intraday Sync Buttons
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col1:
+        run_intraday_full = st.button(
+            "🔄 Full Sync" if not st.session_state.intraday_bulk_running else "⏳ Running...",
+            disabled=st.session_state.intraday_bulk_running or st.session_state.sync_running,
+            help="Sync all intraday data (full refresh)",
+            key="btn_intraday_full"
+        )
+    with col2:
+        run_intraday_incr = st.button(
+            "⚡ Incremental" if not st.session_state.intraday_bulk_running else "⏳ Running...",
+            disabled=st.session_state.intraday_bulk_running or st.session_state.sync_running,
+            help="Only fetch new intraday data since last sync",
+            key="btn_intraday_incr"
+        )
+    with col3:
+        if st.session_state.intraday_bulk_running:
+            st.warning("Sync in progress...")
+
+    # Execute bulk intraday sync
+    run_bulk_intraday = run_intraday_full or run_intraday_incr
+    use_incremental = intraday_incremental if run_intraday_incr else False
+
+    if run_bulk_intraday and not st.session_state.intraday_bulk_running:
+        st.session_state.intraday_bulk_result = None
+        st.session_state.intraday_bulk_running = True
+
+        with st.status("Running bulk intraday sync...", expanded=True) as status:
+            st.write("🔄 Initializing bulk intraday sync...")
+
+            try:
+                limit = intraday_limit if intraday_limit > 0 else None
+                mode_str = "incremental" if use_incremental else "full"
+                st.write(f"📊 Fetching intraday data ({mode_str} mode)...")
+
+                # Progress container
+                progress_bar = st.progress(0)
+                progress_text = st.empty()
+
+                def update_progress(current, total, symbol, result):
+                    progress = current / total
+                    progress_bar.progress(progress)
+                    status_icon = "✅" if not result.error else "❌"
+                    progress_text.text(f"{status_icon} {symbol}: {result.rows_upserted} rows ({current}/{total})")
+
+                summary = sync_intraday_bulk(
+                    db_path=get_db_path(),
+                    incremental=use_incremental,
+                    limit_symbols=limit,
+                    progress_callback=update_progress,
+                )
+
+                st.session_state.intraday_bulk_result = {
+                    "success": True,
+                    "summary": summary,
+                }
+
+                if summary.symbols_failed == 0:
+                    status.update(
+                        label="✅ Bulk intraday sync completed!", state="complete"
+                    )
+                else:
+                    status.update(
+                        label=f"⚠️ Completed with {summary.symbols_failed} failures",
+                        state="complete"
+                    )
+
+            except Exception as e:
+                st.session_state.intraday_bulk_result = {
+                    "success": False,
+                    "error": str(e),
+                }
+                status.update(label="❌ Bulk intraday sync failed!", state="error")
+
+            finally:
+                st.session_state.intraday_bulk_running = False
+
+    # Display bulk intraday sync result
+    if st.session_state.intraday_bulk_result is not None:
+        result = st.session_state.intraday_bulk_result
+
+        if result["success"]:
+            summary = result["summary"]
+
+            if summary.symbols_failed == 0:
+                st.success(
+                    f"✅ Intraday sync completed: {summary.symbols_ok} symbols, "
+                    f"{summary.rows_upserted:,} rows upserted"
+                )
+            else:
+                st.warning(
+                    f"⚠️ Intraday sync completed with issues: {summary.symbols_ok} OK, "
+                    f"{summary.symbols_failed} failed"
+                )
+
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Total Symbols", summary.symbols_total)
+            col2.metric("Symbols OK", summary.symbols_ok)
+            col3.metric("Symbols Failed", summary.symbols_failed)
+            col4.metric("Rows Upserted", f"{summary.rows_upserted:,}")
+
+            # Show failed symbols if any
+            failed_results = [r for r in summary.results if r.error]
+            if failed_results:
+                with st.expander(f"🔍 View {len(failed_results)} failures"):
+                    for r in failed_results[:20]:  # Limit display
+                        st.text(f"{r.symbol}: {r.error}")
+        else:
+            st.error(f"❌ Intraday sync failed: {result['error']}")
+
+    # =========================================================================
+    # ANNOUNCEMENTS SYNC SECTION
+    # =========================================================================
+    st.markdown("---")
+    st.subheader("📣 Announcements Sync")
+    st.caption("Sync company announcements, AGM/EOGM calendar, and dividend payouts from PSX DPS")
+
+    # Initialize session state
+    if "announcements_sync_running" not in st.session_state:
+        st.session_state.announcements_sync_running = False
+    if "announcements_sync_result" not in st.session_state:
+        st.session_state.announcements_sync_result = None
+
+    # -------------------------------------------------------------------------
+    # ANNOUNCEMENTS BACKGROUND SERVICE STATUS
+    # -------------------------------------------------------------------------
+    ann_running, ann_pid = is_announcements_running()
+    ann_status = read_announcements_status()
+
+    st.markdown("#### Background Service")
+    if ann_running:
+        st.success(f"🟢 **Announcements Service Running** (PID: {ann_pid})")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Interval", f"{ann_status.interval_seconds}s")
+        col2.metric("Total Runs", ann_status.total_runs)
+        col3.metric("Announcements", ann_status.announcements_synced)
+        col4.metric("Dividends", ann_status.dividends_synced)
+
+        if ann_status.current_task:
+            st.info(f"🔄 Currently: {ann_status.current_task} - {ann_status.current_symbol or ''} ({ann_status.progress:.0f}%)")
+
+        if ann_status.last_run_at:
+            st.caption(f"Last run: {ann_status.last_run_at[:19]} | Result: {ann_status.last_run_result or 'N/A'}")
+
+        if ann_status.next_run_at:
+            st.caption(f"Next run: {ann_status.next_run_at[:19]}")
+
+        # Stop button
+        if st.button("⏹️ Stop Announcements Service", type="secondary", key="btn_stop_ann_service"):
+            success, msg = stop_announcements_service()
+            if success:
+                st.success(msg)
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error(msg)
+    else:
+        st.info("🔴 Announcements service not running")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            ann_interval = st.number_input(
+                "Interval (seconds)",
+                min_value=300,
+                max_value=7200,
+                value=3600,
+                step=300,
+                help="Time between sync runs (default: 3600 = 1 hour)",
+                key="ann_service_interval"
+            )
+
+        with col2:
+            st.caption("CLI equivalent:")
+            st.code(
+                f"psxsync announcements service start --interval {ann_interval}",
+                language="bash"
+            )
+
+        if st.button("▶️ Start Announcements Service", type="primary", key="btn_start_ann_service"):
+            success, msg = start_announcements_service(interval_seconds=ann_interval)
+            if success:
+                st.success(msg)
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error(msg)
+
+    st.markdown("---")
+
+    # -------------------------------------------------------------------------
+    # ONE-TIME ANNOUNCEMENTS SYNC
+    # -------------------------------------------------------------------------
+    st.markdown("#### One-Time Sync")
+    st.caption("Run a single announcements sync (blocks UI until complete)")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        sync_announcements_flag = st.checkbox("Company Announcements", value=True, key="sync_ann_flag")
+    with col2:
+        sync_events_flag = st.checkbox("Corporate Events (AGM/EOGM)", value=True, key="sync_events_flag")
+    with col3:
+        sync_dividends_flag = st.checkbox("Dividend Payouts", value=True, key="sync_dividends_flag")
+
+    if st.button(
+        "🔄 Sync Announcements Now" if not st.session_state.announcements_sync_running else "⏳ Syncing...",
+        disabled=st.session_state.announcements_sync_running,
+        type="primary",
+        key="btn_sync_announcements"
+    ):
+        st.session_state.announcements_sync_running = True
+        st.session_state.announcements_sync_result = None
+
+        with st.status("Syncing announcements...", expanded=True) as status:
+            try:
+                from datetime import timedelta
+
+                con = get_connection()
+                stats = {"announcements": 0, "events": 0, "dividends": 0}
+
+                # Sync announcements
+                if sync_announcements_flag:
+                    st.write("📣 Fetching company announcements...")
+                    offset = 0
+                    while True:
+                        records, total = fetch_announcements(announcement_type="C", offset=offset)
+                        if not records:
+                            break
+                        for record in records:
+                            if save_announcement(con, record):
+                                stats["announcements"] += 1
+                        offset += len(records)
+                        if offset >= total or len(records) < 20:
+                            break
+                    st.write(f"   ✅ {stats['announcements']} announcements saved")
+
+                # Sync corporate events
+                if sync_events_flag:
+                    st.write("📅 Fetching corporate events...")
+                    from_date = datetime.now().strftime("%Y-%m-%d")
+                    to_date = (datetime.now() + timedelta(days=365)).strftime("%Y-%m-%d")
+                    events = fetch_corporate_events(from_date, to_date)
+                    for event in events:
+                        if save_corporate_event(con, event):
+                            stats["events"] += 1
+                    st.write(f"   ✅ {stats['events']} events saved")
+
+                # Sync dividends
+                if sync_dividends_flag:
+                    st.write("💰 Fetching dividend payouts...")
+                    cur = con.execute("SELECT symbol FROM symbols WHERE is_active = 1")
+                    symbols = [row[0] for row in cur.fetchall()]
+                    progress_bar = st.progress(0)
+                    for i, symbol in enumerate(symbols):
+                        try:
+                            payouts = fetch_company_payouts(symbol)
+                            for payout in payouts:
+                                if save_dividend_payout(con, payout):
+                                    stats["dividends"] += 1
+                        except Exception:
+                            pass
+                        progress_bar.progress((i + 1) / len(symbols))
+                    st.write(f"   ✅ {stats['dividends']} payouts saved from {len(symbols)} symbols")
+
+                st.session_state.announcements_sync_result = {"success": True, "stats": stats}
+                status.update(label="✅ Announcements sync completed!", state="complete")
+
+            except Exception as e:
+                st.session_state.announcements_sync_result = {"success": False, "error": str(e)}
+                status.update(label="❌ Sync failed!", state="error")
+
+            finally:
+                st.session_state.announcements_sync_running = False
+
+    # Display sync result
+    if st.session_state.announcements_sync_result is not None:
+        result = st.session_state.announcements_sync_result
+        if result["success"]:
+            stats = result["stats"]
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Announcements", stats["announcements"])
+            col2.metric("Events", stats["events"])
+            col3.metric("Dividends", stats["dividends"])
+        else:
+            st.error(f"❌ Sync failed: {result['error']}")
 
     # Display sync result
     if st.session_state.sync_result is not None:

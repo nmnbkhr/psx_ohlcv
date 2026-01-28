@@ -395,6 +395,43 @@ CREATE INDEX IF NOT EXISTS idx_company_payouts_ex_date
     ON company_payouts(ex_date);
 
 -- =============================================================================
+-- Financial Announcements: Results announcements from PSX
+-- Source: https://www.psx.com.pk/psx/announcement/financial-announcements
+-- Primary key: (symbol, announcement_date, fiscal_period)
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS financial_announcements (
+    symbol              TEXT NOT NULL,
+    announcement_date   TEXT NOT NULL,      -- YYYY-MM-DD
+    fiscal_period       TEXT NOT NULL,      -- e.g., '31/12/2025(YR)', '30/06/2025(HYR)'
+
+    -- Financial Results
+    profit_before_tax   REAL,               -- In millions Rs.
+    profit_after_tax    REAL,               -- In millions Rs.
+    eps                 REAL,               -- Earnings per share
+
+    -- Dividend/Bonus/Right
+    dividend_payout     TEXT,               -- Raw string e.g., "83%(i) (D)"
+    dividend_amount     REAL,               -- Parsed percentage
+    payout_type         TEXT,               -- 'cash', 'bonus', 'right', or NULL
+
+    -- Corporate Events
+    agm_date            TEXT,               -- AGM/EOGM date YYYY-MM-DD
+    book_closure_from   TEXT,               -- Book closure start
+    book_closure_to     TEXT,               -- Book closure end
+
+    -- Metadata
+    company_name        TEXT,               -- Company name from announcement
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY (symbol, announcement_date, fiscal_period)
+);
+
+CREATE INDEX IF NOT EXISTS idx_financial_announcements_symbol
+    ON financial_announcements(symbol);
+CREATE INDEX IF NOT EXISTS idx_financial_announcements_date
+    ON financial_announcements(announcement_date);
+
+-- =============================================================================
 -- User Interactions: Track user activity for analytics
 -- Logs page visits, button clicks, searches, and other actions
 -- =============================================================================
@@ -567,6 +604,37 @@ CREATE INDEX IF NOT EXISTS idx_announcements_date
     ON corporate_announcements(announcement_date);
 CREATE INDEX IF NOT EXISTS idx_announcements_type
     ON corporate_announcements(announcement_type);
+
+-- =============================================================================
+-- COMPANY ANNOUNCEMENTS: Raw scraped announcements from PSX DPS
+-- Source: POST /announcements endpoint
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS company_announcements (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol              TEXT NOT NULL,
+    company_name        TEXT,
+    announcement_date   TEXT NOT NULL,              -- YYYY-MM-DD
+    announcement_time   TEXT,                       -- HH:MM
+
+    title               TEXT NOT NULL,
+    category            TEXT,                       -- 'results', 'dividend', 'agm', 'board_meeting', 'book_closure', 'corporate_action', 'general'
+
+    -- Document references (PSX IDs)
+    image_id            TEXT,                       -- PSX image ID for images
+    pdf_id              TEXT,                       -- PSX PDF document ID
+
+    -- Metadata
+    scraped_at          TEXT NOT NULL DEFAULT (datetime('now')),
+
+    UNIQUE(symbol, announcement_date, announcement_time, title)
+);
+
+CREATE INDEX IF NOT EXISTS idx_company_announcements_symbol
+    ON company_announcements(symbol);
+CREATE INDEX IF NOT EXISTS idx_company_announcements_date
+    ON company_announcements(announcement_date);
+CREATE INDEX IF NOT EXISTS idx_company_announcements_category
+    ON company_announcements(category);
 
 -- =============================================================================
 -- Equity Structure: Detailed ownership and capital structure
@@ -749,6 +817,104 @@ CREATE TABLE IF NOT EXISTS psx_market_stats (
 
 CREATE INDEX IF NOT EXISTS idx_psx_market_stats_date
     ON psx_market_stats(stat_date);
+
+-- =============================================================================
+-- CORPORATE EVENTS: AGM, EOGM, and other scheduled corporate events
+-- Source: PSX DPS /calendar endpoint
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS corporate_events (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id            INTEGER UNIQUE,             -- PSX event ID from API
+    symbol              TEXT NOT NULL,
+    company_name        TEXT,
+
+    -- Event details
+    event_type          TEXT NOT NULL,              -- 'AGM', 'EOGM', 'BOARD_MEETING', etc.
+    event_date          TEXT NOT NULL,              -- YYYY-MM-DD
+    event_time          TEXT,                       -- HH:MM:SS
+    city                TEXT,                       -- Event location city
+    venue               TEXT,                       -- Full venue details
+
+    -- Financial period
+    period_end          TEXT,                       -- Fiscal period end date (YYYY-MM-DD)
+
+    -- Status tracking
+    status              TEXT DEFAULT 'scheduled',   -- 'scheduled', 'completed', 'cancelled'
+
+    -- Metadata
+    scraped_at          TEXT NOT NULL DEFAULT (datetime('now')),
+
+    UNIQUE(symbol, event_date, event_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_corporate_events_symbol
+    ON corporate_events(symbol);
+CREATE INDEX IF NOT EXISTS idx_corporate_events_date
+    ON corporate_events(event_date);
+CREATE INDEX IF NOT EXISTS idx_corporate_events_type
+    ON corporate_events(event_type);
+
+-- =============================================================================
+-- DIVIDEND PAYOUTS: Historical dividend declarations and payments
+-- Source: PSX DPS /company/payouts endpoint
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS dividend_payouts (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol              TEXT NOT NULL,
+
+    -- Announcement info
+    announcement_date   TEXT NOT NULL,              -- YYYY-MM-DD
+    announcement_time   TEXT,                       -- HH:MM:SS
+
+    -- Dividend details
+    fiscal_period       TEXT,                       -- e.g., 'Q1 2024', 'FY 2023'
+    dividend_percent    REAL,                       -- Dividend percentage (e.g., 50 for 50%)
+    dividend_type       TEXT,                       -- 'cash', 'stock', 'interim', 'final'
+    dividend_number     TEXT,                       -- e.g., '1st Interim', '2nd Interim', 'Final'
+
+    -- Book closure dates
+    book_closure_from   TEXT,                       -- YYYY-MM-DD
+    book_closure_to     TEXT,                       -- YYYY-MM-DD
+
+    -- Payment info (if available)
+    record_date         TEXT,                       -- YYYY-MM-DD
+    payment_date        TEXT,                       -- YYYY-MM-DD
+    dividend_per_share  REAL,                       -- Actual amount per share
+
+    -- Metadata
+    scraped_at          TEXT NOT NULL DEFAULT (datetime('now')),
+
+    UNIQUE(symbol, announcement_date, dividend_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dividend_payouts_symbol
+    ON dividend_payouts(symbol);
+CREATE INDEX IF NOT EXISTS idx_dividend_payouts_date
+    ON dividend_payouts(announcement_date);
+CREATE INDEX IF NOT EXISTS idx_dividend_payouts_type
+    ON dividend_payouts(dividend_type);
+
+-- =============================================================================
+-- ANNOUNCEMENTS SYNC STATUS: Track sync progress for resumable scraping
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS announcements_sync_status (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    sync_type           TEXT NOT NULL,              -- 'announcements', 'events', 'dividends'
+    symbol              TEXT,                       -- NULL for all-symbols sync
+    last_sync_date      TEXT,                       -- Last successful sync date
+    last_page           INTEGER DEFAULT 0,          -- Last page processed (for pagination)
+    total_records       INTEGER DEFAULT 0,          -- Total records synced
+    status              TEXT DEFAULT 'pending',     -- 'pending', 'running', 'completed', 'failed'
+    error_message       TEXT,
+    started_at          TEXT,
+    completed_at        TEXT,
+    scraped_at          TEXT NOT NULL DEFAULT (datetime('now')),
+
+    UNIQUE(sync_type, symbol)
+);
+
+CREATE INDEX IF NOT EXISTS idx_announcements_sync_type
+    ON announcements_sync_status(sync_type);
 """
 
 
@@ -2574,6 +2740,157 @@ def get_company_payouts(
     params.append(limit)
 
     return pd.read_sql_query(query, con, params=params)
+
+
+# =============================================================================
+# Financial Announcements Functions
+# =============================================================================
+
+
+def upsert_financial_announcement(
+    con: sqlite3.Connection,
+    symbol: str,
+    announcement: dict,
+) -> bool:
+    """
+    Upsert a single financial announcement.
+
+    Args:
+        con: Database connection
+        symbol: Stock symbol
+        announcement: Dict with announcement data
+
+    Returns:
+        True if inserted/updated successfully
+    """
+    now = now_iso()
+    symbol = symbol.upper()
+
+    ann_date = announcement.get("announcement_date")
+    fiscal_period = announcement.get("fiscal_period") or announcement.get("fiscal_year", "")
+
+    if not ann_date or not fiscal_period:
+        return False
+
+    try:
+        con.execute(
+            """
+            INSERT INTO financial_announcements (
+                symbol, announcement_date, fiscal_period,
+                profit_before_tax, profit_after_tax, eps,
+                dividend_payout, dividend_amount, payout_type,
+                agm_date, book_closure_from, book_closure_to,
+                company_name, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol, announcement_date, fiscal_period) DO UPDATE SET
+                profit_before_tax = excluded.profit_before_tax,
+                profit_after_tax = excluded.profit_after_tax,
+                eps = excluded.eps,
+                dividend_payout = excluded.dividend_payout,
+                dividend_amount = excluded.dividend_amount,
+                payout_type = excluded.payout_type,
+                agm_date = excluded.agm_date,
+                book_closure_from = excluded.book_closure_from,
+                book_closure_to = excluded.book_closure_to,
+                company_name = excluded.company_name,
+                updated_at = excluded.updated_at
+            """,
+            (
+                symbol,
+                ann_date,
+                fiscal_period,
+                announcement.get("profit_before_tax"),
+                announcement.get("profit_after_tax"),
+                announcement.get("eps"),
+                announcement.get("dividend_payout") or announcement.get("details_raw"),
+                announcement.get("dividend_amount") or announcement.get("amount"),
+                announcement.get("payout_type"),
+                announcement.get("agm_date"),
+                announcement.get("book_closure_from"),
+                announcement.get("book_closure_to"),
+                announcement.get("company_name"),
+                now,
+            ),
+        )
+        con.commit()
+        return True
+    except sqlite3.Error:
+        return False
+
+
+def upsert_financial_announcements(
+    con: sqlite3.Connection,
+    symbol: str,
+    announcements: list[dict],
+) -> int:
+    """
+    Upsert multiple financial announcements.
+
+    Args:
+        con: Database connection
+        symbol: Stock symbol
+        announcements: List of announcement dicts
+
+    Returns:
+        Number of rows upserted
+    """
+    count = 0
+    for ann in announcements:
+        if upsert_financial_announcement(con, symbol, ann):
+            count += 1
+    return count
+
+
+def get_financial_announcements(
+    con: sqlite3.Connection,
+    symbol: str,
+    limit: int = 10,
+) -> list[dict]:
+    """
+    Get financial announcements for a symbol.
+
+    Args:
+        con: Database connection
+        symbol: Stock symbol
+        limit: Maximum rows to return
+
+    Returns:
+        List of announcement dicts
+    """
+    cur = con.execute(
+        """
+        SELECT symbol, announcement_date, fiscal_period,
+               profit_before_tax, profit_after_tax, eps,
+               dividend_payout, dividend_amount, payout_type,
+               agm_date, book_closure_from, book_closure_to,
+               company_name, updated_at
+        FROM financial_announcements
+        WHERE symbol = ?
+        ORDER BY announcement_date DESC
+        LIMIT ?
+        """,
+        (symbol.upper(), limit),
+    )
+
+    results = []
+    for row in cur.fetchall():
+        results.append({
+            "symbol": row[0],
+            "announcement_date": row[1],
+            "fiscal_period": row[2],
+            "profit_before_tax": row[3],
+            "profit_after_tax": row[4],
+            "eps": row[5],
+            "dividend_payout": row[6],
+            "dividend_amount": row[7],
+            "payout_type": row[8],
+            "agm_date": row[9],
+            "book_closure_from": row[10],
+            "book_closure_to": row[11],
+            "company_name": row[12],
+        })
+
+    return results
 
 
 # =============================================================================

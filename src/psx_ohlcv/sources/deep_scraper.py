@@ -82,11 +82,13 @@ def _parse_date_str(date_str: str | None) -> str | None:
     if not date_str or date_str == "-":
         return None
 
-    # Try common formats
+    # Try common formats (including datetime formats with time)
     formats = [
         "%Y-%m-%d",
-        "%b %d, %Y",     # Jan 20, 2026
-        "%B %d, %Y",     # January 20, 2026
+        "%b %d, %Y",           # Jan 20, 2026
+        "%B %d, %Y",           # January 20, 2026
+        "%B %d, %Y %I:%M %p",  # October 23, 2025 3:48 PM
+        "%B %d, %Y %H:%M",     # October 23, 2025 15:48
         "%d-%m-%Y",
         "%d/%m/%Y",
         "%d %b %Y",
@@ -517,7 +519,15 @@ def parse_announcements_data(tree: html.HtmlElement) -> list[dict]:
 
 
 def parse_payouts_data(tree: html.HtmlElement) -> list[dict]:
-    """Extract dividend/payout data."""
+    """Extract dividend/payout data.
+
+    PSX company page payout structure:
+    - Headers: Date, Financial Results, Details, Book Closure
+    - Date: Announcement date (e.g., "October 23, 2025 3:48 PM")
+    - Financial Results: Fiscal period (e.g., "30/09/2025(IIIQ)")
+    - Details: Payout % and type (e.g., "50%(iii) (D)")
+    - Book Closure: Date range (e.g., "04/11/2025 - 05/11/2025")
+    """
     payouts = []
 
     payouts_div = tree.xpath('//div[@id="payouts"]')
@@ -533,9 +543,10 @@ def parse_payouts_data(tree: html.HtmlElement) -> list[dict]:
         if not headers:
             continue
 
-        # Build column map
+        # Build column map - support multiple PSX formats
         col_map = {}
         for i, h in enumerate(headers):
+            # Standard format columns
             if "EX" in h and "DATE" in h:
                 col_map["ex_date"] = i
             elif "ANNOUNCEMENT" in h:
@@ -546,10 +557,19 @@ def parse_payouts_data(tree: html.HtmlElement) -> list[dict]:
                 col_map["book_closure_to"] = i
             elif "AMOUNT" in h or "DIVIDEND" in h:
                 col_map["amount"] = i
-            elif "TYPE" in h:
+            elif h == "TYPE":
                 col_map["payout_type"] = i
             elif "YEAR" in h or "FISCAL" in h:
                 col_map["fiscal_year"] = i
+            # PSX company page format: Date, Financial Results, Details, Book Closure
+            elif h == "DATE":
+                col_map["announcement_date"] = i
+            elif "FINANCIAL" in h and "RESULT" in h:
+                col_map["fiscal_period"] = i
+            elif "DETAIL" in h:
+                col_map["details"] = i
+            elif h == "BOOK CLOSURE":
+                col_map["book_closure"] = i
 
         rows = table.xpath('.//tbody//tr | .//tr[position()>1]')
         for row in rows:
@@ -561,17 +581,51 @@ def parse_payouts_data(tree: html.HtmlElement) -> list[dict]:
 
             payout = {"payout_type": "cash"}
 
+            # Handle standard format
             for key, idx in col_map.items():
                 if idx < len(cells):
                     val = cells[idx]
                     if key == "amount":
                         payout[key] = _parse_numeric(val)
-                    elif "date" in key:
+                    elif "date" in key and key != "fiscal_period":
                         payout[key] = _parse_date_str(val)
+                    elif key == "fiscal_period":
+                        payout["fiscal_year"] = val
+                    elif key == "details":
+                        # Parse "50%(iii) (D)" format
+                        payout["details_raw"] = val
+                        # Extract percentage
+                        pct_match = re.search(r"([\d.]+)%", val)
+                        if pct_match:
+                            payout["amount"] = float(pct_match.group(1))
+                        # Determine type: (D) = dividend/cash, (B) = bonus
+                        if "(D)" in val.upper():
+                            payout["payout_type"] = "cash"
+                        elif "(B)" in val.upper():
+                            payout["payout_type"] = "bonus"
+                        elif "(R)" in val.upper():
+                            payout["payout_type"] = "right"
+                    elif key == "book_closure":
+                        # Parse "04/11/2025 - 05/11/2025" format
+                        parts = re.split(r'\s*-\s*', val)
+                        if len(parts) >= 1:
+                            payout["book_closure_from"] = _parse_date_str(parts[0])
+                        if len(parts) >= 2:
+                            payout["book_closure_to"] = _parse_date_str(parts[1])
                     else:
                         payout[key] = val if val else None
 
-            if payout.get("ex_date") or payout.get("amount"):
+            # Derive ex_date if not explicitly provided
+            # PSX company page shows announcement_date, not ex_date
+            # Use book_closure_from as proxy (ex-date is typically 1-2 days before)
+            if not payout.get("ex_date"):
+                if payout.get("book_closure_from"):
+                    payout["ex_date"] = payout["book_closure_from"]
+                elif payout.get("announcement_date"):
+                    payout["ex_date"] = payout["announcement_date"]
+
+            # Only add if we have meaningful data (must have ex_date for DB key)
+            if payout.get("ex_date") and (payout.get("amount") or payout.get("announcement_date")):
                 payouts.append(payout)
 
     return payouts
@@ -671,6 +725,7 @@ def save_company_snapshot(
         Status dict
     """
     from ..db import (
+        upsert_company_payouts,
         upsert_company_snapshot,
         upsert_corporate_announcement,
         upsert_equity_structure,
@@ -686,6 +741,7 @@ def save_company_snapshot(
         "trading_sessions_saved": 0,
         "announcements_saved": 0,
         "equity_saved": False,
+        "payouts_saved": 0,
     }
 
     # Save main snapshot
@@ -722,6 +778,12 @@ def save_company_snapshot(
     if equity_data:
         upsert_equity_structure(con, symbol, snapshot_date, equity_data)
         result["equity_saved"] = True
+
+    # Save payouts (dividend/bonus history)
+    payouts_data = data.get("payouts_data", [])
+    if payouts_data:
+        payouts_saved = upsert_company_payouts(con, symbol, payouts_data)
+        result["payouts_saved"] = payouts_saved
 
     return result
 
@@ -842,3 +904,253 @@ def deep_scrape_batch(
     )
 
     return summary
+
+
+# =============================================================================
+# PSX Financial Announcements Scraper (Dividends from www.psx.com.pk)
+# =============================================================================
+
+PSX_FINANCIAL_ANNOUNCEMENTS_URL = "https://www.psx.com.pk/psx/announcement/financial-announcements"
+
+
+def fetch_psx_financial_announcements(timeout: int = 60) -> str:
+    """Fetch HTML from PSX financial announcements page.
+
+    Args:
+        timeout: Request timeout in seconds (default: 60, PSX can be slow)
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate",
+        "Connection": "keep-alive",
+    }
+
+    response = requests.get(
+        PSX_FINANCIAL_ANNOUNCEMENTS_URL,
+        headers=headers,
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    return response.text
+
+
+def parse_financial_announcements(html_content: str) -> list[dict]:
+    """Parse ALL financial announcement data from PSX financial announcements page.
+
+    The page has a table with columns:
+    - Column 0: Company name
+    - Column 1: Date/timestamp
+    - Column 2: Fiscal period (e.g., 31/12/2025(YR), 30/06/2025(HYR))
+    - Column 3: Dividend/Bonus/Right (e.g., "83%(i) (D)")
+    - Column 4: Profit Before Tax (millions Rs.)
+    - Column 5: Profit After Tax (millions Rs.)
+    - Column 6: EPS (Earnings Per Share)
+    - Column 7: AGM/EOGM Date
+    - Column 8: Book Closure dates (e.g., "19/03/2025 - 26/03/2025")
+
+    Returns:
+        List of dicts with ALL financial announcement data.
+    """
+    tree = html.fromstring(html_content)
+    announcements = []
+
+    # Find the main table
+    tables = tree.xpath('//table')
+
+    for table in tables:
+        rows = table.xpath('.//tbody//tr | .//tr[position()>1]')
+
+        for row in rows:
+            cells = row.xpath('.//td')
+            if len(cells) < 5:
+                continue
+
+            # Extract text from cells
+            cell_texts = []
+            for cell in cells:
+                text = cell.text_content().strip()
+                cell_texts.append(text)
+
+            if len(cell_texts) < 9:
+                continue
+
+            # Parse the row data
+            company_name = cell_texts[0] if len(cell_texts) > 0 else ""
+            ann_date = cell_texts[1] if len(cell_texts) > 1 else ""
+            fiscal_period = cell_texts[2] if len(cell_texts) > 2 else ""
+            dividend_str = cell_texts[3] if len(cell_texts) > 3 else ""
+            profit_before_str = cell_texts[4] if len(cell_texts) > 4 else ""
+            profit_after_str = cell_texts[5] if len(cell_texts) > 5 else ""
+            eps_str = cell_texts[6] if len(cell_texts) > 6 else ""
+            agm_date_str = cell_texts[7] if len(cell_texts) > 7 else ""
+            book_closure = cell_texts[8] if len(cell_texts) > 8 else ""
+
+            # Parse announcement date
+            announcement_date = _parse_date_str(ann_date.split()[0] if ann_date else "")
+
+            # Skip rows without valid data
+            if not announcement_date and not fiscal_period:
+                continue
+
+            # Parse dividend string (e.g., "83%(i) (D)" or "130%(F) (D)")
+            payout_type = None
+            dividend_amount = None
+
+            if dividend_str and dividend_str not in ("-", "—", ""):
+                # Extract percentage
+                pct_match = re.search(r"([\d.]+)%", dividend_str)
+                if pct_match:
+                    dividend_amount = float(pct_match.group(1))
+
+                # Determine type
+                if "(D)" in dividend_str.upper():
+                    payout_type = "cash"
+                elif "(B)" in dividend_str.upper():
+                    payout_type = "bonus"
+                elif "(R)" in dividend_str.upper():
+                    payout_type = "right"
+
+            # Parse profit values (remove commas and parse as float)
+            profit_before_tax = _parse_numeric(profit_before_str)
+            profit_after_tax = _parse_numeric(profit_after_str)
+            eps = _parse_numeric(eps_str)
+
+            # Parse AGM date
+            agm_date = _parse_date_str(agm_date_str) if agm_date_str and agm_date_str not in ("-", "—") else None
+
+            # Parse book closure dates
+            book_from, book_to = None, None
+            if book_closure and book_closure not in ("-", "—", ""):
+                parts = re.split(r'\s*-\s*', book_closure)
+                if len(parts) >= 1:
+                    book_from = _parse_date_str(parts[0])
+                if len(parts) >= 2:
+                    book_to = _parse_date_str(parts[1])
+
+            announcement = {
+                "company_name": company_name,
+                "announcement_date": announcement_date,
+                "fiscal_period": fiscal_period,
+                "fiscal_year": fiscal_period,  # For backward compatibility with payouts
+                # Financial results
+                "profit_before_tax": profit_before_tax,
+                "profit_after_tax": profit_after_tax,
+                "eps": eps,
+                # Dividend info
+                "dividend_payout": dividend_str if dividend_str not in ("-", "—", "") else None,
+                "dividend_amount": dividend_amount,
+                "amount": dividend_amount,  # For backward compatibility with payouts
+                "details_raw": dividend_str,  # For backward compatibility
+                "payout_type": payout_type,
+                # Corporate events
+                "agm_date": agm_date,
+                "book_closure_from": book_from,
+                "book_closure_to": book_to,
+                # Derive ex_date from book_closure_from for payout compatibility
+                "ex_date": book_from if book_from else announcement_date,
+            }
+
+            announcements.append(announcement)
+
+    return announcements
+
+
+def scrape_psx_financial_announcements(
+    con: sqlite3.Connection,
+    symbol_map: dict[str, str] | None = None,
+) -> dict:
+    """Scrape ALL financial announcement data from PSX financial announcements page.
+
+    Saves data to BOTH tables:
+    - company_payouts: Dividend/bonus/rights payout history (backward compatible)
+    - financial_announcements: Full financial results with EPS, profit, AGM, etc.
+
+    Args:
+        con: Database connection.
+        symbol_map: Optional mapping of company names to symbols.
+                   If not provided, will try to match using symbols table.
+
+    Returns:
+        Summary dict with results.
+    """
+    from ..db import upsert_company_payouts, upsert_financial_announcements
+
+    result = {
+        "success": False,
+        "total_announcements": 0,
+        "payouts_saved": 0,
+        "financial_announcements_saved": 0,
+        "companies_without_symbol": [],
+        "error": None,
+    }
+
+    try:
+        # Fetch the page
+        html_content = fetch_psx_financial_announcements()
+
+        # Parse announcements
+        announcements = parse_financial_announcements(html_content)
+        result["total_announcements"] = len(announcements)
+
+        if not announcements:
+            result["success"] = True
+            return result
+
+        # Build symbol map if not provided
+        if symbol_map is None:
+            symbol_map = {}
+            cur = con.execute("SELECT symbol, name FROM symbols")
+            for row in cur.fetchall():
+                # Map both symbol and company name
+                symbol_map[row[0].upper()] = row[0].upper()
+                if row[1]:
+                    # Normalize company name for matching
+                    normalized = row[1].upper().replace("LIMITED", "").strip()
+                    symbol_map[normalized] = row[0].upper()
+
+        # Group announcements by symbol
+        announcements_by_symbol: dict[str, list] = {}
+
+        for ann in announcements:
+            company = ann["company_name"]
+            symbol = None
+
+            # Try to find symbol
+            if company:
+                normalized = company.upper().replace("LIMITED", "").strip()
+                symbol = symbol_map.get(normalized)
+
+                # Also try exact match
+                if not symbol:
+                    for name, sym in symbol_map.items():
+                        if normalized in name or name in normalized:
+                            symbol = sym
+                            break
+
+            if symbol:
+                if symbol not in announcements_by_symbol:
+                    announcements_by_symbol[symbol] = []
+                announcements_by_symbol[symbol].append(ann)
+            else:
+                result["companies_without_symbol"].append(company)
+
+        # Save to BOTH tables for each symbol
+        for symbol, symbol_announcements in announcements_by_symbol.items():
+            # Save to company_payouts (backward compatible - dividends only)
+            count = upsert_company_payouts(con, symbol, symbol_announcements)
+            result["payouts_saved"] += count
+
+            # Save to financial_announcements (full data)
+            fin_count = upsert_financial_announcements(con, symbol, symbol_announcements)
+            result["financial_announcements_saved"] += fin_count
+
+        result["success"] = True
+
+    except requests.RequestException as e:
+        result["error"] = f"HTTP error: {e}"
+    except Exception as e:
+        result["error"] = f"Parse error: {e}"
+
+    return result

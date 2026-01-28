@@ -33,6 +33,7 @@ from .sources.market_watch import (
     fetch_market_watch_html,
     parse_symbols_from_market_watch,
 )
+from .sources.indices import fetch_indices_data, save_index_data
 
 
 @dataclass
@@ -44,6 +45,7 @@ class SyncSummary:
     symbols_ok: int
     symbols_failed: int
     rows_upserted: int
+    indices_synced: int = 0  # KSE-100 and other indices
     failures: list[dict] = field(default_factory=list)
 
 
@@ -88,6 +90,18 @@ def sync_all(
         upsert_symbols(con, symbols)
         logger.info("Refreshed %d symbols", len(symbols))
 
+    # Step 1.5: Sync KSE-100 and other indices FIRST (before stock data)
+    logger.info("Syncing KSE-100 and other indices...")
+    indices_synced = 0
+    try:
+        indices_data = fetch_indices_data(timeout=config.timeout)
+        for idx_data in indices_data:
+            if save_index_data(con, idx_data):
+                indices_synced += 1
+        logger.info("Synced %d indices", indices_synced)
+    except Exception as e:
+        logger.warning("Failed to sync indices: %s", e)
+
     # Step 2: Get symbols to sync
     if symbols_list is not None:
         # Use explicit list, filter to uppercase and sorted
@@ -109,6 +123,7 @@ def sync_all(
             symbols_ok=0,
             symbols_failed=0,
             rows_upserted=0,
+            indices_synced=indices_synced,
         )
 
     # Step 3: Record sync run start
@@ -195,6 +210,7 @@ def sync_all(
         symbols_ok=symbols_ok,
         symbols_failed=symbols_failed,
         rows_upserted=total_rows,
+        indices_synced=indices_synced,
         failures=failures,
     )
 
@@ -349,3 +365,118 @@ def sync_intraday(
             newest_ts=None,
             error=error_msg,
         )
+
+
+@dataclass
+class BulkIntradaySyncSummary:
+    """Summary of bulk intraday sync operation for all symbols."""
+
+    symbols_total: int
+    symbols_ok: int
+    symbols_failed: int
+    rows_upserted: int
+    results: list[IntradaySyncSummary] = field(default_factory=list)
+
+
+def sync_intraday_bulk(
+    db_path: Path | str | None = None,
+    symbols_list: list[str] | None = None,
+    incremental: bool = True,
+    max_rows: int | None = None,
+    limit_symbols: int | None = None,
+    session: requests.Session | None = None,
+    config: SyncConfig | None = None,
+    progress_callback=None,
+) -> BulkIntradaySyncSummary:
+    """
+    Sync intraday data for all symbols or a specific list.
+
+    Args:
+        db_path: Path to SQLite database. Uses default if None.
+        symbols_list: Explicit list of symbols to sync. If None, syncs all from DB.
+        incremental: If True, only fetch data newer than last sync.
+        max_rows: Optional limit on number of rows to keep per symbol (most recent).
+        limit_symbols: Limit number of symbols to sync (if symbols_list is None).
+        session: Optional requests Session for HTTP calls.
+        config: SyncConfig with options (retries, timeouts, etc.).
+        progress_callback: Optional callback(current, total, symbol, result) for progress updates.
+
+    Returns:
+        BulkIntradaySyncSummary with counts and per-symbol results.
+    """
+    import time
+
+    if config is None:
+        config = DEFAULT_SYNC_CONFIG
+
+    logger = get_logger()
+
+    if session is None:
+        session = create_session(config=config)
+
+    con = connect(db_path)
+    init_schema(con)
+
+    # Get symbols to sync
+    if symbols_list is not None:
+        symbols_to_sync = sorted([s.upper().strip() for s in symbols_list])
+    else:
+        symbols_to_sync = get_symbols_list(con, limit=limit_symbols)
+
+    con.close()
+
+    if not symbols_to_sync:
+        logger.warning("No symbols to sync intraday data")
+        return BulkIntradaySyncSummary(
+            symbols_total=0,
+            symbols_ok=0,
+            symbols_failed=0,
+            rows_upserted=0,
+            results=[],
+        )
+
+    summary = BulkIntradaySyncSummary(
+        symbols_total=len(symbols_to_sync),
+        symbols_ok=0,
+        symbols_failed=0,
+        rows_upserted=0,
+        results=[],
+    )
+
+    logger.info("Starting bulk intraday sync for %d symbols", len(symbols_to_sync))
+
+    for i, symbol in enumerate(symbols_to_sync):
+        # Sync this symbol
+        result = sync_intraday(
+            db_path=db_path,
+            symbol=symbol,
+            incremental=incremental,
+            max_rows=max_rows,
+            session=session,
+            config=config,
+        )
+
+        summary.results.append(result)
+        summary.rows_upserted += result.rows_upserted
+
+        if result.error:
+            summary.symbols_failed += 1
+        else:
+            summary.symbols_ok += 1
+
+        # Progress callback
+        if progress_callback:
+            progress_callback(i + 1, len(symbols_to_sync), symbol, result)
+
+        # Small delay between requests to avoid rate limiting
+        if i < len(symbols_to_sync) - 1:
+            time.sleep(0.5)
+
+    logger.info(
+        "Bulk intraday sync complete: %d ok, %d failed, %d rows",
+        summary.symbols_ok,
+        summary.symbols_failed,
+        summary.rows_upserted,
+    )
+
+    return summary

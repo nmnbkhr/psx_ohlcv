@@ -202,7 +202,7 @@ class OpenAIClient:
         payload = {
             "model": self.model,
             "messages": messages,
-            "max_tokens": max_tokens or self.max_tokens,
+            "max_completion_tokens": max_tokens or self.max_tokens,
             "temperature": temperature if temperature is not None else self.temperature,
         }
 
@@ -257,7 +257,7 @@ class OpenAIClient:
         payload = {
             "model": self.model,
             "messages": messages,
-            "max_tokens": max_tokens or self.max_tokens,
+            "max_completion_tokens": max_tokens or self.max_tokens,
             "temperature": temperature if temperature is not None else self.temperature,
             "stream": True,
         }

@@ -33,12 +33,13 @@ SYSTEM_PROMPT = """You are a financial analyst assistant specializing in Pakista
 - Analyze provided stock market data objectively and factually
 - Provide clear, structured insights in markdown format
 - Help users understand market movements and company performance
+- Provide a clear assessment and actionable items
 
 ## HARD RULES (MUST FOLLOW)
 1. **NEVER invent, estimate, or hallucinate numbers** - only use data explicitly provided
 2. If data is missing or unavailable, explicitly state "Data not available" or "Not provided"
 3. Do not claim certainty about future price movements
-4. Do not provide investment advice or buy/sell recommendations
+4. Provide educational observations, NOT personal investment advice
 5. Always acknowledge data limitations and time ranges
 
 ## PSX MARKET CONTEXT
@@ -52,11 +53,40 @@ SYSTEM_PROMPT = """You are a financial analyst assistant specializing in Pakista
 data are calculated as max(open, close) and min(open, close) respectively. These are NOT true
 intraday highs and lows. Do NOT claim these represent actual intraday price extremes.
 
-## OUTPUT FORMAT
-- Use markdown formatting with headers, bullet points, and tables where appropriate
-- Be concise but comprehensive
-- Highlight key insights at the beginning
-- Include data source attribution
+## OUTPUT FORMAT (STRICT)
+You MUST structure your response as follows:
+
+### 1. ASSESSMENT BOX (Required First)
+Start with a highlighted assessment box using this exact format:
+```
+> 📊 **ASSESSMENT**: [BULLISH 🟢 / BEARISH 🔴 / NEUTRAL ⚪ / MIXED 🟡]
+>
+> **One-line summary**: [Your key finding in one sentence]
+>
+> **Confidence**: [HIGH / MEDIUM / LOW] based on data completeness
+```
+
+### 2. KEY METRICS TABLE (Required)
+A quick-reference table with the most important numbers.
+
+### 3. DETAILED ANALYSIS
+Your comprehensive analysis with sections.
+
+### 4. ACTION ITEMS (Required Last)
+End with specific, actionable items:
+```
+## 📋 Action Items
+- [ ] **Monitor**: [Specific thing to watch]
+- [ ] **Research**: [What to investigate further]
+- [ ] **Alert**: [Set price/volume alerts if applicable]
+```
+
+## DISCLAIMER
+Always include this disclaimer at the very end:
+```
+---
+*⚠️ Disclaimer: This is data-driven analysis, not investment advice. Always conduct your own research and consult a licensed financial advisor before making investment decisions.*
+```
 """
 
 
@@ -83,30 +113,69 @@ COMPANY_SUMMARY_TEMPLATE = """## Analysis Request: Company Summary
 ### 4. Key Financial Metrics (if available)
 {financial_data}
 
+### 5. Dividend/Payout History
+{payout_data}
+
+### 6. Financial Announcements (Earnings Results)
+{financial_announcements_data}
+
+### 7. Intraday Trading Summary
+{intraday_summary_data}
+
+### 8. Recent Corporate Announcements
+{corporate_announcements_data}
+
+### 9. Upcoming Corporate Events
+{corporate_events_data}
+
 ---
 
 ## DATA USED SECTION
-- **Tables**: company_snapshots, eod_ohlcv, trading_sessions
+- **Tables**: company_snapshots, eod_ohlcv, trading_sessions, company_payouts, financial_announcements, intraday_bars, company_announcements, corporate_events
 - **Symbol**: {symbol}
 - **Date Range**: {date_range}
 - **Data Points**: {data_points}
 - **Last Updated**: {last_updated}
 
 ## ANALYSIS REQUEST
-Please provide a comprehensive summary covering:
+Provide a comprehensive analysis with this EXACT structure:
+
+### REQUIRED: Start with Assessment Box
+Use the format from system prompt - BULLISH/BEARISH/NEUTRAL/MIXED with confidence level.
+
+### REQUIRED: Key Metrics Table
+| Metric | Value | Signal |
+|--------|-------|--------|
+| Current Price | XXX | - |
+| Change % | XXX% | 🟢/🔴 |
+| Volume | XXX | Above/Below avg |
+| P/E Ratio | XXX | - |
+| VWAP | XXX | Above/Below price |
+
+### Detailed Analysis Sections:
 1. **Company Overview** - Business description and sector positioning
-2. **Recent Price Action** - Analysis of the provided OHLCV data
-3. **Volume Analysis** - Trading activity trends
-4. **Key Metrics** - P/E ratio, market cap, dividend yield (if available)
-5. **Notable Observations** - Any significant patterns or events
+2. **Price Action Analysis** - Trend direction, support/resistance from OHLCV data
+3. **Volume Analysis** - Is volume confirming price movement? Unusual activity?
+4. **Financial Health** - P/E, EPS trends, dividend history (if available)
+5. **Intraday Patterns** - VWAP positioning, session high/low (if available)
+6. **Corporate Activity** - Recent announcements, upcoming AGM/EOGM, dividends
+7. **Risk Factors** - Thin trading, circuit limit proximity, data gaps
+
+### REQUIRED: End with Action Items
+Specific actionable items using checkbox format.
+
+### REQUIRED: Disclaimer
+Standard disclaimer about not being investment advice.
 
 ## HARD RULES REMINDER
 - Only use the numbers provided above
 - If any data field shows "N/A" or is missing, state "Not available"
 - Do NOT invent any statistics or percentages not explicitly provided
+- Assessment must be based ONLY on provided data, not speculation
 
 ## PSX CAVEATS REMINDER
-- **DERIVED HIGH/LOW**: The high and low in OHLCV data are max/min of open,close - NOT true intraday extremes
+- **DERIVED HIGH/LOW**: The high and low in EOD OHLCV data are max/min of open,close - NOT true intraday extremes
+- **TRUE INTRADAY**: The intraday summary provides actual intraday highs/lows from tick data
 - **Liquidity**: Some stocks may have thin trading volumes
 - **Circuit Breakers**: Daily price limits of ±7.5% apply
 - **Market Hours**: 9:30 AM - 3:30 PM PKT, Monday-Friday
@@ -168,50 +237,72 @@ Please provide intraday commentary covering:
 MARKET_SUMMARY_TEMPLATE = """## Analysis Request: Market Summary
 
 ### DATE: {market_date}
-### INDEX: KSE-100
+### INDICES: KSE-100, KSE-30, KMI-30, ALL SHARE
 
 ---
 
 ## DATA PROVIDED
 
-### 1. Market Overview
+### 1. PSX Indices Overview
 {market_overview}
 
-### 2. Top Gainers
+### 2. Top {top_n} Gainers (Stocks with highest % gain)
 {gainers_data}
 
-### 3. Top Losers
+### 3. Top {top_n} Losers (Stocks with highest % loss)
 {losers_data}
 
-### 4. Volume Leaders
+### 4. Top {top_n} Volume Leaders (Most traded stocks)
 {volume_leaders}
 
-### 5. Sector Performance
+### 5. Sector Performance (All sectors)
 {sector_data}
 
-### 6. Market Breadth
+### 6. Market Breadth (Total stocks traded)
 {breadth_data}
 
 ---
 
 ## DATA USED SECTION
-- **Tables**: trading_sessions, eod_ohlcv, psx_indices, sectors
+- **Tables**: trading_sessions, psx_indices, company_snapshots (for sectors)
 - **Date**: {market_date}
-- **Stocks Analyzed**: {total_stocks}
+- **Total Stocks Analyzed**: {total_stocks}
 - **Sectors Covered**: {sector_count}
 - **Data Freshness**: {last_updated}
 
 ## ANALYSIS REQUEST
-Please provide a market summary covering:
-1. **Index Performance** - KSE-100 movement (if provided)
-2. **Market Breadth** - Gainers vs losers ratio
-3. **Sector Analysis** - Which sectors led/lagged
-4. **Volume Analysis** - Overall market activity
-5. **Notable Movers** - Stocks with significant changes
-6. **Key Observations** - Any market-wide patterns
+Provide a comprehensive market summary with this EXACT structure:
+
+### REQUIRED: Start with Assessment Box
+Use the format from system prompt - BULLISH/BEARISH/NEUTRAL/MIXED with confidence level based on market breadth and index direction.
+
+### REQUIRED: Key Metrics Table
+| Metric | Value | Signal |
+|--------|-------|--------|
+| KSE-100 | XXX | 🟢/🔴 |
+| Market Breadth | XXX gainers / XXX losers | Net +/- |
+| Total Volume | XXX | High/Normal/Low |
+| Leading Sector | XXX | +X.XX% |
+
+### Detailed Analysis Sections:
+1. **Indices Performance** - KSE-100, KSE-30, KMI-30, ALL SHARE movements and comparison
+2. **Market Breadth** - Gainers vs losers ratio, sentiment interpretation
+3. **Sector Analysis** - Top performing and lagging sectors with reasons
+4. **Volume Analysis** - Overall market activity, volume leaders significance
+5. **Top Movers Analysis** - Why are gainers gaining? Why are losers losing?
+6. **Key Observations** - Market-wide patterns, circuit limit hits, unusual activity
+
+### REQUIRED: End with Action Items
+- [ ] **Monitor**: Sectors or stocks to watch
+- [ ] **Research**: Events affecting market today
+- [ ] **Alert**: Set alerts for key levels or stocks
+
+### REQUIRED: Disclaimer
 
 ## HARD RULES REMINDER
 - Only cite specific stocks and numbers from the data provided
+- ANALYZE all {top_n} gainers and losers, not just 1 stock
+- Explain WHY stocks moved (sector trend, volume, circuit limits)
 - If index data is not provided, state "Index data not available"
 - Do not invent sector percentages or market-wide statistics
 
@@ -367,6 +458,9 @@ class PromptBuilder:
             "ohlcv_data": "No OHLCV data available",
             "ohlcv_days": "0",
             "financial_data": "No financial data available",
+            "payout_data": "No dividend/payout history available",
+            "financial_announcements_data": "No financial announcements available",
+            "intraday_summary_data": "No intraday data available",
             "date_range": "Not specified",
             "data_points": "0",
             "last_updated": "Unknown",
@@ -522,12 +616,56 @@ def format_quote_for_prompt(quote: dict) -> str:
 
     # Add optional fields if available
     if quote.get("pe_ratio_ttm"):
-        lines.append(f"- **P/E Ratio (TTM)**: {quote['pe_ratio_ttm']}")
+        pe_val = f"{quote['pe_ratio_ttm']:.2f}" if isinstance(quote['pe_ratio_ttm'], float) else str(quote['pe_ratio_ttm'])
+        lines.append(f"- **P/E Ratio (TTM)**: {pe_val} *(based on unconsolidated financials)*")
     if quote.get("market_cap"):
         lines.append(f"- **Market Cap**: {quote['market_cap']:,}" if isinstance(quote['market_cap'], (int, float)) else f"- **Market Cap**: {quote['market_cap']}")
     if quote.get("week_52_high"):
         lines.append(f"- **52-Week High**: {quote['week_52_high']}")
     if quote.get("week_52_low"):
         lines.append(f"- **52-Week Low**: {quote['week_52_low']}")
+    if quote.get("circuit_high") and quote.get("circuit_low"):
+        lines.append(f"- **Circuit Breaker Range**: {quote['circuit_low']} - {quote['circuit_high']}")
+    if quote.get("ytd_change") is not None:
+        lines.append(f"- **YTD Change**: {quote['ytd_change']:.2f}%" if isinstance(quote['ytd_change'], float) else f"- **YTD Change**: {quote['ytd_change']}%")
+    if quote.get("year_1_change") is not None:
+        lines.append(f"- **1-Year Change**: {quote['year_1_change']:.2f}%" if isinstance(quote['year_1_change'], float) else f"- **1-Year Change**: {quote['year_1_change']}%")
+
+    return "\n".join(lines)
+
+
+def format_payouts_for_prompt(payouts: list[dict]) -> str:
+    """Format dividend/payout history for prompt inclusion.
+
+    Args:
+        payouts: List of payout dicts from database.
+
+    Returns:
+        Formatted string with dividend history.
+    """
+    if not payouts:
+        return "No dividend/payout history available"
+
+    lines = ["**Recent Dividend History:**"]
+
+    for payout in payouts:
+        date = payout.get("ex_date", "N/A")
+        amount = payout.get("amount")
+        details = payout.get("details", "")
+        fiscal = payout.get("fiscal_period", "")
+        payout_type = payout.get("payout_type", "cash")
+
+        # Format the payout entry
+        if amount:
+            amount_str = f"{amount}%"
+        elif details:
+            amount_str = details
+        else:
+            amount_str = "N/A"
+
+        period_str = f" ({fiscal})" if fiscal else ""
+        type_str = f" [{payout_type}]" if payout_type != "cash" else ""
+
+        lines.append(f"- {date}: {amount_str}{period_str}{type_str}")
 
     return "\n".join(lines)

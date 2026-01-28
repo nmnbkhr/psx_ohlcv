@@ -45,7 +45,21 @@ from .sources.sectors import (
     get_sector_list,
     refresh_sectors,
 )
-from .sync import SyncSummary, sync_all, sync_intraday
+from .sync import SyncSummary, sync_all, sync_intraday, sync_intraday_bulk
+from .services.announcements_service import (
+    read_status as read_announcements_status,
+    run_service as run_announcements_service,
+    start_service_background as start_announcements_service,
+    stop_service as stop_announcements_service,
+)
+from .sources.announcements import (
+    fetch_announcements,
+    fetch_corporate_events,
+    fetch_company_payouts,
+    save_announcement,
+    save_corporate_event,
+    save_dividend_payout,
+)
 
 # Exit codes
 EXIT_SUCCESS = 0
@@ -400,6 +414,34 @@ def main(argv: list[str] | None = None) -> int:
         help="Output format (default: table)",
     )
 
+    # intraday sync-all (bulk sync for all symbols - for cron jobs)
+    intraday_sync_all_parser = intraday_sub.add_parser(
+        "sync-all", help="Sync intraday data for all symbols (bulk)"
+    )
+    intraday_sync_all_parser.add_argument(
+        "--no-incremental",
+        action="store_true",
+        help="Fetch all data, not just new data (full refresh)",
+    )
+    intraday_sync_all_parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Limit number of symbols to sync (default: all)",
+    )
+    intraday_sync_all_parser.add_argument(
+        "--max-rows",
+        type=int,
+        default=None,
+        help="Limit number of rows to keep per symbol (most recent)",
+    )
+    intraday_sync_all_parser.add_argument(
+        "--quiet",
+        "-q",
+        action="store_true",
+        help="Quiet mode - minimal output (useful for cron)",
+    )
+
     # regular-market command
     rm_parser = subparsers.add_parser(
         "regular-market",
@@ -621,6 +663,110 @@ def main(argv: list[str] | None = None) -> int:
         help="Sync sector names from company_profile to symbols table"
     )
 
+    # company deep-scrape - full scrape including payouts, financials, etc.
+    company_deep_parser = company_sub.add_parser(
+        "deep-scrape",
+        help="Deep scrape company page (payouts, financials, announcements)"
+    )
+    company_deep_parser.add_argument(
+        "--symbol",
+        type=str,
+        help="Single stock symbol",
+    )
+    company_deep_parser.add_argument(
+        "--symbols",
+        type=str,
+        help="Comma-separated list of symbols (e.g., OGDC,HBL,PSO)",
+    )
+    company_deep_parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Scrape all active symbols",
+    )
+    company_deep_parser.add_argument(
+        "--delay",
+        type=float,
+        default=1.0,
+        help="Delay between requests in seconds (default: 1.0)",
+    )
+    company_deep_parser.add_argument(
+        "--save-html",
+        action="store_true",
+        help="Save raw HTML to database (for debugging)",
+    )
+
+    # company import-payouts - import payouts from saved HTML file
+    company_import_parser = company_sub.add_parser(
+        "import-payouts",
+        help="Import payouts from saved HTML page source (for JS-rendered data)"
+    )
+    company_import_parser.add_argument(
+        "--symbol",
+        type=str,
+        required=True,
+        help="Stock symbol for the imported data",
+    )
+    company_import_parser.add_argument(
+        "--file",
+        type=str,
+        required=True,
+        help="Path to saved HTML file (page source from browser)",
+    )
+
+    # company fetch-dividends - fetch dividend announcements from PSX
+    company_sub.add_parser(
+        "fetch-dividends",
+        help="Fetch dividend announcements from PSX financial announcements page"
+    )
+
+    # announcements command - PSX company announcements sync
+    ann_parser = subparsers.add_parser(
+        "announcements",
+        help="Company announcements, events, and dividend payouts sync"
+    )
+    ann_sub = ann_parser.add_subparsers(dest="ann_command", required=True)
+
+    # announcements sync - run a one-time sync
+    ann_sync_parser = ann_sub.add_parser(
+        "sync", help="Sync all announcements, events, and dividends"
+    )
+    ann_sync_parser.add_argument(
+        "--no-announcements",
+        action="store_true",
+        help="Skip syncing company announcements",
+    )
+    ann_sync_parser.add_argument(
+        "--no-events",
+        action="store_true",
+        help="Skip syncing corporate events (AGM/EOGM)",
+    )
+    ann_sync_parser.add_argument(
+        "--no-dividends",
+        action="store_true",
+        help="Skip syncing dividend payouts",
+    )
+
+    # announcements service - background service management
+    ann_svc_parser = ann_sub.add_parser(
+        "service", help="Manage background sync service"
+    )
+    ann_svc_parser.add_argument(
+        "action",
+        choices=["start", "stop", "status"],
+        help="Service action",
+    )
+    ann_svc_parser.add_argument(
+        "--interval",
+        type=int,
+        default=3600,
+        help="Sync interval in seconds (default: 3600 = 1 hour)",
+    )
+
+    # announcements status - show sync status
+    ann_sub.add_parser(
+        "status", help="Show announcements sync status and stats"
+    )
+
     args = parser.parse_args(argv)
 
     try:
@@ -644,6 +790,8 @@ def main(argv: list[str] | None = None) -> int:
             return handle_master(args)
         elif args.command == "company":
             return handle_company(args)
+        elif args.command == "announcements":
+            return handle_announcements(args)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         return 130
@@ -1195,6 +1343,8 @@ def handle_intraday(args: argparse.Namespace) -> int:
         return handle_intraday_sync(args)
     elif args.intraday_command == "show":
         return handle_intraday_show(args)
+    elif args.intraday_command == "sync-all":
+        return handle_intraday_sync_all(args)
     return EXIT_ERROR
 
 
@@ -1225,6 +1375,73 @@ def handle_intraday_sync(args: argparse.Namespace) -> int:
     print(f"  Newest ts:      {summary.newest_ts or 'N/A'}")
 
     return EXIT_SUCCESS
+
+
+def handle_intraday_sync_all(args: argparse.Namespace) -> int:
+    """Handle bulk intraday sync command for all symbols.
+
+    This command is designed to be run via cron for automated data collection.
+
+    Example cron entries:
+        # Every 5 minutes during market hours (9:30 AM - 3:30 PM PKT, Mon-Fri)
+        */5 9-15 * * 1-5 psxsync intraday sync-all --quiet
+
+        # Full refresh every night at midnight
+        0 0 * * * psxsync intraday sync-all --no-incremental --quiet
+    """
+    setup_logging()
+
+    incremental = not args.no_incremental
+    quiet = args.quiet
+    mode_str = "incremental" if incremental else "full"
+
+    if not quiet:
+        print(f"Starting bulk intraday sync ({mode_str} mode)...")
+        if args.limit:
+            print(f"  Limiting to {args.limit} symbols")
+
+    def progress_callback(current, total, symbol, result):
+        if not quiet:
+            status_icon = "✓" if not result.error else "✗"
+            print(f"  [{current}/{total}] {status_icon} {symbol}: {result.rows_upserted} rows")
+
+    summary = sync_intraday_bulk(
+        db_path=args.db,
+        incremental=incremental,
+        limit_symbols=args.limit,
+        max_rows=args.max_rows,
+        progress_callback=progress_callback if not quiet else None,
+    )
+
+    # Print summary
+    if quiet:
+        # Minimal output for cron logs
+        if summary.symbols_failed > 0:
+            print(
+                f"WARN: Intraday sync: {summary.symbols_ok}/{summary.symbols_total} OK, "
+                f"{summary.symbols_failed} failed, {summary.rows_upserted} rows"
+            )
+        else:
+            print(
+                f"OK: Intraday sync: {summary.symbols_ok} symbols, "
+                f"{summary.rows_upserted} rows"
+            )
+    else:
+        print("\nBulk Intraday Sync Complete")
+        print("=" * 50)
+        print(f"  Mode:           {mode_str}")
+        print(f"  Total symbols:  {summary.symbols_total}")
+        print(f"  Symbols OK:     {summary.symbols_ok}")
+        print(f"  Symbols failed: {summary.symbols_failed}")
+        print(f"  Rows upserted:  {summary.rows_upserted:,}")
+
+        if summary.symbols_failed > 0:
+            print("\nFailed symbols:")
+            for result in summary.results:
+                if result.error:
+                    print(f"  - {result.symbol}: {result.error}")
+
+    return EXIT_SUCCESS if summary.symbols_failed == 0 else EXIT_ERROR
 
 
 def handle_intraday_show(args: argparse.Namespace) -> int:
@@ -1726,6 +1943,12 @@ def handle_company(args: argparse.Namespace) -> int:
         return handle_company_show(args)
     elif args.company_command == "sync-sectors":
         return handle_company_sync_sectors(args)
+    elif args.company_command == "deep-scrape":
+        return handle_company_deep_scrape(args)
+    elif args.company_command == "import-payouts":
+        return handle_company_import_payouts(args)
+    elif args.company_command == "fetch-dividends":
+        return handle_company_fetch_dividends(args)
     return EXIT_ERROR
 
 
@@ -1903,6 +2126,348 @@ def handle_company_sync_sectors(args: argparse.Namespace) -> int:
     con.close()
 
     print(f"Updated {count} symbol(s) with sector names.")
+    return EXIT_SUCCESS
+
+
+def handle_company_deep_scrape(args: argparse.Namespace) -> int:
+    """Handle company deep-scrape command.
+
+    Deep scrapes company pages including:
+    - Trading data (REG, FUT, CSF, ODL)
+    - Company profile and key people
+    - Financial statements
+    - Financial ratios
+    - Corporate announcements
+    - Dividend/payout history
+    """
+    from .sources.deep_scraper import deep_scrape_batch, deep_scrape_symbol
+
+    # Determine symbols to scrape
+    symbols = []
+    if args.symbol:
+        symbols = [args.symbol.upper()]
+    elif args.symbols:
+        symbols = [s.strip().upper() for s in args.symbols.split(",")]
+    elif getattr(args, "all", False):
+        # Get all active symbols
+        from .db import get_symbols_list
+        con = connect(args.db)
+        init_schema(con)
+        symbols = get_symbols_list(con)
+        con.close()
+
+    if not symbols:
+        print("Error: --symbol, --symbols, or --all required", file=sys.stderr)
+        return EXIT_ERROR
+
+    print(f"Deep scraping {len(symbols)} symbol(s)...")
+    print(f"Data: trading, profile, financials, ratios, announcements, payouts")
+    print("-" * 60)
+
+    con = connect(args.db)
+    init_schema(con)
+
+    save_html = getattr(args, "save_html", False)
+
+    if len(symbols) == 1:
+        # Single symbol - direct scrape
+        result = deep_scrape_symbol(con, symbols[0], save_raw_html=save_html)
+        con.close()
+
+        if result.get("success"):
+            print(f"\n{symbols[0]} - Deep scrape complete:")
+            print(f"  Snapshot:     saved")
+            print(f"  Trading:      {result.get('trading_sessions_saved', 0)} market type(s)")
+            print(f"  Announcements: {result.get('announcements_saved', 0)}")
+            print(f"  Equity:       {'saved' if result.get('equity_saved') else 'n/a'}")
+            print(f"  Payouts:      {result.get('payouts_saved', 0)}")
+            return EXIT_SUCCESS
+        else:
+            print(f"Error: {result.get('error')}", file=sys.stderr)
+            return EXIT_ERROR
+    else:
+        # Batch scrape with progress
+        def progress_cb(current, total, symbol, result):
+            status = "OK" if result.get("success") else f"ERR: {result.get('error', 'unknown')}"
+            payouts = result.get("payouts_saved", 0) if result.get("success") else 0
+            print(f"[{current}/{total}] {symbol}: {status} (payouts: {payouts})")
+
+        summary = deep_scrape_batch(
+            con, symbols,
+            delay=args.delay,
+            save_raw_html=save_html,
+            progress_callback=progress_cb,
+        )
+        con.close()
+
+        print("-" * 60)
+        print(f"Deep scrape complete:")
+        print(f"  Total:     {summary['total']}")
+        print(f"  Completed: {summary['completed']}")
+        print(f"  Failed:    {summary['failed']}")
+
+        if summary["errors"]:
+            print("\nErrors:")
+            for err in summary["errors"][:10]:
+                print(f"  {err['symbol']}: {err['error']}")
+            if len(summary["errors"]) > 10:
+                print(f"  ... and {len(summary['errors']) - 10} more")
+
+        return EXIT_SUCCESS if summary["completed"] > 0 else EXIT_ERROR
+
+
+def handle_company_import_payouts(args: argparse.Namespace) -> int:
+    """Handle company import-payouts command.
+
+    Imports payout data from a saved HTML file (page source from browser).
+    Use this when the PSX website loads payout data via JavaScript.
+
+    Usage:
+        1. Open https://dps.psx.com.pk/company/{SYMBOL} in browser
+        2. Wait for page to fully load (payouts section visible)
+        3. Right-click > View Page Source (or Ctrl+U)
+        4. Save the page source as an HTML file
+        5. Run: psxsync company import-payouts --symbol SYMBOL --file path/to/saved.html
+    """
+    from pathlib import Path
+    from lxml import html as lxml_html
+
+    from .db import upsert_company_payouts
+    from .sources.deep_scraper import parse_payouts_data
+
+    symbol = args.symbol.upper()
+    file_path = Path(args.file)
+
+    if not file_path.exists():
+        print(f"Error: File not found: {file_path}", file=sys.stderr)
+        return EXIT_ERROR
+
+    print(f"Importing payouts for {symbol} from {file_path}...")
+
+    # Read and parse HTML file
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            html_content = f.read()
+
+        tree = lxml_html.fromstring(html_content)
+        payouts = parse_payouts_data(tree)
+
+        if not payouts:
+            print("No payouts found in the HTML file.")
+            print("Make sure the payouts section is visible in the page source.")
+            return EXIT_ERROR
+
+        print(f"Found {len(payouts)} payout records.")
+
+        # Save to database
+        con = connect(args.db)
+        init_schema(con)
+
+        count = upsert_company_payouts(con, symbol, payouts)
+        con.close()
+
+        print(f"Imported {count} payout records for {symbol}.")
+
+        # Show imported data
+        print("\nImported payouts:")
+        print("-" * 60)
+        for p in payouts[:10]:
+            ann_date = p.get("announcement_date", "N/A")
+            fiscal = p.get("fiscal_year", "N/A")
+            amount = p.get("amount", "N/A")
+            ptype = p.get("payout_type", "cash")
+            print(f"  {ann_date}: {amount}% {ptype} (Fiscal: {fiscal})")
+
+        if len(payouts) > 10:
+            print(f"  ... and {len(payouts) - 10} more")
+
+        return EXIT_SUCCESS
+
+    except Exception as e:
+        print(f"Error parsing HTML: {e}", file=sys.stderr)
+        return EXIT_ERROR
+
+
+def handle_company_fetch_dividends(args: argparse.Namespace) -> int:
+    """Handle company fetch-dividends command.
+
+    Fetches dividend announcements from PSX financial announcements page
+    (https://www.psx.com.pk/psx/announcement/financial-announcements)
+    and saves them to the company_payouts table.
+    """
+    from .sources.deep_scraper import scrape_psx_financial_announcements
+
+    print("Fetching dividend announcements from PSX...")
+    print(f"Source: https://www.psx.com.pk/psx/announcement/financial-announcements")
+    print("-" * 60)
+
+    con = connect(args.db)
+    init_schema(con)
+
+    result = scrape_psx_financial_announcements(con)
+    con.close()
+
+    if result["success"]:
+        print(f"\nDividend Fetch Complete:")
+        print(f"  Announcements found: {result['total_announcements']}")
+        print(f"  Payouts saved:       {result['payouts_saved']}")
+
+        if result["companies_without_symbol"]:
+            print(f"\nCompanies without matching symbol ({len(result['companies_without_symbol'])}):")
+            for company in result["companies_without_symbol"][:10]:
+                print(f"  - {company}")
+            if len(result["companies_without_symbol"]) > 10:
+                print(f"  ... and {len(result['companies_without_symbol']) - 10} more")
+
+        return EXIT_SUCCESS
+    else:
+        print(f"Error: {result.get('error')}", file=sys.stderr)
+        return EXIT_ERROR
+
+
+def handle_announcements(args: argparse.Namespace) -> int:
+    """Handle announcements subcommands."""
+    if args.ann_command == "sync":
+        return handle_announcements_sync(args)
+    elif args.ann_command == "service":
+        return handle_announcements_service(args)
+    elif args.ann_command == "status":
+        return handle_announcements_status(args)
+    return EXIT_ERROR
+
+
+def handle_announcements_sync(args: argparse.Namespace) -> int:
+    """Handle one-time announcements sync."""
+    from datetime import datetime, timedelta
+
+    print("Syncing announcements data...")
+    print("-" * 50)
+
+    con = connect(args.db)
+    init_schema(con)
+
+    stats = {
+        "announcements": 0,
+        "events": 0,
+        "dividends": 0,
+        "symbols_processed": 0,
+    }
+
+    try:
+        # Sync company announcements
+        if not args.no_announcements:
+            print("Fetching company announcements...")
+            offset = 0
+            page_size = 20
+            while True:
+                records, total = fetch_announcements(
+                    announcement_type="C",
+                    offset=offset,
+                )
+                if not records:
+                    break
+                for record in records:
+                    if save_announcement(con, record):
+                        stats["announcements"] += 1
+                offset += len(records)
+                print(f"  Progress: {offset}/{total}", end="\r")
+                if offset >= total or len(records) < page_size:
+                    break
+            print(f"  Company announcements: {stats['announcements']} saved")
+
+        # Sync corporate events
+        if not args.no_events:
+            print("Fetching corporate events calendar...")
+            from_date = datetime.now().strftime("%Y-%m-%d")
+            to_date = (datetime.now() + timedelta(days=365)).strftime("%Y-%m-%d")
+            events = fetch_corporate_events(from_date, to_date)
+            for event in events:
+                if save_corporate_event(con, event):
+                    stats["events"] += 1
+            print(f"  Corporate events: {stats['events']} saved")
+
+        # Sync dividend payouts
+        if not args.no_dividends:
+            print("Fetching dividend payouts...")
+            cur = con.execute("""
+                SELECT symbol FROM symbols WHERE is_active = 1 ORDER BY symbol
+            """)
+            symbols = [row[0] for row in cur.fetchall()]
+            for i, symbol in enumerate(symbols):
+                print(f"  Processing {symbol} ({i+1}/{len(symbols)})", end="\r")
+                try:
+                    payouts = fetch_company_payouts(symbol)
+                    for payout in payouts:
+                        if save_dividend_payout(con, payout):
+                            stats["dividends"] += 1
+                    stats["symbols_processed"] += 1
+                except Exception as e:
+                    pass  # Skip failed symbols silently
+            print(f"  Dividend payouts: {stats['dividends']} saved from {stats['symbols_processed']} symbols")
+
+    finally:
+        con.close()
+
+    print("\nSync Complete:")
+    print(f"  Announcements: {stats['announcements']}")
+    print(f"  Events:        {stats['events']}")
+    print(f"  Dividends:     {stats['dividends']}")
+
+    return EXIT_SUCCESS
+
+
+def handle_announcements_service(args: argparse.Namespace) -> int:
+    """Handle announcements background service commands."""
+    if args.action == "start":
+        success, msg = start_announcements_service(
+            interval_seconds=args.interval,
+        )
+        print(msg)
+        return EXIT_SUCCESS if success else EXIT_ERROR
+
+    elif args.action == "stop":
+        success, msg = stop_announcements_service()
+        print(msg)
+        return EXIT_SUCCESS if success else EXIT_ERROR
+
+    elif args.action == "status":
+        return handle_announcements_status(args)
+
+    return EXIT_ERROR
+
+
+def handle_announcements_status(args: argparse.Namespace) -> int:
+    """Show announcements sync status."""
+    status = read_announcements_status()
+
+    print("Announcements Sync Status")
+    print("=" * 50)
+    print(f"  Running:           {'Yes' if status.running else 'No'}")
+    if status.pid:
+        print(f"  PID:               {status.pid}")
+    if status.started_at:
+        print(f"  Started at:        {status.started_at}")
+    if status.last_run_at:
+        print(f"  Last run at:       {status.last_run_at}")
+    if status.last_run_result:
+        print(f"  Last result:       {status.last_run_result}")
+    if status.current_task:
+        print(f"  Current task:      {status.current_task}")
+    if status.current_symbol:
+        print(f"  Current symbol:    {status.current_symbol}")
+    if status.progress > 0:
+        print(f"  Progress:          {status.progress:.1f}%")
+    print(f"  Total runs:        {status.total_runs}")
+    if status.next_run_at:
+        print(f"  Next run at:       {status.next_run_at}")
+    if status.error_message:
+        print(f"  Error:             {status.error_message}")
+
+    print("\nStats:")
+    print(f"  Announcements:     {status.announcements_synced}")
+    print(f"  Events:            {status.events_synced}")
+    print(f"  Dividends:         {status.dividends_synced}")
+
     return EXIT_SUCCESS
 
 
