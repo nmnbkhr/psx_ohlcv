@@ -1,6 +1,7 @@
 """Chart helpers for PSX OHLCV Streamlit UI.
 
 Provides reusable Plotly chart components for consistent visualization.
+Supports theming via the themes module for Bloomberg Terminal-style charts.
 """
 
 from typing import Literal
@@ -9,28 +10,160 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from psx_ohlcv.ui.themes import (
+    get_chart_colors,
+    get_plotly_layout,
+    get_theme,
+    ThemeName,
+)
+
 # Chart constants
 MIN_CHART_HEIGHT = 520
 MIN_CANDLESTICK_HEIGHT = 650  # Higher minimum for candlestick pages
 VOLUME_ROW_HEIGHT_RATIO = 0.25
 PRICE_ROW_HEIGHT_RATIO = 0.75
 
-# Color scheme - Professional trading terminal palette
-COLOR_BULLISH = "#00C853"  # Bright green for price increases
-COLOR_BEARISH = "#FF1744"  # Bright red for price decreases
-COLOR_BULLISH_LIGHT = "rgba(0, 200, 83, 0.15)"  # Light green for fills
-COLOR_BEARISH_LIGHT = "rgba(255, 23, 68, 0.15)"  # Light red for fills
-COLOR_SMA_20 = "#FF9800"   # Orange for 20-period SMA
-COLOR_SMA_50 = "#9C27B0"   # Purple for 50-period SMA
-COLOR_VOLUME = "#2196F3"   # Blue for volume bars
-COLOR_GRID = "rgba(128, 128, 128, 0.15)"
-COLOR_NEUTRAL = "#78909C"  # Gray for unchanged
+# Default theme for chart colors (can be overridden per-chart)
+_CURRENT_THEME: ThemeName = "bloomberg"
 
-# Font settings
-FONT_FAMILY = "Arial, sans-serif"
+
+def set_chart_theme(theme_name: ThemeName):
+    """Set the global chart theme.
+
+    Args:
+        theme_name: Theme name ('default' or 'bloomberg')
+    """
+    global _CURRENT_THEME
+    _CURRENT_THEME = theme_name
+
+
+def get_colors():
+    """Get current theme colors for charts."""
+    return get_chart_colors(_CURRENT_THEME)
+
+
+# Color scheme - Bloomberg Terminal palette (dynamic based on theme)
+def _get_color_bullish():
+    return get_colors()["bullish"]
+
+
+def _get_color_bearish():
+    return get_colors()["bearish"]
+
+
+def _get_color_bullish_light():
+    return get_colors()["bullish_light"]
+
+
+def _get_color_bearish_light():
+    return get_colors()["bearish_light"]
+
+
+def _get_color_sma_20():
+    return get_colors()["sma_20"]
+
+
+def _get_color_sma_50():
+    return get_colors()["sma_50"]
+
+
+def _get_color_volume():
+    return get_colors()["volume"]
+
+
+def _get_color_grid():
+    return get_colors()["grid"]
+
+
+def _get_color_neutral():
+    return get_colors()["neutral"]
+
+
+# Backward compatibility - these are now functions returning the current theme colors
+COLOR_BULLISH = "#00C853"  # Fallback - actual color from theme
+COLOR_BEARISH = "#FF5252"  # Fallback - actual color from theme
+COLOR_BULLISH_LIGHT = "rgba(0, 200, 83, 0.12)"
+COLOR_BEARISH_LIGHT = "rgba(255, 82, 82, 0.12)"
+COLOR_SMA_20 = "#FFB300"   # Amber for SMA 20 (Bloomberg)
+COLOR_SMA_50 = "#00B8D4"   # Cyan for SMA 50 (Bloomberg)
+COLOR_VOLUME = "#2F81F7"   # Bloomberg blue for volume
+COLOR_GRID = "rgba(30, 35, 41, 0.8)"  # Bloomberg muted grid
+COLOR_NEUTRAL = "#6B7280"  # Gray for unchanged
+
+# Font settings - Bloomberg monospace-forward
+FONT_FAMILY = "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace"
 FONT_SIZE_TITLE = 14
-FONT_SIZE_AXIS = 12
+FONT_SIZE_AXIS = 11
 FONT_SIZE_TICK = 10
+
+# Bloomberg-style layout defaults
+PAPER_BG = "#0B0E11"
+PLOT_BG = "#0B0E11"
+TEXT_COLOR = "#EAECEF"
+TEXT_SECONDARY = "#9AA4B2"
+BORDER_COLOR = "#1E2329"
+
+
+def apply_bloomberg_layout(fig: go.Figure) -> go.Figure:
+    """Apply Bloomberg Terminal styling to a Plotly figure.
+
+    Args:
+        fig: Plotly Figure to style
+
+    Returns:
+        Styled Plotly Figure
+    """
+    colors = get_colors()
+    theme = get_theme(_CURRENT_THEME)
+
+    fig.update_layout(
+        paper_bgcolor=colors["paper"],
+        plot_bgcolor=colors["background"],
+        font=dict(
+            family=FONT_FAMILY,
+            color=colors["text"],
+            size=FONT_SIZE_TICK,
+        ),
+        title=dict(
+            font=dict(
+                family=FONT_FAMILY,
+                color=colors["text"],
+                size=FONT_SIZE_TITLE,
+            ),
+        ),
+        hoverlabel=dict(
+            bgcolor=theme.bg_elevated,
+            bordercolor=theme.border_primary,
+            font=dict(
+                family=FONT_FAMILY,
+                color=colors["text"],
+                size=12,
+            ),
+        ),
+        modebar=dict(
+            bgcolor="rgba(0,0,0,0)",
+            color=colors["text_secondary"],
+            activecolor=colors["text"],
+        ),
+    )
+
+    # Update all axes
+    fig.update_xaxes(
+        gridcolor=colors["grid"],
+        linecolor=theme.border_primary,
+        tickfont=dict(color=colors["text_secondary"], size=FONT_SIZE_TICK),
+        titlefont=dict(color=colors["text_secondary"], size=FONT_SIZE_AXIS),
+        zerolinecolor=colors["grid"],
+    )
+    fig.update_yaxes(
+        gridcolor=colors["grid"],
+        linecolor=theme.border_primary,
+        tickfont=dict(color=colors["text_secondary"], size=FONT_SIZE_TICK),
+        titlefont=dict(color=colors["text_secondary"], size=FONT_SIZE_AXIS),
+        zerolinecolor=colors["grid"],
+    )
+
+    return fig
 
 
 def compute_sma(df: pd.DataFrame, column: str, period: int) -> pd.Series:
@@ -113,6 +246,14 @@ def make_candlestick(
         row_heights=[PRICE_ROW_HEIGHT_RATIO, VOLUME_ROW_HEIGHT_RATIO],
     )
 
+    # Get theme colors
+    colors = get_colors()
+    bullish = colors["bullish"]
+    bearish = colors["bearish"]
+    sma_20_color = colors["sma_20"]
+    sma_50_color = colors["sma_50"]
+    grid_color = colors["grid"]
+
     # Row 1: Candlestick chart
     fig.add_trace(
         go.Candlestick(
@@ -122,10 +263,10 @@ def make_candlestick(
             low=df["low"],
             close=df["close"],
             name="OHLC",
-            increasing_line_color=COLOR_BULLISH,
-            decreasing_line_color=COLOR_BEARISH,
-            increasing_fillcolor=COLOR_BULLISH,
-            decreasing_fillcolor=COLOR_BEARISH,
+            increasing_line_color=bullish,
+            decreasing_line_color=bearish,
+            increasing_fillcolor=bullish,
+            decreasing_fillcolor=bearish,
         ),
         row=1,
         col=1,
@@ -139,7 +280,7 @@ def make_candlestick(
                 y=df["sma_20"],
                 mode="lines",
                 name="SMA(20)",
-                line=dict(color=COLOR_SMA_20, width=1.5),
+                line=dict(color=sma_20_color, width=1.5),
                 hovertemplate="%{x}<br>SMA(20): %{y:.2f}<extra></extra>",
             ),
             row=1,
@@ -153,7 +294,7 @@ def make_candlestick(
                 y=df["sma_50"],
                 mode="lines",
                 name="SMA(50)",
-                line=dict(color=COLOR_SMA_50, width=1.5),
+                line=dict(color=sma_50_color, width=1.5),
                 hovertemplate="%{x}<br>SMA(50): %{y:.2f}<extra></extra>",
             ),
             row=1,
@@ -161,8 +302,8 @@ def make_candlestick(
         )
 
     # Row 2: Volume bars colored by price direction
-    colors = [
-        COLOR_BULLISH if row["close"] >= row["open"] else COLOR_BEARISH
+    bar_colors = [
+        bullish if row["close"] >= row["open"] else bearish
         for _, row in df.iterrows()
     ]
     fig.add_trace(
@@ -170,7 +311,7 @@ def make_candlestick(
             x=df[date_col],
             y=df["volume"],
             name="Volume",
-            marker_color=colors,
+            marker_color=bar_colors,
             opacity=0.7,
             hovertemplate="%{x}<br>Volume: %{y:,.0f}<extra></extra>",
         ),
@@ -185,7 +326,7 @@ def make_candlestick(
     # Use at least 1% of price as padding, or 10% of range
     price_padding = max(price_range * 0.1, price_min * 0.01) if price_min > 0 else 1
 
-    # Update layout
+    # Update layout with Bloomberg styling
     chart_height = height or MIN_CANDLESTICK_HEIGHT
     fig.update_layout(
         height=chart_height,
@@ -196,34 +337,41 @@ def make_candlestick(
             y=1.02,
             xanchor="right",
             x=1,
-            font=dict(size=FONT_SIZE_TICK),
+            font=dict(size=FONT_SIZE_TICK, color=colors["text_secondary"]),
+            bgcolor="rgba(0,0,0,0)",
         ),
         xaxis_rangeslider_visible=False,
-        margin=dict(l=70, r=50, t=60, b=50),
+        margin=dict(l=10, r=70, t=60, b=50),  # Right margin for Y-axis labels
         hovermode="x unified",
-        font=dict(family=FONT_FAMILY, size=FONT_SIZE_TICK),
+        font=dict(family=FONT_FAMILY, size=FONT_SIZE_TICK, color=colors["text"]),
+        paper_bgcolor=colors["paper"],
+        plot_bgcolor=colors["background"],
     )
 
-    # Update y-axes
+    # Update y-axes (Bloomberg style: axis on right side)
     fig.update_yaxes(
         range=[price_min - price_padding, price_max + price_padding],
         row=1,
         col=1,
         title_text="Price (PKR)",
-        title_font=dict(size=FONT_SIZE_AXIS),
+        title_font=dict(size=FONT_SIZE_AXIS, color=colors["text_secondary"]),
         tickformat=".2f",
-        tickfont=dict(size=FONT_SIZE_TICK),
-        gridcolor=COLOR_GRID,
+        tickfont=dict(size=FONT_SIZE_TICK, color=colors["text_secondary"]),
+        gridcolor=grid_color,
         showgrid=True,
+        side="right",
+        linecolor=BORDER_COLOR,
     )
     fig.update_yaxes(
         row=2,
         col=1,
         title_text="Volume",
-        title_font=dict(size=FONT_SIZE_AXIS),
-        tickfont=dict(size=FONT_SIZE_TICK),
-        gridcolor=COLOR_GRID,
+        title_font=dict(size=FONT_SIZE_AXIS, color=colors["text_secondary"]),
+        tickfont=dict(size=FONT_SIZE_TICK, color=colors["text_secondary"]),
+        gridcolor=grid_color,
         showgrid=True,
+        side="right",
+        linecolor=BORDER_COLOR,
     )
 
     # Update x-axes
@@ -231,22 +379,25 @@ def make_candlestick(
         row=2,
         col=1,
         title_text="Date",
-        title_font=dict(size=FONT_SIZE_AXIS),
-        tickfont=dict(size=FONT_SIZE_TICK),
-        gridcolor=COLOR_GRID,
+        title_font=dict(size=FONT_SIZE_AXIS, color=colors["text_secondary"]),
+        tickfont=dict(size=FONT_SIZE_TICK, color=colors["text_secondary"]),
+        gridcolor=grid_color,
         showgrid=True,
+        linecolor=BORDER_COLOR,
     )
     fig.update_xaxes(
         row=1,
         col=1,
-        tickfont=dict(size=FONT_SIZE_TICK),
-        gridcolor=COLOR_GRID,
+        tickfont=dict(size=FONT_SIZE_TICK, color=colors["text_secondary"]),
+        gridcolor=grid_color,
         showgrid=True,
+        linecolor=BORDER_COLOR,
     )
 
     # Update subplot title font
     for annotation in fig.layout.annotations:
         annotation.font.size = FONT_SIZE_TITLE
+        annotation.font.color = colors["text"]
 
     return fig
 
@@ -293,6 +444,9 @@ def make_price_line(
     price_range = price_max - price_min
     y_padding = max(price_range * 0.1, price_min * 0.01) if price_min > 0 else 1
 
+    # Get theme colors
+    colors = get_colors()
+
     fig = go.Figure()
 
     fig.add_trace(
@@ -301,28 +455,41 @@ def make_price_line(
             y=df[price_col],
             mode="lines",
             name=title,
-            line=dict(color="#1f77b4", width=2),
+            line=dict(color=colors["accent"], width=2),
             fill="tozeroy" if show_area else None,
-            fillcolor="rgba(31, 119, 180, 0.1)" if show_area else None,
+            fillcolor=colors["info_light"] if show_area else None,
             hovertemplate="%{x}<br>%{y:.2f}<extra></extra>",
         )
     )
 
     fig.update_layout(
         height=height,
-        title=dict(text=title, font=dict(size=FONT_SIZE_TITLE)),
-        margin=dict(l=70, r=50, t=50, b=50),
+        title=dict(text=title, font=dict(size=FONT_SIZE_TITLE, color=colors["text"])),
+        margin=dict(l=10, r=70, t=50, b=50),
         yaxis=dict(
             range=[price_min - y_padding, price_max + y_padding],
             title="Price (PKR)",
             tickformat=".2f",
-            gridcolor=COLOR_GRID,
+            gridcolor=colors["grid"],
             showgrid=True,
+            tickfont=dict(color=colors["text_secondary"]),
+            titlefont=dict(color=colors["text_secondary"]),
+            side="right",
+            linecolor=BORDER_COLOR,
         ),
-        xaxis=dict(title="Date", gridcolor=COLOR_GRID, showgrid=True),
+        xaxis=dict(
+            title="Date",
+            gridcolor=colors["grid"],
+            showgrid=True,
+            tickfont=dict(color=colors["text_secondary"]),
+            titlefont=dict(color=colors["text_secondary"]),
+            linecolor=BORDER_COLOR,
+        ),
         showlegend=False,
         hovermode="x",
-        font=dict(family=FONT_FAMILY, size=FONT_SIZE_TICK),
+        font=dict(family=FONT_FAMILY, size=FONT_SIZE_TICK, color=colors["text"]),
+        paper_bgcolor=colors["paper"],
+        plot_bgcolor=colors["background"],
     )
 
     return fig
@@ -343,6 +510,9 @@ def make_volume_chart(
     Returns:
         Plotly Figure object.
     """
+    # Get theme colors
+    theme_colors = get_colors()
+
     if df.empty:
         fig = go.Figure()
         fig.add_annotation(
@@ -352,13 +522,13 @@ def make_volume_chart(
             x=0.5,
             y=0.5,
             showarrow=False,
-            font=dict(size=14, color="#888"),
+            font=dict(size=14, color=theme_colors["text_secondary"]),
         )
         fig.update_layout(
             height=height,
-            title=dict(text="Volume", font=dict(size=FONT_SIZE_TITLE, color="#E0E0E0")),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
+            title=dict(text="Volume", font=dict(size=FONT_SIZE_TITLE, color=theme_colors["text"])),
+            paper_bgcolor=theme_colors["paper"],
+            plot_bgcolor=theme_colors["background"],
         )
         return fig
 
@@ -366,12 +536,12 @@ def make_volume_chart(
 
     # Color bars by price direction if open/close available
     if "open" in df.columns and "close" in df.columns:
-        colors = [
-            COLOR_BULLISH if row["close"] >= row["open"] else COLOR_BEARISH
+        bar_colors = [
+            theme_colors["bullish"] if row["close"] >= row["open"] else theme_colors["bearish"]
             for _, row in df.iterrows()
         ]
     else:
-        colors = COLOR_VOLUME
+        bar_colors = theme_colors["volume"]
 
     fig = go.Figure()
 
@@ -380,7 +550,7 @@ def make_volume_chart(
             x=df[date_col],
             y=df["volume"],
             name="Volume",
-            marker_color=colors,
+            marker_color=bar_colors,
             opacity=0.85,
             hovertemplate="<b>%{x}</b><br>Volume: %{y:,.0f}<extra></extra>",
         )
@@ -390,27 +560,30 @@ def make_volume_chart(
         height=height,
         title=dict(
             text="Volume",
-            font=dict(size=FONT_SIZE_TITLE, color="#E0E0E0"),
-            x=0.5,
-            xanchor="center",
+            font=dict(size=FONT_SIZE_TITLE, color=theme_colors["text"]),
+            x=0,
+            xanchor="left",
         ),
-        margin=dict(l=70, r=50, t=50, b=50),
+        margin=dict(l=10, r=70, t=50, b=50),
         yaxis=dict(
             title="",
-            gridcolor=COLOR_GRID,
+            gridcolor=theme_colors["grid"],
             showgrid=True,
-            tickfont=dict(color="#888"),
+            tickfont=dict(color=theme_colors["text_secondary"]),
+            side="right",
+            linecolor=BORDER_COLOR,
         ),
         xaxis=dict(
             title="",
-            gridcolor=COLOR_GRID,
+            gridcolor=theme_colors["grid"],
             showgrid=True,
-            tickfont=dict(color="#888"),
+            tickfont=dict(color=theme_colors["text_secondary"]),
+            linecolor=BORDER_COLOR,
         ),
         showlegend=False,
-        font=dict(family=FONT_FAMILY, size=FONT_SIZE_TICK),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family=FONT_FAMILY, size=FONT_SIZE_TICK, color=theme_colors["text"]),
+        paper_bgcolor=theme_colors["paper"],
+        plot_bgcolor=theme_colors["background"],
         bargap=0.2,
     )
 
@@ -434,6 +607,9 @@ def make_market_breadth_chart(
     Returns:
         Plotly Figure object.
     """
+    # Get theme colors
+    theme_colors = get_colors()
+
     total = gainers + losers + unchanged
     if total == 0:
         # Empty state
@@ -445,19 +621,23 @@ def make_market_breadth_chart(
             x=0.5,
             y=0.5,
             showarrow=False,
-            font=dict(size=14, color="#888"),
+            font=dict(size=14, color=theme_colors["text_secondary"]),
         )
-        fig.update_layout(height=height)
+        fig.update_layout(
+            height=height,
+            paper_bgcolor=theme_colors["paper"],
+            plot_bgcolor=theme_colors["background"],
+        )
         return fig
 
     labels = ["Gainers", "Losers", "Unchanged"]
     values = [gainers, losers, unchanged]
-    colors = [COLOR_BULLISH, COLOR_BEARISH, COLOR_NEUTRAL]
+    pie_colors = [theme_colors["bullish"], theme_colors["bearish"], theme_colors["neutral"]]
 
     # Calculate net sentiment
     net = gainers - losers
     sentiment = "Bullish" if net > 0 else "Bearish" if net < 0 else "Neutral"
-    sentiment_color = COLOR_BULLISH if net > 0 else COLOR_BEARISH if net < 0 else COLOR_NEUTRAL
+    sentiment_color = theme_colors["bullish"] if net > 0 else theme_colors["bearish"] if net < 0 else theme_colors["neutral"]
 
     fig = go.Figure(
         data=[
@@ -466,11 +646,11 @@ def make_market_breadth_chart(
                 values=values,
                 hole=0.5,  # Larger hole for center annotation
                 marker=dict(
-                    colors=colors,
-                    line=dict(color='rgba(255,255,255,0.1)', width=2)
+                    colors=pie_colors,
+                    line=dict(color=BORDER_COLOR, width=2)
                 ),
                 textinfo="value",
-                textfont=dict(size=FONT_SIZE_TICK + 2, color="white"),
+                textfont=dict(size=FONT_SIZE_TICK + 2, color=theme_colors["text"]),
                 hovertemplate="<b>%{label}</b><br>%{value} stocks<br>%{percent}<extra></extra>",
                 pull=[0.02 if v == max(values) else 0 for v in values],  # Pull out the largest
             )
@@ -490,9 +670,9 @@ def make_market_breadth_chart(
         height=height,
         title=dict(
             text="Market Breadth",
-            font=dict(size=FONT_SIZE_TITLE, color="#E0E0E0"),
-            x=0.5,
-            xanchor="center",
+            font=dict(size=FONT_SIZE_TITLE, color=theme_colors["text"]),
+            x=0,
+            xanchor="left",
         ),
         margin=dict(l=20, r=20, t=50, b=40),
         showlegend=True,
@@ -502,11 +682,12 @@ def make_market_breadth_chart(
             y=-0.15,
             xanchor="center",
             x=0.5,
-            font=dict(size=11),
+            font=dict(size=11, color=theme_colors["text_secondary"]),
+            bgcolor="rgba(0,0,0,0)",
         ),
-        font=dict(family=FONT_FAMILY, size=FONT_SIZE_TICK),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family=FONT_FAMILY, size=FONT_SIZE_TICK, color=theme_colors["text"]),
+        paper_bgcolor=theme_colors["paper"],
+        plot_bgcolor=theme_colors["background"],
     )
 
     return fig
@@ -533,6 +714,9 @@ def make_top_movers_chart(
     Returns:
         Plotly Figure object.
     """
+    # Get theme colors
+    theme_colors = get_colors()
+
     if df.empty:
         fig = go.Figure()
         fig.add_annotation(
@@ -542,18 +726,18 @@ def make_top_movers_chart(
             x=0.5,
             y=0.5,
             showarrow=False,
-            font=dict(size=14, color="#888"),
+            font=dict(size=14, color=theme_colors["text_secondary"]),
         )
         fig.update_layout(
             height=height,
-            title=dict(text=title, font=dict(size=FONT_SIZE_TITLE, color="#E0E0E0")),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
+            title=dict(text=title, font=dict(size=FONT_SIZE_TITLE, color=theme_colors["text"])),
+            paper_bgcolor=theme_colors["paper"],
+            plot_bgcolor=theme_colors["background"],
         )
         return fig
 
-    base_color = COLOR_BULLISH if chart_type == "gainers" else COLOR_BEARISH
-    light_color = COLOR_BULLISH_LIGHT if chart_type == "gainers" else COLOR_BEARISH_LIGHT
+    base_color = theme_colors["bullish"] if chart_type == "gainers" else theme_colors["bearish"]
+    light_color = theme_colors["bullish_light"] if chart_type == "gainers" else theme_colors["bearish_light"]
 
     # Create gradient effect based on magnitude
     values = df[change_col].abs()
@@ -584,31 +768,33 @@ def make_top_movers_chart(
         height=height,
         title=dict(
             text=title,
-            font=dict(size=FONT_SIZE_TITLE, color="#E0E0E0"),
-            x=0.5,
-            xanchor="center",
+            font=dict(size=FONT_SIZE_TITLE, color=theme_colors["text"]),
+            x=0,
+            xanchor="left",
         ),
         margin=dict(l=70, r=80, t=50, b=40),
         xaxis=dict(
             title="",
-            gridcolor=COLOR_GRID,
+            gridcolor=theme_colors["grid"],
             showgrid=True,
             zeroline=True,
-            zerolinecolor="rgba(255,255,255,0.2)",
+            zerolinecolor=BORDER_COLOR,
             zerolinewidth=1,
-            tickfont=dict(color="#888"),
+            tickfont=dict(color=theme_colors["text_secondary"]),
+            linecolor=BORDER_COLOR,
         ),
         yaxis=dict(
             title="",
             categoryorder=(
                 "total ascending" if chart_type == "losers" else "total descending"
             ),
-            tickfont=dict(color="#E0E0E0", size=12),
+            tickfont=dict(color=theme_colors["text"], size=12),
+            linecolor=BORDER_COLOR,
         ),
         showlegend=False,
-        font=dict(family=FONT_FAMILY, size=FONT_SIZE_TICK),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family=FONT_FAMILY, size=FONT_SIZE_TICK, color=theme_colors["text"]),
+        paper_bgcolor=theme_colors["paper"],
+        plot_bgcolor=theme_colors["background"],
         bargap=0.3,
     )
 
@@ -635,6 +821,9 @@ def make_intraday_chart(
     Returns:
         Plotly Figure object.
     """
+    # Get theme colors
+    theme_colors = get_colors()
+
     required_cols = [ts_col, "open", "high", "low", "close", "volume"]
     missing = [c for c in required_cols if c not in df.columns]
     if missing:
@@ -649,8 +838,13 @@ def make_intraday_chart(
             x=0.5,
             y=0.5,
             showarrow=False,
+            font=dict(color=theme_colors["text_secondary"]),
         )
-        fig.update_layout(height=height or MIN_CANDLESTICK_HEIGHT)
+        fig.update_layout(
+            height=height or MIN_CANDLESTICK_HEIGHT,
+            paper_bgcolor=theme_colors["paper"],
+            plot_bgcolor=theme_colors["background"],
+        )
         return fig
 
     df = df.sort_values(ts_col).copy()
@@ -685,7 +879,7 @@ def make_intraday_chart(
             mode="lines",
             line=dict(width=0),
             fill="tonexty",
-            fillcolor="rgba(100, 100, 100, 0.2)",
+            fillcolor="rgba(47, 129, 247, 0.1)",  # Bloomberg blue tint
             name="High-Low Range",
             hoverinfo="skip",
         ),
@@ -700,7 +894,7 @@ def make_intraday_chart(
             y=df["close"],
             mode="lines",
             name="Close",
-            line=dict(color="#1f77b4", width=2),
+            line=dict(color=theme_colors["accent"], width=2),
             hovertemplate="%{x}<br>Close: %{y:.2f}<extra></extra>",
         ),
         row=1,
@@ -714,7 +908,7 @@ def make_intraday_chart(
             y=df["open"],
             mode="lines",
             name="Open",
-            line=dict(color="#ff7f0e", width=1, dash="dot"),
+            line=dict(color=theme_colors["warning"], width=1, dash="dot"),
             hovertemplate="%{x}<br>Open: %{y:.2f}<extra></extra>",
         ),
         row=1,
@@ -722,8 +916,8 @@ def make_intraday_chart(
     )
 
     # Volume bars
-    colors = [
-        COLOR_BULLISH if row["close"] >= row["open"] else COLOR_BEARISH
+    bar_colors = [
+        theme_colors["bullish"] if row["close"] >= row["open"] else theme_colors["bearish"]
         for _, row in df.iterrows()
     ]
     fig.add_trace(
@@ -731,7 +925,7 @@ def make_intraday_chart(
             x=df[ts_col],
             y=df["volume"],
             name="Volume",
-            marker_color=colors,
+            marker_color=bar_colors,
             opacity=0.7,
             hovertemplate="%{x}<br>Volume: %{y:,.0f}<extra></extra>",
         ),
@@ -745,7 +939,7 @@ def make_intraday_chart(
     price_range = price_max - price_min
     price_padding = max(price_range * 0.15, price_min * 0.02) if price_min > 0 else 1
 
-    # Update layout
+    # Update layout with Bloomberg styling
     chart_height = height or MIN_CANDLESTICK_HEIGHT
     fig.update_layout(
         height=chart_height,
@@ -756,12 +950,15 @@ def make_intraday_chart(
             y=1.02,
             xanchor="right",
             x=1,
-            font=dict(size=FONT_SIZE_TICK),
+            font=dict(size=FONT_SIZE_TICK, color=theme_colors["text_secondary"]),
+            bgcolor="rgba(0,0,0,0)",
         ),
         xaxis_rangeslider_visible=False,
-        margin=dict(l=70, r=50, t=80, b=50),
+        margin=dict(l=10, r=70, t=80, b=50),
         hovermode="x unified",
-        font=dict(family=FONT_FAMILY, size=FONT_SIZE_TICK),
+        font=dict(family=FONT_FAMILY, size=FONT_SIZE_TICK, color=theme_colors["text"]),
+        paper_bgcolor=theme_colors["paper"],
+        plot_bgcolor=theme_colors["background"],
     )
 
     fig.update_yaxes(
@@ -769,32 +966,46 @@ def make_intraday_chart(
         row=1,
         col=1,
         title_text="Price (PKR)",
+        title_font=dict(color=theme_colors["text_secondary"]),
         tickformat=".2f",
-        gridcolor=COLOR_GRID,
+        tickfont=dict(color=theme_colors["text_secondary"]),
+        gridcolor=theme_colors["grid"],
         showgrid=True,
+        side="right",
+        linecolor=BORDER_COLOR,
     )
     fig.update_yaxes(
         row=2,
         col=1,
         title_text="Volume",
-        gridcolor=COLOR_GRID,
+        title_font=dict(color=theme_colors["text_secondary"]),
+        tickfont=dict(color=theme_colors["text_secondary"]),
+        gridcolor=theme_colors["grid"],
         showgrid=True,
+        side="right",
+        linecolor=BORDER_COLOR,
     )
     fig.update_xaxes(
         row=2,
         col=1,
         title_text="Time",
-        gridcolor=COLOR_GRID,
+        title_font=dict(color=theme_colors["text_secondary"]),
+        tickfont=dict(color=theme_colors["text_secondary"]),
+        gridcolor=theme_colors["grid"],
         showgrid=True,
+        linecolor=BORDER_COLOR,
     )
     fig.update_xaxes(
         row=1,
         col=1,
-        gridcolor=COLOR_GRID,
+        tickfont=dict(color=theme_colors["text_secondary"]),
+        gridcolor=theme_colors["grid"],
         showgrid=True,
+        linecolor=BORDER_COLOR,
     )
 
     for annotation in fig.layout.annotations:
         annotation.font.size = FONT_SIZE_TITLE
+        annotation.font.color = theme_colors["text"]
 
     return fig

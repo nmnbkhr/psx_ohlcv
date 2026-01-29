@@ -10,6 +10,15 @@ from .analytics import (
     get_current_market_with_sectors,
     init_analytics_schema,
 )
+
+# Phase 3.5: Fixed Income (Government Debt) imports
+from .analytics_fixed_income import (
+    compute_and_store_analytics as compute_fi_analytics,
+)
+from .analytics_fixed_income import (
+    get_instruments_by_yield,
+    get_yield_curve_analytics,
+)
 from .analytics_fx import (
     compute_and_store_fx_adjusted_metrics,
     get_fx_analytics,
@@ -82,6 +91,18 @@ from .sources.sectors import (
     refresh_sectors,
 )
 from .sync import SyncSummary, sync_all, sync_intraday, sync_intraday_bulk
+from .sync_fixed_income import (
+    get_fi_status_summary,
+    get_fi_sync_status,
+    seed_fi_instruments,
+    sync_all_fixed_income,
+    sync_fi_curves,
+    sync_fi_quotes,
+    sync_sbp_pma_docs,
+)
+from .sync_fixed_income import (
+    setup_csv_templates as setup_fi_csv_templates,
+)
 
 # Phase 2: FX imports
 from .sync_fx import (
@@ -1556,6 +1577,202 @@ def main(argv: list[str] | None = None) -> int:
         help="Show sukuk data summary and sync status"
     )
 
+    # =========================================================================
+    # Phase 3.5: FIXED INCOME (Government Debt) commands
+    # =========================================================================
+    fi_parser = subparsers.add_parser(
+        "fixed-income",
+        help="Fixed Income analytics (Phase 3.5: MTB, PIB, GOP Sukuk)"
+    )
+    fi_sub = fi_parser.add_subparsers(
+        dest="fi_command", required=True
+    )
+
+    # fixed-income seed - seed instrument master data
+    fi_seed_parser = fi_sub.add_parser(
+        "seed",
+        help="Seed fixed income instruments (MTB, PIB, GOP Sukuk)"
+    )
+    fi_seed_parser.add_argument(
+        "--source",
+        type=str,
+        choices=["SAMPLE", "CSV"],
+        default="SAMPLE",
+        help="Data source (default: SAMPLE)",
+    )
+    fi_seed_parser.add_argument(
+        "--csv",
+        type=str,
+        default=None,
+        help="Path to instruments CSV file (when source=CSV)",
+    )
+
+    # fixed-income sync - sync quotes and curves
+    fi_sync_parser = fi_sub.add_parser(
+        "sync",
+        help="Sync fixed income quotes and yield curves"
+    )
+    fi_sync_parser.add_argument(
+        "--source",
+        type=str,
+        choices=["SAMPLE", "CSV"],
+        default="SAMPLE",
+        help="Data source (default: SAMPLE)",
+    )
+    fi_sync_parser.add_argument(
+        "--quotes-csv",
+        type=str,
+        default=None,
+        help="Path to quotes CSV file",
+    )
+    fi_sync_parser.add_argument(
+        "--curves-csv",
+        type=str,
+        default=None,
+        help="Path to yield curves CSV file",
+    )
+    fi_sync_parser.add_argument(
+        "--all",
+        action="store_true",
+        dest="sync_all",
+        help="Sync instruments, quotes, curves, and SBP docs",
+    )
+
+    # fixed-income compute - compute bond analytics
+    fi_compute_parser = fi_sub.add_parser(
+        "compute",
+        help="Compute bond analytics (YTM, duration, convexity)"
+    )
+    fi_compute_parser.add_argument(
+        "--isins",
+        type=str,
+        default=None,
+        help="Comma-separated ISINs (default: all active)",
+    )
+    fi_compute_parser.add_argument(
+        "--as-of",
+        type=str,
+        default=None,
+        help="Calculation date (default: today)",
+    )
+
+    # fixed-income list - list instruments
+    fi_list_parser = fi_sub.add_parser(
+        "list",
+        help="List fixed income instruments"
+    )
+    fi_list_parser.add_argument(
+        "--category",
+        type=str,
+        choices=["MTB", "PIB", "GOP_SUKUK", "CORP_BOND", "CORP_SUKUK", "ALL"],
+        default="ALL",
+        help="Filter by category",
+    )
+    fi_list_parser.add_argument(
+        "--min-yield",
+        type=float,
+        default=None,
+        help="Minimum yield filter",
+    )
+    fi_list_parser.add_argument(
+        "--sort",
+        type=str,
+        choices=["yield", "duration", "maturity"],
+        default="yield",
+        help="Sort field (default: yield)",
+    )
+
+    # fixed-income show - show instrument details
+    fi_show_parser = fi_sub.add_parser(
+        "show",
+        help="Show fixed income instrument details and analytics"
+    )
+    fi_show_parser.add_argument(
+        "--isin",
+        type=str,
+        required=True,
+        help="Instrument ISIN",
+    )
+
+    # fixed-income curve - show yield curve
+    fi_curve_parser = fi_sub.add_parser(
+        "curve",
+        help="Show yield curve data"
+    )
+    fi_curve_parser.add_argument(
+        "--name",
+        type=str,
+        choices=["PKR_MTB", "PKR_PIB", "PKR_GOP_SUKUK"],
+        default="PKR_MTB",
+        help="Curve name (default: PKR_MTB)",
+    )
+    fi_curve_parser.add_argument(
+        "--date",
+        type=str,
+        default=None,
+        help="Curve date (default: latest)",
+    )
+
+    # fixed-income sbp - sync SBP PMA documents
+    fi_sbp_parser = fi_sub.add_parser(
+        "sbp",
+        help="Sync SBP Primary Market Activities documents"
+    )
+    fi_sbp_parser.add_argument(
+        "--source",
+        type=str,
+        choices=["SBP", "SAMPLE"],
+        default="SBP",
+        help="Data source (default: SBP)",
+    )
+    fi_sbp_parser.add_argument(
+        "--download",
+        action="store_true",
+        help="Also download PDF files",
+    )
+    fi_sbp_parser.add_argument(
+        "--category",
+        type=str,
+        choices=["MTB", "PIB", "GOP_SUKUK"],
+        default=None,
+        help="Filter by category",
+    )
+
+    # fixed-income templates - create CSV templates
+    fi_sub.add_parser(
+        "templates",
+        help="Create CSV template files for manual data entry"
+    )
+
+    # fixed-income status - show data status
+    fi_sub.add_parser(
+        "status",
+        help="Show fixed income data summary and sync status"
+    )
+
+    # fixed-income service - background sync service
+    fi_service_parser = fi_sub.add_parser(
+        "service",
+        help="Manage FI background sync service"
+    )
+    fi_service_parser.add_argument(
+        "action",
+        type=str,
+        choices=["start", "stop", "status"],
+        help="Service action",
+    )
+    fi_service_parser.add_argument(
+        "--continuous",
+        action="store_true",
+        help="Run continuously (auto-sync every interval)",
+    )
+    fi_service_parser.add_argument(
+        "--interval",
+        type=int,
+        default=3600,
+        help="Sync interval in seconds (default: 3600 = 1 hour)",
+    )
+
     args = parser.parse_args(argv)
 
     try:
@@ -1597,6 +1814,9 @@ def main(argv: list[str] | None = None) -> int:
             return handle_bonds(args)
         elif args.command == "sukuk":
             return handle_sukuk(args)
+        # Phase 3.5: Fixed Income commands
+        elif args.command == "fixed-income":
+            return handle_fixed_income(args)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         return 130
@@ -4858,6 +5078,426 @@ def handle_sukuk_status(args: argparse.Namespace) -> int:
             )
 
     return EXIT_SUCCESS
+
+
+# =============================================================================
+# Phase 3.5: Fixed Income (Government Debt) handlers
+# =============================================================================
+
+def handle_fixed_income(args: argparse.Namespace) -> int:
+    """Handle fixed-income subcommands."""
+    cmd = args.fi_command
+
+    if cmd == "seed":
+        return handle_fi_seed(args)
+    elif cmd == "sync":
+        return handle_fi_sync(args)
+    elif cmd == "compute":
+        return handle_fi_compute(args)
+    elif cmd == "list":
+        return handle_fi_list(args)
+    elif cmd == "show":
+        return handle_fi_show(args)
+    elif cmd == "curve":
+        return handle_fi_curve(args)
+    elif cmd == "sbp":
+        return handle_fi_sbp(args)
+    elif cmd == "templates":
+        return handle_fi_templates(args)
+    elif cmd == "status":
+        return handle_fi_status(args)
+    elif cmd == "service":
+        return handle_fi_service(args)
+
+    return EXIT_ERROR
+
+
+def handle_fi_seed(args: argparse.Namespace) -> int:
+    """Handle fixed-income seed command."""
+    source = args.source
+    csv_path = getattr(args, "csv", None)
+
+    print(f"Seeding fixed income instruments (source: {source})...")
+
+    result = seed_fi_instruments(
+        db_path=args.db,
+        source=source,
+        csv_path=csv_path,
+    )
+
+    if result.get("success"):
+        print(f"  Inserted: {result['inserted']} instruments")
+        print(f"  Failed:   {result['failed']}")
+        print(f"  Total:    {result['total']}")
+        return EXIT_SUCCESS
+
+    print(f"Error: {'; '.join(result.get('errors', []))}", file=sys.stderr)
+    return EXIT_ERROR
+
+
+def handle_fi_sync(args: argparse.Namespace) -> int:
+    """Handle fixed-income sync command."""
+    source = args.source
+    quotes_csv = getattr(args, "quotes_csv", None)
+    curves_csv = getattr(args, "curves_csv", None)
+
+    if getattr(args, "sync_all", False):
+        print("Syncing all fixed income data...")
+        results = sync_all_fixed_income(
+            db_path=args.db,
+            source=source,
+            quotes_csv=quotes_csv,
+            curves_csv=curves_csv,
+        )
+
+        for key, summary in results.items():
+            print(f"\n{key.upper()}:")
+            if isinstance(summary, dict):
+                for k, v in summary.items():
+                    if k != "errors":
+                        print(f"  {k}: {v}")
+        return EXIT_SUCCESS
+
+    # Sync quotes
+    print(f"Syncing fixed income quotes (source: {source})...")
+    quote_summary = sync_fi_quotes(
+        db_path=args.db,
+        source="CSV" if quotes_csv else source,
+        csv_path=quotes_csv,
+    )
+    print(f"  Total:    {quote_summary.total}")
+    print(f"  OK:       {quote_summary.ok}")
+    print(f"  Upserted: {quote_summary.rows_upserted}")
+
+    # Sync curves if provided
+    if curves_csv:
+        print(f"\nSyncing yield curves from {curves_csv}...")
+        curve_summary = sync_fi_curves(
+            db_path=args.db,
+            source="CSV",
+            csv_path=curves_csv,
+        )
+        print(f"  Total:    {curve_summary.total}")
+        print(f"  OK:       {curve_summary.ok}")
+        print(f"  Upserted: {curve_summary.rows_upserted}")
+
+    return EXIT_SUCCESS
+
+
+def handle_fi_compute(args: argparse.Namespace) -> int:
+    """Handle fixed-income compute command."""
+    isins = None
+    if args.isins:
+        isins = [i.strip() for i in args.isins.split(",")]
+
+    as_of = getattr(args, "as_of", None)
+
+    print("Computing fixed income analytics (YTM, duration, convexity)...")
+
+    con = connect(args.db)
+    result = compute_fi_analytics(con, isins=isins, as_of_date=as_of)
+    con.close()
+
+    if result.get("success"):
+        print(f"  Computed: {result['stored']} instruments")
+        print(f"  Failed:   {result['failed']}")
+        return EXIT_SUCCESS
+
+    print(f"Errors: {result.get('errors', [])}", file=sys.stderr)
+    return EXIT_ERROR
+
+
+def handle_fi_list(args: argparse.Namespace) -> int:
+    """Handle fixed-income list command."""
+    category = None if args.category == "ALL" else args.category
+    min_yield = getattr(args, "min_yield", None)
+    sort_by = getattr(args, "sort", "yield")
+
+    con = connect(args.db)
+    results = get_instruments_by_yield(
+        con,
+        category=category,
+        min_yield=min_yield,
+        sort_by=sort_by,
+        limit=50,
+    )
+    con.close()
+
+    if not results:
+        print("No fixed income instruments found.")
+        return EXIT_SUCCESS
+
+    # Header
+    hdr = (
+        f"{'ISIN':<20} {'SYMBOL':<12} {'CAT':<10} "
+        f"{'MATURITY':<12} {'YTM %':<8} {'DUR':<6}"
+    )
+    print(hdr)
+    print("-" * 70)
+
+    for inst in results:
+        ytm = inst.get("yield_to_maturity")
+        ytm_str = f"{ytm * 100:.2f}" if ytm else "N/A"
+        dur = inst.get("modified_duration")
+        dur_str = f"{dur:.2f}" if dur else "N/A"
+
+        print(
+            f"{inst.get('isin', 'N/A'):<20} "
+            f"{inst.get('symbol', 'N/A'):<12} "
+            f"{inst.get('category', 'N/A'):<10} "
+            f"{inst.get('maturity_date', 'N/A'):<12} "
+            f"{ytm_str:<8} "
+            f"{dur_str:<6}"
+        )
+
+    print(f"\nTotal: {len(results)} instruments")
+    return EXIT_SUCCESS
+
+
+def handle_fi_show(args: argparse.Namespace) -> int:
+    """Handle fixed-income show command."""
+    isin = args.isin
+
+    from .analytics_fixed_income import compute_analytics_for_instrument
+    from .db import get_fi_instrument, get_fi_latest_quote, init_schema
+
+    con = connect(args.db)
+    init_schema(con)
+
+    # Get instrument
+    inst = get_fi_instrument(con, isin)
+    if not inst:
+        print(f"Instrument not found: {isin}", file=sys.stderr)
+        con.close()
+        return EXIT_ERROR
+
+    print(f"\nFixed Income Instrument: {isin}")
+    print("=" * 60)
+    print(f"  Symbol:          {inst.get('symbol', 'N/A')}")
+    print(f"  Category:        {inst.get('category', 'N/A')}")
+    print(f"  Issuer:          {inst.get('issuer', 'N/A')}")
+    print(f"  Issue Date:      {inst.get('issue_date', 'N/A')}")
+    print(f"  Maturity Date:   {inst.get('maturity_date', 'N/A')}")
+    print(f"  Coupon Rate:     {(inst.get('coupon_rate', 0) or 0) * 100:.2f}%")
+    print(f"  Face Value:      {inst.get('face_value', 'N/A')}")
+    print(f"  Is Shariah:      {'Yes' if inst.get('is_shariah') else 'No'}")
+
+    # Get latest quote
+    quote = get_fi_latest_quote(con, isin)
+    if quote:
+        print(f"\nLatest Quote ({quote.get('date')}):")
+        print(f"  Clean Price:     {quote.get('clean_price', 'N/A')}")
+        print(f"  Dirty Price:     {quote.get('dirty_price', 'N/A')}")
+        ytm_val = (quote.get('yield_to_maturity', 0) or 0) * 100
+        print(f"  YTM:             {ytm_val:.2f}%")
+
+    # Compute analytics
+    analytics = compute_analytics_for_instrument(con, isin)
+    if analytics and "ytm" in analytics:
+        print("\nComputed Analytics:")
+        print(f"  Computed YTM:    {analytics.get('ytm_pct', 'N/A')}%")
+        print(f"  Mac Duration:    {analytics.get('macaulay_duration', 'N/A')} years")
+        print(f"  Mod Duration:    {analytics.get('modified_duration', 'N/A')}")
+        print(f"  Convexity:       {analytics.get('convexity', 'N/A')}")
+        print(f"  PVBP:            {analytics.get('pvbp', 'N/A')}")
+        print(f"  Years to Mat:    {analytics.get('years_to_maturity', 'N/A')}")
+
+    con.close()
+    return EXIT_SUCCESS
+
+
+def handle_fi_curve(args: argparse.Namespace) -> int:
+    """Handle fixed-income curve command."""
+    curve_name = args.name
+    curve_date = getattr(args, "date", None)
+
+    con = connect(args.db)
+    analytics = get_yield_curve_analytics(con, curve_name, curve_date)
+    con.close()
+
+    if analytics.get("error"):
+        print(f"Error: {analytics['error']}", file=sys.stderr)
+        return EXIT_ERROR
+
+    print(f"\nYield Curve: {curve_name}")
+    print(f"Date: {analytics.get('curve_date', 'N/A')}")
+    print("=" * 50)
+
+    points = analytics.get("points", [])
+    if points:
+        print(f"\n{'TENOR':<12} {'YIELD %':<10}")
+        print("-" * 25)
+        for point in sorted(points, key=lambda x: x.get("tenor_months", 0)):
+            tenor = point.get("tenor_months", 0)
+            tenor_str = f"{tenor}M" if tenor < 12 else f"{tenor // 12}Y"
+            yld = point.get("yield_value", 0) or 0
+            print(f"{tenor_str:<12} {yld * 100:.2f}")
+
+    # Summary
+    if analytics.get("steepness") is not None:
+        print(f"\nCurve Shape:  {analytics.get('shape', 'N/A')}")
+        print(f"Steepness:    {analytics['steepness'] * 100:.2f} bps")
+        short_t = analytics.get('short_tenor')
+        short_y = (analytics.get('short_yield', 0) or 0) * 100
+        print(f"Short ({short_t}M): {short_y:.2f}%")
+        long_t = analytics.get('long_tenor')
+        long_y = (analytics.get('long_yield', 0) or 0) * 100
+        print(f"Long ({long_t}M):  {long_y:.2f}%")
+
+    return EXIT_SUCCESS
+
+
+def handle_fi_sbp(args: argparse.Namespace) -> int:
+    """Handle fixed-income sbp command."""
+    source = args.source
+    download = getattr(args, "download", False)
+    category = getattr(args, "category", None)
+
+    print(f"Syncing SBP PMA documents (source: {source})...")
+
+    summary = sync_sbp_pma_docs(
+        db_path=args.db,
+        source=source,
+        download=download,
+        category=category,
+    )
+
+    print(f"  Total:    {summary.total}")
+    print(f"  OK:       {summary.ok}")
+    print(f"  Failed:   {summary.failed}")
+    print(f"  Upserted: {summary.rows_upserted}")
+
+    if summary.errors:
+        print("\nErrors:")
+        for title, err in summary.errors[:5]:
+            print(f"  {title}: {err}")
+
+    return EXIT_SUCCESS
+
+
+def handle_fi_templates(args: argparse.Namespace) -> int:
+    """Handle fixed-income templates command."""
+    print("Creating CSV templates for fixed income data entry...")
+
+    result = setup_fi_csv_templates()
+
+    for name, path in result.items():
+        print(f"  Created: {path}")
+
+    print(f"\nTotal: {len(result)} templates created")
+    return EXIT_SUCCESS
+
+
+def handle_fi_status(args: argparse.Namespace) -> int:
+    """Handle fixed-income status command."""
+    summary = get_fi_status_summary(args.db)
+
+    print("\nFixed Income Data Summary")
+    print("=" * 60)
+    print(f"  Total instruments:   {summary.get('total_instruments', 0)}")
+    print(f"  Active instruments:  {summary.get('active_instruments', 0)}")
+    print(f"  With quotes:         {summary.get('instruments_with_quotes', 0)}")
+    print(f"  Total quote rows:    {summary.get('total_quote_rows', 0)}")
+    print(f"  Yield curves:        {summary.get('total_curve_points', 0)} points")
+    print(f"  SBP documents:       {summary.get('sbp_doc_count', 0)}")
+
+    # Latest by category
+    latest = summary.get("latest_by_category", {})
+    if latest:
+        print("\nLatest Quote by Category:")
+        for cat, date in latest.items():
+            print(f"  {cat:<15} {date}")
+
+    # Curve dates
+    curves = summary.get("curve_dates", [])
+    if curves:
+        print("\nAvailable Curve Dates:")
+        for curve in curves[:5]:
+            c_name = curve.get('curve_name')
+            c_date = curve.get('latest_date')
+            c_count = curve.get('count')
+            print(f"  {c_name}: {c_date} ({c_count} points)")
+
+    # Recent sync runs
+    runs = get_fi_sync_status(args.db)
+    if runs:
+        print("\nRecent Sync Runs:")
+        hdr = f"  {'RUN ID':<10} {'TYPE':<20} {'STATUS':<12} {'ROWS':<8}"
+        print(hdr)
+        print("  " + "-" * 55)
+        for run in runs[:5]:
+            print(
+                f"  {run['run_id']:<10} "
+                f"{run.get('sync_type', 'N/A'):<20} "
+                f"{run.get('status', 'N/A'):<12} "
+                f"{run.get('rows_upserted', 0):<8}"
+            )
+
+    return EXIT_SUCCESS
+
+
+def handle_fi_service(args: argparse.Namespace) -> int:
+    """Handle fixed-income service command."""
+    from .services.fi_sync_service import (
+        is_fi_sync_running,
+        read_fi_status,
+        start_fi_sync_background,
+        stop_fi_sync,
+    )
+
+    action = args.action
+
+    if action == "status":
+        running, pid = is_fi_sync_running()
+        status = read_fi_status()
+
+        print("\nFixed Income Sync Service Status")
+        print("=" * 50)
+        print(f"  Running:        {'Yes' if running else 'No'}")
+        if running and pid:
+            print(f"  PID:            {pid}")
+        if status.started_at:
+            print(f"  Started:        {status.started_at}")
+        if status.last_sync_at:
+            print(f"  Last sync:      {status.last_sync_at}")
+        if status.next_sync_at:
+            print(f"  Next sync:      {status.next_sync_at}")
+        if status.continuous:
+            print(f"  Mode:           Continuous (every {status.sync_interval}s)")
+        else:
+            print("  Mode:           One-time")
+        print(f"  Sync count:     {status.sync_count}")
+        print(f"  Docs synced:    {status.docs_synced}")
+        print(f"  Curves synced:  {status.curves_synced}")
+        if status.result:
+            print(f"  Last result:    {status.result}")
+        if status.error_message:
+            print(f"  Last error:     {status.error_message}")
+        if status.progress_message:
+            print(f"  Status:         {status.progress_message}")
+
+        return EXIT_SUCCESS
+
+    elif action == "start":
+        continuous = getattr(args, "continuous", False)
+        interval = getattr(args, "interval", 3600)
+
+        mode = "continuous" if continuous else "one-time"
+        print(f"Starting FI sync service ({mode}, interval={interval}s)...")
+        success, msg = start_fi_sync_background(
+            continuous=continuous,
+            sync_interval=interval,
+        )
+        print(msg)
+        return EXIT_SUCCESS if success else EXIT_ERROR
+
+    elif action == "stop":
+        print("Stopping FI sync service...")
+        success, msg = stop_fi_sync()
+        print(msg)
+        return EXIT_SUCCESS if success else EXIT_ERROR
+
+    return EXIT_ERROR
 
 
 if __name__ == "__main__":

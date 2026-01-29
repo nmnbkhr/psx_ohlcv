@@ -70,6 +70,12 @@ from psx_ohlcv.services.announcements_service import (
     start_service_background as start_announcements_service,
     stop_service as stop_announcements_service,
 )
+from psx_ohlcv.services.eod_sync_service import (
+    is_eod_sync_running,
+    read_eod_status,
+    start_eod_sync_background,
+    stop_eod_sync,
+)
 from psx_ohlcv.sources.announcements import (
     fetch_announcements,
     fetch_corporate_events,
@@ -85,6 +91,14 @@ from psx_ohlcv.ui.charts import (
     make_price_line,
     make_top_movers_chart,
     make_volume_chart,
+)
+from psx_ohlcv.ui.themes import (
+    get_theme_css,
+    get_theme,
+    get_chart_colors,
+    get_plotly_layout,
+    THEME_NAMES,
+    ThemeName,
 )
 from psx_ohlcv.ui.session_tracker import (
     get_session_id,
@@ -146,228 +160,40 @@ st.set_page_config(
 )
 
 # =============================================================================
-# TRADING UI DESIGN SYSTEM
-# Professional trading terminal aesthetic with trader-centric UX
+# THEME SYSTEM
+# Supports multiple themes: default (original) and bloomberg (professional terminal)
+# Theme is persisted in session_state and applied via CSS injection
 # =============================================================================
 
-TRADING_CSS = """
-<style>
-/* === Color Palette === */
-:root {
-    --gain-color: #00C853;
-    --loss-color: #FF1744;
-    --neutral-color: #78909C;
-    --accent-color: #2196F3;
-    --warning-color: #FFC107;
-    --bg-card: rgba(255, 255, 255, 0.02);
-    --border-color: rgba(255, 255, 255, 0.1);
-}
+def init_theme():
+    """Initialize theme in session state if not set."""
+    if "theme" not in st.session_state:
+        # Default to Bloomberg theme for professional trading terminal look
+        st.session_state.theme = "bloomberg"
 
-/* === Typography for Numbers === */
-.stMetric [data-testid="stMetricValue"] {
-    font-family: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
-    font-weight: 600;
-}
 
-/* === Metric Cards Enhancement === */
-[data-testid="stMetric"] {
-    background: var(--bg-card);
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    padding: 12px 16px;
-}
+def get_current_theme() -> ThemeName:
+    """Get current theme from session state."""
+    init_theme()
+    return st.session_state.theme
 
-/* === Price Change Colors === */
-.price-up { color: #00C853 !important; }
-.price-down { color: #FF1744 !important; }
-.price-neutral { color: #78909C !important; }
 
-/* === Loading Skeleton Animation === */
-@keyframes shimmer {
-    0% { background-position: -200% 0; }
-    100% { background-position: 200% 0; }
-}
-.skeleton {
-    background: linear-gradient(90deg, rgba(255,255,255,0.05) 25%, rgba(255,255,255,0.1) 50%, rgba(255,255,255,0.05) 75%);
-    background-size: 200% 100%;
-    animation: shimmer 1.5s infinite;
-    border-radius: 4px;
-}
-.skeleton-text {
-    height: 16px;
-    margin: 8px 0;
-}
-.skeleton-metric {
-    height: 32px;
-    width: 80%;
-    margin: 8px 0;
-}
+def set_theme(theme_name: ThemeName):
+    """Set theme in session state."""
+    if theme_name in THEME_NAMES:
+        st.session_state.theme = theme_name
 
-/* === Data Freshness Badges === */
-.data-fresh {
-    color: #00C853;
-    background: rgba(0, 200, 83, 0.1);
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-size: 11px;
-}
-.data-stale {
-    color: #FFC107;
-    background: rgba(255, 193, 7, 0.1);
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-size: 11px;
-}
-.data-old {
-    color: #FF1744;
-    background: rgba(255, 23, 68, 0.1);
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-size: 11px;
-}
 
-/* === Warning/Info Banners === */
-.data-warning {
-    background: linear-gradient(135deg, rgba(255, 193, 7, 0.15) 0%, rgba(255, 193, 7, 0.05) 100%);
-    border: 1px solid rgba(255, 193, 7, 0.3);
-    border-left: 4px solid #FFC107;
-    border-radius: 6px;
-    padding: 12px 16px;
-    margin: 8px 0;
-    font-size: 13px;
-}
-.data-info {
-    background: linear-gradient(135deg, rgba(33, 150, 243, 0.15) 0%, rgba(33, 150, 243, 0.05) 100%);
-    border: 1px solid rgba(33, 150, 243, 0.3);
-    border-left: 4px solid #2196F3;
-    border-radius: 6px;
-    padding: 12px 16px;
-    margin: 8px 0;
-    font-size: 13px;
-}
-.data-error {
-    background: linear-gradient(135deg, rgba(255, 23, 68, 0.15) 0%, rgba(255, 23, 68, 0.05) 100%);
-    border: 1px solid rgba(255, 23, 68, 0.3);
-    border-left: 4px solid #FF1744;
-    border-radius: 6px;
-    padding: 12px 16px;
-    margin: 8px 0;
-    font-size: 13px;
-}
+def inject_theme_css():
+    """Inject current theme CSS into the page."""
+    theme_name = get_current_theme()
+    css = get_theme_css(theme_name)
+    st.markdown(css, unsafe_allow_html=True)
 
-/* === Empty State === */
-.empty-state {
-    text-align: center;
-    padding: 40px 20px;
-    color: #888;
-}
-.empty-state-icon {
-    font-size: 48px;
-    margin-bottom: 16px;
-    opacity: 0.5;
-}
 
-/* === Data Tables === */
-.stDataFrame {
-    font-family: 'JetBrains Mono', 'SF Mono', monospace;
-    font-size: 13px;
-}
-
-/* === Section Headers === */
-.section-header {
-    border-left: 4px solid #2196F3;
-    padding-left: 12px;
-    margin: 24px 0 16px 0;
-}
-
-/* === KPI Row === */
-.kpi-row {
-    display: flex;
-    gap: 16px;
-    margin-bottom: 24px;
-}
-
-/* === Ticker Tape Style === */
-.ticker-item {
-    display: inline-block;
-    padding: 4px 12px;
-    margin: 2px 4px;
-    border-radius: 4px;
-    font-family: monospace;
-    font-size: 13px;
-}
-.ticker-up { background: rgba(0, 200, 83, 0.15); border: 1px solid rgba(0, 200, 83, 0.3); }
-.ticker-down { background: rgba(255, 23, 68, 0.15); border: 1px solid rgba(255, 23, 68, 0.3); }
-
-/* === Market Status Badge === */
-.market-status {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 12px;
-    border-radius: 20px;
-    font-size: 12px;
-    font-weight: 600;
-}
-.market-open { background: rgba(0, 200, 83, 0.2); color: #00C853; }
-.market-closed { background: rgba(255, 23, 68, 0.2); color: #FF1744; }
-
-/* === Compact Info Cards === */
-.info-card {
-    background: linear-gradient(135deg, rgba(33, 150, 243, 0.1) 0%, rgba(33, 150, 243, 0.05) 100%);
-    border: 1px solid rgba(33, 150, 243, 0.2);
-    border-radius: 8px;
-    padding: 16px;
-    margin-bottom: 16px;
-}
-
-/* === Sidebar Styling === */
-[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, rgba(0,0,0,0.02) 0%, rgba(0,0,0,0.05) 100%);
-}
-
-/* === Button Improvements === */
-.stButton > button {
-    border-radius: 6px;
-    font-weight: 500;
-    transition: all 0.2s ease;
-}
-
-/* === Progress Bars === */
-.stProgress > div > div {
-    border-radius: 4px;
-}
-
-/* === Expander Headers === */
-.streamlit-expanderHeader {
-    font-weight: 600;
-    font-size: 14px;
-}
-
-/* === Tab Styling === */
-.stTabs [data-baseweb="tab-list"] {
-    gap: 8px;
-}
-.stTabs [data-baseweb="tab"] {
-    border-radius: 6px 6px 0 0;
-    padding: 8px 16px;
-}
-
-/* === Announcement Cards === */
-.announcement-card {
-    border-left: 3px solid #FFC107;
-    padding-left: 12px;
-    margin: 8px 0;
-}
-
-/* === Hide Streamlit Branding === */
-#MainMenu {visibility: hidden;}
-footer {visibility: hidden;}
-</style>
-"""
-
-# Inject custom CSS
-st.markdown(TRADING_CSS, unsafe_allow_html=True)
+# Initialize theme and inject CSS
+init_theme()
+inject_theme_css()
 
 
 def format_price_change(value: float, include_sign: bool = True) -> str:
@@ -6121,104 +5947,114 @@ def sync_monitor():
     with header_col2:
         render_market_status_badge()
 
-    # Initialize session state for sync
-    if "sync_result" not in st.session_state:
-        st.session_state.sync_result = None
-    if "sync_running" not in st.session_state:
-        st.session_state.sync_running = False
+    # =========================================================================
+    # EOD SYNC SECTION (Background Service)
+    # =========================================================================
+    st.subheader("📊 EOD Data Sync")
 
-    # Run Sync Section
-    st.subheader("Run Sync")
+    # Check if EOD sync is running
+    eod_running, eod_pid = is_eod_sync_running()
+    eod_status = read_eod_status()
 
-    col1, col2 = st.columns([1, 1])
+    # Show current status
+    if eod_running:
+        # Sync is running - show progress
+        st.info(f"🔄 **EOD Sync Running** (PID: {eod_pid})")
 
-    with col1:
-        refresh_symbols = st.checkbox(
-            "Refresh symbols before sync",
-            value=False,
-            help="Fetch latest symbols from PSX market-watch before syncing",
-            disabled=st.session_state.sync_running
-        )
-        incremental_mode = st.checkbox(
-            "Incremental mode",
-            value=True,
-            help="Only fetch data newer than existing records (faster)",
-            disabled=st.session_state.sync_running
-        )
+        # Progress bar
+        progress_pct = eod_status.progress / 100.0
+        st.progress(progress_pct, text=eod_status.progress_message or "Syncing...")
 
-    with col2:
-        cli_flags = "--all"
-        if refresh_symbols:
-            cli_flags += " --refresh-symbols"
-        if incremental_mode:
-            cli_flags += " --incremental"
-        st.caption("Equivalent CLI command:")
-        st.code(f"psxsync sync {cli_flags}", language="bash")
+        # Current symbol
+        if eod_status.current_symbol:
+            st.caption(f"Currently syncing: **{eod_status.current_symbol}**")
 
-    # Run Sync Button
-    col1, col2, col3 = st.columns([1, 1, 2])
-    with col1:
-        run_full_sync = st.button(
-            "▶️ Run Full Sync" if not st.session_state.sync_running else "⏳ Running...",
-            type="primary",
-            disabled=st.session_state.sync_running,
-            help="Start syncing EOD data for all symbols"
-        )
-
-    with col2:
-        if st.session_state.sync_running:
-            st.warning("Sync in progress...")
-
-    # Execute sync when button clicked
-    if run_full_sync and not st.session_state.sync_running:
-        st.session_state.sync_result = None
-        st.session_state.sync_running = True
-
-        with st.status("Running sync...", expanded=True) as status:
-            st.write("🔄 Initializing sync...")
-
-            try:
-                config = SyncConfig(
-                    incremental=incremental_mode,
-                    max_retries=DEFAULT_SYNC_CONFIG.max_retries,
-                    delay_min=DEFAULT_SYNC_CONFIG.delay_min,
-                    delay_max=DEFAULT_SYNC_CONFIG.delay_max,
-                    timeout=DEFAULT_SYNC_CONFIG.timeout,
-                )
-
-                if refresh_symbols:
-                    st.write("📋 Refreshing symbols from PSX...")
-
-                st.write("📊 Fetching EOD data for all symbols...")
-
-                summary = sync_all(
-                    db_path=get_db_path(),
-                    refresh_symbols=refresh_symbols,
-                    config=config,
-                )
-
-                st.session_state.sync_result = {
-                    "success": True,
-                    "summary": summary,
-                }
-
-                if summary.symbols_failed == 0:
-                    status.update(
-                        label="✅ Sync completed successfully!", state="complete"
-                    )
+        # Stop button
+        col1, col2, col3 = st.columns([1, 1, 2])
+        with col1:
+            if st.button("🛑 Stop Sync", type="secondary", key="btn_stop_eod_sync"):
+                success, msg = stop_eod_sync()
+                if success:
+                    st.success(msg)
                 else:
-                    fail_msg = f"⚠️ Completed with {summary.symbols_failed} failures"
-                    status.update(label=fail_msg, state="complete")
+                    st.error(msg)
+                time.sleep(0.5)
+                st.rerun()
 
-            except Exception as e:
-                st.session_state.sync_result = {
-                    "success": False,
-                    "error": str(e),
-                }
-                status.update(label="❌ Sync failed!", state="error")
+        # Auto-refresh to show progress updates
+        time.sleep(2)
+        st.rerun()
 
-            finally:
-                st.session_state.sync_running = False
+    else:
+        # Show last sync result if available
+        if eod_status.completed_at:
+            result_col1, result_col2, result_col3, result_col4 = st.columns(4)
+            with result_col1:
+                if eod_status.result == "success":
+                    st.success("✅ Last sync: Success")
+                elif eod_status.result == "partial":
+                    st.warning("⚠️ Last sync: Partial")
+                elif eod_status.result == "error":
+                    st.error("❌ Last sync: Error")
+                elif eod_status.result == "cancelled":
+                    st.info("🚫 Last sync: Cancelled")
+                else:
+                    st.info("ℹ️ Last sync: Unknown")
+
+            with result_col2:
+                st.metric("Symbols OK", eod_status.symbols_ok)
+            with result_col3:
+                st.metric("Failed", eod_status.symbols_failed)
+            with result_col4:
+                st.metric("Rows", f"{eod_status.rows_upserted:,}")
+
+            if eod_status.completed_at:
+                st.caption(f"Completed: {eod_status.completed_at[:19].replace('T', ' ')}")
+            if eod_status.error_message:
+                st.error(f"Error: {eod_status.error_message}")
+
+        # Sync options
+        st.markdown("---")
+        col1, col2 = st.columns([1, 1])
+
+        with col1:
+            refresh_symbols = st.checkbox(
+                "Refresh symbols before sync",
+                value=False,
+                help="Fetch latest symbols from PSX market-watch before syncing",
+            )
+            incremental_mode = st.checkbox(
+                "Incremental mode",
+                value=True,
+                help="Only fetch data newer than existing records (faster)",
+            )
+
+        with col2:
+            cli_flags = "--all"
+            if refresh_symbols:
+                cli_flags += " --refresh-symbols"
+            if incremental_mode:
+                cli_flags += " --incremental"
+            st.caption("Equivalent CLI command:")
+            st.code(f"psxsync sync {cli_flags}", language="bash")
+
+        # Run Sync Button
+        col1, col2, col3 = st.columns([1, 1, 2])
+        with col1:
+            if st.button("▶️ Run Full Sync", type="primary", help="Start syncing EOD data for all symbols (runs in background)"):
+                success, msg = start_eod_sync_background(
+                    incremental=incremental_mode,
+                    refresh_symbols=refresh_symbols,
+                )
+                if success:
+                    st.success(f"🚀 {msg}")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+        with col2:
+            st.caption("Sync runs in background - you can navigate away")
 
     # =========================================================================
     # BULK INTRADAY SYNC SECTION
@@ -6231,6 +6067,10 @@ def sync_monitor():
         st.session_state.intraday_bulk_result = None
     if "intraday_bulk_running" not in st.session_state:
         st.session_state.intraday_bulk_running = False
+    if "sync_running" not in st.session_state:
+        st.session_state.sync_running = False
+    if "sync_result" not in st.session_state:
+        st.session_state.sync_result = None
 
     # -------------------------------------------------------------------------
     # BACKGROUND SERVICE STATUS
@@ -6899,11 +6739,12 @@ def instruments_page():
         with col1:
             if st.button("Seed Universe", type="secondary", key="inst_seed"):
                 with st.spinner("Seeding instrument universe..."):
-                    from psx_ohlcv.sync_instruments import seed_phase1_universe
-                    result = seed_phase1_universe(db_path=get_db_path())
+                    from psx_ohlcv.sources.instrument_universe import seed_universe
+                    result = seed_universe(get_cached_connection())
+                    totals = result.get('totals', {})
                     st.success(
-                        f"Seeded {result.get('inserted', 0)} instruments "
-                        f"(Failed: {result.get('failed', 0)})"
+                        f"Seeded {totals.get('inserted', 0)} instruments "
+                        f"(Failed: {totals.get('failed', 0)})"
                     )
                     st.rerun()
 
@@ -7139,10 +6980,11 @@ def rankings_page():
         with col1:
             if st.button("Seed Universe", type="secondary", key="rank_seed"):
                 with st.spinner("Seeding instrument universe..."):
-                    from psx_ohlcv.sync_instruments import seed_phase1_universe
-                    result = seed_phase1_universe(db_path=get_db_path())
+                    from psx_ohlcv.sources.instrument_universe import seed_universe
+                    result = seed_universe(get_cached_connection())
+                    totals = result.get('totals', {})
                     st.success(
-                        f"Seeded {result.get('inserted', 0)} instruments"
+                        f"Seeded {totals.get('inserted', 0)} instruments"
                     )
                     st.rerun()
 
@@ -8925,6 +8767,612 @@ def sbp_auction_archive_page():
     render_footer()
 
 
+# =============================================================================
+# Phase 3.5: Government Fixed Income Pages
+# =============================================================================
+
+def govt_fixed_income_page():
+    """Government Fixed Income Screener - MTB, PIB, GOP Sukuk."""
+    import pandas as pd
+
+    from psx_ohlcv.analytics_fixed_income import (
+        compute_analytics_for_instrument,
+        get_instruments_by_yield,
+    )
+    from psx_ohlcv.db import (
+        get_fi_instrument,
+        get_fi_instruments,
+        get_fi_latest_quote,
+    )
+    from psx_ohlcv.sync_fixed_income import (
+        get_fi_status_summary,
+        seed_fi_instruments,
+        sync_all_fixed_income,
+        sync_fi_quotes,
+    )
+    from psx_ohlcv.services.fi_sync_service import (
+        is_fi_sync_running,
+        read_fi_status,
+        start_fi_sync_background,
+        stop_fi_sync,
+    )
+
+    # =================================================================
+    # HEADER
+    # =================================================================
+    header_col1, header_col2 = st.columns([3, 1])
+    with header_col1:
+        st.markdown("## 💰 Government Fixed Income")
+        st.caption("MTB, PIB, GOP Sukuk Analytics (Phase 3.5 - Read-Only)")
+    with header_col2:
+        st.markdown(
+            '<div class="data-info">📈 Bond Analytics</div>',
+            unsafe_allow_html=True
+        )
+
+    con = get_connection()
+
+    # =================================================================
+    # DATA SYNC CONTROLS
+    # =================================================================
+    with st.expander("🔧 Data Management", expanded=False):
+        sync_col1, sync_col2, sync_col3 = st.columns(3)
+
+        with sync_col1:
+            if st.button("Seed Instruments", key="fi_seed"):
+                with st.spinner("Seeding fixed income instruments..."):
+                    result = seed_fi_instruments()
+                    if result.get("success"):
+                        st.success(f"Seeded {result['inserted']} instruments")
+                        st.rerun()
+                    else:
+                        st.error(f"Error: {result.get('errors', [])}")
+
+        with sync_col2:
+            if st.button("Sync All Data", key="fi_sync_all"):
+                with st.spinner("Syncing all fixed income data..."):
+                    results = sync_all_fixed_income()
+                    st.success("Sync complete!")
+                    for key, summary in results.items():
+                        if isinstance(summary, dict):
+                            ok_count = summary.get('ok', summary.get('inserted', 0))
+                            st.write(f"**{key}**: {ok_count} OK")
+                    st.rerun()
+
+        with sync_col3:
+            summary = get_fi_status_summary()
+            st.metric("Total Instruments", summary.get("total_instruments", 0))
+            st.metric("Quote Rows", summary.get("total_quote_rows", 0))
+
+        # Background Service Controls
+        st.markdown("---")
+        st.markdown("#### 🔄 Background Sync Service")
+
+        svc_running, svc_pid = is_fi_sync_running()
+        svc_status = read_fi_status()
+
+        svc_col1, svc_col2, svc_col3 = st.columns(3)
+
+        with svc_col1:
+            if svc_running:
+                st.success(f"🟢 Service Running (PID: {svc_pid})")
+                if st.button("Stop Service", key="fi_svc_stop"):
+                    success, msg = stop_fi_sync()
+                    if success:
+                        st.success(msg)
+                    else:
+                        st.error(msg)
+                    st.rerun()
+            else:
+                st.warning("🔴 Service Stopped")
+                continuous = st.checkbox(
+                    "Continuous Mode",
+                    key="fi_svc_continuous",
+                    help="Run sync every hour automatically"
+                )
+                if st.button("Start Service", key="fi_svc_start"):
+                    success, msg = start_fi_sync_background(continuous=continuous)
+                    if success:
+                        st.success(msg)
+                    else:
+                        st.error(msg)
+                    st.rerun()
+
+        with svc_col2:
+            if svc_status.last_sync_at:
+                st.metric("Last Sync", svc_status.last_sync_at[:16])
+            if svc_status.sync_count:
+                st.metric("Total Syncs", svc_status.sync_count)
+
+        with svc_col3:
+            if svc_status.docs_synced:
+                st.metric("Docs Synced", svc_status.docs_synced)
+            if svc_status.curves_synced:
+                st.metric("Curves Synced", svc_status.curves_synced)
+
+        if svc_status.progress_message:
+            st.caption(f"Status: {svc_status.progress_message}")
+
+    # =================================================================
+    # FILTERS
+    # =================================================================
+    st.markdown("### Filters")
+    filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
+
+    with filter_col1:
+        category = st.selectbox(
+            "Category",
+            ["ALL", "MTB", "PIB", "GOP_SUKUK", "CORP_BOND", "CORP_SUKUK"],
+            key="fi_category_filter"
+        )
+
+    with filter_col2:
+        min_yield = st.number_input(
+            "Min YTM (%)", min_value=0.0, max_value=30.0, value=0.0,
+            step=0.5, key="fi_min_ytm"
+        )
+
+    with filter_col3:
+        sort_by = st.selectbox(
+            "Sort By",
+            ["yield", "duration", "maturity"],
+            key="fi_sort"
+        )
+
+    with filter_col4:
+        shariah_only = st.checkbox("Shariah Only", key="fi_shariah")
+
+    # =================================================================
+    # INSTRUMENTS TABLE
+    # =================================================================
+    st.markdown("### Fixed Income Instruments")
+
+    cat_filter = None if category == "ALL" else category
+    min_yield_dec = min_yield / 100 if min_yield > 0 else None
+
+    instruments = get_instruments_by_yield(
+        con,
+        category=cat_filter,
+        min_yield=min_yield_dec,
+        sort_by=sort_by,
+        limit=100,
+    )
+
+    # Filter shariah if needed
+    if shariah_only:
+        instruments = [i for i in instruments if i.get("is_shariah")]
+
+    if not instruments:
+        st.warning("No instruments found. Click 'Seed Instruments' to load sample data.")
+    else:
+        # Build table
+        table_data = []
+        for inst in instruments:
+            coupon = inst.get("coupon_rate")
+            coupon_str = f"{coupon * 100:.2f}%" if coupon else "Zero"
+            ytm = inst.get("yield_to_maturity")
+            ytm_str = f"{ytm * 100:.2f}%" if ytm else "N/A"
+            dur = inst.get("modified_duration")
+            dur_str = f"{dur:.2f}" if dur else "N/A"
+            price = inst.get("clean_price") or inst.get("dirty_price")
+            price_str = f"{price:.2f}" if price else "N/A"
+
+            table_data.append({
+                "ISIN": inst.get("isin", "")[:15],
+                "Symbol": inst.get("symbol"),
+                "Category": inst.get("category"),
+                "Coupon": coupon_str,
+                "Maturity": inst.get("maturity_date"),
+                "Price": price_str,
+                "YTM": ytm_str,
+                "Duration": dur_str,
+                "Shariah": "✓" if inst.get("is_shariah") else "",
+            })
+
+        df = pd.DataFrame(table_data)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        st.markdown(f"**Total: {len(instruments)} instruments**")
+
+        # =================================================================
+        # INSTRUMENT DETAILS
+        # =================================================================
+        st.markdown("### Instrument Details")
+
+        all_instruments = get_fi_instruments(con, category=cat_filter, active_only=True)
+        if all_instruments:
+            isin_options = {i["isin"]: f"{i['symbol']} ({i['category']})" for i in all_instruments}
+            selected_isin = st.selectbox(
+                "Select Instrument",
+                options=list(isin_options.keys()),
+                format_func=lambda x: isin_options.get(x, x),
+                key="fi_selected_isin"
+            )
+
+            if selected_isin:
+                inst = get_fi_instrument(con, selected_isin)
+                quote = get_fi_latest_quote(con, selected_isin)
+                analytics = compute_analytics_for_instrument(con, selected_isin)
+
+                if inst:
+                    col1, col2 = st.columns(2)
+
+                    with col1:
+                        st.markdown("**Instrument Info**")
+                        st.write(f"**Symbol:** {inst.get('symbol')}")
+                        st.write(f"**ISIN:** {inst.get('isin')}")
+                        st.write(f"**Category:** {inst.get('category')}")
+                        st.write(f"**Issuer:** {inst.get('issuer', 'N/A')}")
+                        st.write(f"**Issue Date:** {inst.get('issue_date', 'N/A')}")
+                        st.write(f"**Maturity:** {inst.get('maturity_date')}")
+                        coupon = inst.get("coupon_rate")
+                        st.write(f"**Coupon:** {coupon * 100:.2f}%" if coupon else "**Coupon:** Zero")
+                        st.write(f"**Shariah:** {'Yes' if inst.get('is_shariah') else 'No'}")
+
+                    with col2:
+                        st.markdown("**Analytics**")
+                        if quote:
+                            st.write(f"**Quote Date:** {quote.get('date')}")
+                            st.write(f"**Clean Price:** {quote.get('clean_price', 'N/A')}")
+                            st.write(f"**Dirty Price:** {quote.get('dirty_price', 'N/A')}")
+                            ytm = quote.get("yield_to_maturity")
+                            st.write(f"**Quoted YTM:** {ytm * 100:.2f}%" if ytm else "**YTM:** N/A")
+
+                        if analytics and "ytm" in analytics:
+                            st.markdown("---")
+                            st.write(f"**Computed YTM:** {analytics.get('ytm_pct', 'N/A')}%")
+                            st.write(f"**Mac Duration:** {analytics.get('macaulay_duration', 'N/A')} years")
+                            st.write(f"**Mod Duration:** {analytics.get('modified_duration', 'N/A')}")
+                            st.write(f"**Convexity:** {analytics.get('convexity', 'N/A')}")
+                            st.write(f"**PVBP:** {analytics.get('pvbp', 'N/A')}")
+
+    render_footer()
+
+
+def fi_yield_curve_page():
+    """Fixed Income Yield Curve - Term structure visualization."""
+    import pandas as pd
+    import plotly.graph_objects as go
+
+    from psx_ohlcv.analytics_fixed_income import (
+        compare_yield_curves,
+        get_yield_curve_analytics,
+    )
+    from psx_ohlcv.db import get_fi_curve, get_fi_curve_dates
+    from psx_ohlcv.sync_fixed_income import sync_fi_curves
+
+    # =================================================================
+    # HEADER
+    # =================================================================
+    st.markdown("## 📊 Fixed Income Yield Curve")
+    st.caption("Government Securities Term Structure (Phase 3.5)")
+
+    con = get_connection()
+
+    # =================================================================
+    # DATA CONTROLS
+    # =================================================================
+    with st.expander("🔧 Data Management", expanded=False):
+        col1, col2 = st.columns(2)
+
+        with col1:
+            if st.button("Sync Yield Curves", key="fi_curves_sync"):
+                with st.spinner("Syncing yield curve data..."):
+                    summary = sync_fi_curves()
+                    st.success(f"Synced {summary.rows_upserted} curve points")
+                    st.rerun()
+
+        with col2:
+            # Show available curves
+            curve_dates = get_fi_curve_dates(con)
+            if curve_dates:
+                st.write("**Available Curves:**")
+                for cd in curve_dates[:5]:
+                    st.write(f"- {cd.get('curve_name')}: {cd.get('latest_date')} ({cd.get('count')} points)")
+
+    # =================================================================
+    # CURVE SELECTION
+    # =================================================================
+    st.markdown("### Select Curve")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        curve_name = st.selectbox(
+            "Curve Name",
+            ["PKR_MTB", "PKR_PIB", "PKR_GOP_SUKUK"],
+            key="fi_curve_name"
+        )
+
+    with col2:
+        # Get available dates for selected curve
+        curve_data = get_fi_curve(con, curve_name)
+        if curve_data:
+            available_dates = sorted(set(p.get("curve_date") for p in curve_data if p.get("curve_date")), reverse=True)
+            curve_date = st.selectbox(
+                "Curve Date",
+                available_dates if available_dates else ["Latest"],
+                key="fi_curve_date"
+            )
+        else:
+            curve_date = None
+            st.info("No curve data available")
+
+    # =================================================================
+    # YIELD CURVE CHART
+    # =================================================================
+    if curve_data:
+        analytics = get_yield_curve_analytics(con, curve_name, curve_date)
+
+        if not analytics.get("error"):
+            points = analytics.get("points", [])
+            if points:
+                # Sort by tenor
+                sorted_points = sorted(points, key=lambda x: x.get("tenor_months", 0))
+
+                # Build chart data
+                tenors = []
+                yields = []
+                tenor_labels = []
+
+                for p in sorted_points:
+                    tenor_m = p.get("tenor_months", 0)
+                    yld = p.get("yield_value", 0)
+                    if yld:
+                        tenors.append(tenor_m)
+                        yields.append(yld * 100)  # Convert to percentage
+                        if tenor_m < 12:
+                            tenor_labels.append(f"{tenor_m}M")
+                        else:
+                            tenor_labels.append(f"{tenor_m // 12}Y")
+
+                # Create chart
+                fig = go.Figure()
+
+                fig.add_trace(go.Scatter(
+                    x=tenors,
+                    y=yields,
+                    mode='lines+markers',
+                    name=curve_name,
+                    line=dict(width=2),
+                    marker=dict(size=8),
+                ))
+
+                fig.update_layout(
+                    title=f"Yield Curve - {curve_name}",
+                    xaxis_title="Tenor (Months)",
+                    yaxis_title="Yield (%)",
+                    xaxis=dict(
+                        tickmode='array',
+                        tickvals=tenors,
+                        ticktext=tenor_labels,
+                    ),
+                    height=400,
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
+
+                # =================================================================
+                # CURVE METRICS
+                # =================================================================
+                st.markdown("### Curve Metrics")
+
+                col1, col2, col3, col4 = st.columns(4)
+
+                with col1:
+                    st.metric("Curve Date", analytics.get("curve_date", "N/A"))
+
+                with col2:
+                    shape = analytics.get("shape", "N/A")
+                    st.metric("Curve Shape", shape.title() if shape else "N/A")
+
+                with col3:
+                    steepness = analytics.get("steepness")
+                    if steepness is not None:
+                        st.metric("Steepness", f"{steepness * 100:.0f} bps")
+                    else:
+                        st.metric("Steepness", "N/A")
+
+                with col4:
+                    st.metric("Points", analytics.get("num_points", 0))
+
+                # =================================================================
+                # CURVE DATA TABLE
+                # =================================================================
+                st.markdown("### Curve Points")
+
+                table_data = []
+                for p in sorted_points:
+                    tenor_m = p.get("tenor_months", 0)
+                    if tenor_m < 12:
+                        tenor_str = f"{tenor_m} Months"
+                    else:
+                        tenor_str = f"{tenor_m // 12} Years"
+
+                    yld = p.get("yield_value", 0)
+                    table_data.append({
+                        "Tenor": tenor_str,
+                        "Months": tenor_m,
+                        "Yield (%)": f"{yld * 100:.4f}" if yld else "N/A",
+                    })
+
+                df = pd.DataFrame(table_data)
+                st.dataframe(df, use_container_width=True, hide_index=True)
+
+        else:
+            st.warning(f"No data for curve: {analytics.get('error')}")
+
+    else:
+        st.info("No yield curve data. Click 'Sync Yield Curves' to load sample data.")
+
+    render_footer()
+
+
+def sbp_pma_archive_page():
+    """SBP PMA Archive - Primary Market Activities document metadata."""
+    import pandas as pd
+
+    from psx_ohlcv.db import get_sbp_pma_docs
+    from psx_ohlcv.sources.sbp_pma import (
+        PMA_DOCS_DIR,
+        SBP_PMA_URL,
+        fetch_and_parse_pma,
+        get_sample_pma_documents,
+    )
+    from psx_ohlcv.sync_fixed_income import sync_sbp_pma_docs
+
+    # =================================================================
+    # HEADER
+    # =================================================================
+    st.markdown("## 📝 SBP PMA Archive")
+    st.caption("State Bank of Pakistan Primary Market Activities (Phase 3.5)")
+
+    con = get_connection()
+
+    # =================================================================
+    # INFO BOX
+    # =================================================================
+    st.info(f"""
+    **Source:** [SBP Primary Market Activities]({SBP_PMA_URL})
+
+    This page archives document metadata from SBP's Primary Market Activities page.
+    Documents include MTB, PIB, and GOP Sukuk auction results, calendars, and announcements.
+    """)
+
+    # =================================================================
+    # DATA CONTROLS
+    # =================================================================
+    with st.expander("🔧 Data Management", expanded=False):
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            source = st.selectbox(
+                "Source",
+                ["SBP", "SAMPLE"],
+                key="pma_source"
+            )
+
+        with col2:
+            download = st.checkbox("Download PDFs", key="pma_download")
+
+        with col3:
+            category = st.selectbox(
+                "Category Filter",
+                ["ALL", "MTB", "PIB", "GOP_SUKUK"],
+                key="pma_category"
+            )
+
+        if st.button("Sync Documents", key="pma_sync"):
+            with st.spinner("Syncing SBP PMA documents..."):
+                cat_filter = None if category == "ALL" else category
+                summary = sync_sbp_pma_docs(
+                    source=source,
+                    download=download,
+                    category=cat_filter,
+                )
+                st.success(f"Synced {summary.ok} documents, {summary.rows_upserted} stored")
+                st.rerun()
+
+        st.markdown(f"**Local Storage:** `{PMA_DOCS_DIR}`")
+
+    # =================================================================
+    # FILTERS
+    # =================================================================
+    st.markdown("### Filters")
+    filter_col1, filter_col2 = st.columns(2)
+
+    with filter_col1:
+        cat_filter = st.selectbox(
+            "Category",
+            ["ALL", "MTB", "PIB", "GOP_SUKUK", "OTHER"],
+            key="pma_view_category"
+        )
+
+    with filter_col2:
+        doc_type_filter = st.selectbox(
+            "Document Type",
+            ["ALL", "RESULT", "CALENDAR", "ANNOUNCEMENT", "CIRCULAR", "TARGET", "OTHER"],
+            key="pma_doc_type"
+        )
+
+    # =================================================================
+    # DOCUMENTS TABLE
+    # =================================================================
+    st.markdown("### Documents")
+
+    docs = get_sbp_pma_docs(
+        con,
+        category=None if cat_filter == "ALL" else cat_filter,
+        doc_type=None if doc_type_filter == "ALL" else doc_type_filter,
+        limit=100,
+    )
+
+    if docs:
+        table_data = []
+        for doc in docs:
+            table_data.append({
+                "Title": doc.get("title", "")[:50],
+                "Category": doc.get("category", "N/A"),
+                "Type": doc.get("doc_type", "N/A"),
+                "Date": doc.get("doc_date", "N/A"),
+                "URL": doc.get("url", "")[:60] + "..." if len(doc.get("url", "")) > 60 else doc.get("url", ""),
+            })
+
+        df = pd.DataFrame(table_data)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        st.markdown(f"**Total: {len(docs)} documents**")
+
+        # =================================================================
+        # DOCUMENT DETAILS
+        # =================================================================
+        st.markdown("### Document Details")
+
+        doc_options = {d.get("doc_id"): d.get("title", d.get("doc_id")) for d in docs}
+        selected_doc = st.selectbox(
+            "Select Document",
+            options=list(doc_options.keys()),
+            format_func=lambda x: doc_options.get(x, x)[:60],
+            key="pma_selected_doc"
+        )
+
+        if selected_doc:
+            doc = next((d for d in docs if d.get("doc_id") == selected_doc), None)
+            if doc:
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.write(f"**Title:** {doc.get('title')}")
+                    st.write(f"**Category:** {doc.get('category')}")
+                    st.write(f"**Type:** {doc.get('doc_type')}")
+                    st.write(f"**Date:** {doc.get('doc_date', 'N/A')}")
+
+                with col2:
+                    url = doc.get("url")
+                    if url:
+                        st.markdown(f"**URL:** [{url[:40]}...]({url})")
+                    st.write(f"**Fetched:** {doc.get('fetched_at', 'N/A')}")
+                    st.write(f"**Parsed:** {'Yes' if doc.get('parsed') else 'No'}")
+
+    else:
+        st.info("No documents found. Click 'Sync Documents' to fetch from SBP.")
+
+        # Show preview of what would be fetched
+        with st.expander("Preview: Sample Documents"):
+            sample_docs = get_sample_pma_documents()
+            preview_data = []
+            for doc in sample_docs:
+                preview_data.append({
+                    "Title": doc.title,
+                    "Category": doc.category,
+                    "Type": doc.doc_type,
+                    "Date": doc.doc_date,
+                })
+            st.dataframe(pd.DataFrame(preview_data), use_container_width=True, hide_index=True)
+
+    render_footer()
+
+
 # -----------------------------------------------------------------------------
 # Main App with Sidebar Navigation
 # -----------------------------------------------------------------------------
@@ -8935,6 +9383,25 @@ def main():
 
     # Sidebar
     st.sidebar.title("PSX OHLCV Explorer")
+
+    # Theme toggle
+    theme_options = {
+        "bloomberg": "Bloomberg Terminal",
+        "default": "Default Trading",
+    }
+    current_theme = get_current_theme()
+    selected_theme = st.sidebar.selectbox(
+        "Theme",
+        options=list(theme_options.keys()),
+        format_func=lambda x: theme_options[x],
+        index=list(theme_options.keys()).index(current_theme),
+        key="theme_selector",
+        label_visibility="collapsed",
+    )
+    if selected_theme != current_theme:
+        set_theme(selected_theme)
+        st.rerun()
+
     st.sidebar.markdown("---")
 
     # Navigation - updated with new pages
@@ -8961,6 +9428,9 @@ def main():
         "🕌 Sukuk Screener",     # Phase 3 (additive)
         "📈 Sukuk Yield Curve",  # Phase 3 (additive)
         "🏛️ SBP Archive",        # Phase 3 (additive)
+        "💰 Govt Fixed Income",  # Phase 3.5: Fixed Income
+        "📊 FI Yield Curve",     # Phase 3.5: FI Yield Curves
+        "📝 SBP PMA Archive",    # Phase 3.5: SBP PMA Docs
         "🔄 Sync Monitor",
         "📋 Schema",
         "⚙️ Settings",
@@ -9046,6 +9516,13 @@ def main():
         sukuk_yield_curve_page()
     elif page == "🏛️ SBP Archive":
         sbp_auction_archive_page()
+    # Phase 3.5: Fixed Income (Government Debt) pages
+    elif page == "💰 Govt Fixed Income":
+        govt_fixed_income_page()
+    elif page == "📊 FI Yield Curve":
+        fi_yield_curve_page()
+    elif page == "📝 SBP PMA Archive":
+        sbp_pma_archive_page()
     elif page == "🔄 Sync Monitor":
         sync_monitor()
     elif page == "📋 Schema":

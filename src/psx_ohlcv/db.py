@@ -1403,6 +1403,153 @@ CREATE TABLE IF NOT EXISTS sukuk_sync_runs (
 
 CREATE INDEX IF NOT EXISTS idx_sukuk_sync_status
     ON sukuk_sync_runs(status);
+
+-- ==========================================================================
+-- Phase 3: Fixed Income Tables (Government Debt + Sukuk)
+-- ==========================================================================
+
+-- Fixed income instruments master table
+CREATE TABLE IF NOT EXISTS fi_instruments (
+    instrument_id       TEXT PRIMARY KEY,
+    isin                TEXT,
+    issuer              TEXT NOT NULL DEFAULT 'GOVT_OF_PAKISTAN',
+    name                TEXT NOT NULL,
+    category            TEXT NOT NULL,              -- MTB | PIB | GOP_SUKUK | CORP_BOND | CORP_SUKUK
+    currency            TEXT NOT NULL DEFAULT 'PKR',
+    issue_date          TEXT,
+    maturity_date       TEXT NOT NULL,
+    coupon_rate         REAL,                       -- annual decimal (0.185 = 18.5%)
+    coupon_frequency    INTEGER,                    -- payments per year (2 typical)
+    day_count           TEXT NOT NULL DEFAULT 'ACT/365',
+    face_value          REAL NOT NULL DEFAULT 100.0,
+    shariah_compliant   INTEGER NOT NULL DEFAULT 0,
+    is_active           INTEGER NOT NULL DEFAULT 1,
+    source              TEXT NOT NULL DEFAULT 'MANUAL',
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_fi_instruments_category
+    ON fi_instruments(category);
+
+CREATE INDEX IF NOT EXISTS idx_fi_instruments_maturity
+    ON fi_instruments(maturity_date);
+
+-- Fixed income daily quotes (yield-first)
+CREATE TABLE IF NOT EXISTS fi_quotes (
+    instrument_id       TEXT NOT NULL,
+    quote_date          TEXT NOT NULL,              -- YYYY-MM-DD
+    clean_price         REAL,                       -- per 100 face value
+    ytm                 REAL,                       -- yield to maturity (decimal)
+    bid                 REAL,
+    ask                 REAL,
+    volume              REAL,
+    source              TEXT NOT NULL DEFAULT 'MANUAL',
+    ingested_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY(instrument_id, quote_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fi_quotes_date
+    ON fi_quotes(quote_date);
+
+-- Fixed income yield curves
+CREATE TABLE IF NOT EXISTS fi_curves (
+    curve_name          TEXT NOT NULL,              -- PKR_MTB | PKR_PIB | PKR_GOP_SUKUK
+    curve_date          TEXT NOT NULL,
+    tenor_days          INTEGER NOT NULL,
+    rate                REAL NOT NULL,              -- decimal yield
+    source              TEXT NOT NULL DEFAULT 'MANUAL',
+    PRIMARY KEY(curve_name, curve_date, tenor_days)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fi_curves_date
+    ON fi_curves(curve_date);
+
+-- Fixed income computed analytics (bond math snapshots)
+CREATE TABLE IF NOT EXISTS fi_analytics (
+    instrument_id       TEXT NOT NULL,
+    as_of_date          TEXT NOT NULL,
+    price               REAL,
+    ytm                 REAL,
+    macaulay_duration   REAL,
+    modified_duration   REAL,
+    convexity           REAL,
+    pvbp                REAL,                       -- price value of 1bp
+    PRIMARY KEY(instrument_id, as_of_date)
+);
+
+-- SBP Primary Market Activities document archive
+CREATE TABLE IF NOT EXISTS sbp_pma_docs (
+    doc_id              TEXT PRIMARY KEY,           -- sha256(url + title)
+    category            TEXT NOT NULL,              -- MTB | PIB | GOP_SUKUK
+    title               TEXT NOT NULL,
+    doc_date            TEXT,
+    url                 TEXT NOT NULL,
+    local_path          TEXT,
+    fetched_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    source              TEXT NOT NULL DEFAULT 'SBP_PMA'
+);
+
+CREATE INDEX IF NOT EXISTS idx_sbp_pma_docs_category
+    ON sbp_pma_docs(category);
+
+CREATE INDEX IF NOT EXISTS idx_sbp_pma_docs_date
+    ON sbp_pma_docs(doc_date);
+
+-- Fixed income events (structured facts from auction docs)
+CREATE TABLE IF NOT EXISTS fi_events (
+    event_id            TEXT PRIMARY KEY,           -- sha256(category+date+title)
+    category            TEXT NOT NULL,              -- MTB | PIB | GOP_SUKUK
+    event_date          TEXT NOT NULL,
+    label               TEXT NOT NULL,              -- "Auction Result", "Tender Notice", etc.
+    notes               TEXT,
+    source_doc_id       TEXT,                       -- link to sbp_pma_docs
+    created_at          TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_fi_events_category
+    ON fi_events(category);
+
+CREATE INDEX IF NOT EXISTS idx_fi_events_date
+    ON fi_events(event_date);
+
+-- Fixed income sync runs audit
+CREATE TABLE IF NOT EXISTS fi_sync_runs (
+    run_id              TEXT PRIMARY KEY,
+    started_at          TEXT NOT NULL,
+    ended_at            TEXT,
+    sync_type           TEXT NOT NULL,              -- INIT | LOAD | COMPUTE | SBP_REFRESH
+    status              TEXT NOT NULL DEFAULT 'running',
+    items_total         INTEGER DEFAULT 0,
+    items_ok            INTEGER DEFAULT 0,
+    rows_upserted       INTEGER DEFAULT 0,
+    error_message       TEXT
+);
+
+-- SBP Policy Rates (monetary policy rates)
+CREATE TABLE IF NOT EXISTS sbp_policy_rates (
+    rate_date           TEXT PRIMARY KEY,           -- YYYY-MM-DD
+    policy_rate         REAL,                       -- SBP Policy Rate (decimal)
+    ceiling_rate        REAL,                       -- Overnight Reverse Repo ceiling
+    floor_rate          REAL,                       -- Overnight Repo floor
+    overnight_repo_rate REAL,                       -- Weighted avg overnight repo
+    source              TEXT NOT NULL DEFAULT 'SBP_MSM',
+    ingested_at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- KIBOR Rates (interbank offered rates)
+CREATE TABLE IF NOT EXISTS kibor_rates (
+    rate_date           TEXT NOT NULL,              -- YYYY-MM-DD
+    tenor_months        INTEGER NOT NULL,           -- 3, 6, or 12
+    bid                 REAL NOT NULL,
+    offer               REAL NOT NULL,
+    source              TEXT NOT NULL DEFAULT 'SBP_MSM',
+    ingested_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY(rate_date, tenor_months)
+);
+
+CREATE INDEX IF NOT EXISTS idx_kibor_rates_date
+    ON kibor_rates(rate_date);
 """
 
 
@@ -7470,3 +7617,683 @@ def get_sukuk_data_summary(con: sqlite3.Connection) -> dict:
         pass
 
     return summary
+
+
+# =============================================================================
+# Phase 3: Fixed Income CRUD Functions
+# =============================================================================
+
+
+def upsert_fi_instrument(con: sqlite3.Connection, data: dict) -> bool:
+    """Upsert a fixed income instrument."""
+    try:
+        con.execute("""
+            INSERT INTO fi_instruments (
+                instrument_id, isin, issuer, name, category, currency,
+                issue_date, maturity_date, coupon_rate, coupon_frequency,
+                day_count, face_value, shariah_compliant, is_active, source,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(instrument_id) DO UPDATE SET
+                isin = excluded.isin,
+                issuer = excluded.issuer,
+                name = excluded.name,
+                category = excluded.category,
+                currency = excluded.currency,
+                issue_date = excluded.issue_date,
+                maturity_date = excluded.maturity_date,
+                coupon_rate = excluded.coupon_rate,
+                coupon_frequency = excluded.coupon_frequency,
+                day_count = excluded.day_count,
+                face_value = excluded.face_value,
+                shariah_compliant = excluded.shariah_compliant,
+                is_active = excluded.is_active,
+                source = excluded.source,
+                updated_at = datetime('now')
+        """, (
+            data.get("instrument_id"),
+            data.get("isin"),
+            data.get("issuer", "GOVT_OF_PAKISTAN"),
+            data.get("name"),
+            data.get("category"),
+            data.get("currency", "PKR"),
+            data.get("issue_date"),
+            data.get("maturity_date"),
+            data.get("coupon_rate"),
+            data.get("coupon_frequency"),
+            data.get("day_count", "ACT/365"),
+            data.get("face_value", 100.0),
+            1 if data.get("shariah_compliant") else 0,
+            1 if data.get("is_active", True) else 0,
+            data.get("source", "MANUAL"),
+        ))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_fi_instruments(
+    con: sqlite3.Connection,
+    category: str | None = None,
+    active_only: bool = True,
+    issuer: str | None = None,
+) -> list[dict]:
+    """Get fixed income instruments with optional filters."""
+    try:
+        query = "SELECT * FROM fi_instruments WHERE 1=1"
+        params = []
+
+        if active_only:
+            query += " AND is_active = 1"
+
+        if category:
+            query += " AND category = ?"
+            params.append(category)
+
+        if issuer:
+            query += " AND issuer LIKE ?"
+            params.append(f"%{issuer}%")
+
+        query += " ORDER BY maturity_date ASC"
+
+        cur = con.execute(query, params)
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def get_fi_instrument(con: sqlite3.Connection, instrument_id: str) -> dict | None:
+    """Get a single fixed income instrument by ID."""
+    try:
+        cur = con.execute(
+            "SELECT * FROM fi_instruments WHERE instrument_id = ?",
+            (instrument_id,)
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def upsert_fi_quote(con: sqlite3.Connection, data: dict) -> bool:
+    """Upsert a fixed income quote."""
+    try:
+        con.execute("""
+            INSERT INTO fi_quotes (
+                instrument_id, quote_date, clean_price, ytm, bid, ask,
+                volume, source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(instrument_id, quote_date) DO UPDATE SET
+                clean_price = excluded.clean_price,
+                ytm = excluded.ytm,
+                bid = excluded.bid,
+                ask = excluded.ask,
+                volume = excluded.volume,
+                source = excluded.source,
+                ingested_at = datetime('now')
+        """, (
+            data.get("instrument_id"),
+            data.get("quote_date"),
+            data.get("clean_price"),
+            data.get("ytm"),
+            data.get("bid"),
+            data.get("ask"),
+            data.get("volume"),
+            data.get("source", "MANUAL"),
+        ))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_fi_quotes(
+    con: sqlite3.Connection,
+    instrument_id: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    limit: int = 365,
+) -> list[dict]:
+    """Get quotes for an instrument."""
+    try:
+        query = "SELECT * FROM fi_quotes WHERE instrument_id = ?"
+        params = [instrument_id]
+
+        if start_date:
+            query += " AND quote_date >= ?"
+            params.append(start_date)
+
+        if end_date:
+            query += " AND quote_date <= ?"
+            params.append(end_date)
+
+        query += " ORDER BY quote_date DESC LIMIT ?"
+        params.append(limit)
+
+        cur = con.execute(query, params)
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def get_fi_latest_quote(
+    con: sqlite3.Connection,
+    instrument_id: str,
+) -> dict | None:
+    """Get latest quote for an instrument."""
+    try:
+        cur = con.execute("""
+            SELECT * FROM fi_quotes
+            WHERE instrument_id = ?
+            ORDER BY quote_date DESC
+            LIMIT 1
+        """, (instrument_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def upsert_fi_curve_point(con: sqlite3.Connection, data: dict) -> bool:
+    """Upsert a yield curve point."""
+    try:
+        con.execute("""
+            INSERT INTO fi_curves (curve_name, curve_date, tenor_days, rate, source)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(curve_name, curve_date, tenor_days) DO UPDATE SET
+                rate = excluded.rate,
+                source = excluded.source
+        """, (
+            data.get("curve_name"),
+            data.get("curve_date"),
+            data.get("tenor_days"),
+            data.get("rate"),
+            data.get("source", "MANUAL"),
+        ))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_fi_curve(
+    con: sqlite3.Connection,
+    curve_name: str,
+    curve_date: str | None = None,
+) -> list[dict]:
+    """
+    Get yield curve points.
+
+    Args:
+        con: Database connection
+        curve_name: Name of curve (PKR_MTB, PKR_PIB, etc.)
+        curve_date: Specific date (None = latest)
+
+    Returns:
+        List of curve points sorted by tenor
+    """
+    try:
+        if curve_date is None:
+            # Get latest date for this curve
+            cur = con.execute("""
+                SELECT MAX(curve_date) FROM fi_curves
+                WHERE curve_name = ?
+            """, (curve_name,))
+            row = cur.fetchone()
+            if not row or not row[0]:
+                return []
+            curve_date = row[0]
+
+        cur = con.execute("""
+            SELECT * FROM fi_curves
+            WHERE curve_name = ? AND curve_date = ?
+            ORDER BY tenor_days ASC
+        """, (curve_name, curve_date))
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def get_fi_curve_dates(
+    con: sqlite3.Connection,
+    curve_name: str | None = None,
+    limit: int = 30,
+) -> list:
+    """
+    Get available curve dates.
+
+    If curve_name is provided, returns list of date strings for that curve.
+    If curve_name is None, returns list of dicts with curve summaries.
+    """
+    try:
+        if curve_name:
+            cur = con.execute("""
+                SELECT DISTINCT curve_date FROM fi_curves
+                WHERE curve_name = ?
+                ORDER BY curve_date DESC
+                LIMIT ?
+            """, (curve_name, limit))
+            return [row[0] for row in cur.fetchall()]
+        else:
+            # Return summary of all curves
+            cur = con.execute("""
+                SELECT curve_name,
+                       MAX(curve_date) as latest_date,
+                       COUNT(*) as count
+                FROM fi_curves
+                GROUP BY curve_name
+                ORDER BY curve_name
+            """)
+            return [
+                {"curve_name": row[0], "latest_date": row[1], "count": row[2]}
+                for row in cur.fetchall()
+            ]
+    except Exception:
+        return []
+
+
+def upsert_fi_analytics(con: sqlite3.Connection, data: dict) -> bool:
+    """Upsert fixed income analytics snapshot."""
+    try:
+        con.execute("""
+            INSERT INTO fi_analytics (
+                instrument_id, as_of_date, price, ytm,
+                macaulay_duration, modified_duration, convexity, pvbp
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(instrument_id, as_of_date) DO UPDATE SET
+                price = excluded.price,
+                ytm = excluded.ytm,
+                macaulay_duration = excluded.macaulay_duration,
+                modified_duration = excluded.modified_duration,
+                convexity = excluded.convexity,
+                pvbp = excluded.pvbp
+        """, (
+            data.get("instrument_id"),
+            data.get("as_of_date"),
+            data.get("price"),
+            data.get("ytm"),
+            data.get("macaulay_duration"),
+            data.get("modified_duration"),
+            data.get("convexity"),
+            data.get("pvbp"),
+        ))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_fi_analytics(
+    con: sqlite3.Connection,
+    instrument_id: str,
+    as_of_date: str | None = None,
+) -> dict | None:
+    """Get analytics for an instrument."""
+    try:
+        if as_of_date:
+            cur = con.execute("""
+                SELECT * FROM fi_analytics
+                WHERE instrument_id = ? AND as_of_date = ?
+            """, (instrument_id, as_of_date))
+        else:
+            cur = con.execute("""
+                SELECT * FROM fi_analytics
+                WHERE instrument_id = ?
+                ORDER BY as_of_date DESC
+                LIMIT 1
+            """, (instrument_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def upsert_sbp_pma_doc(con: sqlite3.Connection, data: dict) -> bool:
+    """Upsert an SBP PMA document record."""
+    try:
+        con.execute("""
+            INSERT INTO sbp_pma_docs (
+                doc_id, category, title, doc_date, url, local_path, source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(doc_id) DO UPDATE SET
+                category = excluded.category,
+                title = excluded.title,
+                doc_date = excluded.doc_date,
+                url = excluded.url,
+                local_path = excluded.local_path,
+                fetched_at = datetime('now')
+        """, (
+            data.get("doc_id"),
+            data.get("category"),
+            data.get("title"),
+            data.get("doc_date"),
+            data.get("url"),
+            data.get("local_path"),
+            data.get("source", "SBP_PMA"),
+        ))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_sbp_pma_docs(
+    con: sqlite3.Connection,
+    category: str | None = None,
+    doc_type: str | None = None,
+    since: str | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    """Get SBP PMA documents with optional filters."""
+    try:
+        query = "SELECT * FROM sbp_pma_docs WHERE 1=1"
+        params = []
+
+        if category:
+            query += " AND category = ?"
+            params.append(category)
+
+        if doc_type:
+            query += " AND doc_type = ?"
+            params.append(doc_type)
+
+        if since:
+            query += " AND doc_date >= ?"
+            params.append(since)
+
+        query += " ORDER BY doc_date DESC, fetched_at DESC LIMIT ?"
+        params.append(limit)
+
+        cur = con.execute(query, params)
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def upsert_fi_event(con: sqlite3.Connection, data: dict) -> bool:
+    """Upsert a fixed income event."""
+    try:
+        con.execute("""
+            INSERT INTO fi_events (
+                event_id, category, event_date, label, notes, source_doc_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(event_id) DO UPDATE SET
+                category = excluded.category,
+                event_date = excluded.event_date,
+                label = excluded.label,
+                notes = excluded.notes,
+                source_doc_id = excluded.source_doc_id
+        """, (
+            data.get("event_id"),
+            data.get("category"),
+            data.get("event_date"),
+            data.get("label"),
+            data.get("notes"),
+            data.get("source_doc_id"),
+        ))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def record_fi_sync_run(
+    con: sqlite3.Connection,
+    run_id: str,
+    sync_type: str,
+    items_total: int = 0,
+) -> bool:
+    """Record start of a fixed income sync run."""
+    try:
+        con.execute("""
+            INSERT INTO fi_sync_runs (run_id, started_at, sync_type, items_total)
+            VALUES (?, datetime('now'), ?, ?)
+        """, (run_id, sync_type, items_total))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def update_fi_sync_run(
+    con: sqlite3.Connection,
+    run_id: str,
+    status: str,
+    items_ok: int = 0,
+    rows_upserted: int = 0,
+    error_message: str | None = None,
+) -> bool:
+    """Update a fixed income sync run."""
+    try:
+        con.execute("""
+            UPDATE fi_sync_runs SET
+                ended_at = datetime('now'),
+                status = ?,
+                items_ok = ?,
+                rows_upserted = ?,
+                error_message = ?
+            WHERE run_id = ?
+        """, (status, items_ok, rows_upserted, error_message, run_id))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_fi_sync_runs(con: sqlite3.Connection, limit: int = 10) -> list[dict]:
+    """Get recent fixed income sync runs."""
+    try:
+        cur = con.execute("""
+            SELECT * FROM fi_sync_runs
+            ORDER BY started_at DESC
+            LIMIT ?
+        """, (limit,))
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def get_fi_data_summary(con: sqlite3.Connection) -> dict:
+    """Get summary of fixed income data in database."""
+    summary = {
+        "total_instruments": 0,
+        "active_instruments": 0,
+        "instruments_with_quotes": 0,
+        "total_quote_rows": 0,
+        "categories": {},
+        "latest_quote_date": None,
+        "earliest_quote_date": None,
+        "curve_count": 0,
+        "sbp_doc_count": 0,
+    }
+
+    try:
+        # Total and active instruments
+        cur = con.execute("SELECT COUNT(*) FROM fi_instruments")
+        summary["total_instruments"] = cur.fetchone()[0]
+
+        cur = con.execute(
+            "SELECT COUNT(*) FROM fi_instruments WHERE is_active = 1"
+        )
+        summary["active_instruments"] = cur.fetchone()[0]
+
+        # Instruments with quotes
+        cur = con.execute(
+            "SELECT COUNT(DISTINCT instrument_id) FROM fi_quotes"
+        )
+        summary["instruments_with_quotes"] = cur.fetchone()[0]
+
+        # Total quote rows
+        cur = con.execute("SELECT COUNT(*) FROM fi_quotes")
+        summary["total_quote_rows"] = cur.fetchone()[0]
+
+        # Category breakdown
+        cur = con.execute("""
+            SELECT category, COUNT(*) as count
+            FROM fi_instruments
+            WHERE is_active = 1
+            GROUP BY category
+            ORDER BY count DESC
+        """)
+        summary["categories"] = {row[0]: row[1] for row in cur.fetchall()}
+
+        # Date range
+        cur = con.execute(
+            "SELECT MAX(quote_date), MIN(quote_date) FROM fi_quotes"
+        )
+        row = cur.fetchone()
+        if row:
+            summary["latest_quote_date"] = row[0]
+            summary["earliest_quote_date"] = row[1]
+
+        # Curve count
+        cur = con.execute(
+            "SELECT COUNT(DISTINCT curve_name || curve_date) FROM fi_curves"
+        )
+        summary["curve_count"] = cur.fetchone()[0]
+
+        # SBP documents
+        cur = con.execute("SELECT COUNT(*) FROM sbp_pma_docs")
+        summary["sbp_doc_count"] = cur.fetchone()[0]
+
+    except Exception:
+        pass
+
+    return summary
+
+
+# =============================================================================
+# SBP Policy Rates and KIBOR CRUD Functions
+# =============================================================================
+
+def upsert_policy_rate(con: sqlite3.Connection, data: dict) -> bool:
+    """Upsert SBP policy rate data."""
+    try:
+        con.execute("""
+            INSERT INTO sbp_policy_rates (
+                rate_date, policy_rate, ceiling_rate, floor_rate,
+                overnight_repo_rate, source
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(rate_date) DO UPDATE SET
+                policy_rate = excluded.policy_rate,
+                ceiling_rate = excluded.ceiling_rate,
+                floor_rate = excluded.floor_rate,
+                overnight_repo_rate = excluded.overnight_repo_rate,
+                source = excluded.source
+        """, (
+            data.get("rate_date"),
+            data.get("policy_rate"),
+            data.get("ceiling_rate"),
+            data.get("floor_rate"),
+            data.get("overnight_repo_rate"),
+            data.get("source", "SBP_MSM"),
+        ))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_latest_policy_rate(con: sqlite3.Connection) -> dict | None:
+    """Get the latest SBP policy rate."""
+    try:
+        cur = con.execute("""
+            SELECT * FROM sbp_policy_rates
+            ORDER BY rate_date DESC
+            LIMIT 1
+        """)
+        row = cur.fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def get_policy_rates(
+    con: sqlite3.Connection,
+    since: str | None = None,
+    limit: int = 30,
+) -> list[dict]:
+    """Get SBP policy rate history."""
+    try:
+        if since:
+            cur = con.execute("""
+                SELECT * FROM sbp_policy_rates
+                WHERE rate_date >= ?
+                ORDER BY rate_date DESC
+                LIMIT ?
+            """, (since, limit))
+        else:
+            cur = con.execute("""
+                SELECT * FROM sbp_policy_rates
+                ORDER BY rate_date DESC
+                LIMIT ?
+            """, (limit,))
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def upsert_kibor_rate(con: sqlite3.Connection, data: dict) -> bool:
+    """Upsert KIBOR rate data."""
+    try:
+        con.execute("""
+            INSERT INTO kibor_rates (
+                rate_date, tenor_months, bid, offer, source
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(rate_date, tenor_months) DO UPDATE SET
+                bid = excluded.bid,
+                offer = excluded.offer,
+                source = excluded.source
+        """, (
+            data.get("rate_date"),
+            data.get("tenor_months"),
+            data.get("bid"),
+            data.get("offer"),
+            data.get("source", "SBP_MSM"),
+        ))
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_kibor_rates(
+    con: sqlite3.Connection,
+    rate_date: str | None = None,
+    tenor_months: int | None = None,
+    limit: int = 30,
+) -> list[dict]:
+    """Get KIBOR rates with optional filters."""
+    try:
+        query = "SELECT * FROM kibor_rates WHERE 1=1"
+        params = []
+
+        if rate_date:
+            query += " AND rate_date = ?"
+            params.append(rate_date)
+
+        if tenor_months:
+            query += " AND tenor_months = ?"
+            params.append(tenor_months)
+
+        query += " ORDER BY rate_date DESC, tenor_months ASC LIMIT ?"
+        params.append(limit)
+
+        cur = con.execute(query, params)
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def get_latest_kibor_rates(con: sqlite3.Connection) -> list[dict]:
+    """Get the latest KIBOR rates for all tenors."""
+    try:
+        cur = con.execute("""
+            SELECT * FROM kibor_rates
+            WHERE rate_date = (SELECT MAX(rate_date) FROM kibor_rates)
+            ORDER BY tenor_months ASC
+        """)
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
