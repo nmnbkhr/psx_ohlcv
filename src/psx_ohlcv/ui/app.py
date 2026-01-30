@@ -393,18 +393,40 @@ def check_data_staleness(con, table: str = "eod_ohlcv", date_col: str = "date") 
     """
     Check if data in a table is stale.
 
+    Also checks regular_market_current for live data.
+
     Returns:
         Tuple of (is_stale, message)
     """
     try:
-        result = con.execute(
-            f"SELECT MAX({date_col}) as max_date FROM {table}"
-        ).fetchone()
-        if result and result["max_date"]:
-            latest_date = datetime.strptime(str(result["max_date"])[:10], "%Y-%m-%d")
+        latest_dates = []
+
+        # Check the specified table
+        try:
+            result = con.execute(
+                f"SELECT MAX({date_col}) as max_date FROM {table}"
+            ).fetchone()
+            if result and result["max_date"]:
+                latest_dates.append(str(result["max_date"])[:10])
+        except Exception:
+            pass
+
+        # Also check regular_market_current for live data
+        try:
+            result = con.execute(
+                "SELECT MAX(DATE(ts)) as max_date FROM regular_market_current"
+            ).fetchone()
+            if result and result["max_date"]:
+                latest_dates.append(str(result["max_date"])[:10])
+        except Exception:
+            pass
+
+        if latest_dates:
+            most_recent = max(latest_dates)
+            latest_date = datetime.strptime(most_recent, "%Y-%m-%d")
             days_old = (datetime.now() - latest_date).days
             if days_old > 3:
-                return True, f"Data is {days_old} days old (last: {result['max_date']})"
+                return True, f"Data is {days_old} days old (last: {most_recent})"
             return False, ""
         return True, "No data found in database"
     except Exception:
@@ -484,18 +506,53 @@ def get_cached_connection():
 @st.cache_data(ttl=60)
 def get_data_freshness(_con) -> tuple[int | None, str | None]:
     """
-    Get data freshness info.
+    Get data freshness info from multiple sources.
+
+    Checks eod_ohlcv, regular_market_current, and psx_indices tables
+    to find the most recent data timestamp.
 
     Returns:
         Tuple of (days_old, latest_date_str) or (None, None) if no data.
     """
-    result = _con.execute(
-        "SELECT MAX(date) as max_date FROM eod_ohlcv"
-    ).fetchone()
-    if result and result["max_date"]:
-        latest_date = datetime.strptime(result["max_date"], "%Y-%m-%d")
+    latest_dates = []
+
+    # Check eod_ohlcv
+    try:
+        result = _con.execute(
+            "SELECT MAX(date) as max_date FROM eod_ohlcv"
+        ).fetchone()
+        if result and result["max_date"]:
+            latest_dates.append(str(result["max_date"])[:10])
+    except Exception:
+        pass
+
+    # Check regular_market_current (live market data)
+    try:
+        result = _con.execute(
+            "SELECT MAX(DATE(ts)) as max_date FROM regular_market_current"
+        ).fetchone()
+        if result and result["max_date"]:
+            latest_dates.append(str(result["max_date"])[:10])
+    except Exception:
+        pass
+
+    # Check psx_indices
+    try:
+        result = _con.execute(
+            "SELECT MAX(index_date) as max_date FROM psx_indices"
+        ).fetchone()
+        if result and result["max_date"]:
+            latest_dates.append(str(result["max_date"])[:10])
+    except Exception:
+        pass
+
+    if latest_dates:
+        # Get the most recent date
+        most_recent = max(latest_dates)
+        latest_date = datetime.strptime(most_recent, "%Y-%m-%d")
         days_old = (datetime.now() - latest_date).days
-        return days_old, result["max_date"]
+        return days_old, most_recent
+
     return None, None
 
 
