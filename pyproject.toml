@@ -27,6 +27,11 @@ ui = [
     "streamlit",
     "plotly",
 ]
+agentic = [
+    "anthropic>=0.40.0",
+    "openai>=1.50.0",
+    "tiktoken>=0.7.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
