@@ -99,7 +99,6 @@ Respond with ONLY the category name (MARKET, FIXED_INCOME, SYNC, or GENERAL)."""
                         "content": f"{self.ROUTING_PROMPT}\n\nUser message: {user_message}",
                     }
                 ],
-                max_tokens=20,
             )
 
             category = response.text.strip().upper()
@@ -202,12 +201,15 @@ Respond with ONLY the category name (MARKET, FIXED_INCOME, SYNC, or GENERAL)."""
         Returns:
             Dict with provider and model info
         """
+        fallback_model = None
+        if self.config.enable_fallback and self.config.fallback_model:
+            fallback_model = self.config.fallback_model.model_id
         return {
             "primary_provider": self.config.primary_provider.value,
             "agent_model": self.config.agent_model.model_id,
             "routing_model": self.config.routing_model.model_id,
             "fallback_enabled": self.config.enable_fallback,
-            "fallback_model": self.config.fallback_model.model_id if self.config.enable_fallback else None,
+            "fallback_model": fallback_model,
         }
 
 

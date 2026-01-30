@@ -29,31 +29,16 @@ class ModelConfig:
 
 
 # =============================================================================
-# OpenAI GPT-5.2 Models
+# OpenAI Models
 # =============================================================================
 
-OPENAI_GPT52_INSTANT = ModelConfig(
+# Note: gpt-4o is used as it supports function calling (tools)
+# chatgpt-4o-latest does NOT support function calling
+OPENAI_GPT4O_LATEST = ModelConfig(
     provider=LLMProvider.OPENAI,
-    model_id="gpt-5.2",  # Instant variant (default)
+    model_id="gpt-4o",  # Latest GPT-4o with function calling support
     temperature=0.1,
     max_tokens=4096,
-    options={"reasoning_effort": "low"},
-)
-
-OPENAI_GPT52_THINKING = ModelConfig(
-    provider=LLMProvider.OPENAI,
-    model_id="gpt-5.2",
-    temperature=0.1,
-    max_tokens=8192,
-    options={"reasoning_effort": "medium"},
-)
-
-OPENAI_GPT52_PRO = ModelConfig(
-    provider=LLMProvider.OPENAI,
-    model_id="gpt-5.2-pro",
-    temperature=0.1,
-    max_tokens=16384,
-    options={"reasoning_effort": "high"},
 )
 
 OPENAI_GPT4O = ModelConfig(
@@ -117,10 +102,10 @@ class AgenticConfig:
     """
 
     primary_provider: LLMProvider = LLMProvider.OPENAI
-    agent_model: ModelConfig = field(default_factory=lambda: OPENAI_GPT52_THINKING)
+    agent_model: ModelConfig = field(default_factory=lambda: OPENAI_GPT4O_LATEST)
     routing_model: ModelConfig = field(default_factory=lambda: OPENAI_GPT4O_MINI)
-    fallback_model: ModelConfig = field(default_factory=lambda: ANTHROPIC_CLAUDE_SONNET)
-    enable_fallback: bool = True
+    fallback_model: ModelConfig | None = None
+    enable_fallback: bool = False
     cache_enabled: bool = True
     cache_ttl_hours: int = 24
     max_retries: int = 3
@@ -131,13 +116,13 @@ class AgenticConfig:
 # Preset Configurations
 # =============================================================================
 
-# Default: OpenAI GPT-5.2 with Anthropic fallback
+# Default: OpenAI GPT-5.2 (no fallback)
 CONFIG_OPENAI_PRIMARY = AgenticConfig(
     primary_provider=LLMProvider.OPENAI,
-    agent_model=OPENAI_GPT52_THINKING,
+    agent_model=OPENAI_GPT4O_LATEST,
     routing_model=OPENAI_GPT4O_MINI,
-    fallback_model=ANTHROPIC_CLAUDE_SONNET,
-    enable_fallback=True,
+    fallback_model=None,
+    enable_fallback=False,
 )
 
 # Alternative: Anthropic Claude with OpenAI fallback
@@ -145,7 +130,7 @@ CONFIG_ANTHROPIC_PRIMARY = AgenticConfig(
     primary_provider=LLMProvider.ANTHROPIC,
     agent_model=ANTHROPIC_CLAUDE_SONNET,
     routing_model=ANTHROPIC_CLAUDE_HAIKU,
-    fallback_model=OPENAI_GPT52_INSTANT,
+    fallback_model=OPENAI_GPT4O,
     enable_fallback=True,
 )
 
@@ -154,17 +139,17 @@ CONFIG_COST_OPTIMIZED = AgenticConfig(
     primary_provider=LLMProvider.OPENAI,
     agent_model=OPENAI_GPT4O_MINI,
     routing_model=OPENAI_GPT4O_MINI,
-    fallback_model=ANTHROPIC_CLAUDE_HAIKU,
-    enable_fallback=True,
+    fallback_model=None,
+    enable_fallback=False,
 )
 
 # Maximum quality: Best models
 CONFIG_MAX_QUALITY = AgenticConfig(
     primary_provider=LLMProvider.OPENAI,
-    agent_model=OPENAI_GPT52_PRO,
-    routing_model=OPENAI_GPT52_INSTANT,
-    fallback_model=ANTHROPIC_CLAUDE_OPUS,
-    enable_fallback=True,
+    agent_model=OPENAI_GPT4O_LATEST,
+    routing_model=OPENAI_GPT4O_MINI,
+    fallback_model=None,
+    enable_fallback=False,
 )
 
 
@@ -261,7 +246,7 @@ def validate_config(config: AgenticConfig) -> list[str]:
         errors.append(f"Missing {key_name} environment variable")
 
     # Check fallback provider API key if enabled
-    if config.enable_fallback:
+    if config.enable_fallback and config.fallback_model is not None:
         fallback_provider = config.fallback_model.provider
         if not get_api_key(fallback_provider):
             key_name = (
@@ -286,6 +271,7 @@ def print_config(config: AgenticConfig | None = None) -> str:
     if config is None:
         config = get_active_config()
 
+    fallback_str = config.fallback_model.model_id if config.fallback_model else "None"
     lines = [
         "PSX OHLCV Agentic AI Configuration",
         "=" * 40,
@@ -293,7 +279,7 @@ def print_config(config: AgenticConfig | None = None) -> str:
         f"Agent Model: {config.agent_model.model_id}",
         f"Routing Model: {config.routing_model.model_id}",
         f"Fallback Enabled: {config.enable_fallback}",
-        f"Fallback Model: {config.fallback_model.model_id}",
+        f"Fallback Model: {fallback_str}",
         f"Cache Enabled: {config.cache_enabled}",
         f"Max Retries: {config.max_retries}",
         "=" * 40,

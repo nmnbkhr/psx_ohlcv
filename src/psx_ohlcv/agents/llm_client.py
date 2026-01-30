@@ -181,10 +181,22 @@ class OpenAIClient(BaseLLMClient):
         role = msg.get("role")
         content = msg.get("content")
 
+        # Handle tool messages (already in OpenAI format)
+        if role == "tool":
+            return {
+                "role": "tool",
+                "tool_call_id": msg.get("tool_call_id"),
+                "content": content if isinstance(content, str) else str(content),
+            }
+
+        # Handle assistant messages with tool_calls (already in OpenAI format)
+        if role == "assistant" and "tool_calls" in msg:
+            return msg
+
         # Handle tool results (from Anthropic format)
         if role == "user" and isinstance(content, list):
             # Check if this is tool results
-            if content and content[0].get("type") == "tool_result":
+            if content and isinstance(content[0], dict) and content[0].get("type") == "tool_result":
                 return {
                     "role": "tool",
                     "tool_call_id": content[0].get("tool_use_id"),

@@ -7,7 +7,7 @@ name = "psx_ohlcv"
 version = "0.2.0"
 description = "PSX OHLCV data fetcher"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 license = {text = "MIT"}
 dependencies = [
     "requests",
