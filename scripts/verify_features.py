@@ -134,7 +134,7 @@ def test_d_market_summary_tracking() -> bool:
     # Check downloaded_market_summary_dates table
     cur = con.execute("PRAGMA table_info(downloaded_market_summary_dates)")
     cols = {row[1] for row in cur.fetchall()}
-    required = {"date", "status", "csv_path", "record_count", "error_msg", "fetched_at"}
+    required = {"date", "status", "csv_path", "row_count", "message", "updated_at"}
     missing = required - cols
     if missing:
         print(f"  FAIL: downloaded_market_summary_dates missing columns: {missing}")
@@ -148,10 +148,10 @@ def test_d_market_summary_tracking() -> bool:
         upsert_download_record,
     )
 
-    # Insert test records
-    upsert_download_record(con, "2025-01-15", "ok", "/tmp/test.csv", 100)
-    upsert_download_record(con, "2025-01-16", "error", None, 0, "Test error")
-    upsert_download_record(con, "2025-01-17", "not_found")
+    # Insert test records (use keyword args to match function signature)
+    upsert_download_record(con, "2025-01-15", "ok", csv_path="/tmp/test.csv", row_count=100)
+    upsert_download_record(con, "2025-01-16", "failed", row_count=0, message="Test error")
+    upsert_download_record(con, "2025-01-17", "missing")
 
     # Verify retrieval
     failed = get_failed_dates(con)

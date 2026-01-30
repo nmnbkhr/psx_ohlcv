@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 from .config import get_db_path
+from .instruments import NON_EQUITY_TYPES
 from .db import (
     connect,
     create_instruments_sync_run,
@@ -119,7 +120,7 @@ def sync_instruments_eod(
         InstrumentSyncSummary with counts and errors
     """
     if instrument_types is None:
-        instrument_types = ["ETF", "REIT", "INDEX"]
+        instrument_types = NON_EQUITY_TYPES
 
     summary = InstrumentSyncSummary()
 

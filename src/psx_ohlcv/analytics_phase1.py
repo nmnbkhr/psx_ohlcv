@@ -13,8 +13,10 @@ import pandas as pd
 from .db import (
     get_instruments,
     get_ohlcv_instrument,
+    get_eod_ohlcv,
     upsert_instrument_ranking,
 )
+from .instruments import NON_EQUITY_TYPES, DEFAULT_BENCHMARK_ID
 
 
 def compute_returns(df: pd.DataFrame, periods: list[int] | None = None) -> dict:
@@ -149,10 +151,54 @@ def compute_relative_strength(
     return results
 
 
+def _get_instrument_ohlcv(
+    con: sqlite3.Connection,
+    instrument_id: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    limit: int = 300,
+) -> pd.DataFrame:
+    """
+    Get OHLCV data for an instrument, trying multiple sources.
+
+    First tries eod_ohlcv by symbol (for equities, ETFs, REITs synced via DPS).
+    Falls back to ohlcv_instruments table (for indices, legacy data).
+
+    Args:
+        con: Database connection
+        instrument_id: Instrument ID
+        start_date: Start date (inclusive)
+        end_date: End date (inclusive)
+        limit: Max rows to return
+
+    Returns:
+        DataFrame with OHLCV data
+    """
+    # Look up instrument to get symbol
+    try:
+        cur = con.execute(
+            "SELECT symbol FROM instruments WHERE instrument_id = ?",
+            (instrument_id,)
+        )
+        row = cur.fetchone()
+        symbol = row[0] if row else None
+    except Exception:
+        symbol = None
+
+    # Try eod_ohlcv first (equities, ETFs, REITs synced via psxsync eod)
+    if symbol:
+        df = get_eod_ohlcv(con, symbol=symbol, start_date=start_date, end_date=end_date, limit=limit)
+        if not df.empty:
+            return df
+
+    # Fall back to ohlcv_instruments table (indices, legacy sync)
+    return get_ohlcv_instrument(con, instrument_id, start_date=start_date, end_date=end_date, limit=limit)
+
+
 def compute_all_metrics(
     con: sqlite3.Connection,
     instrument_id: str,
-    benchmark_id: str | None = "IDX:KSE100",
+    benchmark_id: str | None = DEFAULT_BENCHMARK_ID,
 ) -> dict:
     """
     Compute all metrics for an instrument.
@@ -165,8 +211,8 @@ def compute_all_metrics(
     Returns:
         Dict with all computed metrics
     """
-    # Get instrument OHLCV
-    df = get_ohlcv_instrument(con, instrument_id, limit=300)
+    # Get instrument OHLCV (handles ETF/REIT/INDEX vs other instruments)
+    df = _get_instrument_ohlcv(con, instrument_id, limit=300)
 
     if df.empty:
         return {"instrument_id": instrument_id, "error": "no_data"}
@@ -183,7 +229,7 @@ def compute_all_metrics(
 
     # Relative strength vs benchmark
     if benchmark_id:
-        benchmark_df = get_ohlcv_instrument(con, benchmark_id, limit=300)
+        benchmark_df = _get_instrument_ohlcv(con, benchmark_id, limit=300)
         if not benchmark_df.empty:
             rs = compute_relative_strength(df, benchmark_df)
             metrics.update(rs)
@@ -215,7 +261,7 @@ def compute_rankings(
         as_of_date = datetime.now().strftime("%Y-%m-%d")
 
     if instrument_types is None:
-        instrument_types = ["ETF", "REIT", "INDEX"]
+        instrument_types = NON_EQUITY_TYPES
 
     # Get all instruments of requested types
     all_instruments = []
@@ -351,7 +397,7 @@ def get_rankings(
         List of ranking records sorted by return_1m descending
     """
     if instrument_types is None:
-        instrument_types = ["ETF", "REIT", "INDEX"]
+        instrument_types = NON_EQUITY_TYPES
 
     # Build query
     type_placeholders = ",".join("?" * len(instrument_types))
@@ -448,7 +494,7 @@ def compute_and_store_all_rankings(
         Summary dict with counts by type
     """
     if instrument_types is None:
-        instrument_types = ["ETF", "REIT", "INDEX"]
+        instrument_types = NON_EQUITY_TYPES
 
     results = {}
     for inst_type in instrument_types:
@@ -487,7 +533,7 @@ def get_normalized_performance(
 
     dfs = []
     for inst_id in instrument_ids:
-        df = get_ohlcv_instrument(con, inst_id, start_date=start_date, end_date=end_date)
+        df = _get_instrument_ohlcv(con, inst_id, start_date=start_date, end_date=end_date)
         if not df.empty:
             df = df.sort_values("date").set_index("date")
             # Normalize to base

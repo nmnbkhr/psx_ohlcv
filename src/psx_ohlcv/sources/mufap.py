@@ -2,23 +2,33 @@
 MUFAP (Mutual Funds Association of Pakistan) data source module for Phase 2.5.
 
 This module provides mutual fund data fetching from various sources:
-- MUFAP website (primary source)
+- MUFAP website (primary source) - https://www.mufap.com.pk
 - Sample/mock data - for testing when website unavailable
 
 Mutual fund data is used for analytics only, NOT for investment recommendations.
 """
 
 import json
+import logging
 import random
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
+import requests
 
 from ..config import DATA_ROOT
 
-# MUFAP API endpoints (discovered from website)
+logger = logging.getLogger(__name__)
+
+# MUFAP API endpoints
 MUFAP_BASE_URL = "https://www.mufap.com.pk"
+
+# API Headers
+MUFAP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
 
 # Fund categories (MUFAP standard)
 FUND_CATEGORIES = [
@@ -352,34 +362,28 @@ def fetch_funds_from_mufap(
     fund_type: str = "OPEN_END",
 ) -> list[dict]:
     """
-    Fetch mutual fund master data from MUFAP website.
+    Fetch mutual fund master data from MUFAP.
 
-    Note: MUFAP doesn't have a public API, so this attempts to scrape
-    or falls back to default funds.
+    Currently returns default funds as MUFAP website requires
+    scraping which may be unreliable. When MUFAP is available,
+    this can be extended to fetch live data.
 
     Args:
         category: Filter by category (None = all)
-        fund_type: 'OPEN_END' | 'VPS' | 'ETF'
+        fund_type: 'OPEN_END' | 'VPS' | 'ETF' | 'ALL'
 
     Returns:
         List of fund metadata dicts
     """
-    # Try to fetch from MUFAP website
-    try:
-        # MUFAP has dynamic content, would need proper scraping
-        # For now, return default funds filtered by criteria
-        funds = get_default_funds()
+    # Use default funds (MUFAP website scraping not implemented)
+    funds = get_default_funds()
 
-        if category:
-            funds = [f for f in funds if f.get("category") == category]
-        if fund_type != "ALL":
-            funds = [f for f in funds if f.get("fund_type") == fund_type]
+    if category:
+        funds = [f for f in funds if f.get("category") == category]
+    if fund_type != "ALL":
+        funds = [f for f in funds if f.get("fund_type") == fund_type]
 
-        return funds
-
-    except Exception:
-        # Fallback to defaults
-        return get_default_funds()
+    return funds
 
 
 def fetch_nav_from_mufap(

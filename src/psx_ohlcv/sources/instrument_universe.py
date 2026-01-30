@@ -23,20 +23,48 @@ UNIVERSE_CONFIG_PATH = DATA_ROOT / "universe_phase1.json"
 # Default instruments if config file doesn't exist
 DEFAULT_INSTRUMENTS = {
     "indexes": [
+        # Main indices
         {"symbol": "KSE100", "name": "KSE-100 Index", "source": "DPS"},
+        {"symbol": "KSE100PR", "name": "KSE-100 Price Return Index", "source": "DPS"},
+        {"symbol": "ALLSHR", "name": "All Share Index", "source": "DPS"},
         {"symbol": "KSE30", "name": "KSE-30 Index", "source": "DPS"},
         {"symbol": "KMI30", "name": "KMI-30 Index", "source": "DPS"},
-        {"symbol": "ALLSHR", "name": "All Share Index", "source": "DPS"},
+        {"symbol": "KMIALLSHR", "name": "KMI All Share Index", "source": "DPS"},
+        {"symbol": "MII30", "name": "Meezan Islamic Index 30", "source": "DPS"},
+        # Sector indices
+        {"symbol": "BKTI", "name": "Banking Index", "source": "DPS"},
+        {"symbol": "OGTI", "name": "Oil & Gas Index", "source": "DPS"},
+        # Thematic indices
+        {"symbol": "PSXDIV20", "name": "PSX Dividend 20 Index", "source": "DPS"},
+        {"symbol": "UPP9", "name": "UPP-9 Index", "source": "DPS"},
+        # ETF tracking indices
+        {"symbol": "NITPGI", "name": "NIT Pakistan Gateway Index", "source": "DPS"},
+        {"symbol": "NBPPGI", "name": "NBP Pakistan Growth Index", "source": "DPS"},
+        {"symbol": "MZNPI", "name": "Meezan Pakistan Index", "source": "DPS"},
+        {"symbol": "JSMFI", "name": "JS Momentum Factor Index", "source": "DPS"},
+        {"symbol": "ACI", "name": "Alfalah Consumer Index", "source": "DPS"},
+        {"symbol": "JSGBKTI", "name": "JS Global Banking Index", "source": "DPS"},
+        {"symbol": "HBLTTI", "name": "HBL Total Treasury Index", "source": "DPS"},
     ],
     "etfs": [
-        # Known PSX ETFs - add more as they are discovered
-        {"symbol": "NIUETF", "name": "NIT Islamic Equity Fund", "source": "DPS"},
-        {"symbol": "MIETF", "name": "Meezan Islamic ETF", "source": "DPS"},
+        # PSX ETFs (sector: EXCHANGE TRADED FUNDS, symbols end with 'ETF')
+        {"symbol": "ACIETF", "name": "Alfalah Consumer Index (ETF)", "source": "DPS"},
+        {"symbol": "HBLTETF", "name": "HBL Total Treasury ETF", "source": "DPS"},
+        {"symbol": "JSGBETF", "name": "JS Global Banking Sector (ETF)", "source": "DPS"},
+        {"symbol": "JSMFETF", "name": "JS Momentum Factor Exchange Traded Fund", "source": "DPS"},
+        {"symbol": "MIIETF", "name": "Mahaana Islamic Index ETF", "source": "DPS"},
+        {"symbol": "MZNPETF", "name": "Meezan Pakistan ETF", "source": "DPS"},
+        {"symbol": "NBPGETF", "name": "NBP Pakistan Growth ETF", "source": "DPS"},
+        {"symbol": "NITGETF", "name": "NIT Pakistan Gateway ETF", "source": "DPS"},
+        {"symbol": "UBLPETF", "name": "UBL Pakistan Enterprise ETF", "source": "DPS"},
     ],
     "reits": [
-        # Known PSX REITs - add more as they are discovered
+        # PSX REITs (sector: REAL ESTATE INVESTMENT TRUST)
         {"symbol": "DCR", "name": "Dolmen City REIT", "source": "DPS"},
-        {"symbol": "IGILREIT", "name": "IGIL REIT", "source": "DPS"},
+        {"symbol": "GRR", "name": "Globe Residency REIT", "source": "DPS"},
+        {"symbol": "IREIT", "name": "Image REIT", "source": "DPS"},
+        {"symbol": "SRR", "name": "Signature Residency REIT", "source": "DPS"},
+        {"symbol": "TPLRF1", "name": "TPL REIT Fund I", "source": "DPS"},
     ],
 }
 
@@ -136,17 +164,65 @@ def seed_indexes(con: sqlite3.Connection, config: dict | None = None) -> dict:
     return upsert_instruments_batch(con, instruments)
 
 
-def seed_etfs(con: sqlite3.Connection, config: dict | None = None) -> dict:
+def seed_etfs_from_symbols(con: sqlite3.Connection) -> dict:
     """
-    Seed ETF instruments.
+    Seed ETF instruments from symbols table by sector.
+
+    Reads from symbols table where sector_name = 'EXCHANGE TRADED FUNDS'.
+    This is the preferred method as it picks up new ETFs automatically.
 
     Args:
         con: Database connection
-        config: Config dict, or None to load from file
 
     Returns:
         Dict with 'inserted', 'updated', 'failed' counts
     """
+    try:
+        cur = con.execute("""
+            SELECT symbol, name, sector_name
+            FROM symbols
+            WHERE sector_name = 'EXCHANGE TRADED FUNDS'
+            AND is_active = 1
+            ORDER BY symbol
+        """)
+        etfs = [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return {"inserted": 0, "updated": 0, "failed": 0}
+
+    instruments = []
+    for etf in etfs:
+        instrument_id = resolve_instrument_id("PSX", etf["symbol"])
+        instruments.append({
+            "instrument_id": instrument_id,
+            "symbol": etf["symbol"],
+            "name": etf.get("name"),
+            "instrument_type": "ETF",
+            "exchange": "PSX",
+            "currency": "PKR",
+            "source": "DPS",
+            "is_active": 1,
+        })
+
+    return upsert_instruments_batch(con, instruments)
+
+
+def seed_etfs(con: sqlite3.Connection, config: dict | None = None) -> dict:
+    """
+    Seed ETF instruments - tries symbols table first, falls back to config.
+
+    Args:
+        con: Database connection
+        config: Config dict, or None to load from file (fallback only)
+
+    Returns:
+        Dict with 'inserted', 'updated', 'failed' counts
+    """
+    # Try to read from symbols table first (dynamic)
+    result = seed_etfs_from_symbols(con)
+    if result.get("inserted", 0) > 0 or result.get("updated", 0) > 0:
+        return result
+
+    # Fall back to config if symbols table has no ETFs
     if config is None:
         config = load_universe_config()
 
@@ -169,17 +245,65 @@ def seed_etfs(con: sqlite3.Connection, config: dict | None = None) -> dict:
     return upsert_instruments_batch(con, instruments)
 
 
-def seed_reits(con: sqlite3.Connection, config: dict | None = None) -> dict:
+def seed_reits_from_symbols(con: sqlite3.Connection) -> dict:
     """
-    Seed REIT instruments.
+    Seed REIT instruments from symbols table by sector.
+
+    Reads from symbols table where sector_name = 'REAL ESTATE INVESTMENT TRUST'.
+    This is the preferred method as it picks up new REITs automatically.
 
     Args:
         con: Database connection
-        config: Config dict, or None to load from file
 
     Returns:
         Dict with 'inserted', 'updated', 'failed' counts
     """
+    try:
+        cur = con.execute("""
+            SELECT symbol, name, sector_name
+            FROM symbols
+            WHERE sector_name = 'REAL ESTATE INVESTMENT TRUST'
+            AND is_active = 1
+            ORDER BY symbol
+        """)
+        reits = [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return {"inserted": 0, "updated": 0, "failed": 0}
+
+    instruments = []
+    for reit in reits:
+        instrument_id = resolve_instrument_id("PSX", reit["symbol"])
+        instruments.append({
+            "instrument_id": instrument_id,
+            "symbol": reit["symbol"],
+            "name": reit.get("name"),
+            "instrument_type": "REIT",
+            "exchange": "PSX",
+            "currency": "PKR",
+            "source": "DPS",
+            "is_active": 1,
+        })
+
+    return upsert_instruments_batch(con, instruments)
+
+
+def seed_reits(con: sqlite3.Connection, config: dict | None = None) -> dict:
+    """
+    Seed REIT instruments - tries symbols table first, falls back to config.
+
+    Args:
+        con: Database connection
+        config: Config dict, or None to load from file (fallback only)
+
+    Returns:
+        Dict with 'inserted', 'updated', 'failed' counts
+    """
+    # Try to read from symbols table first (dynamic)
+    result = seed_reits_from_symbols(con)
+    if result.get("inserted", 0) > 0 or result.get("updated", 0) > 0:
+        return result
+
+    # Fall back to config if symbols table has no REITs
     if config is None:
         config = load_universe_config()
 

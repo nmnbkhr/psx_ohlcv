@@ -1,0 +1,27 @@
+# Streamlit Configuration for PSX OHLCV Explorer
+# Bloomberg Terminal-inspired dark theme
+
+[theme]
+# Base theme (required for custom dark themes)
+base = "dark"
+
+# Bloomberg-inspired colors
+primaryColor = "#2F81F7"           # Focus / active highlight (Bloomberg blue)
+backgroundColor = "#0B0E11"        # Background main
+secondaryBackgroundColor = "#12161C"  # Background panels
+textColor = "#EAECEF"              # Text primary
+
+# Font configuration
+font = "monospace"
+
+[server]
+# Performance settings
+enableStaticServing = true
+
+[browser]
+# Hide Streamlit branding
+gatherUsageStats = false
+
+[runner]
+# Fast rerun on file changes (development)
+fastReruns = true

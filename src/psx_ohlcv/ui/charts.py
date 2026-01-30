@@ -152,14 +152,14 @@ def apply_bloomberg_layout(fig: go.Figure) -> go.Figure:
         gridcolor=colors["grid"],
         linecolor=theme.border_primary,
         tickfont=dict(color=colors["text_secondary"], size=FONT_SIZE_TICK),
-        titlefont=dict(color=colors["text_secondary"], size=FONT_SIZE_AXIS),
+        title_font=dict(color=colors["text_secondary"], size=FONT_SIZE_AXIS),
         zerolinecolor=colors["grid"],
     )
     fig.update_yaxes(
         gridcolor=colors["grid"],
         linecolor=theme.border_primary,
         tickfont=dict(color=colors["text_secondary"], size=FONT_SIZE_TICK),
-        titlefont=dict(color=colors["text_secondary"], size=FONT_SIZE_AXIS),
+        title_font=dict(color=colors["text_secondary"], size=FONT_SIZE_AXIS),
         zerolinecolor=colors["grid"],
     )
 
@@ -468,21 +468,19 @@ def make_price_line(
         margin=dict(l=10, r=70, t=50, b=50),
         yaxis=dict(
             range=[price_min - y_padding, price_max + y_padding],
-            title="Price (PKR)",
+            title=dict(text="Price (PKR)", font=dict(color=colors["text_secondary"])),
             tickformat=".2f",
             gridcolor=colors["grid"],
             showgrid=True,
             tickfont=dict(color=colors["text_secondary"]),
-            titlefont=dict(color=colors["text_secondary"]),
             side="right",
             linecolor=BORDER_COLOR,
         ),
         xaxis=dict(
-            title="Date",
+            title=dict(text="Date", font=dict(color=colors["text_secondary"])),
             gridcolor=colors["grid"],
             showgrid=True,
             tickfont=dict(color=colors["text_secondary"]),
-            titlefont=dict(color=colors["text_secondary"]),
             linecolor=BORDER_COLOR,
         ),
         showlegend=False,

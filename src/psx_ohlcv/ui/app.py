@@ -127,6 +127,7 @@ from psx_ohlcv.db import (
 from psx_ohlcv.db import (
     get_instruments,
     get_ohlcv_instrument,
+    get_eod_ohlcv,
 )
 from psx_ohlcv.analytics_phase1 import (
     compute_rankings,
@@ -6773,20 +6774,30 @@ def instruments_page():
 
             with col2:
                 # Get OHLCV data for chart
+                # Try eod_ohlcv first, fall back to ohlcv_instruments
+                symbol = selected_inst.get("symbol")
                 instrument_id = selected_inst.get("instrument_id")
-                if instrument_id:
+
+                ohlcv_df = None
+                # Try eod_ohlcv first (equities, ETFs, REITs via psxsync eod)
+                if symbol:
+                    ohlcv_df = get_eod_ohlcv(con, symbol=symbol, limit=90)
+
+                # Fall back to ohlcv_instruments (indices, legacy sync)
+                if (ohlcv_df is None or ohlcv_df.empty) and instrument_id:
                     ohlcv_df = get_ohlcv_instrument(con, instrument_id, limit=90)
-                    if not ohlcv_df.empty:
-                        ohlcv_df = ohlcv_df.sort_values("date")
-                        fig = make_price_line(
-                            ohlcv_df,
-                            date_col="date",
-                            price_col="close",
-                            title=f"{selected_symbol} - Last 90 Days"
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
-                    else:
-                        st.info("No OHLCV data available. Run `psxsync instruments sync-eod` to sync data.")
+
+                if ohlcv_df is not None and not ohlcv_df.empty:
+                    ohlcv_df = ohlcv_df.sort_values("date")
+                    fig = make_price_line(
+                        ohlcv_df,
+                        date_col="date",
+                        price_col="close",
+                        title=f"{selected_symbol} - Last 90 Days"
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info(f"No OHLCV data available. Run `psxsync eod {symbol}` to sync data.")
 
     # Sync Section
     st.markdown("---")
@@ -7029,28 +7040,350 @@ def rankings_page():
                 avg_return = valid_returns.mean() * 100
                 st.metric("Avg 1M Return", f"{avg_return:.1f}%")
 
-    # Sync Section
+    # Info about syncing
     st.markdown("---")
-    with st.expander("Sync Instrument Data", expanded=False):
-        col1, col2, col3 = st.columns(3)
+    st.info("💡 To seed or sync instrument data, use the **📦 Instruments** page.")
+
+    render_footer()
+
+
+# =============================================================================
+# Phase 1: Index Analytics Page
+# =============================================================================
+def indices_analytics_page():
+    """Comprehensive Index Analytics - All PSX indices with KPIs."""
+    # =================================================================
+    # HEADER
+    # =================================================================
+    header_col1, header_col2 = st.columns([3, 1])
+    with header_col1:
+        st.markdown("## 📊 Index Analytics")
+        st.caption("PSX Market Indices - Performance & Trends")
+    with header_col2:
+        render_market_status_badge()
+
+    con = get_connection()
+
+    # Get all index instruments
+    indices = get_instruments(con, instrument_type="INDEX", active_only=True)
+
+    if not indices:
+        st.warning("No indices found. Run `psxsync universe seed-phase1` to seed indices.")
+        render_footer()
+        return
+
+    # =================================================================
+    # INDEX OVERVIEW TABLE
+    # =================================================================
+    st.markdown("---")
+    st.subheader("📈 All Indices Performance")
+
+    # Compute metrics for all indices
+    all_metrics = []
+    for idx in indices:
+        metrics = compute_all_metrics(con, idx["instrument_id"])
+        if "error" not in metrics:
+            metrics["symbol"] = idx["symbol"]
+            metrics["name"] = idx.get("name", idx["symbol"])
+            metrics["instrument_id"] = idx["instrument_id"]
+            all_metrics.append(metrics)
+
+    if all_metrics:
+        metrics_df = pd.DataFrame(all_metrics)
+
+        # Get latest close prices
+        for i, row in metrics_df.iterrows():
+            ohlcv = get_ohlcv_instrument(con, row["instrument_id"], limit=2)
+            if not ohlcv.empty:
+                latest = ohlcv.sort_values("date", ascending=False).iloc[0]
+                metrics_df.at[i, "close"] = latest.get("close", 0)
+                if len(ohlcv) > 1:
+                    prev = ohlcv.sort_values("date", ascending=False).iloc[1]
+                    prev_close = prev.get("close", 0)
+                    if prev_close:
+                        change_pct = ((latest.get("close", 0) - prev_close) / prev_close) * 100
+                        metrics_df.at[i, "change_1d"] = change_pct
+
+        # Display columns
+        display_cols = ["symbol", "name", "close", "change_1d", "return_1w", "return_1m", "return_3m", "vol_1m"]
+        available_cols = [c for c in display_cols if c in metrics_df.columns]
+        display_df = metrics_df[available_cols].copy()
+
+        # Format for display
+        if "close" in display_df.columns:
+            display_df["close"] = display_df["close"].apply(
+                lambda x: f"{x:,.2f}" if pd.notna(x) and x else "N/A"
+            )
+
+        pct_cols = ["change_1d", "return_1w", "return_1m", "return_3m", "vol_1m"]
+        for col in pct_cols:
+            if col in display_df.columns:
+                display_df[col] = display_df[col].apply(
+                    lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/A"
+                )
+
+        col_names = {
+            "symbol": "Symbol",
+            "name": "Name",
+            "close": "Last",
+            "change_1d": "1D %",
+            "return_1w": "1W %",
+            "return_1m": "1M %",
+            "return_3m": "3M %",
+            "vol_1m": "Vol 30D",
+        }
+        display_df.rename(columns=col_names, inplace=True)
+
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    # =================================================================
+    # KPI SUMMARY
+    # =================================================================
+    st.markdown("---")
+    st.subheader("📊 Market Summary")
+
+    if all_metrics:
+        # Calculate summary stats
+        valid_1m = [m.get("return_1m") for m in all_metrics if m.get("return_1m") is not None]
+        valid_1d = [m.get("change_1d") for m in all_metrics if m.get("change_1d") is not None] if "change_1d" in metrics_df.columns else []
+
+        col1, col2, col3, col4 = st.columns(4)
 
         with col1:
-            if st.button("Seed Universe", type="secondary", key="rank_seed"):
-                with st.spinner("Seeding instrument universe..."):
-                    from psx_ohlcv.sources.instrument_universe import seed_universe
-                    result = seed_universe(get_cached_connection())
-                    totals = result.get('totals', {})
-                    st.success(
-                        f"Seeded {totals.get('inserted', 0)} instruments"
-                    )
-                    st.rerun()
+            gainers = len([r for r in valid_1d if r > 0]) if valid_1d else 0
+            st.metric("📈 Gainers (1D)", gainers)
 
         with col2:
-            if st.button("Sync All OHLCV", type="primary", key="rank_sync"):
-                with st.spinner("Syncing OHLCV data..."):
+            losers = len([r for r in valid_1d if r < 0]) if valid_1d else 0
+            st.metric("📉 Losers (1D)", losers)
+
+        with col3:
+            if valid_1m:
+                avg_1m = sum(valid_1m) / len(valid_1m)
+                st.metric("Avg 1M Return", f"{avg_1m:+.2f}%")
+            else:
+                st.metric("Avg 1M Return", "N/A")
+
+        with col4:
+            st.metric("Total Indices", len(indices))
+
+    # =================================================================
+    # INDIVIDUAL INDEX DETAIL
+    # =================================================================
+    st.markdown("---")
+    st.subheader("🔍 Index Detail")
+
+    symbol_list = [idx["symbol"] for idx in indices]
+    name_map = {idx["symbol"]: idx.get("name", idx["symbol"]) for idx in indices}
+    id_map = {idx["symbol"]: idx.get("instrument_id") for idx in indices}
+
+    col1, col2 = st.columns([2, 2])
+
+    with col1:
+        selected_symbol = st.selectbox(
+            "Select Index",
+            symbol_list,
+            format_func=lambda x: f"{x} - {name_map.get(x, x)}"
+        )
+
+    with col2:
+        date_range = st.selectbox(
+            "Time Range",
+            ["30 Days", "90 Days", "180 Days", "1 Year"],
+            index=1
+        )
+
+    # Map range to limit
+    range_map = {"30 Days": 30, "90 Days": 90, "180 Days": 180, "1 Year": 365}
+    limit = range_map.get(date_range, 90)
+
+    if selected_symbol:
+        instrument_id = id_map.get(selected_symbol)
+
+        # Get metrics for selected index
+        metrics = compute_all_metrics(con, instrument_id)
+
+        # KPI row for selected index
+        st.markdown("#### Performance Metrics")
+        col1, col2, col3, col4, col5 = st.columns(5)
+
+        with col1:
+            ohlcv = get_ohlcv_instrument(con, instrument_id, limit=2)
+            if not ohlcv.empty:
+                latest = ohlcv.sort_values("date", ascending=False).iloc[0]
+                st.metric("Current Value", f"{latest.get('close', 0):,.2f}")
+            else:
+                st.metric("Current Value", "N/A")
+
+        with col2:
+            if not ohlcv.empty and len(ohlcv) > 1:
+                prev = ohlcv.sort_values("date", ascending=False).iloc[1]
+                change = latest.get("close", 0) - prev.get("close", 0)
+                pct = (change / prev.get("close", 1)) * 100 if prev.get("close") else 0
+                st.metric("1D Change", f"{change:+,.2f}", f"{pct:+.2f}%")
+            else:
+                st.metric("1D Change", "N/A")
+
+        with col3:
+            ret_1w = metrics.get("return_1w")
+            if ret_1w is not None:
+                st.metric("1W Return", f"{ret_1w:+.2f}%")
+            else:
+                st.metric("1W Return", "N/A")
+
+        with col4:
+            ret_1m = metrics.get("return_1m")
+            if ret_1m is not None:
+                st.metric("1M Return", f"{ret_1m:+.2f}%")
+            else:
+                st.metric("1M Return", "N/A")
+
+        with col5:
+            vol = metrics.get("vol_1m")
+            if vol is not None:
+                st.metric("30D Volatility", f"{vol:.2f}%")
+            else:
+                st.metric("30D Volatility", "N/A")
+
+        # Chart
+        st.markdown("#### Price Chart")
+        ohlcv_df = get_ohlcv_instrument(con, instrument_id, limit=limit)
+
+        if not ohlcv_df.empty:
+            ohlcv_df = ohlcv_df.sort_values("date")
+
+            # Use candlestick if all OHLC columns exist, else line chart
+            has_ohlc = all(c in ohlcv_df.columns for c in ["open", "high", "low", "close"])
+
+            if has_ohlc and len(ohlcv_df) >= 5:
+                fig = make_candlestick(
+                    ohlcv_df,
+                    title=f"{selected_symbol} - {name_map.get(selected_symbol, '')}",
+                    date_col="date",
+                    show_sma=True,
+                )
+            else:
+                fig = make_price_line(
+                    ohlcv_df,
+                    title=f"{selected_symbol} - {name_map.get(selected_symbol, '')}",
+                    date_col="date",
+                    price_col="close",
+                    height=400,
+                )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No OHLCV data available. Run `psxsync instruments sync-eod` to sync index data.")
+
+    # =================================================================
+    # MULTI-INDEX COMPARISON
+    # =================================================================
+    st.markdown("---")
+    st.subheader("📊 Index Comparison")
+
+    compare_symbols = st.multiselect(
+        "Select indices to compare (up to 6)",
+        symbol_list,
+        default=symbol_list[:4] if len(symbol_list) >= 4 else symbol_list,
+        max_selections=6,
+    )
+
+    if compare_symbols and len(compare_symbols) >= 2:
+        # Get normalized performance
+        compare_ids = [id_map.get(s) for s in compare_symbols if id_map.get(s)]
+
+        perf_df = get_normalized_performance(con, compare_ids)
+
+        if not perf_df.empty:
+            import plotly.graph_objects as go
+
+            fig = go.Figure()
+
+            # Map IDs back to symbols
+            id_to_symbol = {v: k for k, v in id_map.items()}
+
+            for col in perf_df.columns:
+                symbol = id_to_symbol.get(col, col)
+                fig.add_trace(go.Scatter(
+                    x=perf_df.index,
+                    y=perf_df[col],
+                    mode="lines",
+                    name=symbol,
+                    hovertemplate=f"{symbol}: %{{y:.1f}}<extra></extra>"
+                ))
+
+            fig.update_layout(
+                title="Normalized Performance (Base = 100)",
+                xaxis_title="Date",
+                yaxis_title="Value",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                height=400,
+            )
+
+            # Apply theme
+            from psx_ohlcv.ui.charts import apply_bloomberg_layout
+            apply_bloomberg_layout(fig)
+
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No historical data available for comparison.")
+
+    # =================================================================
+    # CATEGORY VIEW
+    # =================================================================
+    st.markdown("---")
+    st.subheader("📋 Indices by Category")
+
+    # Group indices by category
+    categories = {
+        "Main Indices": ["KSE100", "ALLSHR", "KSE30", "KMI30"],
+        "Islamic Indices": ["KMIALLSHR", "MII30"],
+        "Sector Indices": ["BKTI", "OGTI"],
+        "Thematic Indices": ["PSXDIV20", "UPP9", "KSE100PR"],
+        "ETF Tracking Indices": ["NITPGI", "NBPPGI", "MZNPI", "JSMFI", "ACI", "JSGBKTI", "HBLTTI"],
+    }
+
+    for cat_name, cat_symbols in categories.items():
+        # Get indices in this category
+        cat_indices = [m for m in all_metrics if m.get("symbol") in cat_symbols]
+
+        if cat_indices:
+            with st.expander(f"{cat_name} ({len(cat_indices)} indices)", expanded=False):
+                cat_df = pd.DataFrame(cat_indices)
+                display_cols = ["symbol", "name", "return_1w", "return_1m", "return_3m", "vol_1m"]
+                available_cols = [c for c in display_cols if c in cat_df.columns]
+                display_df = cat_df[available_cols].copy()
+
+                pct_cols = ["return_1w", "return_1m", "return_3m", "vol_1m"]
+                for col in pct_cols:
+                    if col in display_df.columns:
+                        display_df[col] = display_df[col].apply(
+                            lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/A"
+                        )
+
+                display_df.rename(columns={
+                    "symbol": "Symbol",
+                    "name": "Name",
+                    "return_1w": "1W",
+                    "return_1m": "1M",
+                    "return_3m": "3M",
+                    "vol_1m": "Vol",
+                }, inplace=True)
+
+                st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    # =================================================================
+    # SYNC SECTION
+    # =================================================================
+    st.markdown("---")
+    with st.expander("Sync Index Data", expanded=False):
+        col1, col2 = st.columns([2, 4])
+
+        with col1:
+            if st.button("Sync Index OHLCV", type="primary", key="idx_sync"):
+                with st.spinner("Syncing index OHLCV..."):
                     summary = sync_instruments_eod(
                         db_path=get_db_path(),
-                        instrument_types=["ETF", "REIT", "INDEX"],
+                        instrument_types=["INDEX"],
                         incremental=True,
                     )
                     st.success(
@@ -7058,10 +7391,8 @@ def rankings_page():
                     )
                     st.rerun()
 
-        with col3:
-            st.caption("1. Seed universe first")
-            st.caption("2. Sync OHLCV data")
-            st.caption("3. Refresh Rankings")
+        with col2:
+            st.caption("To seed instruments, use the **📦 Instruments** page.")
 
     render_footer()
 
@@ -9430,6 +9761,605 @@ def sbp_pma_archive_page():
     render_footer()
 
 
+def psx_debt_market_page():
+    """PSX Debt Market - Live debt securities from PSX DPS with full metrics."""
+    import pandas as pd
+    import plotly.graph_objects as go
+
+    from psx_ohlcv.sources.psx_debt import (
+        DEBT_CATEGORIES,
+        DebtSecurity,
+        fetch_all_debt_securities,
+        fetch_debt_ohlcv,
+        fetch_debt_security_detail,
+        get_securities_flat_list,
+        get_securities_summary,
+        parse_symbol_info,
+    )
+    from psx_ohlcv.fi_analytics import (
+        analyze_security,
+        build_yield_curve,
+        FREQ_SEMI_ANNUAL,
+        FREQ_ZERO,
+    )
+
+    # =================================================================
+    # HEADER
+    # =================================================================
+    header_col1, header_col2 = st.columns([3, 1])
+    with header_col1:
+        st.markdown("## 📈 PSX Debt Market")
+        st.caption("T-Bills, PIBs, Sukuk, TFCs from PSX Data Portal")
+    with header_col2:
+        st.markdown(
+            '<div class="data-info">💹 Live Data</div>',
+            unsafe_allow_html=True
+        )
+
+    # =================================================================
+    # FETCH DATA FROM PSX
+    # =================================================================
+    with st.spinner("Loading debt securities from PSX..."):
+        securities_by_cat = fetch_all_debt_securities()
+
+    if not any(securities_by_cat.values()):
+        st.error("Could not fetch debt securities from PSX. Please try again later.")
+        render_footer()
+        return
+
+    # Get summary
+    summary = get_securities_summary(securities_by_cat)
+    all_securities = get_securities_flat_list(securities_by_cat)
+
+    # =================================================================
+    # MARKET OVERVIEW KPIs
+    # =================================================================
+    st.markdown("### 📊 Market Overview")
+
+    kpi_cols = st.columns(5)
+    with kpi_cols[0]:
+        st.metric("Total Securities", summary["total"])
+    with kpi_cols[1]:
+        st.metric("Government", summary["government"])
+    with kpi_cols[2]:
+        st.metric("Corporate", summary["corporate"])
+    with kpi_cols[3]:
+        st.metric("Islamic/Sukuk", summary["islamic"])
+    with kpi_cols[4]:
+        # Show by type breakdown
+        type_count = len(summary.get("by_type", {}))
+        st.metric("Security Types", type_count)
+
+    # Category breakdown
+    cat_cols = st.columns(4)
+    for i, (cat_code, cat_name) in enumerate(DEBT_CATEGORIES.items()):
+        with cat_cols[i]:
+            count = len(securities_by_cat.get(cat_code, []))
+            st.metric(cat_name, count)
+
+    # =================================================================
+    # CATEGORY TABS (matching PSX page structure)
+    # =================================================================
+    st.markdown("---")
+
+    # Create tabs for each PSX category
+    tab_names = [f"{DEBT_CATEGORIES[cat]} ({len(securities_by_cat[cat])})" for cat in DEBT_CATEGORIES]
+    tab_names.append("📈 Price Chart")
+    tab_names.append("📊 Security Analytics")  # Enhanced with Bloomberg-style metrics
+    tab_names.append("📉 Yield Curve")  # New yield curve tab
+
+    tabs = st.tabs(tab_names)
+
+    # --- Category Tabs (gop, pds, cds, gds) ---
+    for idx, cat_code in enumerate(DEBT_CATEGORIES.keys()):
+        with tabs[idx]:
+            cat_securities = securities_by_cat.get(cat_code, [])
+            cat_name = DEBT_CATEGORIES[cat_code]
+
+            if not cat_securities:
+                st.info(f"No {cat_name} securities available")
+                continue
+
+            st.markdown(f"### {cat_name}")
+
+            # Build table with all metrics
+            table_data = []
+            for sec in cat_securities:
+                row = {
+                    "Security Code": sec.symbol,
+                    "Security Name": (sec.name or "")[:40],
+                    "Face Value": f"{sec.face_value:,.0f}" if sec.face_value else "N/A",
+                    "Listing Date": sec.listing_date or "N/A",
+                    "Issue Date": sec.issue_date or "N/A",
+                    "Issue Size": sec.issue_size or "N/A",
+                    "Maturity Date": sec.maturity_date or "N/A",
+                }
+
+                # Add coupon info if available
+                if sec.coupon_rate is not None:
+                    row["Coupon Rate"] = f"{sec.coupon_rate:.4f}%"
+                if sec.prev_coupon_date:
+                    row["Prev Coupon"] = sec.prev_coupon_date
+                if sec.next_coupon_date:
+                    row["Next Coupon"] = sec.next_coupon_date
+
+                row["Outstanding Days"] = sec.outstanding_days if sec.outstanding_days else "N/A"
+                row["Remaining Yrs"] = f"{sec.remaining_years:.1f}" if sec.remaining_years else "N/A"
+
+                # Add derived fields
+                if sec.is_islamic:
+                    row["Islamic"] = "✓"
+
+                table_data.append(row)
+
+            if table_data:
+                df = pd.DataFrame(table_data)
+                st.dataframe(df, use_container_width=True, hide_index=True)
+                st.caption(f"Total: {len(table_data)} securities")
+
+    # --- Price Chart Tab ---
+    with tabs[4]:
+        st.markdown("### 📈 Price History")
+
+        chart_col1, chart_col2 = st.columns([3, 1])
+
+        # Get all symbols for selector
+        all_symbols = [s.symbol for s in all_securities]
+
+        with chart_col2:
+            selected_symbol = st.selectbox(
+                "Select Security",
+                options=all_symbols[:150],
+                key="debt_chart_symbol"
+            )
+
+            if selected_symbol:
+                # Find the security in our data
+                sec = next((s for s in all_securities if s.symbol == selected_symbol), None)
+                if sec:
+                    st.markdown("**Security Info:**")
+                    st.write(f"**Name:** {sec.name or 'N/A'}")
+                    st.write(f"**Type:** {sec.security_type or 'N/A'}")
+                    st.write(f"**Category:** {sec.category_name or 'N/A'}")
+                    if sec.face_value:
+                        st.write(f"**Face Value:** Rs. {sec.face_value:,.0f}")
+                    if sec.coupon_rate is not None:
+                        st.write(f"**Coupon:** {sec.coupon_rate:.4f}%")
+                    if sec.maturity_date:
+                        st.write(f"**Maturity:** {sec.maturity_date}")
+                    if sec.outstanding_days:
+                        st.write(f"**Days Left:** {sec.outstanding_days}")
+                    if sec.is_islamic:
+                        st.success("✓ Shariah Compliant")
+
+        with chart_col1:
+            if selected_symbol:
+                with st.spinner(f"Loading price data for {selected_symbol}..."):
+                    ohlcv = fetch_debt_ohlcv(selected_symbol)
+
+                if ohlcv:
+                    df = pd.DataFrame(ohlcv)
+                    df["date"] = pd.to_datetime(df["date"])
+                    df = df.sort_values("date")
+
+                    # Price chart
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=df["date"],
+                        y=df["price"],
+                        mode="lines",
+                        name="Price",
+                        line=dict(color="#00d4aa", width=2),
+                    ))
+
+                    fig.update_layout(
+                        title=f"{selected_symbol} Price History",
+                        xaxis_title="Date",
+                        yaxis_title="Price (PKR)",
+                        template="plotly_dark",
+                        height=400,
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    # Volume chart
+                    if df["volume"].sum() > 0:
+                        vol_fig = go.Figure()
+                        vol_fig.add_trace(go.Bar(
+                            x=df["date"],
+                            y=df["volume"],
+                            name="Volume",
+                            marker_color="#ff6b6b",
+                        ))
+                        vol_fig.update_layout(
+                            title="Trading Volume",
+                            xaxis_title="Date",
+                            yaxis_title="Volume",
+                            template="plotly_dark",
+                            height=200,
+                        )
+                        st.plotly_chart(vol_fig, use_container_width=True)
+
+                    # Stats
+                    stat_cols = st.columns(4)
+                    with stat_cols[0]:
+                        st.metric("Latest", f"{df['price'].iloc[-1]:.4f}")
+                    with stat_cols[1]:
+                        st.metric("High", f"{df['price'].max():.4f}")
+                    with stat_cols[2]:
+                        st.metric("Low", f"{df['price'].min():.4f}")
+                    with stat_cols[3]:
+                        if len(df) > 1:
+                            chg = ((df['price'].iloc[-1] - df['price'].iloc[0]) / df['price'].iloc[0]) * 100
+                            st.metric("Change", f"{chg:.2f}%")
+                else:
+                    st.warning(f"No price data available for {selected_symbol}")
+
+    # --- Security Analytics Tab (Bloomberg-style) ---
+    with tabs[5]:
+        st.markdown("### 📊 Security Analytics")
+        st.caption("Bloomberg-style yield and risk metrics")
+
+        detail_symbol = st.selectbox(
+            "Select Security",
+            options=all_symbols[:150],
+            key="debt_detail_symbol"
+        )
+
+        if detail_symbol:
+            # First check our scraped data
+            sec = next((s for s in all_securities if s.symbol == detail_symbol), None)
+
+            if sec:
+                # Fetch price data for analytics
+                ohlcv = fetch_debt_ohlcv(sec.symbol)
+                latest_price = ohlcv[0]['price'] if ohlcv else None
+
+                # Basic Info Section
+                col1, col2, col3 = st.columns(3)
+
+                with col1:
+                    st.markdown("#### Security Info")
+                    st.write(f"**Symbol:** {sec.symbol}")
+                    st.write(f"**Name:** {sec.name or 'N/A'}")
+                    st.write(f"**Type:** {sec.security_type or 'N/A'}")
+                    st.write(f"**Category:** {sec.category_name or 'N/A'}")
+                    if sec.is_islamic:
+                        st.success("✓ Shariah Compliant")
+
+                with col2:
+                    st.markdown("#### Issue Details")
+                    if sec.face_value:
+                        st.write(f"**Face Value:** Rs. {sec.face_value:,.0f}")
+                    if sec.issue_size:
+                        st.write(f"**Issue Size:** {sec.issue_size}")
+                    if sec.issue_date:
+                        st.write(f"**Issue Date:** {sec.issue_date}")
+                    if sec.maturity_date:
+                        st.write(f"**Maturity:** {sec.maturity_date}")
+
+                with col3:
+                    st.markdown("#### Coupon/Rental")
+                    if sec.coupon_rate is not None and sec.coupon_rate > 0:
+                        st.write(f"**Rate:** {sec.coupon_rate:.4f}%")
+                        st.write(f"**Frequency:** Semi-Annual")
+                    else:
+                        st.write("**Type:** Zero Coupon/Discount")
+                    if sec.prev_coupon_date:
+                        st.write(f"**Last Coupon:** {sec.prev_coupon_date}")
+                    if sec.next_coupon_date:
+                        st.write(f"**Next Coupon:** {sec.next_coupon_date}")
+
+                st.markdown("---")
+
+                # Calculate Analytics if we have price
+                if latest_price and sec.maturity_date and sec.outstanding_days and sec.outstanding_days > 0:
+                    # Determine frequency
+                    coupon_pct = sec.coupon_rate if sec.coupon_rate else 0
+                    freq = FREQ_ZERO if coupon_pct == 0 else FREQ_SEMI_ANNUAL
+                    coupon = coupon_pct / 100  # Convert to decimal
+
+                    # Run analytics
+                    analytics = analyze_security(
+                        symbol=sec.symbol,
+                        name=sec.name,
+                        security_type=sec.security_type,
+                        face_value=sec.face_value or 5000,
+                        coupon_rate=coupon,
+                        maturity_date=sec.maturity_date,
+                        price=latest_price,
+                        prev_coupon_date=sec.prev_coupon_date,
+                        frequency=freq,
+                        price_is_per_100=True,
+                    )
+
+                    st.markdown("### 📈 Yield & Risk Analytics (YAS)")
+                    st.caption("Bloomberg-style Yield Analysis")
+
+                    # Price & Yield Metrics
+                    yield_cols = st.columns(4)
+                    with yield_cols[0]:
+                        st.metric("Clean Price", f"{latest_price:.4f}")
+                    with yield_cols[1]:
+                        if analytics.yield_metrics and analytics.yield_metrics.ytm is not None:
+                            ytm_pct = analytics.yield_metrics.ytm * 100
+                            st.metric("YTM", f"{ytm_pct:.2f}%")
+                        else:
+                            st.metric("YTM", "N/A")
+                    with yield_cols[2]:
+                        if analytics.yield_metrics and analytics.yield_metrics.discount_yield is not None:
+                            dy_pct = analytics.yield_metrics.discount_yield * 100
+                            st.metric("Discount Yield", f"{dy_pct:.2f}%")
+                        elif analytics.yield_metrics and analytics.yield_metrics.current_yield is not None:
+                            cy_pct = analytics.yield_metrics.current_yield * 100
+                            st.metric("Current Yield", f"{cy_pct:.2f}%")
+                        else:
+                            st.metric("Current Yield", "N/A")
+                    with yield_cols[3]:
+                        if analytics.yield_metrics and analytics.yield_metrics.bey is not None:
+                            bey_pct = analytics.yield_metrics.bey * 100
+                            st.metric("BEY", f"{bey_pct:.2f}%")
+                        else:
+                            st.metric("BEY", "N/A")
+
+                    # Duration & Risk Metrics
+                    st.markdown("### 📊 Duration & Risk (DUR)")
+                    st.caption("Bloomberg-style Duration Analysis")
+
+                    dur_cols = st.columns(4)
+                    with dur_cols[0]:
+                        if analytics.years_to_maturity:
+                            st.metric("Years to Mat", f"{analytics.years_to_maturity:.2f}")
+                        else:
+                            st.metric("Years to Mat", "N/A")
+                    with dur_cols[1]:
+                        if analytics.duration_metrics and analytics.duration_metrics.macaulay_dur is not None:
+                            st.metric("Macaulay Dur", f"{analytics.duration_metrics.macaulay_dur:.2f}")
+                        else:
+                            st.metric("Macaulay Dur", "N/A")
+                    with dur_cols[2]:
+                        if analytics.duration_metrics and analytics.duration_metrics.modified_dur is not None:
+                            st.metric("Modified Dur", f"{analytics.duration_metrics.modified_dur:.2f}")
+                        else:
+                            st.metric("Modified Dur", "N/A")
+                    with dur_cols[3]:
+                        if analytics.duration_metrics and analytics.duration_metrics.dv01 is not None:
+                            st.metric("DV01", f"{analytics.duration_metrics.dv01:.4f}")
+                        else:
+                            st.metric("DV01", "N/A")
+
+                    # Analytics Table
+                    with st.expander("📋 Full Analytics Details"):
+                        analytics_data = {
+                            "Metric": [],
+                            "Value": [],
+                            "Description": [],
+                        }
+
+                        # Add all metrics
+                        analytics_data["Metric"].append("Symbol")
+                        analytics_data["Value"].append(sec.symbol)
+                        analytics_data["Description"].append("Security identifier")
+
+                        analytics_data["Metric"].append("Clean Price")
+                        analytics_data["Value"].append(f"{latest_price:.4f}")
+                        analytics_data["Description"].append("Price excluding accrued interest")
+
+                        if analytics.yield_metrics:
+                            ym = analytics.yield_metrics
+                            if ym.ytm is not None:
+                                analytics_data["Metric"].append("YTM")
+                                analytics_data["Value"].append(f"{ym.ytm*100:.4f}%")
+                                analytics_data["Description"].append("Yield to Maturity (annualized)")
+                            if ym.discount_yield is not None:
+                                analytics_data["Metric"].append("Discount Yield")
+                                analytics_data["Value"].append(f"{ym.discount_yield*100:.4f}%")
+                                analytics_data["Description"].append("Money market discount yield")
+                            if ym.bey is not None:
+                                analytics_data["Metric"].append("BEY")
+                                analytics_data["Value"].append(f"{ym.bey*100:.4f}%")
+                                analytics_data["Description"].append("Bond Equivalent Yield")
+                            if ym.current_yield is not None:
+                                analytics_data["Metric"].append("Current Yield")
+                                analytics_data["Value"].append(f"{ym.current_yield*100:.4f}%")
+                                analytics_data["Description"].append("Annual coupon / price")
+
+                        if analytics.duration_metrics:
+                            dm = analytics.duration_metrics
+                            if dm.macaulay_dur is not None:
+                                analytics_data["Metric"].append("Macaulay Duration")
+                                analytics_data["Value"].append(f"{dm.macaulay_dur:.4f} years")
+                                analytics_data["Description"].append("Weighted avg time to cash flows")
+                            if dm.modified_dur is not None:
+                                analytics_data["Metric"].append("Modified Duration")
+                                analytics_data["Value"].append(f"{dm.modified_dur:.4f}")
+                                analytics_data["Description"].append("Price sensitivity to yield changes")
+                            if dm.dv01 is not None:
+                                analytics_data["Metric"].append("DV01")
+                                analytics_data["Value"].append(f"{dm.dv01:.6f}")
+                                analytics_data["Description"].append("Dollar value of 1bp yield change")
+                            if dm.convexity is not None:
+                                analytics_data["Metric"].append("Convexity")
+                                analytics_data["Value"].append(f"{dm.convexity:.4f}")
+                                analytics_data["Description"].append("Second-order price sensitivity")
+
+                        df_analytics = pd.DataFrame(analytics_data)
+                        st.dataframe(df_analytics, use_container_width=True, hide_index=True)
+
+                else:
+                    st.info("Select a security with available price data to view analytics")
+
+                # Maturity Progress
+                st.markdown("---")
+                st.markdown("#### Time to Maturity")
+                if sec.outstanding_days is not None:
+                    if sec.outstanding_days > 0:
+                        st.write(f"**Outstanding Days:** {sec.outstanding_days}")
+                        # Progress bar
+                        if sec.tenor_years and sec.tenor_years > 0:
+                            original_days = sec.tenor_years * 365
+                            elapsed = original_days - sec.outstanding_days
+                            pct_complete = min(1.0, max(0.0, elapsed / original_days))
+                            st.progress(pct_complete)
+                            st.caption(f"{pct_complete*100:.1f}% of original {sec.tenor_years}Y tenor elapsed")
+                    else:
+                        st.error("MATURED")
+                if sec.remaining_years is not None:
+                    st.write(f"**Remaining Years:** {sec.remaining_years:.2f}")
+            else:
+                st.warning("Security not found in data")
+
+    # --- Yield Curve Tab ---
+    with tabs[6]:
+        st.markdown("### 📉 PKR Yield Curve")
+        st.caption("Government Securities Yield Curve Analysis")
+
+        # Build yield curves from available data
+        curve_col1, curve_col2 = st.columns([3, 1])
+
+        with curve_col2:
+            curve_type = st.selectbox(
+                "Curve Type",
+                ["Government (PIB + T-Bill)", "Sukuk (GIS + FRR)", "All Securities"],
+                key="yield_curve_type"
+            )
+
+        with curve_col1:
+            # Filter securities based on curve type
+            if curve_type == "Government (PIB + T-Bill)":
+                curve_securities = [s for s in all_securities
+                                  if s.security_type in ["PIB", "T-Bill", "Floating"]
+                                  and s.outstanding_days and s.outstanding_days > 30]
+            elif curve_type == "Sukuk (GIS + FRR)":
+                curve_securities = [s for s in all_securities
+                                  if s.is_islamic and s.outstanding_days and s.outstanding_days > 30]
+            else:
+                curve_securities = [s for s in all_securities
+                                  if s.outstanding_days and s.outstanding_days > 30]
+
+            st.info(f"Building curve from {len(curve_securities)} securities with price data...")
+
+            # Calculate YTM for each security
+            curve_data = []
+            for sec in curve_securities:
+                ohlcv = fetch_debt_ohlcv(sec.symbol)
+                if ohlcv and sec.maturity_date:
+                    price = ohlcv[0]['price']
+                    coupon_pct = sec.coupon_rate if sec.coupon_rate else 0
+                    freq = FREQ_ZERO if coupon_pct == 0 else FREQ_SEMI_ANNUAL
+
+                    analytics = analyze_security(
+                        symbol=sec.symbol,
+                        name=sec.name,
+                        security_type=sec.security_type,
+                        face_value=sec.face_value or 5000,
+                        coupon_rate=coupon_pct / 100,
+                        maturity_date=sec.maturity_date,
+                        price=price,
+                        frequency=freq,
+                        price_is_per_100=True,
+                    )
+
+                    if analytics.yield_metrics and analytics.yield_metrics.ytm is not None:
+                        ytm = analytics.yield_metrics.ytm
+                        # Filter out extreme values
+                        if 0 < ytm < 0.5:  # 0-50% yield range
+                            curve_data.append({
+                                "symbol": sec.symbol,
+                                "name": sec.name,
+                                "type": sec.security_type,
+                                "years_to_maturity": analytics.years_to_maturity,
+                                "ytm": ytm,
+                                "price": price,
+                            })
+
+            if curve_data:
+                # Sort by maturity
+                curve_data.sort(key=lambda x: x["years_to_maturity"])
+                df_curve = pd.DataFrame(curve_data)
+
+                # Plot yield curve
+                fig = go.Figure()
+
+                # Scatter plot with symbols
+                fig.add_trace(go.Scatter(
+                    x=df_curve["years_to_maturity"],
+                    y=df_curve["ytm"] * 100,  # Convert to percentage
+                    mode="markers+text",
+                    text=df_curve["type"],
+                    textposition="top center",
+                    textfont=dict(size=8),
+                    marker=dict(
+                        size=10,
+                        color=df_curve["ytm"] * 100,
+                        colorscale="Viridis",
+                        showscale=True,
+                        colorbar=dict(title="YTM %"),
+                    ),
+                    hovertemplate=(
+                        "<b>%{customdata[0]}</b><br>" +
+                        "Maturity: %{x:.2f}Y<br>" +
+                        "YTM: %{y:.2f}%<br>" +
+                        "Price: %{customdata[1]:.2f}<extra></extra>"
+                    ),
+                    customdata=list(zip(df_curve["symbol"], df_curve["price"])),
+                ))
+
+                # Add smoothed curve line
+                if len(df_curve) > 2:
+                    fig.add_trace(go.Scatter(
+                        x=df_curve["years_to_maturity"],
+                        y=df_curve["ytm"] * 100,
+                        mode="lines",
+                        line=dict(color="#00d4aa", width=2, dash="dash"),
+                        name="Trend",
+                    ))
+
+                fig.update_layout(
+                    title=f"PKR {curve_type} Yield Curve",
+                    xaxis_title="Years to Maturity",
+                    yaxis_title="Yield to Maturity (%)",
+                    template="plotly_dark",
+                    height=500,
+                    showlegend=False,
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Curve statistics
+                stat_cols = st.columns(4)
+                short_term = [d["ytm"] for d in curve_data if d["years_to_maturity"] < 1]
+                med_term = [d["ytm"] for d in curve_data if 1 <= d["years_to_maturity"] < 5]
+                long_term = [d["ytm"] for d in curve_data if d["years_to_maturity"] >= 5]
+
+                with stat_cols[0]:
+                    if short_term:
+                        avg_st = sum(short_term) / len(short_term) * 100
+                        st.metric("Short Term (<1Y)", f"{avg_st:.2f}%")
+                with stat_cols[1]:
+                    if med_term:
+                        avg_mt = sum(med_term) / len(med_term) * 100
+                        st.metric("Medium Term (1-5Y)", f"{avg_mt:.2f}%")
+                with stat_cols[2]:
+                    if long_term:
+                        avg_lt = sum(long_term) / len(long_term) * 100
+                        st.metric("Long Term (>5Y)", f"{avg_lt:.2f}%")
+                with stat_cols[3]:
+                    if short_term and long_term:
+                        spread = (sum(long_term)/len(long_term) - sum(short_term)/len(short_term)) * 10000
+                        st.metric("Curve Spread (bps)", f"{spread:.0f}")
+
+                # Data table
+                with st.expander("📋 Curve Points Data"):
+                    display_df = df_curve.copy()
+                    display_df["ytm_pct"] = display_df["ytm"] * 100
+                    display_df = display_df[["symbol", "type", "years_to_maturity", "ytm_pct", "price"]]
+                    display_df.columns = ["Symbol", "Type", "Years to Mat", "YTM %", "Price"]
+                    st.dataframe(display_df, use_container_width=True, hide_index=True)
+            else:
+                st.warning("Not enough securities with price data to build yield curve")
+
+    render_footer()
+
+
 # -----------------------------------------------------------------------------
 # Main App with Sidebar Navigation
 # -----------------------------------------------------------------------------
@@ -9461,51 +10391,118 @@ def main():
 
     st.sidebar.markdown("---")
 
-    # Navigation - updated with new pages
-    pages = [
-        "📊 Dashboard",
-        "📈 Candlestick Explorer",
-        "⏱ Intraday Trend",
-        "📊 Regular Market",
-        "🏢 Company Analytics",
-        "📥 Data Acquisition",
-        "📊 Factor Analysis",
-        "🤖 AI Insights",
-        "📚 History",
-        "📥 Market Summary",
-        "🧵 Symbols",
-        "📦 Instruments",        # Phase 1
-        "🏆 Rankings",           # Phase 1
-        "🌍 FX Overview",        # Phase 2
-        "📊 FX Impact",          # Phase 2
-        "🏦 Mutual Funds",       # Phase 2.5
-        "📊 Fund Analytics",     # Phase 2.5
-        "🧾 Bonds Screener",     # Phase 3
-        "📉 Yield Curve",        # Phase 3
-        "🕌 Sukuk Screener",     # Phase 3 (additive)
-        "📈 Sukuk Yield Curve",  # Phase 3 (additive)
-        "🏛️ SBP Archive",        # Phase 3 (additive)
-        "💰 Govt Fixed Income",  # Phase 3.5: Fixed Income
-        "📊 FI Yield Curve",     # Phase 3.5: FI Yield Curves
-        "📝 SBP PMA Archive",    # Phase 3.5: SBP PMA Docs
-        "🔄 Sync Monitor",
-        "📋 Schema",
-        "⚙️ Settings",
-    ]
+    # =================================================================
+    # BLOOMBERG-STYLE GROUPED NAVIGATION
+    # =================================================================
 
-    # Handle programmatic navigation
+    # Navigation groups - Bloomberg Terminal style
+    nav_groups = {
+        "MARKET": [
+            "📊 Dashboard",
+            "📈 Market Summary",
+        ],
+        "EQUITY": [
+            "📈 Quote Monitor",      # Regular Market
+            "📊 Price Chart",        # Candlestick Explorer
+            "⏱ Intraday",            # Intraday Trend
+            "🏢 Company",            # Company Analytics
+            "🏆 Rankings",
+            "📊 Factors",            # Factor Analysis
+            "🧵 Symbols",
+        ],
+        "INDICES": [
+            "📊 Index Monitor",      # Indices
+            "📦 Instruments",
+        ],
+        "FIXED INCOME": [
+            "📈 FI Overview",        # PSX Debt Market
+            "🧾 Bond Search",        # Bonds Screener
+            "📉 Yield Curve",
+            "🕌 Sukuk",              # Sukuk Screener
+            "🏛️ SBP Auctions",       # SBP Archive
+        ],
+        "FX": [
+            "🌍 FX Monitor",         # FX Overview
+            "📊 FX Analytics",       # FX Impact
+        ],
+        "FUNDS": [
+            "🏦 Fund Directory",     # Mutual Funds
+            "📊 Fund Analytics",
+        ],
+        "DATA": [
+            "📥 Data Sync",          # Data Acquisition
+            "📚 History",
+            "🤖 AI Insights",
+            "🔄 Sync Monitor",
+        ],
+        "ADMIN": [
+            "📋 Schema",
+            "⚙️ Settings",
+        ],
+    }
+
+    # Build flat pages list for routing
+    all_pages = []
+    for group_pages in nav_groups.values():
+        all_pages.extend(group_pages)
+
+    # Map old page names to new names for backwards compatibility
+    page_mapping = {
+        "📊 Regular Market": "📈 Quote Monitor",
+        "📈 Candlestick Explorer": "📊 Price Chart",
+        "⏱ Intraday Trend": "⏱ Intraday",
+        "🏢 Company Analytics": "🏢 Company",
+        "📊 Factor Analysis": "📊 Factors",
+        "📊 Indices": "📊 Index Monitor",
+        "📈 PSX Debt Market": "📈 FI Overview",
+        "🧾 Bonds Screener": "🧾 Bond Search",
+        "🕌 Sukuk Screener": "🕌 Sukuk",
+        "🏛️ SBP Archive": "🏛️ SBP Auctions",
+        "🌍 FX Overview": "🌍 FX Monitor",
+        "📊 FX Impact": "📊 FX Analytics",
+        "🏦 Mutual Funds": "🏦 Fund Directory",
+        "📥 Data Acquisition": "📥 Data Sync",
+        "📥 Market Summary": "📈 Market Summary",
+    }
+
+    # Initialize current page in session state
+    if "current_page" not in st.session_state:
+        st.session_state.current_page = "📊 Dashboard"
+
+    # Handle programmatic navigation (nav_to from other pages)
     if "nav_to" in st.session_state and st.session_state.nav_to:
-        try:
-            default_index = pages.index(st.session_state.nav_to)
-        except ValueError:
-            default_index = 0
+        nav_target = st.session_state.nav_to
+        nav_target = page_mapping.get(nav_target, nav_target)
+        if nav_target in all_pages:
+            st.session_state.current_page = nav_target
         st.session_state.nav_to = None
-    else:
-        default_index = 0
 
-    page = st.sidebar.radio(
-        "Navigation", pages, index=default_index, label_visibility="collapsed"
-    )
+    # Render grouped navigation with section headers
+    for group_name, group_pages in nav_groups.items():
+        # Section header with Bloomberg-style formatting
+        st.sidebar.markdown(
+            f'<div style="font-size: 10px; font-weight: 600; color: #ff9800; '
+            f'letter-spacing: 1px; margin: 12px 0 4px 0; padding: 4px 0; '
+            f'border-bottom: 1px solid rgba(255,152,0,0.3);">{group_name}</div>',
+            unsafe_allow_html=True
+        )
+
+        # Pages in this group - use buttons with session state
+        for page_name in group_pages:
+            is_selected = (page_name == st.session_state.current_page)
+
+            # Custom styled button for each page
+            if st.sidebar.button(
+                page_name,
+                key=f"nav_{page_name}",
+                use_container_width=True,
+                type="primary" if is_selected else "secondary",
+            ):
+                st.session_state.current_page = page_name
+                st.rerun()
+
+    # Get selected page from session state
+    page = st.session_state.current_page
 
     st.sidebar.markdown("---")
 
@@ -9528,64 +10525,60 @@ def main():
     st.sidebar.caption("CLI: `psxsync --help`")
     st.sidebar.caption(f"DB: `{get_db_path()}`")
 
-    # Route to page
-    if page == "📊 Dashboard":
-        dashboard()
-    elif page == "📈 Candlestick Explorer":
-        candlestick_explorer()
-    elif page == "⏱ Intraday Trend":
-        intraday_trend_page()
-    elif page == "📊 Regular Market":
-        regular_market_page()
-    elif page == "🏢 Company Analytics":
-        company_analytics_page()
-    elif page == "📥 Data Acquisition":
-        data_acquisition_page()
-    elif page == "📊 Factor Analysis":
-        factor_analysis_page()
-    elif page == "🤖 AI Insights":
-        ai_insights_page()
-    elif page == "📚 History":
-        history_page()
-    elif page == "📥 Market Summary":
-        market_summary_page()
-    elif page == "🧵 Symbols":
-        symbols_page()
-    elif page == "📦 Instruments":
-        instruments_page()
-    elif page == "🏆 Rankings":
-        rankings_page()
-    elif page == "🌍 FX Overview":
-        fx_overview_page()
-    elif page == "📊 FX Impact":
-        fx_impact_page()
-    elif page == "🏦 Mutual Funds":
-        mutual_funds_page()
-    elif page == "📊 Fund Analytics":
-        fund_analytics_page()
-    elif page == "🧾 Bonds Screener":
-        bonds_screener_page()
-    elif page == "📉 Yield Curve":
-        yield_curve_page()
-    elif page == "🕌 Sukuk Screener":
-        sukuk_screener_page()
-    elif page == "📈 Sukuk Yield Curve":
-        sukuk_yield_curve_page()
-    elif page == "🏛️ SBP Archive":
-        sbp_auction_archive_page()
-    # Phase 3.5: Fixed Income (Government Debt) pages
-    elif page == "💰 Govt Fixed Income":
-        govt_fixed_income_page()
-    elif page == "📊 FI Yield Curve":
-        fi_yield_curve_page()
-    elif page == "📝 SBP PMA Archive":
-        sbp_pma_archive_page()
-    elif page == "🔄 Sync Monitor":
-        sync_monitor()
-    elif page == "📋 Schema":
-        schema_page()
-    elif page == "⚙️ Settings":
-        settings_page()
+    # =================================================================
+    # PAGE ROUTING - Maps new Bloomberg-style names to existing functions
+    # =================================================================
+
+    # Page function mapping
+    page_functions = {
+        # MARKET
+        "📊 Dashboard": dashboard,
+        "📈 Market Summary": market_summary_page,
+
+        # EQUITY
+        "📈 Quote Monitor": regular_market_page,
+        "📊 Price Chart": candlestick_explorer,
+        "⏱ Intraday": intraday_trend_page,
+        "🏢 Company": company_analytics_page,
+        "🏆 Rankings": rankings_page,
+        "📊 Factors": factor_analysis_page,
+        "🧵 Symbols": symbols_page,
+
+        # INDICES
+        "📊 Index Monitor": indices_analytics_page,
+        "📦 Instruments": instruments_page,
+
+        # FIXED INCOME
+        "📈 FI Overview": psx_debt_market_page,
+        "🧾 Bond Search": bonds_screener_page,
+        "📉 Yield Curve": yield_curve_page,
+        "🕌 Sukuk": sukuk_screener_page,
+        "🏛️ SBP Auctions": sbp_auction_archive_page,
+
+        # FX
+        "🌍 FX Monitor": fx_overview_page,
+        "📊 FX Analytics": fx_impact_page,
+
+        # FUNDS
+        "🏦 Fund Directory": mutual_funds_page,
+        "📊 Fund Analytics": fund_analytics_page,
+
+        # DATA
+        "📥 Data Sync": data_acquisition_page,
+        "📚 History": history_page,
+        "🤖 AI Insights": ai_insights_page,
+        "🔄 Sync Monitor": sync_monitor,
+
+        # ADMIN
+        "📋 Schema": schema_page,
+        "⚙️ Settings": settings_page,
+    }
+
+    # Execute the selected page function
+    if page in page_functions:
+        page_functions[page]()
+    else:
+        st.error(f"Page not found: {page}")
 
 
 if __name__ == "__main__":

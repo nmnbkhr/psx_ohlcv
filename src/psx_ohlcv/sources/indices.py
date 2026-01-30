@@ -33,22 +33,30 @@ PSX_BASE_URL = "https://dps.psx.com.pk"
 PSX_MARKET_SUMMARY_URL = f"{PSX_BASE_URL}/market-summary"
 PSX_INDICES_API_URL = f"{PSX_BASE_URL}/indices"
 
-# Known index codes
+# Known index codes (from https://dps.psx.com.pk/indices)
 INDEX_CODES = [
-    "KSE100",
-    "KSE100PR",
-    "ALLSHR",
-    "KSE30",
-    "KMI30",
-    "BKTI",
-    "OGTI",
-    "KMIALLSHR",
-    "PSXDIV20",
-    "UPP9",
-    "NITPGI",
-    "NBPPGI",
-    "MZNPI",
-    "JSMFI",
+    # Main indices
+    "KSE100",      # KSE-100 Index
+    "KSE100PR",    # KSE-100 Price Return Index
+    "ALLSHR",      # All Share Index
+    "KSE30",       # KSE-30 Index
+    "KMI30",       # KMI-30 Index
+    "KMIALLSHR",   # KMI All Share Index
+    "MII30",       # Meezan Islamic Index 30
+    # Sector indices
+    "BKTI",        # Banking Index
+    "OGTI",        # Oil & Gas Index
+    # Thematic indices
+    "PSXDIV20",    # PSX Dividend 20 Index
+    "UPP9",        # UPP-9 Index
+    # ETF tracking indices
+    "NITPGI",      # NIT Pakistan Gateway Index
+    "NBPPGI",      # NBP Pakistan Growth Index
+    "MZNPI",       # Meezan Pakistan Index
+    "JSMFI",       # JS Momentum Factor Index
+    "ACI",         # Alfalah Consumer Index
+    "JSGBKTI",     # JS Global Banking Index
+    "HBLTTI",      # HBL Total Treasury Index
 ]
 
 
@@ -64,8 +72,8 @@ def fetch_indices_data(timeout: int = 30) -> list[dict[str, Any]]:
     """
     indices_data = []
 
-    # Fetch data for key indices using the timeseries API
-    key_indices = ["KSE100", "KSE30", "KMI30", "ALLSHR"]
+    # Fetch data for all indices using the timeseries API
+    key_indices = INDEX_CODES
 
     for index_code in key_indices:
         try:

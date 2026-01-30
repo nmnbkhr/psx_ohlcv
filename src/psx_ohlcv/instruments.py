@@ -18,6 +18,38 @@ from .db import (
 
 InstrumentType = Literal["EQUITY", "ETF", "REIT", "INDEX"]
 
+# Centralized constants to avoid hardcoding across the codebase
+NON_EQUITY_TYPES: list[str] = ["ETF", "REIT", "INDEX"]
+ALL_INSTRUMENT_TYPES: list[str] = ["EQUITY", "ETF", "REIT", "INDEX"]
+DEFAULT_BENCHMARK_ID = "IDX:KSE100"
+
+# ETF to tracking index mapping
+# Each ETF tracks a specific index for benchmarking
+ETF_INDEX_MAPPING: dict[str, str] = {
+    "ACIETF": "ACI",       # Alfalah Consumer Index
+    "HBLTETF": "HBLTTI",   # HBL Total Treasury Index
+    "JSGBETF": "JSGBKTI",  # JS Global Banking Index
+    "JSMFETF": "JSMFI",    # JS Momentum Factor Index
+    "MIIETF": "MII30",     # Meezan Islamic Index 30
+    "MZNPETF": "MZNPI",    # Meezan Pakistan Index
+    "NBPGETF": "NBPPGI",   # NBP Pakistan Growth Index
+    "NITGETF": "NITPGI",   # NIT Pakistan Gateway Index
+    "UBLPETF": "KSE100",   # No specific index, uses KSE-100 as benchmark
+}
+
+
+def get_etf_benchmark(etf_symbol: str) -> str:
+    """
+    Get the benchmark index for an ETF.
+
+    Args:
+        etf_symbol: ETF symbol (e.g., "ACIETF")
+
+    Returns:
+        Index symbol that the ETF tracks
+    """
+    return ETF_INDEX_MAPPING.get(etf_symbol, "KSE100")
+
 
 def get_instruments_by_type(
     con: sqlite3.Connection,
