@@ -110,6 +110,7 @@ from psx_ohlcv.ui.session_tracker import (
     track_refresh,
     track_symbol_search,
 )
+from psx_ohlcv.ui.chat import chat_page
 
 # Deep scraper imports for Bloomberg-style data
 from psx_ohlcv.sources.deep_scraper import (
@@ -10432,8 +10433,11 @@ def main():
         "DATA": [
             "📥 Data Sync",          # Data Acquisition
             "📚 History",
-            "🤖 AI Insights",
             "🔄 Sync Monitor",
+        ],
+        "AI": [
+            "💬 AI Chat",            # Agentic chat interface
+            "🤖 AI Insights",        # GPT-powered insights
         ],
         "ADMIN": [
             "📋 Schema",
@@ -10566,8 +10570,11 @@ def main():
         # DATA
         "📥 Data Sync": data_acquisition_page,
         "📚 History": history_page,
-        "🤖 AI Insights": ai_insights_page,
         "🔄 Sync Monitor": sync_monitor,
+
+        # AI
+        "💬 AI Chat": chat_page,
+        "🤖 AI Insights": ai_insights_page,
 
         # ADMIN
         "📋 Schema": schema_page,
