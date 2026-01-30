@@ -427,6 +427,7 @@ class MultiProviderClient:
     """Client that supports multiple providers with automatic fallback.
 
     Uses primary provider by default, falls back to secondary on errors.
+    Fallback client is created lazily only when needed.
     """
 
     def __init__(
@@ -439,13 +440,25 @@ class MultiProviderClient:
 
         Args:
             primary_config: Primary model configuration
-            fallback_config: Fallback model configuration
+            fallback_config: Fallback model configuration (created lazily)
             enable_fallback: Whether to enable fallback
         """
         self.primary = create_client(primary_config)
-        self.fallback = create_client(fallback_config) if fallback_config else None
-        self.enable_fallback = enable_fallback and self.fallback is not None
+        self._fallback_config = fallback_config
+        self._fallback: BaseLLMClient | None = None
+        self.enable_fallback = enable_fallback and fallback_config is not None
         self._last_provider_used: LLMProvider | None = None
+
+    @property
+    def fallback(self) -> BaseLLMClient | None:
+        """Lazy-load fallback client only when needed."""
+        if self._fallback is None and self._fallback_config is not None:
+            try:
+                self._fallback = create_client(self._fallback_config)
+            except Exception as e:
+                logger.warning(f"Failed to create fallback client: {e}")
+                self._fallback = None
+        return self._fallback
 
     @property
     def last_provider_used(self) -> LLMProvider | None:
