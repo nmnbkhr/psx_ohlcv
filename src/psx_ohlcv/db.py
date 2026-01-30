@@ -1581,6 +1581,10 @@ def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
     return con
 
 
+# Alias for backward compatibility with tools
+get_connection = connect
+
+
 def init_schema(con: sqlite3.Connection) -> None:
     """
     Initialize database schema.
