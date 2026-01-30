@@ -2,15 +2,27 @@
 
 Provides the foundation for all specialist agents with common
 functionality for LLM interaction, tool execution, and conversation management.
+Supports both OpenAI and Anthropic providers through a unified interface.
 """
 
 import json
 import logging
-import os
 from abc import ABC, abstractmethod
 from typing import Any, Generator
 
 from ..tools.registry import ToolCategory, ToolRegistry
+from .config import (
+    AgenticConfig,
+    ModelConfig,
+    get_active_config,
+    LLMProvider,
+)
+from .llm_client import (
+    BaseLLMClient,
+    LLMResponse,
+    MultiProviderClient,
+    create_client,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,41 +33,62 @@ class BaseAgent(ABC):
     Subclasses must implement:
     - system_prompt property: The agent's system prompt
     - tool_categories property: List of tool categories this agent can use
+
+    Supports both OpenAI and Anthropic providers through configuration.
     """
 
     def __init__(
         self,
-        model: str = "claude-sonnet-4-20250514",
-        temperature: float = 0.1,
-        max_tokens: int = 4096,
+        config: AgenticConfig | None = None,
+        model_config: ModelConfig | None = None,
     ):
         """Initialize the agent.
 
         Args:
-            model: Model identifier to use
-            temperature: Sampling temperature (0.0 - 1.0)
-            max_tokens: Maximum tokens in response
+            config: Full agentic configuration (uses active config if None)
+            model_config: Override model config (uses config.agent_model if None)
         """
-        self.model = model
-        self.temperature = temperature
-        self.max_tokens = max_tokens
+        self.config = config or get_active_config()
+        self._model_config = model_config or self.config.agent_model
         self.conversation_history: list[dict] = []
-        self._client = None
+        self._client: BaseLLMClient | None = None
+        self._multi_client: MultiProviderClient | None = None
 
     @property
-    def client(self):
-        """Lazy-load the Anthropic client."""
-        if self._client is None:
-            try:
-                from anthropic import Anthropic
+    def client(self) -> BaseLLMClient:
+        """Get the LLM client (with fallback support if enabled)."""
+        if self._multi_client is None:
+            self._multi_client = MultiProviderClient(
+                primary_config=self._model_config,
+                fallback_config=(
+                    self.config.fallback_model if self.config.enable_fallback else None
+                ),
+                enable_fallback=self.config.enable_fallback,
+            )
+        return self._multi_client.get_active_client()
 
-                self._client = Anthropic()
-            except ImportError:
-                raise ImportError(
-                    "anthropic package not installed. "
-                    "Install with: pip install anthropic"
-                )
-        return self._client
+    @property
+    def multi_client(self) -> MultiProviderClient:
+        """Get the multi-provider client."""
+        if self._multi_client is None:
+            self._multi_client = MultiProviderClient(
+                primary_config=self._model_config,
+                fallback_config=(
+                    self.config.fallback_model if self.config.enable_fallback else None
+                ),
+                enable_fallback=self.config.enable_fallback,
+            )
+        return self._multi_client
+
+    @property
+    def provider(self) -> LLMProvider:
+        """Get the current LLM provider."""
+        return self._model_config.provider
+
+    @property
+    def model_id(self) -> str:
+        """Get the current model ID."""
+        return self._model_config.model_id
 
     @property
     @abstractmethod
@@ -71,7 +104,7 @@ class BaseAgent(ABC):
 
     @property
     def tools(self) -> list[dict]:
-        """Get tools available to this agent in Anthropic format."""
+        """Get tools available to this agent in Anthropic format (our standard)."""
         return ToolRegistry.to_anthropic_tools(self.tool_categories)
 
     def clear_history(self) -> None:
@@ -104,20 +137,18 @@ class BaseAgent(ABC):
 
         # Run the agentic loop
         while True:
-            # Make API call
+            # Make API call through multi-provider client
             response = self._call_api()
 
             # Check for tool use
-            if response.stop_reason == "tool_use":
+            if response.has_tool_calls:
                 # Execute tools and continue loop
                 self._handle_tool_use(response)
                 continue
 
-            # Extract final text response
-            text_response = self._extract_text(response.content)
-            self.add_message("assistant", text_response)
-
-            return text_response
+            # Final text response
+            self.add_message("assistant", response.text)
+            return response.text
 
     def run_stream(self, user_message: str) -> Generator[str, None, None]:
         """Run the agent with streaming response.
@@ -129,70 +160,98 @@ class BaseAgent(ABC):
             Chunks of the response text
         """
         # For now, just yield the full response
-        # Streaming implementation can be added later
+        # Full streaming implementation can be added later
         response = self.run(user_message)
         yield response
 
-    def _call_api(self) -> Any:
+    def _call_api(self) -> LLMResponse:
         """Make an API call to the LLM.
 
         Returns:
-            The API response object
+            Unified LLMResponse object
         """
-        logger.debug(f"Calling API with {len(self.conversation_history)} messages")
-
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-            system=self.system_prompt,
-            tools=self.tools if self.tools else None,
-            messages=self.conversation_history,
+        logger.debug(
+            f"Calling {self.provider.value} API with "
+            f"{len(self.conversation_history)} messages"
         )
 
-        logger.debug(f"API response stop_reason: {response.stop_reason}")
+        response = self.multi_client.create_message(
+            messages=self.conversation_history,
+            system=self.system_prompt,
+            tools=self.tools if self.tools else None,
+        )
+
+        logger.debug(f"Response stop_reason: {response.stop_reason}")
+        logger.debug(
+            f"Tokens used: {response.usage.get('input_tokens', 0)} in, "
+            f"{response.usage.get('output_tokens', 0)} out"
+        )
+
         return response
 
-    def _handle_tool_use(self, response: Any) -> None:
+    def _handle_tool_use(self, response: LLMResponse) -> None:
         """Handle tool use in the response.
 
         Executes tools and adds results to conversation history.
 
         Args:
-            response: API response containing tool use blocks
+            response: LLMResponse containing tool calls
         """
-        # Add assistant message with tool use to history
-        self.conversation_history.append(
-            {"role": "assistant", "content": response.content}
-        )
+        # For OpenAI, we need to track the assistant message differently
+        if self.multi_client.last_provider_used == LLMProvider.OPENAI:
+            # OpenAI format: assistant message with tool_calls
+            assistant_msg = {
+                "role": "assistant",
+                "content": response.text or None,
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": json.dumps(tc.arguments),
+                        },
+                    }
+                    for tc in response.tool_calls
+                ],
+            }
+            self.conversation_history.append(assistant_msg)
 
-        # Execute each tool and collect results
-        tool_results = []
-        for block in response.content:
-            if block.type == "tool_use":
-                logger.info(f"Executing tool: {block.name}")
+            # Add each tool result as a separate message for OpenAI
+            for tc in response.tool_calls:
+                logger.info(f"Executing tool: {tc.name}")
                 result = ToolRegistry.execute_tool_call(
-                    {"name": block.name, "input": block.input, "id": block.id}
+                    {"name": tc.name, "input": tc.arguments, "id": tc.id}
+                )
+                tool_result_msg = {
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": result.get("content", ""),
+                }
+                self.conversation_history.append(tool_result_msg)
+        else:
+            # Anthropic format: content blocks
+            self.conversation_history.append({
+                "role": "assistant",
+                "content": response.raw_response.content,
+            })
+
+            # Execute each tool and collect results
+            tool_results = []
+            for tc in response.tool_calls:
+                logger.info(f"Executing tool: {tc.name}")
+                result = ToolRegistry.execute_tool_call(
+                    {"name": tc.name, "input": tc.arguments, "id": tc.id}
                 )
                 tool_results.append(result)
 
-        # Add tool results to history
-        self.conversation_history.append({"role": "user", "content": tool_results})
+            # Add tool results to history
+            self.conversation_history.append({"role": "user", "content": tool_results})
 
-    def _extract_text(self, content: list) -> str:
-        """Extract text from response content blocks.
 
-        Args:
-            content: List of content blocks from API response
-
-        Returns:
-            Concatenated text from all text blocks
-        """
-        texts = []
-        for block in content:
-            if hasattr(block, "text"):
-                texts.append(block.text)
-        return "\n".join(texts)
+# =============================================================================
+# Specialist Agents
+# =============================================================================
 
 
 class MarketAgent(BaseAgent):

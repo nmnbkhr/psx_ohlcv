@@ -2,12 +2,15 @@
 
 Routes user queries to appropriate specialist agents based on intent.
 Manages conversation context across agent switches.
+Supports both OpenAI and Anthropic providers through configuration.
 """
 
 import logging
 from typing import Generator
 
 from .base import MarketAgent, SyncAgent, FixedIncomeAgent
+from .config import AgenticConfig, get_active_config
+from .llm_client import create_client
 
 logger = logging.getLogger(__name__)
 
@@ -51,20 +54,20 @@ GENERAL - For:
 
 Respond with ONLY the category name (MARKET, FIXED_INCOME, SYNC, or GENERAL)."""
 
-    def __init__(self, model: str = "claude-sonnet-4-20250514"):
+    def __init__(self, config: AgenticConfig | None = None):
         """Initialize the orchestrator.
 
         Args:
-            model: Model to use for agents
+            config: Agentic configuration (uses active config if None)
         """
-        self.model = model
-        self._client = None
+        self.config = config or get_active_config()
+        self._routing_client = None
 
-        # Initialize specialist agents
+        # Initialize specialist agents with shared config
         self.agents = {
-            "MARKET": MarketAgent(model=model),
-            "FIXED_INCOME": FixedIncomeAgent(model=model),
-            "SYNC": SyncAgent(model=model),
+            "MARKET": MarketAgent(config=self.config),
+            "FIXED_INCOME": FixedIncomeAgent(config=self.config),
+            "SYNC": SyncAgent(config=self.config),
         }
 
         # Track current agent for context
@@ -72,19 +75,11 @@ Respond with ONLY the category name (MARKET, FIXED_INCOME, SYNC, or GENERAL)."""
         self.conversation_context: list[dict] = []
 
     @property
-    def client(self):
-        """Lazy-load the Anthropic client for routing."""
-        if self._client is None:
-            try:
-                from anthropic import Anthropic
-
-                self._client = Anthropic()
-            except ImportError:
-                raise ImportError(
-                    "anthropic package not installed. "
-                    "Install with: pip install anthropic"
-                )
-        return self._client
+    def routing_client(self):
+        """Lazy-load the LLM client for routing (uses fast/cheap model)."""
+        if self._routing_client is None:
+            self._routing_client = create_client(self.config.routing_model)
+        return self._routing_client
 
     def route(self, user_message: str) -> str:
         """Determine which agent should handle the message.
@@ -96,21 +91,19 @@ Respond with ONLY the category name (MARKET, FIXED_INCOME, SYNC, or GENERAL)."""
             Agent category name (MARKET, FIXED_INCOME, SYNC, or GENERAL)
         """
         try:
-            # Use a fast model for routing
-            response = self.client.messages.create(
-                model="claude-3-haiku-20240307",
-                max_tokens=20,
-                temperature=0,
+            # Use the configured routing model (fast/cheap)
+            response = self.routing_client.create_message(
                 messages=[
                     {
                         "role": "user",
                         "content": f"{self.ROUTING_PROMPT}\n\nUser message: {user_message}",
                     }
                 ],
+                max_tokens=20,
             )
 
-            category = response.content[0].text.strip().upper()
-            logger.info(f"Routed query to: {category}")
+            category = response.text.strip().upper()
+            logger.info(f"Routed query to: {category} (using {self.config.routing_model.model_id})")
 
             # Validate category
             if category in self.agents:
@@ -197,22 +190,43 @@ Respond with ONLY the category name (MARKET, FIXED_INCOME, SYNC, or GENERAL)."""
             name: {
                 "tools": len(agent.tools),
                 "categories": [c.value for c in agent.tool_categories],
+                "provider": agent.provider.value,
+                "model": agent.model_id,
             }
             for name, agent in self.agents.items()
         }
 
+    def get_config_summary(self) -> dict:
+        """Get summary of current configuration.
+
+        Returns:
+            Dict with provider and model info
+        """
+        return {
+            "primary_provider": self.config.primary_provider.value,
+            "agent_model": self.config.agent_model.model_id,
+            "routing_model": self.config.routing_model.model_id,
+            "fallback_enabled": self.config.enable_fallback,
+            "fallback_model": self.config.fallback_model.model_id if self.config.enable_fallback else None,
+        }
+
 
 # Convenience function for quick interactions
-def chat(message: str, orchestrator: AgentOrchestrator | None = None) -> str:
+def chat(
+    message: str,
+    orchestrator: AgentOrchestrator | None = None,
+    config: AgenticConfig | None = None,
+) -> str:
     """Quick chat function for testing.
 
     Args:
         message: User message
         orchestrator: Optional orchestrator instance (creates new if None)
+        config: Optional config for new orchestrator (ignored if orchestrator provided)
 
     Returns:
         Agent response
     """
     if orchestrator is None:
-        orchestrator = AgentOrchestrator()
+        orchestrator = AgentOrchestrator(config=config)
     return orchestrator.process(message)
