@@ -1544,4 +1544,24 @@ CREATE TABLE IF NOT EXISTS kibor_rates (
 
 CREATE INDEX IF NOT EXISTS idx_kibor_rates_date
     ON kibor_rates(rate_date);
+
+-- =============================================================================
+-- COMPOSITE / COVERING INDEXES for common query patterns
+-- =============================================================================
+
+-- EOD: symbol + date range queries (most common pattern)
+CREATE INDEX IF NOT EXISTS idx_eod_symbol_date
+    ON eod_ohlcv(symbol, date);
+
+-- Company fundamentals queried by sector
+CREATE INDEX IF NOT EXISTS idx_fundamentals_sector
+    ON company_fundamentals(sector_name);
+
+-- Financial announcements queried by date range
+CREATE INDEX IF NOT EXISTS idx_fin_ann_date
+    ON financial_announcements(announcement_date);
+
+-- Company quote snapshots queried by symbol + timestamp
+CREATE INDEX IF NOT EXISTS idx_quote_snap_symbol_ts
+    ON company_quote_snapshots(symbol, ts);
 """

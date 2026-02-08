@@ -1,15 +1,16 @@
 """Configuration and default paths."""
 
 import logging
+import os
 from dataclasses import dataclass, fields
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-# Data directory on persistent storage (E: drive in WSL)
-DATA_ROOT = Path("/mnt/e/psxdata")
+# Data directory on persistent storage — reads from environment or defaults
+DATA_ROOT = Path(os.environ.get("PSX_DATA_ROOT", "/mnt/e/psxdata"))
 
-# Default paths - all data in /mnt/e/psxdata
-DEFAULT_DB_PATH = DATA_ROOT / "psx.sqlite"
+# Default paths - all data under DATA_ROOT
+DEFAULT_DB_PATH = Path(os.environ.get("PSX_DB_PATH", str(DATA_ROOT / "psx.sqlite")))
 DEFAULT_LOGS_DIR = DATA_ROOT / "logs"
 DEFAULT_LOG_FILE = DEFAULT_LOGS_DIR / "psxsync.log"
 

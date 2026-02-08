@@ -1,16 +1,36 @@
 """Database connection management and pooling."""
 
 import sqlite3
+import threading
 from pathlib import Path
 
 from psx_ohlcv.config import ensure_dirs, get_db_path
 
 from .schema import SCHEMA_SQL
 
+# Connection cache: reuse connections to the same DB path within the same thread.
+# Keyed by (db_path, thread_id) to remain thread-safe.
+_connection_cache: dict[tuple[str, int], sqlite3.Connection] = {}
+_cache_lock = threading.Lock()
+
+
+def _apply_pragmas(con: sqlite3.Connection) -> None:
+    """Apply SQLite performance PRAGMAs to a connection."""
+    con.execute("PRAGMA journal_mode=WAL")         # Concurrent reads during writes
+    con.execute("PRAGMA synchronous=NORMAL")        # Faster writes, still crash-safe with WAL
+    con.execute("PRAGMA cache_size=-64000")          # 64MB cache (default is 2MB)
+    con.execute("PRAGMA busy_timeout=5000")          # Wait 5s on lock instead of failing
+    con.execute("PRAGMA temp_store=MEMORY")          # Temp tables in RAM
+    con.execute("PRAGMA mmap_size=268435456")        # Memory-map 256MB for faster reads
+    con.execute("PRAGMA foreign_keys=ON")            # Enforce foreign key constraints
+
 
 def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
     """
-    Connect to SQLite database with WAL mode enabled.
+    Connect to SQLite database with optimized PRAGMAs.
+
+    Uses a per-thread connection cache for file-based databases to prevent
+    opening excessive connections during sync operations.
 
     Args:
         db_path: Path to database file. If None, uses default from config.
@@ -20,18 +40,34 @@ def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
         sqlite3.Connection with row_factory set to sqlite3.Row
     """
     if db_path == ":memory:":
-        path = ":memory:"
-    else:
-        path = get_db_path(db_path)
-        ensure_dirs(path)
-        path = str(path)
+        con = sqlite3.connect(":memory:")
+        con.row_factory = sqlite3.Row
+        return con
 
-    con = sqlite3.connect(path)
+    path = str(get_db_path(db_path))
+    ensure_dirs(Path(path))
+
+    # Check cache for existing valid connection
+    thread_id = threading.get_ident()
+    cache_key = (path, thread_id)
+
+    with _cache_lock:
+        cached = _connection_cache.get(cache_key)
+        if cached is not None:
+            try:
+                # Verify connection is still alive
+                cached.execute("SELECT 1")
+                return cached
+            except sqlite3.Error:
+                # Connection is dead, remove from cache
+                _connection_cache.pop(cache_key, None)
+
+    con = sqlite3.connect(path, check_same_thread=False)
     con.row_factory = sqlite3.Row
+    _apply_pragmas(con)
 
-    # Enable WAL mode for better concurrent access (not for :memory:)
-    if db_path != ":memory:":
-        con.execute("PRAGMA journal_mode=WAL")
+    with _cache_lock:
+        _connection_cache[cache_key] = con
 
     return con
 
