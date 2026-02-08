@@ -643,7 +643,7 @@ def render_footer():
 # Page: Live Market
 # -----------------------------------------------------------------------------
 def live_market_page():
-    from psx_ohlcv.ui.pages.live_market import render_live_market
+    from psx_ohlcv.ui.page_views.live_market import render_live_market
     render_live_market()
 
 
@@ -651,7 +651,7 @@ def live_market_page():
 # Page: Data Quality
 # -----------------------------------------------------------------------------
 def data_quality_page():
-    from psx_ohlcv.ui.pages.data_quality import render_data_quality
+    from psx_ohlcv.ui.page_views.data_quality import render_data_quality
     render_data_quality()
 
 
@@ -659,7 +659,7 @@ def data_quality_page():
 # Page: Dashboard
 # -----------------------------------------------------------------------------
 def dashboard():
-    from psx_ohlcv.ui.pages.dashboard import render_dashboard
+    from psx_ohlcv.ui.page_views.dashboard import render_dashboard
     render_dashboard()
 
 
@@ -667,7 +667,7 @@ def dashboard():
 # Page: Candlestick Explorer
 # -----------------------------------------------------------------------------
 def candlestick_explorer():
-    from psx_ohlcv.ui.pages.candlestick import render_candlestick
+    from psx_ohlcv.ui.page_views.candlestick import render_candlestick
     render_candlestick()
 
 
@@ -675,7 +675,7 @@ def candlestick_explorer():
 # Page: Intraday Trend
 # -----------------------------------------------------------------------------
 def intraday_trend_page():
-    from psx_ohlcv.ui.pages.intraday import render_intraday
+    from psx_ohlcv.ui.page_views.intraday import render_intraday
     render_intraday()
 
 
@@ -683,7 +683,7 @@ def intraday_trend_page():
 # Page: Regular Market Watch
 # -----------------------------------------------------------------------------
 def regular_market_page():
-    from psx_ohlcv.ui.pages.regular_market import render_regular_market
+    from psx_ohlcv.ui.page_views.regular_market import render_regular_market
     render_regular_market()
 
 
@@ -691,7 +691,7 @@ def regular_market_page():
 # Page: Symbols
 # -----------------------------------------------------------------------------
 def symbols_page():
-    from psx_ohlcv.ui.pages.symbols import render_symbols
+    from psx_ohlcv.ui.page_views.symbols import render_symbols
     render_symbols()
 
 
@@ -699,7 +699,7 @@ def symbols_page():
 # Page: Schema - Database schema documentation and SQL scripts
 # -----------------------------------------------------------------------------
 def schema_page():
-    from psx_ohlcv.ui.pages.schema import render_schema
+    from psx_ohlcv.ui.page_views.schema import render_schema
     render_schema()
 
 
@@ -707,7 +707,7 @@ def schema_page():
 # Page: Settings
 # -----------------------------------------------------------------------------
 def settings_page():
-    from psx_ohlcv.ui.pages.settings import render_settings
+    from psx_ohlcv.ui.page_views.settings import render_settings
     render_settings()
 
 
@@ -715,7 +715,7 @@ def settings_page():
 # Page: History
 # -----------------------------------------------------------------------------
 def history_page():
-    from psx_ohlcv.ui.pages.history import render_history
+    from psx_ohlcv.ui.page_views.history import render_history
     render_history()
 
 
@@ -723,12 +723,12 @@ def history_page():
 # Page: EOD Data Loader
 # -----------------------------------------------------------------------------
 def eod_data_loader_page():
-    from psx_ohlcv.ui.pages.eod_loader import render_eod_loader
+    from psx_ohlcv.ui.page_views.eod_loader import render_eod_loader
     render_eod_loader()
 
 
 def _eod_data_loader_page_impl():
-    from psx_ohlcv.ui.pages.eod_loader import _eod_data_loader_page_impl
+    from psx_ohlcv.ui.page_views.eod_loader import _eod_data_loader_page_impl
     _eod_data_loader_page_impl()
 
 
@@ -736,7 +736,7 @@ def _eod_data_loader_page_impl():
 # Page: Company Analytics
 # -----------------------------------------------------------------------------
 def company_analytics_page():
-    from psx_ohlcv.ui.pages.company_deep import render_company_deep
+    from psx_ohlcv.ui.page_views.company_deep import render_company_deep
     render_company_deep()
 
 
@@ -744,7 +744,7 @@ def company_analytics_page():
 # Page: Data Acquisition - Bulk Data Scraping & Collection
 # -----------------------------------------------------------------------------
 def data_acquisition_page():
-    from psx_ohlcv.ui.pages.data_acquisition import render_data_acquisition
+    from psx_ohlcv.ui.page_views.data_acquisition import render_data_acquisition
     render_data_acquisition()
 
 
@@ -752,7 +752,7 @@ def data_acquisition_page():
 # Page: Factor Analysis - Quantitative Factor Rankings & Analysis
 # -----------------------------------------------------------------------------
 def factor_analysis_page():
-    from psx_ohlcv.ui.pages.factor_analysis import render_factor_analysis
+    from psx_ohlcv.ui.page_views.factor_analysis import render_factor_analysis
     render_factor_analysis()
 
 
@@ -760,7 +760,7 @@ def factor_analysis_page():
 # Page: AI Insights (GPT-5.2 powered analysis)
 # -----------------------------------------------------------------------------
 def ai_insights_page():
-    from psx_ohlcv.ui.pages.ai_insights import render_ai_insights
+    from psx_ohlcv.ui.page_views.ai_insights import render_ai_insights
     render_ai_insights()
 
 
@@ -768,7 +768,7 @@ def ai_insights_page():
 # Page: Market Summary
 # -----------------------------------------------------------------------------
 def market_summary_page():
-    from psx_ohlcv.ui.pages.market_summary import render_market_summary
+    from psx_ohlcv.ui.page_views.market_summary import render_market_summary
     render_market_summary()
 
 
@@ -776,7 +776,7 @@ def market_summary_page():
 # Page: Sync Monitor
 # -----------------------------------------------------------------------------
 def sync_monitor():
-    from psx_ohlcv.ui.pages.sync_monitor import render_sync_monitor
+    from psx_ohlcv.ui.page_views.sync_monitor import render_sync_monitor
     render_sync_monitor()
 
 
@@ -784,7 +784,7 @@ def sync_monitor():
 # Phase 1: Instruments Page
 # =============================================================================
 def instruments_page():
-    from psx_ohlcv.ui.pages.instruments import render_instruments
+    from psx_ohlcv.ui.page_views.instruments import render_instruments
     render_instruments()
 
 
@@ -792,7 +792,7 @@ def instruments_page():
 # Phase 1: Rankings Page
 # =============================================================================
 def rankings_page():
-    from psx_ohlcv.ui.pages.rankings import render_rankings
+    from psx_ohlcv.ui.page_views.rankings import render_rankings
     render_rankings()
 
 
@@ -800,7 +800,7 @@ def rankings_page():
 # Phase 1: Index Analytics Page
 # =============================================================================
 def indices_analytics_page():
-    from psx_ohlcv.ui.pages.indices import render_indices
+    from psx_ohlcv.ui.page_views.indices import render_indices
     render_indices()
 
 
@@ -808,7 +808,7 @@ def indices_analytics_page():
 # Phase 2: FX Overview Page
 # =============================================================================
 def fx_overview_page():
-    from psx_ohlcv.ui.pages.fx import render_fx_overview
+    from psx_ohlcv.ui.page_views.fx import render_fx_overview
     render_fx_overview()
 
 
@@ -816,7 +816,7 @@ def fx_overview_page():
 # Phase 2: FX Impact Page
 # =============================================================================
 def fx_impact_page():
-    from psx_ohlcv.ui.pages.fx import render_fx_impact
+    from psx_ohlcv.ui.page_views.fx import render_fx_impact
     render_fx_impact()
 
 
@@ -824,7 +824,7 @@ def fx_impact_page():
 # Phase 2.5: Mutual Funds Page
 # =============================================================================
 def mutual_funds_page():
-    from psx_ohlcv.ui.pages.funds import render_mutual_funds
+    from psx_ohlcv.ui.page_views.funds import render_mutual_funds
     render_mutual_funds()
 
 
@@ -832,7 +832,7 @@ def mutual_funds_page():
 # Phase 2.5: Fund Analytics Page
 # =============================================================================
 def fund_analytics_page():
-    from psx_ohlcv.ui.pages.funds import render_fund_analytics
+    from psx_ohlcv.ui.page_views.funds import render_fund_analytics
     render_fund_analytics()
 
 
@@ -840,7 +840,7 @@ def fund_analytics_page():
 # Phase 3: Bonds Screener Page
 # =============================================================================
 def bonds_screener_page():
-    from psx_ohlcv.ui.pages.fixed_income import render_bonds_screener
+    from psx_ohlcv.ui.page_views.fixed_income import render_bonds_screener
     render_bonds_screener()
 
 
@@ -848,7 +848,7 @@ def bonds_screener_page():
 # Phase 3: Yield Curve Page
 # =============================================================================
 def yield_curve_page():
-    from psx_ohlcv.ui.pages.fixed_income import render_yield_curve
+    from psx_ohlcv.ui.page_views.fixed_income import render_yield_curve
     render_yield_curve()
 
 
@@ -856,7 +856,7 @@ def yield_curve_page():
 # Phase 3: Sukuk Screener Page (Additive - separate from bonds)
 # =============================================================================
 def sukuk_screener_page():
-    from psx_ohlcv.ui.pages.fixed_income import render_sukuk_screener
+    from psx_ohlcv.ui.page_views.fixed_income import render_sukuk_screener
     render_sukuk_screener()
 
 
@@ -864,7 +864,7 @@ def sukuk_screener_page():
 # Phase 3: Sukuk Yield Curve Page
 # =============================================================================
 def sukuk_yield_curve_page():
-    from psx_ohlcv.ui.pages.fixed_income import render_sukuk_yield_curve
+    from psx_ohlcv.ui.page_views.fixed_income import render_sukuk_yield_curve
     render_sukuk_yield_curve()
 
 
@@ -872,7 +872,7 @@ def sukuk_yield_curve_page():
 # Phase 3: SBP Auction Archive Page
 # =============================================================================
 def sbp_auction_archive_page():
-    from psx_ohlcv.ui.pages.fixed_income import render_sbp_auction_archive
+    from psx_ohlcv.ui.page_views.fixed_income import render_sbp_auction_archive
     render_sbp_auction_archive()
 
 
@@ -881,42 +881,42 @@ def sbp_auction_archive_page():
 # =============================================================================
 
 def govt_fixed_income_page():
-    from psx_ohlcv.ui.pages.fixed_income import render_govt_fixed_income
+    from psx_ohlcv.ui.page_views.fixed_income import render_govt_fixed_income
     render_govt_fixed_income()
 
 
 def fi_yield_curve_page():
-    from psx_ohlcv.ui.pages.fixed_income import render_fi_yield_curve
+    from psx_ohlcv.ui.page_views.fixed_income import render_fi_yield_curve
     render_fi_yield_curve()
 
 
 def sbp_pma_archive_page():
-    from psx_ohlcv.ui.pages.fixed_income import render_sbp_pma_archive
+    from psx_ohlcv.ui.page_views.fixed_income import render_sbp_pma_archive
     render_sbp_pma_archive()
 
 
 def psx_debt_market_page():
-    from psx_ohlcv.ui.pages.fixed_income import render_psx_debt_market
+    from psx_ohlcv.ui.page_views.fixed_income import render_psx_debt_market
     render_psx_debt_market()
 
 
 def treasury_dashboard_page():
-    from psx_ohlcv.ui.pages.treasury_dashboard import render_treasury_dashboard
+    from psx_ohlcv.ui.page_views.treasury_dashboard import render_treasury_dashboard
     render_treasury_dashboard()
 
 
 def fx_dashboard_page():
-    from psx_ohlcv.ui.pages.fx_dashboard import render_fx_dashboard
+    from psx_ohlcv.ui.page_views.fx_dashboard import render_fx_dashboard
     render_fx_dashboard()
 
 
 def fund_explorer_page():
-    from psx_ohlcv.ui.pages.fund_explorer import render_fund_explorer
+    from psx_ohlcv.ui.page_views.fund_explorer import render_fund_explorer
     render_fund_explorer()
 
 
 def research_terminal_page():
-    from psx_ohlcv.ui.pages.research_terminal import render_research_terminal
+    from psx_ohlcv.ui.page_views.research_terminal import render_research_terminal
     render_research_terminal()
 
 
