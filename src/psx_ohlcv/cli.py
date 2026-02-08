@@ -1855,6 +1855,30 @@ def main(argv: list[str] | None = None) -> int:
     treasury_sub.add_parser("gis-list", help="List GIS auction history")
     treasury_sub.add_parser("summary", help="Show treasury data summary")
 
+    # =========================================================================
+    # v3.0: Rates commands (PKRV yield curve, KONIA, KIBOR)
+    # =========================================================================
+    rates_parser = subparsers.add_parser(
+        "rates",
+        help="Yield curve & overnight rates (PKRV, KONIA, KIBOR)"
+    )
+    rates_sub = rates_parser.add_subparsers(
+        dest="rates_command", required=True
+    )
+
+    rates_sub.add_parser("sync", help="Scrape KONIA + KIBOR + yield curve from SBP")
+    rates_sub.add_parser("konia", help="Show latest KONIA overnight rate")
+    rates_sub.add_parser("kibor", help="Show latest KIBOR rates")
+
+    rates_curve_parser = rates_sub.add_parser(
+        "curve", help="Show PKRV yield curve"
+    )
+    rates_curve_parser.add_argument(
+        "--date", type=str, help="Date (YYYY-MM-DD), defaults to latest"
+    )
+
+    rates_sub.add_parser("summary", help="Show rates data summary")
+
     args = parser.parse_args(argv)
 
     try:
@@ -1904,6 +1928,8 @@ def main(argv: list[str] | None = None) -> int:
             return handle_etf(args)
         elif args.command == "treasury":
             return handle_treasury(args)
+        elif args.command == "rates":
+            return handle_rates(args)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         return 130
@@ -5919,6 +5945,93 @@ def handle_treasury(args: argparse.Namespace) -> int:
         print(f"  Total T-Bill auction records: {summary['total_tbill_records']}")
         print(f"  GIS records:   {gis_summary['total_records']}")
         print(f"  GIS types:     {gis_summary['gis_types']}")
+        return 0
+
+    return 0
+
+
+def handle_rates(args: argparse.Namespace) -> int:
+    """Handle rates subcommands (yield curve, KONIA, KIBOR)."""
+    from .db.repositories.yield_curves import (
+        get_kibor_history,
+        get_latest_konia,
+        get_pkrv_curve,
+        init_yield_curve_schema,
+    )
+    from .sources.sbp_rates import SBPRatesScraper
+
+    con = connect(args.db)
+    init_schema(con)
+    init_yield_curve_schema(con)
+
+    if args.rates_command == "sync":
+        print("Scraping KONIA + KIBOR + yield curve from SBP PMA page...")
+        scraper = SBPRatesScraper()
+        result = scraper.sync_rates(con)
+        print(
+            f"Done: KONIA={'OK' if result['konia_ok'] else 'N/A'}, "
+            f"{result['kibor_ok']} KIBOR rates, "
+            f"{result['pkrv_points']} yield curve points, "
+            f"{result['failed']} failed"
+        )
+        return 0
+
+    elif args.rates_command == "konia":
+        konia = get_latest_konia(con)
+        if not konia:
+            print("No KONIA data. Run 'psxsync rates sync' first.")
+            return 0
+        print(f"\n  KONIA (Overnight Rate): {konia['rate_pct']}%")
+        print(f"  Date: {konia['date']}")
+        return 0
+
+    elif args.rates_command == "kibor":
+        df = get_kibor_history(con)
+        if df.empty:
+            print("No KIBOR data. Run 'psxsync rates sync' first.")
+            return 0
+        # Show latest date only
+        latest_date = df.iloc[0]["date"]
+        latest = df[df["date"] == latest_date]
+        print(f"\n  KIBOR Rates (as of {latest_date})")
+        print(f"  {'Tenor':>6s}  {'Bid':>8s}  {'Offer':>8s}")
+        for _, row in latest.iterrows():
+            print(f"  {row['tenor']:>6s}  {row['bid']:>8.2f}  {row['offer']:>8.2f}")
+        return 0
+
+    elif args.rates_command == "curve":
+        df = get_pkrv_curve(con, date=args.date)
+        if df.empty:
+            print("No yield curve data. Run 'psxsync rates sync' first.")
+            return 0
+        curve_date = df.iloc[0]["date"]
+        print(f"\n{'='*50}")
+        print(f"  Yield Curve ({curve_date})")
+        print(f"{'='*50}")
+        for _, row in df.iterrows():
+            months = row["tenor_months"]
+            if months < 12:
+                label = f"{months}M"
+            else:
+                label = f"{months // 12}Y"
+            print(
+                f"  {label:>5s}  {row['yield_pct']:>8.4f}%  ({row['source']})"
+            )
+        return 0
+
+    elif args.rates_command == "summary":
+        scraper = SBPRatesScraper()
+        summary = scraper.get_summary(con)
+        print(f"\n{'='*50}")
+        print("  Rates Data Summary")
+        print(f"{'='*50}")
+        if summary["latest_konia"]:
+            print(
+                f"  KONIA: {summary['latest_konia']['rate_pct']}% "
+                f"({summary['latest_konia']['date']})"
+            )
+        print(f"  Yield curve points: {summary['curve_points']}")
+        print(f"  KONIA history days: {summary['konia_days']}")
         return 0
 
     return 0

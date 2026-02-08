@@ -98,6 +98,9 @@ def init_schema(con: sqlite3.Connection) -> None:
     from .repositories.treasury import init_treasury_schema
     init_treasury_schema(con)
 
+    from .repositories.yield_curves import init_yield_curve_schema
+    init_yield_curve_schema(con)
+
 
 def _migrate_symbols_table(con: sqlite3.Connection) -> None:
     """Add new columns to symbols table if they don't exist."""

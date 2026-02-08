@@ -44,3 +44,6 @@ from .etf import *  # noqa: F401, F403
 
 # 11. treasury  (10 functions)
 from .treasury import *  # noqa: F401, F403
+
+# 12. yield_curves  (10 functions)
+from .yield_curves import *  # noqa: F401, F403
