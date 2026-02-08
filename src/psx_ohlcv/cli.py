@@ -1990,6 +1990,18 @@ def main(argv: list[str] | None = None) -> int:
 
     vps_sub.add_parser("summary", help="Show VPS data summary")
 
+    # =========================================================================
+    # v3.0: Unified sync-all + status
+    # =========================================================================
+    subparsers.add_parser(
+        "sync-all",
+        help="Run all data scrapers (treasury, rates, FX, ETF, IPO)"
+    )
+    subparsers.add_parser(
+        "status",
+        help="Show data freshness dashboard for all domains"
+    )
+
     args = parser.parse_args(argv)
 
     try:
@@ -2049,6 +2061,10 @@ def main(argv: list[str] | None = None) -> int:
             return handle_ipo(args)
         elif args.command == "vps":
             return handle_vps(args)
+        elif args.command == "sync-all":
+            return handle_sync_all(args)
+        elif args.command == "status":
+            return handle_status(args)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         return 130
@@ -6470,6 +6486,188 @@ def handle_vps(args: argparse.Namespace) -> int:
         if summary["earliest_date"]:
             print(f"  Date range:       {summary['earliest_date']} to {summary['latest_date']}")
         return 0
+
+    return 0
+
+
+def handle_sync_all(args: argparse.Namespace) -> int:
+    """Run all data scrapers in sequence."""
+    import time
+
+    con = connect(args.db)
+    init_schema(con)
+
+    steps: list[tuple[str, callable]] = []
+
+    def _add_step(name: str, fn: callable):
+        steps.append((name, fn))
+
+    # 1. ETF
+    def _sync_etf():
+        from .sources.etf_scraper import ETFScraper
+        s = ETFScraper()
+        return s.sync_etf_data(con)
+    _add_step("ETF NAV + metadata", _sync_etf)
+
+    # 2. Treasury (T-Bills + PIBs)
+    def _sync_treasury():
+        from .sources.sbp_treasury import SBPTreasuryScraper
+        s = SBPTreasuryScraper()
+        return s.sync_treasury(con)
+    _add_step("Treasury auctions (T-Bill + PIB)", _sync_treasury)
+
+    # 3. GIS auctions
+    def _sync_gis():
+        from .sources.sbp_gsp import GSPScraper
+        s = GSPScraper()
+        return s.sync_gis(con)
+    _add_step("GIS auctions", _sync_gis)
+
+    # 4. Rates (KONIA + KIBOR + yield curve)
+    def _sync_rates():
+        from .sources.sbp_rates import SBPRatesScraper
+        s = SBPRatesScraper()
+        return s.sync_rates(con)
+    _add_step("KONIA + KIBOR + yield curve", _sync_rates)
+
+    # 5. SBP FX interbank
+    def _sync_sbp_fx():
+        from .sources.sbp_fx import SBPFXScraper
+        s = SBPFXScraper()
+        return s.sync_interbank(con)
+    _add_step("SBP FX interbank", _sync_sbp_fx)
+
+    # 6. Kerb FX
+    def _sync_kerb():
+        from .sources.forex_scraper import ForexPKScraper
+        s = ForexPKScraper()
+        return s.sync_kerb(con)
+    _add_step("Kerb FX (forex.pk)", _sync_kerb)
+
+    # 7. IPO listings
+    def _sync_ipo():
+        from .sources.ipo_scraper import IPOScraper
+        s = IPOScraper()
+        return s.sync_listings(con)
+    _add_step("IPO listings", _sync_ipo)
+
+    print(f"\n{'='*60}")
+    print(f"  Unified Sync — {len(steps)} data sources")
+    print(f"{'='*60}\n")
+
+    ok_count = 0
+    fail_count = 0
+    t0 = time.time()
+
+    for i, (name, fn) in enumerate(steps, 1):
+        print(f"  [{i}/{len(steps)}] {name}...", end=" ", flush=True)
+        try:
+            result = fn()
+            print(f"OK {result}")
+            ok_count += 1
+        except Exception as e:
+            print(f"FAILED ({e})")
+            fail_count += 1
+
+    elapsed = time.time() - t0
+    print(f"\n{'='*60}")
+    print(f"  Done: {ok_count}/{len(steps)} succeeded, {fail_count} failed ({elapsed:.1f}s)")
+    print(f"{'='*60}")
+
+    return 0 if fail_count == 0 else 1
+
+
+def handle_status(args: argparse.Namespace) -> int:
+    """Show data freshness dashboard."""
+    import os
+    from datetime import datetime, timedelta
+
+    con = connect(args.db)
+    init_schema(con)
+
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    def _get_stats(table: str, date_col: str = "date") -> tuple[int, str | None]:
+        """Get row count and latest date for a table."""
+        try:
+            count = con.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+            if count == 0:
+                return 0, None
+            row = con.execute(
+                f'SELECT MAX("{date_col}") FROM "{table}"'
+            ).fetchone()
+            return count, row[0] if row else None
+        except Exception:
+            return 0, None
+
+    def _freshness(latest: str | None) -> str:
+        if not latest:
+            return "No data"
+        try:
+            dt = datetime.strptime(latest[:10], "%Y-%m-%d")
+            days = (datetime.now() - dt).days
+            if days <= 1:
+                return "Fresh"
+            elif days <= 7:
+                return f"{days}d old"
+            else:
+                return f"{days}d stale"
+        except Exception:
+            return "?"
+
+    domains = [
+        ("EOD OHLCV", "eod_ohlcv", "date"),
+        ("Intraday Bars", "intraday_bars", "ts"),
+        ("ETF NAV", "etf_nav", "date"),
+        ("ETF Master", "etf_master", "updated_at"),
+        ("T-Bill Auctions", "tbill_auctions", "auction_date"),
+        ("PIB Auctions", "pib_auctions", "auction_date"),
+        ("GIS Auctions", "gis_auctions", "auction_date"),
+        ("PKRV Yield Curve", "pkrv_daily", "date"),
+        ("KONIA", "konia_daily", "date"),
+        ("KIBOR", "kibor_daily", "date"),
+        ("SBP FX Interbank", "sbp_fx_interbank", "date"),
+        ("Kerb FX", "forex_kerb", "date"),
+        ("SBP Policy Rate", "sbp_policy_rates", "rate_date"),
+        ("Mutual Funds", "mutual_funds", "updated_at"),
+        ("Mutual Fund NAV", "mutual_fund_nav", "date"),
+        ("Bonds", "bonds_master", "updated_at"),
+        ("Sukuk", "sukuk_master", "created_at"),
+        ("IPO Calendar", "ipo_listings", "updated_at"),
+        ("Company Profiles", "company_profile", "updated_at"),
+        ("Corp. Announcements", "corporate_announcements", "announcement_date"),
+        ("Symbols", "symbols", "updated_at"),
+        ("Dividends/Payouts", "company_payouts", "ex_date"),
+    ]
+
+    print(f"\n  {'Data Domain':<25s}  {'Rows':>10s}  {'Latest':>12s}  {'Freshness'}")
+    print(f"  {'-'*25}  {'-'*10}  {'-'*12}  {'-'*12}")
+
+    for label, table, date_col in domains:
+        count, latest = _get_stats(table, date_col)
+        fresh = _freshness(latest)
+        latest_str = latest[:10] if latest else "N/A"
+        print(f"  {label:<25s}  {count:>10,d}  {latest_str:>12s}  {fresh}")
+
+    # DB stats
+    from .config import get_db_path as _get_db_path
+    db_path = str(args.db) if args.db else str(_get_db_path(None))
+    try:
+        db_size = os.path.getsize(db_path) / (1024 * 1024)
+        wal_path = db_path + "-wal"
+        wal_size = os.path.getsize(wal_path) / (1024 * 1024) if os.path.exists(wal_path) else 0
+
+        table_count = con.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
+        ).fetchone()[0]
+        index_count = con.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index'"
+        ).fetchone()[0]
+
+        print(f"\n  DB: {db_size:.0f} MB | WAL: {wal_size:.0f} MB | "
+              f"Tables: {table_count} | Indexes: {index_count}")
+    except Exception:
+        pass
 
     return 0
 
