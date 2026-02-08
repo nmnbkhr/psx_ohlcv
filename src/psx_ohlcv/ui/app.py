@@ -900,6 +900,26 @@ def psx_debt_market_page():
     render_psx_debt_market()
 
 
+def treasury_dashboard_page():
+    from psx_ohlcv.ui.pages.treasury_dashboard import render_treasury_dashboard
+    render_treasury_dashboard()
+
+
+def fx_dashboard_page():
+    from psx_ohlcv.ui.pages.fx_dashboard import render_fx_dashboard
+    render_fx_dashboard()
+
+
+def fund_explorer_page():
+    from psx_ohlcv.ui.pages.fund_explorer import render_fund_explorer
+    render_fund_explorer()
+
+
+def research_terminal_page():
+    from psx_ohlcv.ui.pages.research_terminal import render_research_terminal
+    render_research_terminal()
+
+
 # -----------------------------------------------------------------------------
 # Main App with Sidebar Navigation
 # -----------------------------------------------------------------------------
@@ -961,14 +981,17 @@ def main():
             "📉 Yield Curve",
             "🕌 Sukuk",              # Sukuk Screener
             "🏛️ SBP Auctions",       # SBP Archive
+            "🏦 Treasury",           # Treasury Dashboard (v3)
         ],
         "FX": [
             "🌍 FX Monitor",         # FX Overview
             "📊 FX Analytics",       # FX Impact
+            "💱 FX Dashboard",       # FX Dashboard (v3)
         ],
         "FUNDS": [
             "🏦 Fund Directory",     # Mutual Funds
             "📊 Fund Analytics",
+            "🔍 Fund Explorer",      # Fund Explorer (v3)
         ],
         "DATA": [
             "📥 Data Sync",          # Data Acquisition
@@ -983,6 +1006,7 @@ def main():
         ],
         "ADMIN": [
             "📋 Schema",
+            "🔬 Research",           # SQL Research Terminal (v3)
             "⚙️ Settings",
         ],
     }
@@ -1101,14 +1125,17 @@ def main():
         "📉 Yield Curve": yield_curve_page,
         "🕌 Sukuk": sukuk_screener_page,
         "🏛️ SBP Auctions": sbp_auction_archive_page,
+        "🏦 Treasury": treasury_dashboard_page,
 
         # FX
         "🌍 FX Monitor": fx_overview_page,
         "📊 FX Analytics": fx_impact_page,
+        "💱 FX Dashboard": fx_dashboard_page,
 
         # FUNDS
         "🏦 Fund Directory": mutual_funds_page,
         "📊 Fund Analytics": fund_analytics_page,
+        "🔍 Fund Explorer": fund_explorer_page,
 
         # DATA
         "📥 Data Sync": data_acquisition_page,
@@ -1123,6 +1150,7 @@ def main():
 
         # ADMIN
         "📋 Schema": schema_page,
+        "🔬 Research": research_terminal_page,
         "⚙️ Settings": settings_page,
     }
 

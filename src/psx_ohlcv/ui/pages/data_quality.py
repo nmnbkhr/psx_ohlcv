@@ -67,12 +67,24 @@ def render_data_quality():
         except Exception:
             rm_symbols = 0
 
-        c1, c2, c3, c4, c5 = st.columns(5)
+        # v3 metrics
+        try:
+            mf_count = con.execute("SELECT COUNT(*) as cnt FROM mutual_funds").fetchone()["cnt"]
+        except Exception:
+            mf_count = 0
+        try:
+            etf_count = con.execute("SELECT COUNT(*) as cnt FROM etf_master").fetchone()["cnt"]
+        except Exception:
+            etf_count = 0
+
+        c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
         c1.metric("Total Symbols", f"{total_symbols:,}")
         c2.metric("With EOD Data", f"{eod_symbols:,}")
         c3.metric("With Intraday", f"{intraday_symbols:,}")
         c4.metric("With Profile", f"{profile_symbols:,}")
         c5.metric("Live Market", f"{rm_symbols:,}")
+        c6.metric("Mutual Funds", f"{mf_count:,}")
+        c7.metric("ETFs", f"{etf_count:,}")
 
         # Symbols with NO data at all
         no_data = con.execute("""
@@ -237,6 +249,46 @@ def render_data_quality():
                 })
         except Exception:
             pass
+
+        # ── v3 Data Domains ─────────────────────────────────────
+        _v3_domains = [
+            ("ETF NAV", "etf_nav", "date"),
+            ("Mutual Fund NAV", "mutual_fund_nav", "date"),
+            ("T-Bill Auctions", "tbill_auctions", "auction_date"),
+            ("PIB Auctions", "pib_auctions", "auction_date"),
+            ("GIS Auctions", "gis_auctions", "auction_date"),
+            ("PKRV Yield Curve", "pkrv_daily", "date"),
+            ("KIBOR Rates", "kibor_daily", "date"),
+            ("KONIA Rate", "konia_daily", "date"),
+            ("SBP Policy Rate", "sbp_policy_rates", "rate_date"),
+            ("SBP FX Interbank", "sbp_fx_interbank", "date"),
+            ("SBP FX Open Market", "sbp_fx_open_market", "date"),
+            ("Kerb FX", "forex_kerb", "date"),
+            ("IPO Calendar", "ipo_listings", "listing_date"),
+            ("Dividends", "company_payouts", "ex_date"),
+            ("Sukuk Master", "sukuk_master", "created_at"),
+        ]
+        for label, table, date_col in _v3_domains:
+            try:
+                row = con.execute(
+                    f"SELECT MAX({date_col}) as latest, COUNT(*) as cnt FROM {table}"
+                ).fetchone()
+                if row and row["latest"]:
+                    try:
+                        days_old = (datetime.now() - datetime.strptime(
+                            str(row["latest"])[:10], "%Y-%m-%d"
+                        )).days
+                    except ValueError:
+                        days_old = -1
+                    freshness_rows.append({
+                        "Data Type": label,
+                        "Latest Date": str(row["latest"])[:10],
+                        "Days Old": days_old,
+                        "Row Count": f"{row['cnt']:,}",
+                        "Status": _freshness_badge(days_old),
+                    })
+            except Exception:
+                pass
 
         if freshness_rows:
             st.dataframe(
