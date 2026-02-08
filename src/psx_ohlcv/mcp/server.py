@@ -346,11 +346,98 @@ FUND_FX_TOOLS = [
 ]
 
 
+# ─── ANALYTICS + SYSTEM TOOL DEFINITIONS ───────────────────────────
+
+ANALYTICS_SYSTEM_TOOLS = [
+    types.Tool(
+        name="screen_stocks",
+        description="Stock screener with multiple filters: market cap, P/E, dividend yield, sector.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "min_market_cap": {"type": "number", "description": "Min market cap in millions"},
+                "max_pe": {"type": "number", "description": "Maximum P/E ratio"},
+                "min_div_yield": {"type": "number", "description": "Min annual dividend yield %"},
+                "sector": {"type": "string", "description": "Filter by sector name"},
+                "shariah": {"type": "boolean", "description": "Shariah-compliant only"},
+                "limit": {"type": "integer", "default": 50},
+            },
+        },
+    ),
+    types.Tool(
+        name="compare_securities",
+        description="Side-by-side comparison of multiple stocks.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "symbols": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of PSX stock symbols to compare",
+                },
+            },
+            "required": ["symbols"],
+        },
+    ),
+    types.Tool(
+        name="calculate_returns",
+        description="Calculate returns for a stock over multiple periods (1D, 1W, 1M, 3M, 6M, 1Y, YTD).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "PSX stock symbol"},
+            },
+            "required": ["symbol"],
+        },
+    ),
+    types.Tool(
+        name="get_sector_performance",
+        description="Sector-wise average returns and volume for the latest trading day.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    types.Tool(
+        name="get_correlation",
+        description="Price correlation between two stocks over a period.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "symbol1": {"type": "string"},
+                "symbol2": {"type": "string"},
+                "days": {"type": "integer", "default": 90, "description": "Period in days"},
+            },
+            "required": ["symbol1", "symbol2"],
+        },
+    ),
+    types.Tool(
+        name="get_data_freshness",
+        description="Status of all data domains — row counts, latest dates, staleness.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    types.Tool(
+        name="get_coverage_summary",
+        description="Summary of data coverage: symbols, funds, bonds, FX pairs, etc.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    types.Tool(
+        name="run_sql",
+        description="Execute a read-only SQL query against the database. Only SELECT queries allowed.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "SQL SELECT query"},
+                "limit": {"type": "integer", "default": 100, "description": "Max rows"},
+            },
+            "required": ["query"],
+        },
+    ),
+]
+
+
 # ─── TOOL REGISTRATION ─────────────────────────────────────────────
 
 @server.list_tools()
 async def list_tools() -> list[types.Tool]:
-    return EQUITY_TOOLS + FIXED_INCOME_TOOLS + FUND_FX_TOOLS
+    return EQUITY_TOOLS + FIXED_INCOME_TOOLS + FUND_FX_TOOLS + ANALYTICS_SYSTEM_TOOLS
 
 
 @server.call_tool()
@@ -913,6 +1000,353 @@ def _handle_get_konia(con: sqlite3.Connection, args: dict) -> list[types.TextCon
     return _json_response({"count": len(rows), "data": rows})
 
 
+# ─── ANALYTICS + SYSTEM HANDLERS ───────────────────────────────────
+
+def _handle_screen_stocks(con: sqlite3.Connection, args: dict) -> list[types.TextContent]:
+    limit = args.get("limit", 50)
+
+    # Use latest EOD date for price data; join with symbols for sector
+    latest = con.execute("SELECT MAX(date) as d FROM eod_ohlcv").fetchone()
+    if not latest or not latest["d"]:
+        return _json_response({"error": "No EOD data"})
+    date = latest["d"]
+
+    # Get previous date for change calculation
+    prev = con.execute(
+        "SELECT MAX(date) as d FROM eod_ohlcv WHERE date < ?", (date,)
+    ).fetchone()
+    prev_date = prev["d"] if prev else None
+
+    sql = """
+        SELECT e.symbol, s.name, s.sector_name, e.close as price, e.volume,
+               s.outstanding_shares,
+               CASE WHEN s.outstanding_shares > 0
+                    THEN ROUND(e.close * s.outstanding_shares / 1e6, 2) END as market_cap_m
+    """
+    if prev_date:
+        sql += """,
+               ROUND((e.close - p.close) / p.close * 100, 2) as change_pct"""
+
+    sql += """
+        FROM eod_ohlcv e
+        INNER JOIN symbols s ON e.symbol = s.symbol AND s.is_active = 1
+    """
+    if prev_date:
+        sql += " LEFT JOIN eod_ohlcv p ON e.symbol = p.symbol AND p.date = ?"
+
+    sql += " WHERE e.date = ? AND e.close > 0"
+    params: list = []
+    if prev_date:
+        params.append(prev_date)
+    params.append(date)
+
+    if args.get("min_market_cap") and args["min_market_cap"] > 0:
+        sql += " AND s.outstanding_shares > 0 AND (e.close * s.outstanding_shares / 1e6) >= ?"
+        params.append(args["min_market_cap"])
+    if args.get("sector"):
+        sql += " AND UPPER(s.sector_name) LIKE ?"
+        params.append(f"%{args['sector'].upper()}%")
+
+    sql += " ORDER BY market_cap_m DESC NULLS LAST LIMIT ?"
+    params.append(limit)
+
+    rows = [dict(r) for r in con.execute(sql, params).fetchall()]
+
+    # Post-filter for max_pe and min_div_yield if company_fundamentals available
+    # (These require fundamentals data which may not exist for all)
+    if args.get("max_pe") is not None or args.get("min_div_yield") is not None:
+        filtered = []
+        for row in rows:
+            fund = con.execute(
+                "SELECT pe_ratio FROM company_fundamentals WHERE symbol = ?",
+                (row["symbol"],),
+            ).fetchone()
+            pe = fund["pe_ratio"] if fund else None
+            if args.get("max_pe") is not None and (pe is None or pe > args["max_pe"]):
+                continue
+            # Dividend yield from payouts in last year
+            if args.get("min_div_yield") is not None:
+                div_sum = con.execute(
+                    """SELECT COALESCE(SUM(amount), 0) as total
+                       FROM company_payouts
+                       WHERE symbol = ? AND payout_type = 'cash'
+                         AND ex_date >= date('now', '-365 days')""",
+                    (row["symbol"],),
+                ).fetchone()
+                div_yield = (div_sum["total"] / row["price"] * 100) if div_sum and row["price"] > 0 else 0
+                if div_yield < args["min_div_yield"]:
+                    continue
+                row["div_yield"] = round(div_yield, 2)
+            if pe is not None:
+                row["pe_ratio"] = pe
+            filtered.append(row)
+        rows = filtered
+
+    return _json_response({"date": date, "count": len(rows), "data": rows})
+
+
+def _handle_compare_securities(con: sqlite3.Connection, args: dict) -> list[types.TextContent]:
+    symbols = [s.upper() for s in args["symbols"]]
+
+    latest = con.execute("SELECT MAX(date) as d FROM eod_ohlcv").fetchone()
+    if not latest or not latest["d"]:
+        return _json_response({"error": "No EOD data"})
+    date = latest["d"]
+
+    prev = con.execute(
+        "SELECT MAX(date) as d FROM eod_ohlcv WHERE date < ?", (date,)
+    ).fetchone()
+    prev_date = prev["d"] if prev else None
+
+    result = []
+    for sym in symbols:
+        eod = con.execute(
+            "SELECT * FROM eod_ohlcv WHERE symbol = ? AND date = ?", (sym, date)
+        ).fetchone()
+        info = con.execute(
+            "SELECT name, sector_name, outstanding_shares FROM symbols WHERE symbol = ?", (sym,)
+        ).fetchone()
+
+        entry: dict = {"symbol": sym}
+        if info:
+            entry.update(dict(info))
+        if eod:
+            entry.update({"close": eod["close"], "volume": eod["volume"], "date": date})
+            if info and info["outstanding_shares"]:
+                entry["market_cap_m"] = round(eod["close"] * info["outstanding_shares"] / 1e6, 2)
+            if prev_date:
+                prev_eod = con.execute(
+                    "SELECT close FROM eod_ohlcv WHERE symbol = ? AND date = ?", (sym, prev_date)
+                ).fetchone()
+                if prev_eod and prev_eod["close"] > 0:
+                    entry["change_pct"] = round(
+                        (eod["close"] - prev_eod["close"]) / prev_eod["close"] * 100, 2
+                    )
+        result.append(entry)
+
+    return _json_response({"date": date, "securities": result})
+
+
+def _handle_calculate_returns(con: sqlite3.Connection, args: dict) -> list[types.TextContent]:
+    symbol = args["symbol"].upper()
+
+    latest = con.execute(
+        "SELECT date, close FROM eod_ohlcv WHERE symbol = ? ORDER BY date DESC LIMIT 1",
+        (symbol,),
+    ).fetchone()
+    if not latest:
+        return _json_response({"error": f"No data for {symbol}"})
+
+    current_price = latest["close"]
+    current_date = latest["date"]
+
+    # Define periods
+    periods = {
+        "1D": "-1 days", "1W": "-7 days", "1M": "-1 months",
+        "3M": "-3 months", "6M": "-6 months", "1Y": "-1 years",
+    }
+    returns: dict = {"symbol": symbol, "price": current_price, "date": current_date}
+
+    for label, offset in periods.items():
+        target_date = con.execute(f"SELECT date(?, ?)", (current_date, offset)).fetchone()[0]
+        row = con.execute(
+            """SELECT close FROM eod_ohlcv
+               WHERE symbol = ? AND date <= ? ORDER BY date DESC LIMIT 1""",
+            (symbol, target_date),
+        ).fetchone()
+        if row and row["close"] > 0:
+            returns[label] = round((current_price - row["close"]) / row["close"] * 100, 2)
+
+    # YTD
+    year_start = current_date[:4] + "-01-01"
+    row = con.execute(
+        """SELECT close FROM eod_ohlcv
+           WHERE symbol = ? AND date >= ? ORDER BY date ASC LIMIT 1""",
+        (symbol, year_start),
+    ).fetchone()
+    if row and row["close"] > 0:
+        returns["YTD"] = round((current_price - row["close"]) / row["close"] * 100, 2)
+
+    return _json_response(returns)
+
+
+def _handle_get_sector_performance(con: sqlite3.Connection, args: dict) -> list[types.TextContent]:
+    # Latest two trading dates
+    dates = con.execute(
+        "SELECT DISTINCT date FROM eod_ohlcv ORDER BY date DESC LIMIT 2"
+    ).fetchall()
+    if len(dates) < 2:
+        return _json_response({"error": "Need at least 2 trading days"})
+
+    latest_date = dates[0]["date"]
+    prev_date = dates[1]["date"]
+
+    rows = con.execute(
+        """SELECT s.sector_name,
+                  COUNT(*) as stocks,
+                  SUM(t.volume) as total_volume,
+                  ROUND(AVG((t.close - p.close) / p.close * 100), 2) as avg_change_pct,
+                  ROUND(MAX((t.close - p.close) / p.close * 100), 2) as best_change_pct,
+                  ROUND(MIN((t.close - p.close) / p.close * 100), 2) as worst_change_pct
+           FROM eod_ohlcv t
+           INNER JOIN eod_ohlcv p ON t.symbol = p.symbol AND p.date = ?
+           INNER JOIN symbols s ON t.symbol = s.symbol
+           WHERE t.date = ? AND p.close > 0 AND t.close > 0
+             AND s.sector_name IS NOT NULL
+           GROUP BY s.sector_name
+           ORDER BY avg_change_pct DESC""",
+        (prev_date, latest_date),
+    ).fetchall()
+
+    return _json_response({
+        "date": latest_date,
+        "prev_date": prev_date,
+        "sectors": [dict(r) for r in rows],
+    })
+
+
+def _handle_get_correlation(con: sqlite3.Connection, args: dict) -> list[types.TextContent]:
+    s1 = args["symbol1"].upper()
+    s2 = args["symbol2"].upper()
+    days = args.get("days", 90)
+
+    cutoff = con.execute(
+        f"SELECT date('now', ? || ' days')", (f"-{days}",)
+    ).fetchone()[0]
+
+    rows = con.execute(
+        """SELECT a.date, a.close as price1, b.close as price2
+           FROM eod_ohlcv a
+           INNER JOIN eod_ohlcv b ON a.date = b.date
+           WHERE a.symbol = ? AND b.symbol = ? AND a.date >= ?
+             AND a.close > 0 AND b.close > 0
+           ORDER BY a.date""",
+        (s1, s2, cutoff),
+    ).fetchall()
+
+    if len(rows) < 5:
+        return _json_response({
+            "error": f"Insufficient overlapping data ({len(rows)} days) for {s1}/{s2}",
+        })
+
+    # Compute Pearson correlation of daily returns
+    prices1 = [r["price1"] for r in rows]
+    prices2 = [r["price2"] for r in rows]
+    returns1 = [(prices1[i] - prices1[i - 1]) / prices1[i - 1] for i in range(1, len(prices1))]
+    returns2 = [(prices2[i] - prices2[i - 1]) / prices2[i - 1] for i in range(1, len(prices2))]
+
+    n = len(returns1)
+    mean1 = sum(returns1) / n
+    mean2 = sum(returns2) / n
+    cov = sum((r1 - mean1) * (r2 - mean2) for r1, r2 in zip(returns1, returns2)) / n
+    std1 = (sum((r - mean1) ** 2 for r in returns1) / n) ** 0.5
+    std2 = (sum((r - mean2) ** 2 for r in returns2) / n) ** 0.5
+    correlation = round(cov / (std1 * std2), 4) if std1 > 0 and std2 > 0 else 0
+
+    return _json_response({
+        "symbol1": s1, "symbol2": s2,
+        "period_days": days, "overlapping_days": len(rows),
+        "correlation": correlation,
+    })
+
+
+# Data freshness domain config: (table, date_column)
+_FRESHNESS_DOMAINS = [
+    ("eod_ohlcv", "date"), ("symbols", "updated_at"),
+    ("company_fundamentals", "updated_at"), ("company_profile", "updated_at"),
+    ("psx_indices", "index_date"), ("mutual_funds", "updated_at"),
+    ("mutual_fund_nav", "date"), ("etf_master", "inception_date"),
+    ("etf_nav", "date"), ("sukuk_master", "created_at"),
+    ("pkrv_daily", "date"), ("tbill_auctions", "auction_date"),
+    ("pib_auctions", "auction_date"), ("gis_auctions", "auction_date"),
+    ("kibor_daily", "date"), ("konia_daily", "date"),
+    ("sbp_policy_rates", "rate_date"),
+    ("sbp_fx_interbank", "date"), ("forex_kerb", "date"),
+    ("ipo_listings", "listing_date"),
+    ("company_payouts", "ex_date"),
+]
+
+
+def _handle_get_data_freshness(con: sqlite3.Connection, args: dict) -> list[types.TextContent]:
+    domains = []
+    for table, date_col in _FRESHNESS_DOMAINS:
+        try:
+            row = con.execute(
+                f"SELECT COUNT(*) as rows, MAX({date_col}) as latest FROM {table}"
+            ).fetchone()
+            domains.append({
+                "table": table, "rows": row["rows"], "latest": row["latest"],
+            })
+        except Exception:
+            domains.append({"table": table, "rows": 0, "latest": None, "error": "table missing"})
+
+    # DB stats
+    db_size = con.execute("PRAGMA page_count").fetchone()[0] * con.execute("PRAGMA page_size").fetchone()[0]
+    table_count = con.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
+    ).fetchone()[0]
+
+    return _json_response({
+        "domains": domains,
+        "db_size_mb": round(db_size / 1e6, 1),
+        "table_count": table_count,
+    })
+
+
+def _handle_get_coverage_summary(con: sqlite3.Connection, args: dict) -> list[types.TextContent]:
+    result: dict = {}
+    queries = {
+        "active_symbols": "SELECT COUNT(*) FROM symbols WHERE is_active = 1",
+        "total_symbols": "SELECT COUNT(*) FROM symbols",
+        "eod_records": "SELECT COUNT(*) FROM eod_ohlcv",
+        "eod_date_range": "SELECT MIN(date) || ' to ' || MAX(date) FROM eod_ohlcv",
+        "mutual_funds": "SELECT COUNT(*) FROM mutual_funds",
+        "fund_nav_records": "SELECT COUNT(*) FROM mutual_fund_nav",
+        "etfs": "SELECT COUNT(*) FROM etf_master",
+        "sukuk": "SELECT COUNT(*) FROM sukuk_master",
+        "ipo_listings": "SELECT COUNT(*) FROM ipo_listings",
+        "pkrv_points": "SELECT COUNT(*) FROM pkrv_daily",
+        "tbill_auctions": "SELECT COUNT(*) FROM tbill_auctions",
+        "pib_auctions": "SELECT COUNT(*) FROM pib_auctions",
+        "company_profiles": "SELECT COUNT(*) FROM company_profile",
+    }
+    for key, sql in queries.items():
+        try:
+            row = con.execute(sql).fetchone()
+            result[key] = row[0]
+        except Exception:
+            result[key] = 0
+
+    return _json_response(result)
+
+
+_WRITE_KEYWORDS = {"INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "TRUNCATE", "REPLACE", "ATTACH", "DETACH"}
+
+
+def _handle_run_sql(con: sqlite3.Connection, args: dict) -> list[types.TextContent]:
+    query = args["query"].strip()
+    limit = args.get("limit", 100)
+
+    # Security: reject write queries
+    first_word = query.split()[0].upper() if query.split() else ""
+    if first_word in _WRITE_KEYWORDS:
+        return _json_response({"error": f"Write queries not allowed. Only SELECT is permitted."})
+
+    # Extra safety: reject semicolons that could chain statements
+    if ";" in query.rstrip(";"):
+        return _json_response({"error": "Multiple statements not allowed."})
+
+    try:
+        # Add LIMIT if not present
+        upper_q = query.upper()
+        if "LIMIT" not in upper_q:
+            query = query.rstrip(";") + f" LIMIT {limit}"
+        rows = [dict(r) for r in con.execute(query).fetchall()]
+        return _json_response({"count": len(rows), "data": rows})
+    except Exception as e:
+        return _json_response({"error": str(e)})
+
+
 # ─── HANDLER DISPATCH ──────────────────────────────────────────────
 
 _HANDLERS = {
@@ -941,6 +1375,15 @@ _HANDLERS = {
     "get_kibor": _handle_get_kibor,
     "get_policy_rate": _handle_get_policy_rate,
     "get_konia": _handle_get_konia,
+    # Analytics + System
+    "screen_stocks": _handle_screen_stocks,
+    "compare_securities": _handle_compare_securities,
+    "calculate_returns": _handle_calculate_returns,
+    "get_sector_performance": _handle_get_sector_performance,
+    "get_correlation": _handle_get_correlation,
+    "get_data_freshness": _handle_get_data_freshness,
+    "get_coverage_summary": _handle_get_coverage_summary,
+    "run_sql": _handle_run_sql,
 }
 
 
