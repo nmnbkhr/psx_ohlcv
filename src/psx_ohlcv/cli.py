@@ -314,6 +314,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Re-download even if CSV already exists",
     )
+    ms_day_parser.add_argument(
+        "--import-eod",
+        action="store_true",
+        help="Import downloaded CSV into eod_ohlcv table",
+    )
+    ms_day_parser.add_argument(
+        "--pdf-fallback",
+        action="store_true",
+        help="Use PDF closing rates as fallback if .Z file fails",
+    )
 
     # market-summary range (date range)
     ms_range_parser = ms_sub.add_parser(
@@ -352,6 +362,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Keep extracted raw files",
     )
+    ms_range_parser.add_argument(
+        "--import-eod",
+        action="store_true",
+        help="Import downloaded CSVs into eod_ohlcv table",
+    )
+    ms_range_parser.add_argument(
+        "--pdf-fallback",
+        action="store_true",
+        help="Use PDF closing rates as fallback for failed .Z files",
+    )
 
     # market-summary last (last N days)
     ms_last_parser = ms_sub.add_parser(
@@ -383,6 +403,16 @@ def main(argv: list[str] | None = None) -> int:
         "--keep-raw",
         action="store_true",
         help="Keep extracted raw files",
+    )
+    ms_last_parser.add_argument(
+        "--import-eod",
+        action="store_true",
+        help="Import downloaded CSVs into eod_ohlcv table",
+    )
+    ms_last_parser.add_argument(
+        "--pdf-fallback",
+        action="store_true",
+        help="Use PDF closing rates as fallback for failed .Z files",
     )
 
     # market-summary retry-failed
@@ -2073,6 +2103,7 @@ def handle_market_summary_day(args: argparse.Namespace) -> int:
         fetch_day_with_tracking,
         init_market_summary_tracking,
     )
+    from .db import ingest_market_summary_csv
 
     date_str = args.date
     print(f"Downloading market summary for {date_str}...")
@@ -2088,16 +2119,46 @@ def handle_market_summary_day(args: argparse.Namespace) -> int:
         force=args.force,
         keep_raw=args.keep_raw,
     )
-    con.close()
+
+    # PDF fallback if .Z file failed
+    pdf_used = False
+    if getattr(args, 'pdf_fallback', False) and result["status"] == "failed":
+        from .sources.closing_rates_pdf import fetch_day as fetch_pdf_day
+        print(f"\n  .Z file failed, trying PDF fallback...")
+        pdf_result = fetch_pdf_day(
+            date_str,
+            out_dir=args.out_dir,
+            force=args.force,
+        )
+        if pdf_result["status"] == "ok":
+            result = pdf_result
+            result["message"] = "Recovered from PDF fallback"
+            pdf_used = True
 
     print(f"\nMarket Summary: {date_str}")
     print("=" * 50)
-    print(f"  Status:         {result['status']}")
+    print(f"  Status:         {result['status']}{' (PDF fallback)' if pdf_used else ''}")
     print(f"  Row Count:      {result['row_count']}")
     if result["csv_path"]:
         print(f"  CSV saved to:   {result['csv_path']}")
     if result["message"]:
         print(f"  Message:        {result['message']}")
+
+    # Import to eod_ohlcv if requested
+    if args.import_eod and result["csv_path"] and result["status"] in ("ok", "skipped"):
+        print(f"\nImporting to eod_ohlcv table...")
+        # Set source based on whether PDF fallback was used
+        source = "closing_rates_pdf" if pdf_used else "market_summary"
+        ingest_result = ingest_market_summary_csv(
+            con, result["csv_path"], skip_existing=not args.force, source=source
+        )
+        print(f"  Import Status:  {ingest_result['status']}")
+        print(f"  Rows Inserted:  {ingest_result['rows_inserted']}")
+        print(f"  Source:         {source}")
+        if ingest_result["message"]:
+            print(f"  Message:        {ingest_result['message']}")
+
+    con.close()
 
     if result["status"] in ("ok", "skipped"):
         return EXIT_SUCCESS
@@ -2109,6 +2170,8 @@ def handle_market_summary_day(args: argparse.Namespace) -> int:
 
 def handle_market_summary_range(args: argparse.Namespace) -> int:
     """Handle market-summary range command."""
+    from .db import ingest_all_market_summary_csvs, ingest_market_summary_csv
+
     try:
         start_date = parse_date(args.start)
         end_date = parse_date(args.end)
@@ -2132,11 +2195,29 @@ def handle_market_summary_range(args: argparse.Namespace) -> int:
         keep_raw=args.keep_raw,
     )
 
+    # PDF fallback for failed dates (only when .Z file fails)
+    pdf_recovered = 0
+    pdf_recovered_dates = []  # Track PDF-recovered dates for separate ingestion
+    if getattr(args, 'pdf_fallback', False) and summary["failed"]:
+        from .sources.closing_rates_pdf import fetch_day as fetch_pdf_day
+        print("\nRetrying failed dates with PDF fallback...")
+        remaining_failed = []
+        for err in summary["failed"]:
+            pdf_result = fetch_pdf_day(err['date'], out_dir=args.out_dir, force=args.force)
+            if pdf_result["status"] == "ok":
+                pdf_recovered += 1
+                pdf_recovered_dates.append((err['date'], pdf_result['csv_path']))
+                print(f"  {err['date']}: Recovered from PDF ({pdf_result['row_count']} rows)")
+            else:
+                remaining_failed.append(err)
+        summary["failed"] = remaining_failed
+        summary["ok"] += pdf_recovered
+
     print("\nMarket Summary Range Download")
     print("=" * 50)
     print(f"  Date range:     {summary['start']} to {summary['end']}")
     print(f"  Dates checked:  {summary['total']}")
-    print(f"  Downloaded:     {summary['ok']}")
+    print(f"  Downloaded:     {summary['ok']}{f' ({pdf_recovered} from PDF)' if pdf_recovered else ''}")
     print(f"  Skipped:        {summary['skipped']} (already exist)")
     print(f"  Missing:        {summary['missing']} (holidays/weekends)")
     print(f"  Failed:         {len(summary['failed'])}")
@@ -2148,11 +2229,44 @@ def handle_market_summary_range(args: argparse.Namespace) -> int:
         if len(summary["failed"]) > 10:
             print(f"  ... and {len(summary['failed']) - 10} more errors")
 
+    # Import to eod_ohlcv if requested
+    if args.import_eod and (summary['ok'] > 0 or summary['skipped'] > 0):
+        print(f"\nImporting to eod_ohlcv table...")
+        con = connect(args.db)
+        init_schema(con)
+
+        # Import market_summary CSVs (primary source)
+        ingest_result = ingest_all_market_summary_csvs(
+            con, csv_dir=args.out_dir, skip_existing=not args.force
+        )
+        print(f"  Market Summary:")
+        print(f"    Files processed: {ingest_result['total_files']}")
+        print(f"    Imported:        {ingest_result['ok']}")
+        print(f"    Skipped:         {ingest_result['skipped']} (already in DB)")
+        print(f"    Total rows:      {ingest_result['total_rows']}")
+
+        # Import PDF-recovered dates separately (fallback source)
+        if pdf_recovered_dates:
+            print(f"  PDF Fallback:")
+            pdf_rows = 0
+            for date_str, csv_path in pdf_recovered_dates:
+                result = ingest_market_summary_csv(
+                    con, csv_path, skip_existing=not args.force, source="closing_rates_pdf"
+                )
+                if result['status'] == 'ok':
+                    pdf_rows += result['rows_inserted']
+                    print(f"    {date_str}: {result['rows_inserted']} rows")
+            print(f"    Total PDF rows:  {pdf_rows}")
+
+        con.close()
+
     return EXIT_SUCCESS
 
 
 def handle_market_summary_last(args: argparse.Namespace) -> int:
     """Handle market-summary last command."""
+    from .db import ingest_all_market_summary_csvs, ingest_market_summary_csv
+
     try:
         start_date, end_date = resolve_range(days=args.days)
     except ValueError as e:
@@ -2175,11 +2289,29 @@ def handle_market_summary_last(args: argparse.Namespace) -> int:
         keep_raw=args.keep_raw,
     )
 
+    # PDF fallback for failed dates (only when .Z file fails)
+    pdf_recovered = 0
+    pdf_recovered_dates = []  # Track PDF-recovered dates for separate ingestion
+    if getattr(args, 'pdf_fallback', False) and summary["failed"]:
+        from .sources.closing_rates_pdf import fetch_day as fetch_pdf_day
+        print("\nRetrying failed dates with PDF fallback...")
+        remaining_failed = []
+        for err in summary["failed"]:
+            pdf_result = fetch_pdf_day(err['date'], out_dir=args.out_dir, force=args.force)
+            if pdf_result["status"] == "ok":
+                pdf_recovered += 1
+                pdf_recovered_dates.append((err['date'], pdf_result['csv_path']))
+                print(f"  {err['date']}: Recovered from PDF ({pdf_result['row_count']} rows)")
+            else:
+                remaining_failed.append(err)
+        summary["failed"] = remaining_failed
+        summary["ok"] += pdf_recovered
+
     print("\nMarket Summary Download")
     print("=" * 50)
     print(f"  Date range:     {summary['start']} to {summary['end']}")
     print(f"  Dates checked:  {summary['total']}")
-    print(f"  Downloaded:     {summary['ok']}")
+    print(f"  Downloaded:     {summary['ok']}{f' ({pdf_recovered} from PDF)' if pdf_recovered else ''}")
     print(f"  Skipped:        {summary['skipped']} (already exist)")
     print(f"  Missing:        {summary['missing']} (holidays/weekends)")
     print(f"  Failed:         {len(summary['failed'])}")
@@ -2190,6 +2322,37 @@ def handle_market_summary_last(args: argparse.Namespace) -> int:
             print(f"  {err['date']}: {err['message']}")
         if len(summary["failed"]) > 10:
             print(f"  ... and {len(summary['failed']) - 10} more errors")
+
+    # Import to eod_ohlcv if requested
+    if args.import_eod and (summary['ok'] > 0 or summary['skipped'] > 0):
+        print(f"\nImporting to eod_ohlcv table...")
+        con = connect(args.db)
+        init_schema(con)
+
+        # Import market_summary CSVs (primary source)
+        ingest_result = ingest_all_market_summary_csvs(
+            con, csv_dir=args.out_dir, skip_existing=not args.force
+        )
+        print(f"  Market Summary:")
+        print(f"    Files processed: {ingest_result['total_files']}")
+        print(f"    Imported:        {ingest_result['ok']}")
+        print(f"    Skipped:         {ingest_result['skipped']} (already in DB)")
+        print(f"    Total rows:      {ingest_result['total_rows']}")
+
+        # Import PDF-recovered dates separately (fallback source)
+        if pdf_recovered_dates:
+            print(f"  PDF Fallback:")
+            pdf_rows = 0
+            for date_str, csv_path in pdf_recovered_dates:
+                result = ingest_market_summary_csv(
+                    con, csv_path, skip_existing=not args.force, source="closing_rates_pdf"
+                )
+                if result['status'] == 'ok':
+                    pdf_rows += result['rows_inserted']
+                    print(f"    {date_str}: {result['rows_inserted']} rows")
+            print(f"    Total PDF rows:  {pdf_rows}")
+
+        con.close()
 
     return EXIT_SUCCESS
 

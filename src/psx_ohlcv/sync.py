@@ -168,7 +168,7 @@ def sync_all(
 
             # Upsert to database
             if not df.empty:
-                rows = upsert_eod(con, df)
+                rows = upsert_eod(con, df, source="per_symbol_api")
                 total_rows += rows
                 logger.debug("%s: upserted %d rows", symbol, rows)
 

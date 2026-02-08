@@ -35,11 +35,15 @@ CREATE TABLE IF NOT EXISTS eod_ohlcv (
     sector_code  TEXT,                  -- Sector code from market summary
     company_name TEXT,                  -- Company name from market summary
     ingested_at  TEXT NOT NULL,
+    source       TEXT,                  -- Data source: market_summary, closing_rates_pdf, per_symbol_api
+    processname  TEXT,                  -- Process type: eodfile (csv/pdf), per_symbol_api
     PRIMARY KEY (symbol, date)
 );
 
 CREATE INDEX IF NOT EXISTS idx_eod_ohlcv_date ON eod_ohlcv(date);
 CREATE INDEX IF NOT EXISTS idx_eod_ohlcv_symbol ON eod_ohlcv(symbol);
+CREATE INDEX IF NOT EXISTS idx_eod_ohlcv_source ON eod_ohlcv(source);
+CREATE INDEX IF NOT EXISTS idx_eod_ohlcv_processname ON eod_ohlcv(processname);
 
 CREATE TABLE IF NOT EXISTS sync_runs (
     run_id         TEXT PRIMARY KEY,
@@ -1641,6 +1645,14 @@ def _migrate_eod_ohlcv_table(con: sqlite3.Connection) -> None:
     if "company_name" not in existing_cols:
         con.execute("ALTER TABLE eod_ohlcv ADD COLUMN company_name TEXT")
 
+    # Add source column if missing
+    if "source" not in existing_cols:
+        con.execute("ALTER TABLE eod_ohlcv ADD COLUMN source TEXT")
+
+    # Add processname column if missing
+    if "processname" not in existing_cols:
+        con.execute("ALTER TABLE eod_ohlcv ADD COLUMN processname TEXT")
+
     con.commit()
 
 
@@ -1733,7 +1745,9 @@ def upsert_symbols(con: sqlite3.Connection, symbols: list[dict]) -> int:
     return count
 
 
-def upsert_eod(con: sqlite3.Connection, df: pd.DataFrame) -> int:
+def upsert_eod(
+    con: sqlite3.Connection, df: pd.DataFrame, source: str = "unknown"
+) -> int:
     """
     Upsert EOD OHLCV data from DataFrame.
 
@@ -1741,6 +1755,13 @@ def upsert_eod(con: sqlite3.Connection, df: pd.DataFrame) -> int:
         con: Database connection
         df: DataFrame with columns: symbol, date, open, high, low, close, volume
             Optional columns: prev_close, sector_code, company_name
+        source: Data source identifier (e.g., 'market_summary', 'closing_rates_pdf', 'per_symbol_api')
+
+    Behavior by source:
+        - 'per_symbol_api': INSERT only if no data exists for symbol+date (no overwrite)
+          processname = 'per_symbol_api'
+        - 'market_summary', 'closing_rates_pdf', others: Full upsert (overwrite existing)
+          processname = 'eodfile'
 
     Returns:
         Number of rows inserted or updated
@@ -1756,39 +1777,81 @@ def upsert_eod(con: sqlite3.Connection, df: pd.DataFrame) -> int:
         missing = required_cols - set(df.columns)
         raise ValueError(f"DataFrame missing columns: {missing}")
 
-    for _, row in df.iterrows():
-        cur = con.execute(
-            """
-            INSERT INTO eod_ohlcv
-                (symbol, date, open, high, low, close, volume,
-                 prev_close, sector_code, company_name, ingested_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(symbol, date) DO UPDATE SET
-                open = excluded.open,
-                high = excluded.high,
-                low = excluded.low,
-                close = excluded.close,
-                volume = excluded.volume,
-                prev_close = excluded.prev_close,
-                sector_code = excluded.sector_code,
-                company_name = excluded.company_name,
-                ingested_at = excluded.ingested_at
-            """,
-            (
-                row["symbol"],
-                row["date"],
-                row["open"],
-                row["high"],
-                row["low"],
-                row["close"],
-                row["volume"],
-                row.get("prev_close"),
-                row.get("sector_code"),
-                row.get("company_name"),
-                now,
-            ),
-        )
-        count += cur.rowcount
+    # Determine processname based on source
+    # per_symbol_api -> processname = 'per_symbol_api'
+    # market_summary, closing_rates_pdf -> processname = 'eodfile'
+    if source == "per_symbol_api":
+        processname = "per_symbol_api"
+    else:
+        processname = "eodfile"
+
+    # per_symbol_api: INSERT OR IGNORE (don't overwrite existing data)
+    # Other sources (market_summary, closing_rates_pdf): Full upsert (overwrite)
+    if source == "per_symbol_api":
+        for _, row in df.iterrows():
+            cur = con.execute(
+                """
+                INSERT OR IGNORE INTO eod_ohlcv
+                    (symbol, date, open, high, low, close, volume,
+                     prev_close, sector_code, company_name, ingested_at, source, processname)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["symbol"],
+                    row["date"],
+                    row["open"],
+                    row["high"],
+                    row["low"],
+                    row["close"],
+                    row["volume"],
+                    row.get("prev_close"),
+                    row.get("sector_code"),
+                    row.get("company_name"),
+                    now,
+                    source,
+                    processname,
+                ),
+            )
+            count += cur.rowcount
+    else:
+        # Full upsert for market_summary, closing_rates_pdf, etc.
+        for _, row in df.iterrows():
+            cur = con.execute(
+                """
+                INSERT INTO eod_ohlcv
+                    (symbol, date, open, high, low, close, volume,
+                     prev_close, sector_code, company_name, ingested_at, source, processname)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(symbol, date) DO UPDATE SET
+                    open = excluded.open,
+                    high = excluded.high,
+                    low = excluded.low,
+                    close = excluded.close,
+                    volume = excluded.volume,
+                    prev_close = excluded.prev_close,
+                    sector_code = excluded.sector_code,
+                    company_name = excluded.company_name,
+                    ingested_at = excluded.ingested_at,
+                    source = excluded.source,
+                    processname = excluded.processname
+                """,
+                (
+                    row["symbol"],
+                    row["date"],
+                    row["open"],
+                    row["high"],
+                    row["low"],
+                    row["close"],
+                    row["volume"],
+                    row.get("prev_close"),
+                    row.get("sector_code"),
+                    row.get("company_name"),
+                    now,
+                    source,
+                    processname,
+                ),
+            )
+            count += cur.rowcount
 
     con.commit()
     return count
@@ -3962,6 +4025,7 @@ def ingest_market_summary_csv(
     con: sqlite3.Connection,
     csv_path: str | Path,
     skip_existing: bool = True,
+    source: str = "market_summary",
 ) -> dict:
     """
     Ingest market summary CSV file into eod_ohlcv table.
@@ -3973,6 +4037,7 @@ def ingest_market_summary_csv(
         con: Database connection
         csv_path: Path to CSV file
         skip_existing: If True, skip if date already has data
+        source: Data source identifier (default: 'market_summary')
 
     Returns:
         Dict with status, rows_inserted, date, message
@@ -4030,11 +4095,12 @@ def ingest_market_summary_csv(
         if "date" not in df.columns:
             df["date"] = date_str
 
-        # Upsert the data
-        rows = upsert_eod(con, df)
+        # Upsert the data with source tracking
+        rows = upsert_eod(con, df, source=source)
         result["rows_inserted"] = rows
         result["status"] = "ok"
         result["message"] = f"Inserted {rows} rows for {date_str}"
+        result["source"] = source
 
     except Exception as e:
         result["message"] = f"Error: {e}"
@@ -4104,6 +4170,242 @@ def ingest_all_market_summary_csvs(
             })
 
     return summary
+
+
+def get_eod_source_summary(con: sqlite3.Connection) -> dict:
+    """
+    Get summary of EOD data by source.
+
+    Returns:
+        Dict with source counts and date ranges
+    """
+    cursor = con.execute("""
+        SELECT
+            COALESCE(source, 'unknown') as source,
+            COUNT(*) as row_count,
+            COUNT(DISTINCT date) as date_count,
+            MIN(date) as min_date,
+            MAX(date) as max_date
+        FROM eod_ohlcv
+        GROUP BY COALESCE(source, 'unknown')
+        ORDER BY row_count DESC
+    """)
+
+    sources = {}
+    for row in cursor.fetchall():
+        sources[row[0]] = {
+            "row_count": row[1],
+            "date_count": row[2],
+            "min_date": row[3],
+            "max_date": row[4],
+        }
+    return sources
+
+
+def get_eod_date_source_breakdown(con: sqlite3.Connection, date_str: str) -> dict:
+    """
+    Get source breakdown for a specific date.
+
+    Args:
+        con: Database connection
+        date_str: Date in YYYY-MM-DD format
+
+    Returns:
+        Dict with source -> count mapping
+    """
+    cursor = con.execute("""
+        SELECT
+            COALESCE(source, 'unknown') as source,
+            COUNT(*) as count
+        FROM eod_ohlcv
+        WHERE date = ?
+        GROUP BY COALESCE(source, 'unknown')
+    """, (date_str,))
+
+    return {row[0]: row[1] for row in cursor.fetchall()}
+
+
+def verify_eod_data_sources(
+    con: sqlite3.Connection,
+    csv_dir: str | Path | None = None,
+    pdf_dir: str | Path | None = None,
+) -> dict:
+    """
+    Verify EOD data sources and identify gaps.
+
+    Compares DB data against available CSV and PDF files to identify:
+    - Dates with data from each source
+    - Dates missing from DB
+    - Data source mismatches
+
+    Args:
+        con: Database connection
+        csv_dir: Directory with market summary CSVs
+        pdf_dir: Directory with closing rates PDFs
+
+    Returns:
+        Dict with verification results
+    """
+    from pathlib import Path
+    from .config import DATA_ROOT
+
+    if csv_dir is None:
+        csv_dir = DATA_ROOT / "market_summary" / "csv"
+    else:
+        csv_dir = Path(csv_dir)
+
+    if pdf_dir is None:
+        pdf_dir = DATA_ROOT / "closing_rates" / "csv"
+    else:
+        pdf_dir = Path(pdf_dir)
+
+    # Get dates from CSV files
+    csv_dates = set()
+    if csv_dir.exists():
+        for f in csv_dir.glob("*.csv"):
+            csv_dates.add(f.stem)
+
+    # Get dates from PDF-derived CSVs
+    pdf_dates = set()
+    if pdf_dir.exists():
+        for f in pdf_dir.glob("*.csv"):
+            pdf_dates.add(f.stem)
+
+    # Get dates and sources from DB
+    cursor = con.execute("""
+        SELECT date, COALESCE(source, 'unknown') as source, COUNT(*) as count
+        FROM eod_ohlcv
+        GROUP BY date, COALESCE(source, 'unknown')
+        ORDER BY date
+    """)
+
+    db_data = {}
+    for row in cursor.fetchall():
+        date_str = row[0]
+        source = row[1]
+        count = row[2]
+        if date_str not in db_data:
+            db_data[date_str] = {}
+        db_data[date_str][source] = count
+
+    db_dates = set(db_data.keys())
+
+    # Analysis
+    result = {
+        "csv_dates": len(csv_dates),
+        "pdf_dates": len(pdf_dates),
+        "db_dates": len(db_dates),
+        "csv_only": sorted(csv_dates - db_dates),
+        "pdf_only": sorted(pdf_dates - db_dates - csv_dates),
+        "db_only": sorted(db_dates - csv_dates - pdf_dates),
+        "by_date": [],
+    }
+
+    # Detailed breakdown by date
+    all_dates = sorted(csv_dates | pdf_dates | db_dates)
+    for date_str in all_dates:
+        csv_count = 0
+        pdf_count = 0
+        if date_str in csv_dates and csv_dir.exists():
+            try:
+                csv_file = csv_dir / f"{date_str}.csv"
+                if csv_file.exists():
+                    csv_count = sum(1 for _ in open(csv_file)) - 1  # -1 for header
+            except Exception:
+                pass
+
+        if date_str in pdf_dates and pdf_dir.exists():
+            try:
+                pdf_file = pdf_dir / f"{date_str}.csv"
+                if pdf_file.exists():
+                    pdf_count = sum(1 for _ in open(pdf_file)) - 1
+            except Exception:
+                pass
+
+        db_info = db_data.get(date_str, {})
+        db_total = sum(db_info.values())
+
+        result["by_date"].append({
+            "date": date_str,
+            "csv_rows": csv_count,
+            "pdf_rows": pdf_count,
+            "db_rows": db_total,
+            "db_sources": db_info,
+        })
+
+    return result
+
+
+def backfill_eod_sources(con: sqlite3.Connection, dry_run: bool = True) -> dict:
+    """
+    Backfill source column for existing data based on available files.
+
+    Logic:
+    - If date has market_summary CSV -> set source to 'market_summary'
+    - If date has closing_rates PDF CSV -> set source to 'closing_rates_pdf'
+    - Otherwise -> set source to 'per_symbol_api' (historical API data)
+
+    Args:
+        con: Database connection
+        dry_run: If True, only report what would be done
+
+    Returns:
+        Dict with backfill results
+    """
+    from pathlib import Path
+    from .config import DATA_ROOT
+
+    csv_dir = DATA_ROOT / "market_summary" / "csv"
+    pdf_dir = DATA_ROOT / "closing_rates" / "csv"
+
+    # Get dates from files
+    csv_dates = set()
+    if csv_dir.exists():
+        for f in csv_dir.glob("*.csv"):
+            csv_dates.add(f.stem)
+
+    pdf_dates = set()
+    if pdf_dir.exists():
+        for f in pdf_dir.glob("*.csv"):
+            pdf_dates.add(f.stem)
+
+    # Get dates with unknown source
+    cursor = con.execute("""
+        SELECT DISTINCT date FROM eod_ohlcv
+        WHERE source IS NULL OR source = 'unknown'
+        ORDER BY date
+    """)
+    unknown_dates = [row[0] for row in cursor.fetchall()]
+
+    result = {
+        "total_unknown_dates": len(unknown_dates),
+        "to_market_summary": [],
+        "to_closing_rates_pdf": [],
+        "to_per_symbol_api": [],
+        "dry_run": dry_run,
+    }
+
+    for date_str in unknown_dates:
+        if date_str in csv_dates:
+            source = "market_summary"
+            result["to_market_summary"].append(date_str)
+        elif date_str in pdf_dates:
+            source = "closing_rates_pdf"
+            result["to_closing_rates_pdf"].append(date_str)
+        else:
+            source = "per_symbol_api"
+            result["to_per_symbol_api"].append(date_str)
+
+        if not dry_run:
+            con.execute(
+                "UPDATE eod_ohlcv SET source = ? WHERE date = ? AND (source IS NULL OR source = 'unknown')",
+                (source, date_str),
+            )
+
+    if not dry_run:
+        con.commit()
+
+    return result
 
 
 # =============================================================================

@@ -1,7 +1,7 @@
 """Data models for PSX OHLCV."""
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 
 
 @dataclass
@@ -56,5 +56,5 @@ class SyncFailure:
 
 
 def now_iso() -> str:
-    """Return current UTC time as ISO string."""
-    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    """Return current local time as ISO string (Pakistan Standard Time)."""
+    return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")

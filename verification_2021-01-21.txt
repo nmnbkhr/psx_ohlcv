@@ -1,0 +1,80 @@
+================================================================================
+PSX OHLCV DATA VERIFICATION REPORT
+Date: 2021-01-21
+Generated: 2026-02-01 18:32:56
+================================================================================
+
+1. DATA SOURCES
+----------------------------------------
+   CSV file: /mnt/e/psxdata/market_summary/csv/2021-01-21.csv
+   PDF file: /mnt/e/psxdata/closing_rates/pdf/2021-01-21.pdf
+   Database: eod_ohlcv table
+
+2. ROW COUNTS
+----------------------------------------
+   CSV:  547 symbols
+   PDF:  425 symbols
+   DB:   547 symbols
+
+3. SYMBOL COVERAGE
+----------------------------------------
+   Common to all 3:   425
+   In CSV but not PDF: 122
+   In PDF but not CSV: 0
+   CSV equals DB:      YES
+
+   CSV-only breakdown:
+     Futures/Options: 114
+     Other:          8
+
+4. VALUE COMPARISON (Common Symbols)
+----------------------------------------
+   CSV vs DB:  425/425 match (100.00%)
+   CSV vs PDF: 370/425 exact match
+              (55 differ only in volume lot size)
+
+   Regular stocks: 369 - ALL MATCH PERFECTLY
+   Futures:        56 - Volume in lots vs shares
+
+5. SAMPLE DATA (5 regular stocks)
+----------------------------------------
+   Symbol   Field            CSV          PDF           DB Match
+   -------- ------- ------------ ------------ ------------ -----
+   ABL      open           87.95        87.95        87.95 ✓
+   ABL      high           87.95        87.95        87.95 ✓
+   ABL      low            86.50        86.50        86.50 ✓
+   ABL      close          86.88        86.88        86.88 ✓
+   ABL      volume       109,500      109,500      109,500 ✓
+   ENGRO    open          309.25       309.25       309.25 ✓
+   ENGRO    high          311.50       311.50       311.50 ✓
+   ENGRO    low           306.90       306.90       306.90 ✓
+   ENGRO    close         310.75       310.75       310.75 ✓
+   ENGRO    volume       217,956      217,956      217,956 ✓
+   HBL      open          141.54       141.54       141.54 ✓
+   HBL      high          143.50       143.50       143.50 ✓
+   HBL      low           140.50       140.50       140.50 ✓
+   HBL      close         142.81       142.81       142.81 ✓
+   HBL      volume     1,571,769    1,571,769    1,571,769 ✓
+   LUCK     open          686.50       686.50       686.50 ✓
+   LUCK     high          707.00       707.00       707.00 ✓
+   LUCK     low           686.50       686.50       686.50 ✓
+   LUCK     close         699.47       699.47       699.47 ✓
+   LUCK     volume       683,092      683,092      683,092 ✓
+   UBL      open          138.95       138.95       138.95 ✓
+   UBL      high          140.00       140.00       140.00 ✓
+   UBL      low           138.01       138.01       138.01 ✓
+   UBL      close         138.79       138.79       138.79 ✓
+   UBL      volume     3,972,280    3,972,280    3,972,280 ✓
+
+6. CONCLUSION
+----------------------------------------
+   ✓ CSV and DB are 100% identical (547 symbols)
+   ✓ PDF has 425 symbols (all present in CSV/DB)
+   ✓ Regular stocks: Perfect OHLCV match across all sources
+   ✓ Futures: OHLC match, volume differs (lots vs shares)
+   
+   The PDF can reliably serve as fallback when .Z files are
+   corrupted or empty. Volume for futures should be multiplied
+   by 500 to convert from lots to shares.
+
+================================================================================
