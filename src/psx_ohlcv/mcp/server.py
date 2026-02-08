@@ -127,11 +127,94 @@ EQUITY_TOOLS = [
 ]
 
 
+# ─── FIXED INCOME TOOL DEFINITIONS ─────────────────────────────────
+
+FIXED_INCOME_TOOLS = [
+    types.Tool(
+        name="get_sukuk",
+        description="List sukuk (Islamic bonds) with master data and latest quotes.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "description": "Filter by category (e.g., GOP_SUKUK)",
+                },
+            },
+        },
+    ),
+    types.Tool(
+        name="get_yield_curve",
+        description=(
+            "Get yield curve data (PKRV or yield_curve_points). "
+            "Returns tenor and yield for a given date."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "curve_type": {
+                    "type": "string",
+                    "enum": ["pkrv", "pib", "all"],
+                    "default": "pkrv",
+                    "description": "Curve type: pkrv, pib, or all",
+                },
+                "date": {
+                    "type": "string",
+                    "description": "Date YYYY-MM-DD (default: latest available)",
+                },
+            },
+        },
+    ),
+    types.Tool(
+        name="get_tbill_auctions",
+        description="Get T-Bill auction results with yields, amounts, and tenors.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "start_date": {"type": "string", "description": "Start date YYYY-MM-DD"},
+                "end_date": {"type": "string", "description": "End date YYYY-MM-DD"},
+                "tenor": {"type": "string", "description": "Filter by tenor (e.g., 3M, 6M, 12M)"},
+            },
+        },
+    ),
+    types.Tool(
+        name="get_pib_auctions",
+        description="Get PIB (Pakistan Investment Bond) auction results.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "start_date": {"type": "string", "description": "Start date YYYY-MM-DD"},
+                "end_date": {"type": "string", "description": "End date YYYY-MM-DD"},
+            },
+        },
+    ),
+    types.Tool(
+        name="get_gis_auctions",
+        description="Get GIS (Government Ijarah Sukuk) auction results.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "start_date": {"type": "string", "description": "Start date YYYY-MM-DD"},
+                "end_date": {"type": "string", "description": "End date YYYY-MM-DD"},
+            },
+        },
+    ),
+    types.Tool(
+        name="get_latest_yields",
+        description=(
+            "Get latest yields across all fixed income instruments: "
+            "PKRV curve, T-Bill, PIB, KIBOR, KONIA, and SBP policy rate."
+        ),
+        inputSchema={"type": "object", "properties": {}},
+    ),
+]
+
+
 # ─── TOOL REGISTRATION ─────────────────────────────────────────────
 
 @server.list_tools()
 async def list_tools() -> list[types.Tool]:
-    return EQUITY_TOOLS
+    return EQUITY_TOOLS + FIXED_INCOME_TOOLS
 
 
 @server.call_tool()
@@ -318,14 +401,173 @@ def _handle_get_top_movers(con: sqlite3.Connection, args: dict) -> list[types.Te
     return _json_response(result)
 
 
+# ─── FIXED INCOME HANDLERS ─────────────────────────────────────────
+
+def _handle_get_sukuk(con: sqlite3.Connection, args: dict) -> list[types.TextContent]:
+    sql = """SELECT m.*, q.quote_date, q.clean_price, q.dirty_price,
+                    q.yield_to_maturity, q.bid_yield, q.ask_yield
+             FROM sukuk_master m
+             LEFT JOIN sukuk_quotes q ON m.instrument_id = q.instrument_id
+               AND q.quote_date = (
+                   SELECT MAX(quote_date) FROM sukuk_quotes WHERE instrument_id = m.instrument_id
+               )
+             WHERE 1=1"""
+    params: list = []
+    if args.get("category"):
+        sql += " AND UPPER(m.category) LIKE ?"
+        params.append(f"%{args['category'].upper()}%")
+    sql += " ORDER BY m.name"
+    rows = [dict(r) for r in con.execute(sql, params).fetchall()]
+    return _json_response({"count": len(rows), "data": rows})
+
+
+def _handle_get_yield_curve(con: sqlite3.Connection, args: dict) -> list[types.TextContent]:
+    curve_type = args.get("curve_type", "pkrv")
+    date = args.get("date")
+
+    if curve_type == "pkrv":
+        if not date:
+            row = con.execute("SELECT MAX(date) as d FROM pkrv_daily").fetchone()
+            date = row["d"] if row else None
+        if not date:
+            return _json_response({"error": "No PKRV data available"})
+        rows = con.execute(
+            "SELECT tenor_months, yield_pct FROM pkrv_daily WHERE date = ? ORDER BY tenor_months",
+            (date,),
+        ).fetchall()
+        return _json_response({"curve_type": "pkrv", "date": date, "points": [dict(r) for r in rows]})
+    else:
+        # yield_curve_points table
+        bond_filter = "PIB" if curve_type == "pib" else "%"
+        if not date:
+            row = con.execute(
+                "SELECT MAX(curve_date) as d FROM yield_curve_points WHERE bond_type LIKE ?",
+                (bond_filter,),
+            ).fetchone()
+            date = row["d"] if row else None
+        if not date:
+            return _json_response({"error": f"No yield curve data for {curve_type}"})
+        rows = con.execute(
+            """SELECT tenor_months, yield_rate, bond_type
+               FROM yield_curve_points
+               WHERE curve_date = ? AND bond_type LIKE ?
+               ORDER BY tenor_months""",
+            (date, bond_filter),
+        ).fetchall()
+        return _json_response({
+            "curve_type": curve_type, "date": date, "points": [dict(r) for r in rows],
+        })
+
+
+def _handle_get_tbill_auctions(con: sqlite3.Connection, args: dict) -> list[types.TextContent]:
+    sql = "SELECT * FROM tbill_auctions WHERE 1=1"
+    params: list = []
+    if args.get("start_date"):
+        sql += " AND auction_date >= ?"
+        params.append(args["start_date"])
+    if args.get("end_date"):
+        sql += " AND auction_date <= ?"
+        params.append(args["end_date"])
+    if args.get("tenor"):
+        sql += " AND UPPER(tenor) = ?"
+        params.append(args["tenor"].upper())
+    sql += " ORDER BY auction_date DESC LIMIT 50"
+    rows = [dict(r) for r in con.execute(sql, params).fetchall()]
+    return _json_response({"count": len(rows), "data": rows})
+
+
+def _handle_get_pib_auctions(con: sqlite3.Connection, args: dict) -> list[types.TextContent]:
+    sql = "SELECT * FROM pib_auctions WHERE 1=1"
+    params: list = []
+    if args.get("start_date"):
+        sql += " AND auction_date >= ?"
+        params.append(args["start_date"])
+    if args.get("end_date"):
+        sql += " AND auction_date <= ?"
+        params.append(args["end_date"])
+    sql += " ORDER BY auction_date DESC LIMIT 50"
+    rows = [dict(r) for r in con.execute(sql, params).fetchall()]
+    return _json_response({"count": len(rows), "data": rows})
+
+
+def _handle_get_gis_auctions(con: sqlite3.Connection, args: dict) -> list[types.TextContent]:
+    sql = "SELECT * FROM gis_auctions WHERE 1=1"
+    params: list = []
+    if args.get("start_date"):
+        sql += " AND auction_date >= ?"
+        params.append(args["start_date"])
+    if args.get("end_date"):
+        sql += " AND auction_date <= ?"
+        params.append(args["end_date"])
+    sql += " ORDER BY auction_date DESC LIMIT 50"
+    rows = [dict(r) for r in con.execute(sql, params).fetchall()]
+    return _json_response({"count": len(rows), "data": rows})
+
+
+def _handle_get_latest_yields(con: sqlite3.Connection, args: dict) -> list[types.TextContent]:
+    result: dict = {}
+
+    # SBP Policy Rate
+    row = con.execute(
+        "SELECT * FROM sbp_policy_rates ORDER BY rate_date DESC LIMIT 1"
+    ).fetchone()
+    result["policy_rate"] = dict(row) if row else None
+
+    # KIBOR (all tenors, latest date)
+    kibor_date = con.execute("SELECT MAX(date) as d FROM kibor_daily").fetchone()
+    if kibor_date and kibor_date["d"]:
+        rows = con.execute(
+            "SELECT tenor, bid, offer FROM kibor_daily WHERE date = ? ORDER BY tenor",
+            (kibor_date["d"],),
+        ).fetchall()
+        result["kibor"] = {"date": kibor_date["d"], "rates": [dict(r) for r in rows]}
+
+    # KONIA
+    row = con.execute(
+        "SELECT * FROM konia_daily ORDER BY date DESC LIMIT 1"
+    ).fetchone()
+    result["konia"] = dict(row) if row else None
+
+    # PKRV curve (latest)
+    pkrv_date = con.execute("SELECT MAX(date) as d FROM pkrv_daily").fetchone()
+    if pkrv_date and pkrv_date["d"]:
+        rows = con.execute(
+            "SELECT tenor_months, yield_pct FROM pkrv_daily WHERE date = ? ORDER BY tenor_months",
+            (pkrv_date["d"],),
+        ).fetchall()
+        result["pkrv"] = {"date": pkrv_date["d"], "curve": [dict(r) for r in rows]}
+
+    # Latest T-Bill auction yield
+    row = con.execute(
+        "SELECT * FROM tbill_auctions ORDER BY auction_date DESC LIMIT 1"
+    ).fetchone()
+    result["latest_tbill_auction"] = dict(row) if row else None
+
+    # Latest PIB auction
+    row = con.execute(
+        "SELECT * FROM pib_auctions ORDER BY auction_date DESC LIMIT 1"
+    ).fetchone()
+    result["latest_pib_auction"] = dict(row) if row else None
+
+    return _json_response(result)
+
+
 # ─── HANDLER DISPATCH ──────────────────────────────────────────────
 
 _HANDLERS = {
+    # Equity
     "get_eod": _handle_get_eod,
     "search_symbols": _handle_search_symbols,
     "get_company_profile": _handle_get_company_profile,
     "get_market_snapshot": _handle_get_market_snapshot,
     "get_top_movers": _handle_get_top_movers,
+    # Fixed income
+    "get_sukuk": _handle_get_sukuk,
+    "get_yield_curve": _handle_get_yield_curve,
+    "get_tbill_auctions": _handle_get_tbill_auctions,
+    "get_pib_auctions": _handle_get_pib_auctions,
+    "get_gis_auctions": _handle_get_gis_auctions,
+    "get_latest_yields": _handle_get_latest_yields,
 }
 
 
