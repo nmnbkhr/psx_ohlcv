@@ -259,21 +259,18 @@ def _render_tbill_auctions(con):
     """T-Bill auction results table."""
     st.markdown("### T-Bill Auctions")
     df = pd.read_sql_query(
-        """SELECT auction_date, tenor, cutoff_yield, cutoff_price,
-                  amount_accepted_billions, target_amount_billions
+        """SELECT auction_date, tenor, cutoff_yield
            FROM tbill_auctions ORDER BY auction_date DESC LIMIT 10""",
         con,
     )
     if df.empty:
-        st.info("No T-Bill auction data. Run `psxsync treasury tbill-sync` to fetch.")
+        st.info("No T-Bill auction data. Use Sync Treasury Data below to fetch.")
         return
 
     st.dataframe(
         df.rename(columns={
             "auction_date": "Date", "tenor": "Tenor",
-            "cutoff_yield": "Yield (%)", "cutoff_price": "Price",
-            "amount_accepted_billions": "Accepted (B)",
-            "target_amount_billions": "Target (B)",
+            "cutoff_yield": "Yield (%)",
         }),
         use_container_width=True, hide_index=True,
     )
@@ -283,20 +280,18 @@ def _render_pib_auctions(con):
     """PIB auction results table."""
     st.markdown("### PIB Auctions")
     df = pd.read_sql_query(
-        """SELECT auction_date, tenor, pib_type, cutoff_yield,
-                  coupon_rate, amount_accepted_billions
+        """SELECT auction_date, tenor, pib_type, cutoff_yield
            FROM pib_auctions ORDER BY auction_date DESC LIMIT 10""",
         con,
     )
     if df.empty:
-        st.info("No PIB auction data. Run `psxsync treasury pib-sync` to fetch.")
+        st.info("No PIB auction data. Use Sync Treasury Data below to fetch.")
         return
 
     st.dataframe(
         df.rename(columns={
             "auction_date": "Date", "tenor": "Tenor", "pib_type": "Type",
-            "cutoff_yield": "Yield (%)", "coupon_rate": "Coupon (%)",
-            "amount_accepted_billions": "Accepted (B)",
+            "cutoff_yield": "Yield (%)",
         }),
         use_container_width=True, hide_index=True,
     )
