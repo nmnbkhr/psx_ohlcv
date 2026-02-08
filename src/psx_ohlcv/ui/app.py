@@ -648,6 +648,14 @@ def live_market_page():
 
 
 # -----------------------------------------------------------------------------
+# Page: Data Quality
+# -----------------------------------------------------------------------------
+def data_quality_page():
+    from psx_ohlcv.ui.pages.data_quality import render_data_quality
+    render_data_quality()
+
+
+# -----------------------------------------------------------------------------
 # Page: Dashboard
 # -----------------------------------------------------------------------------
 def dashboard():
@@ -967,6 +975,7 @@ def main():
             "📂 EOD Loader",         # EOD Data Loader
             "📚 History",
             "🔄 Sync Monitor",
+            "🩺 Data Quality",
         ],
         "AI": [
             "💬 AI Chat",            # Agentic chat interface
@@ -1106,6 +1115,7 @@ def main():
         "📂 EOD Loader": eod_data_loader_page,
         "📚 History": history_page,
         "🔄 Sync Monitor": sync_monitor,
+        "🩺 Data Quality": data_quality_page,
 
         # AI
         "💬 AI Chat": chat_page,
