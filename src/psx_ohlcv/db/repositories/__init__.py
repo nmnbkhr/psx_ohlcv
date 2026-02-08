@@ -56,3 +56,6 @@ from .dividends import *  # noqa: F401, F403
 
 # 15. ipo  (6 functions)
 from .ipo import *  # noqa: F401, F403
+
+# 16. vps  (4 functions)
+from .vps import *  # noqa: F401, F403

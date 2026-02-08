@@ -1967,6 +1967,29 @@ def main(argv: list[str] | None = None) -> int:
     ipo_show_parser = ipo_sub.add_parser("show", help="Show IPO details for a symbol")
     ipo_show_parser.add_argument("symbol", help="Stock symbol")
 
+    # =========================================================================
+    # v3.0: VPS (Voluntary Pension System) commands
+    # =========================================================================
+    vps_parser = subparsers.add_parser(
+        "vps",
+        help="VPS pension fund data (NAV, performance)"
+    )
+    vps_sub = vps_parser.add_subparsers(
+        dest="vps_command", required=True
+    )
+
+    vps_sub.add_parser("list", help="List VPS pension funds")
+
+    vps_nav_parser = vps_sub.add_parser("nav", help="Show NAV history for a VPS fund")
+    vps_nav_parser.add_argument("fund_id", help="VPS fund ID (e.g. MUFAP:ABL-VPS-EQ)")
+
+    vps_perf_parser = vps_sub.add_parser("performance", help="Compare VPS fund performance")
+    vps_perf_parser.add_argument(
+        "--days", type=int, default=365, help="Lookback period in days (default: 365)"
+    )
+
+    vps_sub.add_parser("summary", help="Show VPS data summary")
+
     args = parser.parse_args(argv)
 
     try:
@@ -2024,6 +2047,8 @@ def main(argv: list[str] | None = None) -> int:
             return handle_dividends(args)
         elif args.command == "ipo":
             return handle_ipo(args)
+        elif args.command == "vps":
+            return handle_vps(args)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         return 130
@@ -6378,6 +6403,72 @@ def handle_ipo(args: argparse.Namespace) -> int:
             val = ipo.get(key)
             if val:
                 print(f"  {key:>22s}: {val}")
+        return 0
+
+    return 0
+
+
+def handle_vps(args: argparse.Namespace) -> int:
+    """Handle vps subcommands."""
+    from .db.repositories.vps import (
+        compare_vps_performance,
+        get_vps_funds,
+        get_vps_nav_history,
+        get_vps_summary,
+    )
+
+    con = connect(args.db)
+    init_schema(con)
+
+    if args.vps_command == "list":
+        df = get_vps_funds(con)
+        if df.empty:
+            print("No VPS funds found.")
+            return 0
+        print(f"\n  VPS Pension Funds ({len(df)} funds)")
+        print(f"  {'Fund ID':>25s}  {'Fund Name'}")
+        for _, row in df.iterrows():
+            shariah = " [Shariah]" if row.get("is_shariah") else ""
+            print(f"  {row['fund_id']:>25s}  {row['fund_name']}{shariah}")
+        return 0
+
+    elif args.vps_command == "nav":
+        df = get_vps_nav_history(con, args.fund_id)
+        if df.empty:
+            print(f"No NAV data for {args.fund_id}.")
+            return 0
+        print(f"\n  NAV History — {args.fund_id} ({len(df)} records)")
+        print(f"  {'Date':>12s}  {'NAV':>10s}  {'Change%':>8s}")
+        for _, row in df.head(20).iterrows():
+            chg = f"{row['nav_change_pct']:.2f}" if row.get("nav_change_pct") else "N/A"
+            print(f"  {row['date']:>12s}  {row['nav']:>10.4f}  {chg:>8s}")
+        if len(df) > 20:
+            print(f"  ... showing latest 20 of {len(df)} records")
+        return 0
+
+    elif args.vps_command == "performance":
+        df = compare_vps_performance(con, days=args.days)
+        if df.empty:
+            print("No VPS performance data available.")
+            return 0
+        print(f"\n  VPS Performance ({args.days}D)")
+        print(f"  {'Fund Name':>40s}  {'Return%':>8s}  {'Latest NAV':>10s}")
+        for _, row in df.iterrows():
+            ret = f"{row['return_pct']:.2f}" if row.get("return_pct") is not None else "N/A"
+            print(
+                f"  {row['fund_name'][:40]:>40s}  {ret:>8s}  {row['latest_nav']:>10.4f}"
+            )
+        return 0
+
+    elif args.vps_command == "summary":
+        summary = get_vps_summary(con)
+        print(f"\n{'='*50}")
+        print("  VPS Pension Fund Summary")
+        print(f"{'='*50}")
+        print(f"  Total VPS funds:  {summary['total_funds']}")
+        print(f"  Total NAV records: {summary['total_nav_records']}")
+        if summary["earliest_date"]:
+            print(f"  Date range:       {summary['earliest_date']} to {summary['latest_date']}")
         return 0
 
     return 0
