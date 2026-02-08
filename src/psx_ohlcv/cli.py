@@ -243,6 +243,12 @@ def main(argv: list[str] | None = None) -> int:
         default=30,
         help="HTTP request timeout in seconds (default: 30)",
     )
+    sync_parser.add_argument(
+        "--async",
+        action="store_true",
+        dest="use_async",
+        help="Use async fetcher (6-7x faster, concurrent HTTP)",
+    )
 
     # quote command
     quote_parser = subparsers.add_parser("quote", help="Get latest quote for a symbol")
@@ -1963,20 +1969,32 @@ def handle_sync(args: argparse.Namespace) -> int:
         incremental=args.incremental,
     )
 
-    # Run sync
+    # Run sync (async or sequential)
     mode_str = "incremental" if args.incremental else "full"
-    print(f"Starting EOD sync ({mode_str} mode)...")
 
-    summary = sync_all(
-        db_path=args.db,
-        refresh_symbols=args.refresh_symbols,
-        limit_symbols=args.limit_symbols if args.sync_all else None,
-        symbols_list=symbols_list,
-        config=config,
-    )
+    if getattr(args, "use_async", False):
+        import asyncio
+        from .sync_async import sync_all_async
 
-    # Print summary
-    print_summary(summary)
+        print(f"Starting ASYNC EOD sync ({mode_str} mode)...")
+        summary = asyncio.run(sync_all_async(
+            db_path=args.db,
+            refresh_symbols=args.refresh_symbols,
+            limit_symbols=args.limit_symbols if args.sync_all else None,
+            symbols_list=symbols_list,
+            config=config,
+        ))
+        print_async_summary(summary)
+    else:
+        print(f"Starting EOD sync ({mode_str} mode)...")
+        summary = sync_all(
+            db_path=args.db,
+            refresh_symbols=args.refresh_symbols,
+            limit_symbols=args.limit_symbols if args.sync_all else None,
+            symbols_list=symbols_list,
+            config=config,
+        )
+        print_summary(summary)
 
     # Exit code: 0 if any symbol succeeded, 2 if all failed
     if summary.symbols_total == 0:
@@ -2010,6 +2028,35 @@ def print_summary(summary: SyncSummary) -> None:
         print("\n" + "-" * 50)
         print("FAILED SYMBOLS (first 10):")
         print("-" * 50)
+        for f in summary.failures[:10]:
+            msg = f["error_message"][:60] if f["error_message"] else "N/A"
+            print(f"  {f['symbol']:<10} {f['error_type']:<12} {msg}")
+        if len(summary.failures) > 10:
+            print(f"  ... and {len(summary.failures) - 10} more")
+
+    print("=" * 50)
+
+
+def print_async_summary(summary) -> None:
+    """Print async sync summary."""
+    print("\n" + "=" * 50)
+    print("ASYNC SYNC SUMMARY")
+    print("=" * 50)
+    print(f"  Symbols total:  {summary.symbols_total}")
+    print(f"  Symbols OK:     {summary.symbols_ok}")
+    print(f"  Symbols failed: {summary.symbols_failed}")
+    print(f"  Rows upserted:  {summary.rows_upserted}")
+    print(f"  Elapsed:        {summary.elapsed:.1f}s")
+    print(f"  Run ID:         {summary.run_id}")
+
+    if summary.failures:
+        print("\n" + "-" * 50)
+        print("TOP FAILURES BY ERROR TYPE:")
+        print("-" * 50)
+        error_counts = Counter(f["error_type"] for f in summary.failures)
+        for error_type, count in error_counts.most_common():
+            print(f"  {error_type}: {count}")
+        print("\nFAILED SYMBOLS (first 10):")
         for f in summary.failures[:10]:
             msg = f["error_message"][:60] if f["error_message"] else "N/A"
             print(f"  {f['symbol']:<10} {f['error_type']:<12} {msg}")
