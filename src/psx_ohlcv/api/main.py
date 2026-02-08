@@ -12,12 +12,12 @@ Run with: uvicorn psx_ohlcv.api.main:app --reload --port 8000
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .routers import eod, tasks, symbols, market, company, instruments, fi, ws
+from .routers import eod, tasks, symbols, market, company, instruments, fi, ws, treasury, funds, rates
 
 app = FastAPI(
     title="PSX OHLCV API",
-    description="Backend API for PSX market data — EOD, company, instruments, fixed income",
-    version="2.0.0",
+    description="Backend API for PSX market data — EOD, company, instruments, fixed income, treasury, funds, FX rates",
+    version="3.0.0",
 )
 
 # CORS middleware for Streamlit frontend
@@ -37,6 +37,9 @@ app.include_router(market.router, prefix="/api/market", tags=["Market Data"])
 app.include_router(company.router, prefix="/api/company", tags=["Company Data"])
 app.include_router(instruments.router, prefix="/api/instruments", tags=["Instruments"])
 app.include_router(fi.router, prefix="/api/fi", tags=["Fixed Income"])
+app.include_router(treasury.router, prefix="/api/treasury", tags=["Treasury"])
+app.include_router(funds.router, prefix="/api/funds", tags=["Funds"])
+app.include_router(rates.router, prefix="/api/rates", tags=["Rates"])
 app.include_router(ws.router, prefix="/ws", tags=["WebSocket"])
 
 
@@ -45,7 +48,7 @@ def root():
     """API root endpoint."""
     return {
         "name": "PSX OHLCV API",
-        "version": "2.0.0",
+        "version": "3.0.0",
         "docs": "/docs",
     }
 
