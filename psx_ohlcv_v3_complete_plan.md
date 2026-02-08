@@ -309,7 +309,7 @@ src/psx_ohlcv/
 │   │   ├── rates.py          # 🆕 NEW
 │   │   └── market.py         # 🆕 NEW
 │
-├── ui/pages/                  # Existing Streamlit
+├── ui/page_views/                  # Existing Streamlit
 │   ├── dashboard.py          # ✅ EXISTS
 │   ├── ... (15 existing)     # ✅ EXISTS
 │   ├── treasury_dashboard.py # 🆕 NEW — T-Bill/PIB/Yield curves
@@ -1275,7 +1275,7 @@ Commit: "test: MCP server integration tests — all tools verified"
 ```
 TASK: Create a Treasury Market dashboard page.
 
-Create src/psx_ohlcv/ui/pages/treasury_dashboard.py
+Create src/psx_ohlcv/ui/page_views/treasury_dashboard.py
 
 Sections:
 1. YIELD CURVE CHART (plotly)
@@ -1306,7 +1306,7 @@ Commit: "feat: Treasury Market dashboard page"
 ```
 TASK: Create FX rates comparison dashboard.
 
-Create src/psx_ohlcv/ui/pages/fx_dashboard.py
+Create src/psx_ohlcv/ui/page_views/fx_dashboard.py
 
 Sections:
 1. RATE CARDS — For USD, EUR, GBP, SAR, AED:
@@ -1332,7 +1332,7 @@ Commit: "feat: FX rates comparison dashboard"
 ```
 TASK: Create mutual fund + ETF explorer page.
 
-Create src/psx_ohlcv/ui/pages/fund_explorer.py
+Create src/psx_ohlcv/ui/page_views/fund_explorer.py
 
 Sections:
 1. FUND FILTER SIDEBAR
@@ -1367,7 +1367,7 @@ Commit: "feat: mutual fund + ETF explorer page"
 ```
 TASK: Create data quality monitoring page.
 
-Create src/psx_ohlcv/ui/pages/data_quality.py
+Create src/psx_ohlcv/ui/page_views/data_quality.py
 
 This reuses the same logic as psxsync status but in a visual dashboard.
 
@@ -1397,7 +1397,7 @@ Commit: "feat: data quality dashboard page"
 ```
 TASK: Create a SQL research terminal page.
 
-Create src/psx_ohlcv/ui/pages/research_terminal.py
+Create src/psx_ohlcv/ui/page_views/research_terminal.py
 
 This is for power users who want to run custom SQL queries.
 

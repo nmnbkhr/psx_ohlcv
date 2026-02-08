@@ -339,7 +339,7 @@ pip install httpx  # if not already installed
 ```
 Update the Dashboard page (the most visible page) to use PSXClient.
 
-Read src/psx_ohlcv/ui/pages/dashboard.py and:
+Read src/psx_ohlcv/ui/page_views/dashboard.py and:
 1. Replace all direct db.connect() + db.get_xxx() calls with PSXClient calls
 2. Add at the top of the page:
    from psx_ohlcv.api_client import PSXClient
@@ -385,7 +385,7 @@ git commit -m "feat: Streamlit UI wired through PSXClient
 
 ### Prompt T5.1 — Live Market Page
 ```
-Create a new Streamlit page: src/psx_ohlcv/ui/pages/live_market.py
+Create a new Streamlit page: src/psx_ohlcv/ui/page_views/live_market.py
 
 This page shows:
 1. KSE-100 index with live value + change + sparkline
@@ -414,7 +414,7 @@ VERIFY:
 
 ### Prompt T6.1 — Data Quality Page
 ```
-Create src/psx_ohlcv/ui/pages/data_quality.py
+Create src/psx_ohlcv/ui/page_views/data_quality.py
 
 This page answers: "What data do I have, what's missing, what's stale?"
 

@@ -153,7 +153,7 @@ All 46 import sites (`from psx_ohlcv.db import ...`) continue working unchanged.
 - `chat_page` already extracted (imported from `psx_ohlcv.ui.chat`)
 
 ### Prompt 2.2 — Create Page Module Structure
-- Created `src/psx_ohlcv/ui/pages/` with 22 page stub files
+- Created `src/psx_ohlcv/ui/page_views/` with 22 page stub files
 - Created `src/psx_ohlcv/ui/components/` with 3 component stub files
 - Related pages grouped: fixed_income.py (9 pages), fx.py (2), funds.py (2)
 

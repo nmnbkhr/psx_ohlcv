@@ -662,21 +662,21 @@ Do NOT modify any code. Analysis only.
 ```
 Based on the analysis from 2.1, create the page module directory:
 
-mkdir -p src/psx_ohlcv/ui/pages
+mkdir -p src/psx_ohlcv/ui/page_views
 mkdir -p src/psx_ohlcv/ui/components
 
 Create empty files with docstrings:
-- src/psx_ohlcv/ui/pages/__init__.py
-- src/psx_ohlcv/ui/pages/dashboard.py
-- src/psx_ohlcv/ui/pages/candlestick.py
-- src/psx_ohlcv/ui/pages/intraday.py
-- src/psx_ohlcv/ui/pages/regular_market.py
-- src/psx_ohlcv/ui/pages/history.py
-- src/psx_ohlcv/ui/pages/symbols.py
-- src/psx_ohlcv/ui/pages/sync_monitor.py
-- src/psx_ohlcv/ui/pages/ai_insights.py
-- src/psx_ohlcv/ui/pages/company_deep.py
-- src/psx_ohlcv/ui/pages/settings.py
+- src/psx_ohlcv/ui/page_views/__init__.py
+- src/psx_ohlcv/ui/page_views/dashboard.py
+- src/psx_ohlcv/ui/page_views/candlestick.py
+- src/psx_ohlcv/ui/page_views/intraday.py
+- src/psx_ohlcv/ui/page_views/regular_market.py
+- src/psx_ohlcv/ui/page_views/history.py
+- src/psx_ohlcv/ui/page_views/symbols.py
+- src/psx_ohlcv/ui/page_views/sync_monitor.py
+- src/psx_ohlcv/ui/page_views/ai_insights.py
+- src/psx_ohlcv/ui/page_views/company_deep.py
+- src/psx_ohlcv/ui/page_views/settings.py
 - src/psx_ohlcv/ui/components/__init__.py
 - src/psx_ohlcv/ui/components/sidebar.py
 - src/psx_ohlcv/ui/components/helpers.py
@@ -714,7 +714,7 @@ Rules:
 6. The page should work when called as: render_[page_name]()
 
 In app.py, replace the page section with:
-  from psx_ohlcv.ui.pages.[page_name] import render_[page_name]
+  from psx_ohlcv.ui.page_views.[page_name] import render_[page_name]
   render_[page_name]()
 
 After EACH page extraction, verify the Streamlit app still starts:
@@ -735,7 +735,7 @@ If all pass:
   git add -A
   git commit -m "refactor: split app.py monolith into page modules
   
-  Created src/psx_ohlcv/ui/pages/ with individual page modules.
+  Created src/psx_ohlcv/ui/page_views/ with individual page modules.
   Created src/psx_ohlcv/ui/components/ for shared helpers.
   app.py reduced to ~300 lines (routing + shared state only).
   All UI functionality preserved."
@@ -1191,7 +1191,7 @@ Check where we are and branch:
 
 Confirm prerequisites:
   ls src/psx_ohlcv/db/__init__.py       # Phase 1
-  ls src/psx_ohlcv/ui/pages/ 2>/dev/null # Phase 2
+  ls src/psx_ohlcv/ui/page_views/ 2>/dev/null # Phase 2
   docker compose ps 2>/dev/null          # Phase 3
   ls src/psx_ohlcv/sources/async_fetcher.py 2>/dev/null  # Phase 4
   pytest tests/ -x --tb=short -q 2>&1 | tail -5
@@ -1435,7 +1435,7 @@ Final verification on dev:
   wc -l src/psx_ohlcv/db.py 2>/dev/null || echo "db.py replaced by db/ package ✓"
   wc -l src/psx_ohlcv/ui/app.py
   find src/psx_ohlcv/db/repositories/ -name "*.py" | wc -l
-  find src/psx_ohlcv/ui/pages/ -name "*.py" 2>/dev/null | wc -l
+  find src/psx_ohlcv/ui/page_views/ -name "*.py" 2>/dev/null | wc -l
 
 If all clean, tag the release:
   git tag -a v2.0.0 -m "Major refactor: modular DB, split UI, PostgreSQL, async, expanded API"
@@ -1783,7 +1783,7 @@ Diagnose:
        # page logic here
    
    In app.py:
-   from psx_ohlcv.ui.pages.dashboard import render_dashboard
+   from psx_ohlcv.ui.page_views.dashboard import render_dashboard
    render_dashboard(con, config)
 ```
 
@@ -2030,7 +2030,7 @@ Please help me reconstruct where we are:
 1. Run: cd ~/psx_ohlcv && git branch --show-current
 2. Run: git log --oneline -10
 3. Check if db/ package exists: ls -la src/psx_ohlcv/db/ 2>/dev/null || echo "db.py is still monolith"
-4. Check if pages exist: ls -la src/psx_ohlcv/ui/pages/ 2>/dev/null || echo "app.py is still monolith"
+4. Check if pages exist: ls -la src/psx_ohlcv/ui/page_views/ 2>/dev/null || echo "app.py is still monolith"
 5. Check Docker: docker compose ps 2>/dev/null || echo "No Docker yet"
 6. Check for async: ls src/psx_ohlcv/sources/async_fetcher.py 2>/dev/null || echo "No async yet"
 7. Run: wc -l src/psx_ohlcv/db.py 2>/dev/null || echo "db.py replaced by package"
