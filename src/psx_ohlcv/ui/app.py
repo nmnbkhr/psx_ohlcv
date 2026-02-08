@@ -640,6 +640,14 @@ def render_footer():
 
 
 # -----------------------------------------------------------------------------
+# Page: Live Market
+# -----------------------------------------------------------------------------
+def live_market_page():
+    from psx_ohlcv.ui.pages.live_market import render_live_market
+    render_live_market()
+
+
+# -----------------------------------------------------------------------------
 # Page: Dashboard
 # -----------------------------------------------------------------------------
 def dashboard():
@@ -923,6 +931,7 @@ def main():
     nav_groups = {
         "MARKET": [
             "📊 Dashboard",
+            "📡 Live Market",
             "📈 Market Summary",
         ],
         "EQUITY": [
@@ -1061,6 +1070,7 @@ def main():
     page_functions = {
         # MARKET
         "📊 Dashboard": dashboard,
+        "📡 Live Market": live_market_page,
         "📈 Market Summary": market_summary_page,
 
         # EQUITY
