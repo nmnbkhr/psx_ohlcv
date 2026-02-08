@@ -1154,11 +1154,17 @@ def main():
         "⚙️ Settings": settings_page,
     }
 
-    # Execute the selected page function
-    if page in page_functions:
-        page_functions[page]()
-    else:
-        st.error(f"Page not found: {page}")
+    # Execute the selected page function inside an atomic container.
+    # st.empty() ensures the ENTIRE previous page content is replaced
+    # on navigation, preventing "ghost" elements from longer pages
+    # bleeding into shorter ones (e.g. Dashboard content appearing
+    # below FI Overview).
+    page_slot = st.empty()
+    with page_slot.container():
+        if page in page_functions:
+            page_functions[page]()
+        else:
+            st.error(f"Page not found: {page}")
 
 
 if __name__ == "__main__":
