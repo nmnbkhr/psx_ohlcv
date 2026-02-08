@@ -8,7 +8,7 @@ Verifies that prompts contain all required sections:
 
 import pytest
 
-from psx_ohlcv.llm.prompts import (
+from psx_ohlcv.agents.prompts import (
     PromptBuilder,
     InsightMode,
     SYSTEM_PROMPT,

@@ -1,16 +1,21 @@
-"""Configuration and default paths."""
+"""Configuration and default paths.
+
+Paths are derived from ``settings.Settings`` so that env-var overrides
+(PSX_DATA_ROOT, PSX_DB_PATH) propagate everywhere automatically.
+"""
 
 import logging
 from dataclasses import dataclass, fields
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-# Data directory on persistent storage (E: drive in WSL)
-DATA_ROOT = Path("/mnt/e/psxdata")
+from .settings import get_settings as _get_settings
 
-# Default paths - all data in /mnt/e/psxdata
-DEFAULT_DB_PATH = DATA_ROOT / "psx.sqlite"
-DEFAULT_LOGS_DIR = DATA_ROOT / "logs"
+# Derive all paths from the central Settings singleton
+_s = _get_settings()
+DATA_ROOT = Path(_s.data_root)
+DEFAULT_DB_PATH = Path(_s.db_path)
+DEFAULT_LOGS_DIR = Path(_s.logs_dir)
 DEFAULT_LOG_FILE = DEFAULT_LOGS_DIR / "psxsync.log"
 
 # Logging config
