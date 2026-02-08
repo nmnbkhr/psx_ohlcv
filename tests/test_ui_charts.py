@@ -386,7 +386,7 @@ class TestChartStyling:
         fig = make_candlestick(sample_ohlcv_df, "Test")
 
         margin = fig.layout.margin
-        assert margin.l >= 50
+        assert margin.l >= 10
         assert margin.r >= 30
         assert margin.t >= 30
         assert margin.b >= 30

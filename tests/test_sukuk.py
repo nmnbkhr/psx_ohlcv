@@ -231,8 +231,8 @@ class TestSukukSync:
             seed_sukuk(db_path=db_path)
             summary = get_data_summary(db_path=db_path)
 
-            assert "total_sukuk" in summary
-            assert summary["total_sukuk"] > 0
+            assert "total_instruments" in summary
+            assert summary["total_instruments"] > 0
         finally:
             Path(db_path).unlink(missing_ok=True)
 

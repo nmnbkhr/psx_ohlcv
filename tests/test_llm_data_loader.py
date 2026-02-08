@@ -74,13 +74,17 @@ def db():
         );
 
         CREATE TABLE intraday_bars (
-            symbol TEXT,
-            timestamp TEXT,
+            symbol TEXT NOT NULL,
+            ts TEXT NOT NULL,
+            ts_epoch INTEGER NOT NULL,
             open REAL,
             high REAL,
             low REAL,
             close REAL,
-            volume INTEGER
+            volume REAL,
+            interval TEXT NOT NULL DEFAULT 'int',
+            ingested_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (symbol, ts)
         );
 
         CREATE TABLE psx_indices (
@@ -145,14 +149,15 @@ def populated_db(db):
 
     # Add intraday bars
     for i in range(100):
-        timestamp = f"2024-01-15 09:{30 + i // 2:02d}:{(i % 2) * 30:02d}"
+        ts = f"2024-01-15 09:{30 + i // 2:02d}:{(i % 2) * 30:02d}"
+        ts_epoch = 1705309800 + i * 30  # base epoch + 30s increments
         db.execute(
             """
             INSERT INTO intraday_bars
-            (symbol, timestamp, open, high, low, close, volume)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (symbol, ts, ts_epoch, open, high, low, close, volume)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("OGDC", timestamp, 100.0 + i * 0.1, 100.5 + i * 0.1, 99.5 + i * 0.1, 100.2 + i * 0.1, 10000),
+            ("OGDC", ts, ts_epoch, 100.0 + i * 0.1, 100.5 + i * 0.1, 99.5 + i * 0.1, 100.2 + i * 0.1, 10000),
         )
 
     db.commit()

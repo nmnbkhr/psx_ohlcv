@@ -51,8 +51,10 @@ class TestSyncIntraday:
         assert summary.error is None
         assert summary.newest_ts is not None
 
-        # Verify data in database
-        cur = db.execute("SELECT COUNT(*) FROM intraday_bars WHERE symbol='ABOT'")
+        # Verify data in database (sync_intraday closes the cached connection,
+        # so open a fresh one for verification)
+        con = connect(db_path)
+        cur = con.execute("SELECT COUNT(*) FROM intraday_bars WHERE symbol='ABOT'")
         assert cur.fetchone()[0] == 3
 
     def test_sync_intraday_empty_response(self, db_path, db):
@@ -193,8 +195,10 @@ class TestSyncIntraday:
                 symbol="ABOT",
             )
 
-        # Verify sync state was updated (returns tuple of (last_ts, last_ts_epoch))
-        last_ts, last_ts_epoch = get_intraday_sync_state(db, "ABOT")
+        # Verify sync state was updated (sync_intraday closes the cached connection,
+        # so open a fresh one for verification)
+        con = connect(db_path)
+        last_ts, last_ts_epoch = get_intraday_sync_state(con, "ABOT")
         assert last_ts is not None
         assert last_ts == summary.newest_ts
         assert last_ts_epoch == 1705320000

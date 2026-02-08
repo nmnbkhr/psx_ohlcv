@@ -13,6 +13,7 @@ dependencies = [
     "requests",
     "pandas",
     "lxml",
+    "tabulate",
 ]
 
 [project.scripts]
