@@ -47,3 +47,6 @@ from .treasury import *  # noqa: F401, F403
 
 # 12. yield_curves  (10 functions)
 from .yield_curves import *  # noqa: F401, F403
+
+# 13. fx_extended  (8 functions)
+from .fx_extended import *  # noqa: F401, F403

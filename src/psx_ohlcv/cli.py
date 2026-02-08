@@ -1879,6 +1879,32 @@ def main(argv: list[str] | None = None) -> int:
 
     rates_sub.add_parser("summary", help="Show rates data summary")
 
+    # =========================================================================
+    # v3.0: FX Extended commands (SBP interbank, open market, kerb)
+    # =========================================================================
+    fxe_parser = subparsers.add_parser(
+        "fx-rates",
+        help="FX rates — SBP interbank, open market, kerb (forex.pk)"
+    )
+    fxe_sub = fxe_parser.add_subparsers(
+        dest="fxe_command", required=True
+    )
+
+    fxe_sub.add_parser("sbp-sync", help="Scrape SBP interbank USD/PKR rates")
+    fxe_sub.add_parser("kerb-sync", help="Scrape kerb rates from forex.pk")
+    fxe_sub.add_parser("sync-all", help="Sync both SBP interbank and kerb rates")
+
+    fxe_latest_parser = fxe_sub.add_parser("latest", help="Show latest FX rates")
+    fxe_latest_parser.add_argument(
+        "--source", choices=["interbank", "kerb", "all"], default="all",
+        help="Rate source (default: all)"
+    )
+
+    fxe_spread_parser = fxe_sub.add_parser("spread", help="Show FX spread for a currency")
+    fxe_spread_parser.add_argument("currency", help="Currency code (e.g. USD, EUR)")
+
+    fxe_sub.add_parser("summary", help="Show FX data summary")
+
     args = parser.parse_args(argv)
 
     try:
@@ -1930,6 +1956,8 @@ def main(argv: list[str] | None = None) -> int:
             return handle_treasury(args)
         elif args.command == "rates":
             return handle_rates(args)
+        elif args.command == "fx-rates":
+            return handle_fx_rates(args)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         return 130
@@ -6032,6 +6060,105 @@ def handle_rates(args: argparse.Namespace) -> int:
             )
         print(f"  Yield curve points: {summary['curve_points']}")
         print(f"  KONIA history days: {summary['konia_days']}")
+        return 0
+
+    return 0
+
+
+def handle_fx_rates(args: argparse.Namespace) -> int:
+    """Handle fx-rates subcommands (SBP interbank, open market, kerb)."""
+    from .db.repositories.fx_extended import (
+        get_all_fx_latest,
+        get_fx_spread,
+        init_fx_extended_schema,
+    )
+    from .sources.forex_scraper import ForexPKScraper
+    from .sources.sbp_fx import SBPFXScraper
+
+    con = connect(args.db)
+    init_schema(con)
+    init_fx_extended_schema(con)
+
+    if args.fxe_command == "sbp-sync":
+        print("Scraping SBP interbank USD/PKR rates...")
+        scraper = SBPFXScraper()
+        result = scraper.sync_interbank(con)
+        print(f"Done: {result['ok']} OK, {result['failed']} failed (total {result['total']})")
+        return 0
+
+    elif args.fxe_command == "kerb-sync":
+        print("Scraping kerb rates from forex.pk...")
+        scraper = ForexPKScraper()
+        result = scraper.sync_kerb(con)
+        print(f"Done: {result['ok']} OK, {result['failed']} failed (total {result['total']})")
+        return 0
+
+    elif args.fxe_command == "sync-all":
+        print("Syncing SBP interbank + kerb rates...")
+        sbp = SBPFXScraper()
+        r1 = sbp.sync_interbank(con)
+        print(f"  SBP interbank: {r1['ok']} OK")
+
+        kerb = ForexPKScraper()
+        r2 = kerb.sync_kerb(con)
+        print(f"  Kerb (forex.pk): {r2['ok']} OK")
+        print(f"Done: {r1['ok'] + r2['ok']} total rates synced")
+        return 0
+
+    elif args.fxe_command == "latest":
+        if args.source in ("interbank", "all"):
+            df = get_all_fx_latest(con, source="interbank")
+            if not df.empty:
+                print(f"\n  SBP Interbank Rates")
+                print(f"  {'Currency':>8s}  {'Buying':>10s}  {'Selling':>10s}  {'Date':>12s}")
+                for _, row in df.iterrows():
+                    print(
+                        f"  {row['currency']:>8s}  {row['buying']:>10.2f}  "
+                        f"{row['selling']:>10.2f}  {row['date']:>12s}"
+                    )
+            else:
+                print("  No interbank data. Run 'psxsync fx-rates sbp-sync' first.")
+
+        if args.source in ("kerb", "all"):
+            df = get_all_fx_latest(con, source="kerb")
+            if not df.empty:
+                print(f"\n  Kerb / Open Market Rates (forex.pk)")
+                print(f"  {'Currency':>8s}  {'Buying':>10s}  {'Selling':>10s}  {'Date':>12s}")
+                for _, row in df.iterrows():
+                    print(
+                        f"  {row['currency']:>8s}  {row['buying']:>10.2f}  "
+                        f"{row['selling']:>10.2f}  {row['date']:>12s}"
+                    )
+            else:
+                print("  No kerb data. Run 'psxsync fx-rates kerb-sync' first.")
+        return 0
+
+    elif args.fxe_command == "spread":
+        spread = get_fx_spread(con, args.currency)
+        print(f"\n  FX Spread for {spread['currency']}")
+        for source_name in ("interbank", "open_market", "kerb"):
+            rate = spread[source_name]
+            if rate:
+                print(
+                    f"  {source_name:>12s}:  Buy {rate['buying']:.2f}  "
+                    f"Sell {rate['selling']:.2f}  ({rate['date']})"
+                )
+            else:
+                print(f"  {source_name:>12s}:  No data")
+        return 0
+
+    elif args.fxe_command == "summary":
+        ib = get_all_fx_latest(con, source="interbank")
+        kerb = get_all_fx_latest(con, source="kerb")
+        print(f"\n{'='*50}")
+        print("  FX Rates Summary")
+        print(f"{'='*50}")
+        print(f"  Interbank currencies: {len(ib)}")
+        print(f"  Kerb currencies:      {len(kerb)}")
+        if not ib.empty:
+            print(f"  Latest interbank:     {ib.iloc[0]['date']}")
+        if not kerb.empty:
+            print(f"  Latest kerb:          {kerb.iloc[0]['date']}")
         return 0
 
     return 0
