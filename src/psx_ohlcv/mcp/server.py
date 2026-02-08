@@ -1387,6 +1387,338 @@ _HANDLERS = {
 }
 
 
+# ─── RESOURCES ─────────────────────────────────────────────────────
+
+@server.list_resources()
+async def list_resources() -> list[types.Resource]:
+    return [
+        types.Resource(
+            uri="psx://schema",
+            name="Database Schema",
+            description="Complete SQLite schema for all PSX data tables",
+            mimeType="text/plain",
+        ),
+        types.Resource(
+            uri="psx://symbols",
+            name="Symbol Master List",
+            description="All PSX stock symbols with name, sector, and status",
+            mimeType="text/plain",
+        ),
+        types.Resource(
+            uri="psx://data-dictionary",
+            name="Data Dictionary",
+            description="Column descriptions for key tables",
+            mimeType="text/plain",
+        ),
+        types.Resource(
+            uri="psx://trading-calendar",
+            name="Trading Calendar",
+            description="PSX trading days available in the database",
+            mimeType="text/plain",
+        ),
+    ]
+
+
+@server.read_resource()
+async def read_resource(uri: str) -> str:
+    con = get_db()
+    try:
+        if uri == "psx://schema":
+            tables = con.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' ORDER BY name"
+            ).fetchall()
+            return "\n\n".join(row[0] for row in tables if row[0])
+
+        elif uri == "psx://symbols":
+            rows = con.execute(
+                "SELECT symbol, name, sector_name, is_active FROM symbols ORDER BY symbol"
+            ).fetchall()
+            lines = ["symbol | name | sector | active"]
+            lines.extend(
+                f"{r['symbol']} | {r['name']} | {r['sector_name']} | {r['is_active']}"
+                for r in rows
+            )
+            return "\n".join(lines)
+
+        elif uri == "psx://data-dictionary":
+            return _DATA_DICTIONARY
+
+        elif uri == "psx://trading-calendar":
+            rows = con.execute(
+                "SELECT DISTINCT date FROM eod_ohlcv ORDER BY date DESC LIMIT 500"
+            ).fetchall()
+            lines = [f"Trading days in database ({len(rows)} most recent):"]
+            lines.extend(r["date"] for r in rows)
+            return "\n".join(lines)
+
+        return f"Unknown resource: {uri}"
+    finally:
+        con.close()
+
+
+_DATA_DICTIONARY = """\
+# PSX OHLCV Data Dictionary
+
+## eod_ohlcv — End of Day OHLCV
+- symbol: PSX stock ticker (e.g., OGDC, HBL)
+- date: Trading date (YYYY-MM-DD)
+- open/high/low/close: Price in PKR
+- volume: Number of shares traded
+- prev_close: Previous day close (often NULL — use self-join instead)
+- sector_code: Sector code from market summary
+- source: Data origin (market_summary, closing_rates_pdf, per_symbol_api)
+
+## symbols — Master symbol list
+- symbol: PSX stock ticker (PRIMARY KEY)
+- name: Full company name
+- sector/sector_name: Sector code and description
+- outstanding_shares: Total shares outstanding
+- is_active: 1 = currently trading
+
+## company_fundamentals — Latest company metrics
+- symbol: PSX ticker
+- price/change/change_pct: Latest price data
+- market_cap: Market capitalization (thousands PKR)
+- pe_ratio: Price to earnings ratio
+- total_shares/free_float_shares/free_float_pct: Float data
+- wk52_low/wk52_high: 52-week trading range
+- ytd_change_pct/one_year_change_pct: Performance metrics
+
+## psx_indices — Index data
+- index_code: KSE100, KSE30, KMI30, ALLSHR
+- value: Current index value
+- change/change_pct: Daily change
+
+## mutual_funds — Fund master data
+- fund_id: Unique identifier (e.g., MUFAP:ABL-ISF)
+- fund_type: OPEN_END, VPS, ETF
+- category: Equity, Money Market, Income, etc.
+- is_shariah: 1 = Shariah-compliant
+
+## mutual_fund_nav — Fund NAV time series
+- fund_id + date: Composite key
+- nav: Net Asset Value per unit
+- offer_price/redemption_price: Entry/exit prices
+
+## pkrv_daily — PKRV yield curve
+- date + tenor_months: Composite key
+- yield_pct: Yield percentage
+
+## tbill_auctions / pib_auctions — Treasury auctions
+- auction_date + tenor: Key fields
+- cutoff_yield/cutoff_price: Auction results
+- amount_accepted_billions: Volume
+
+## kibor_daily — Interbank offered rate
+- date + tenor: Key fields
+- bid/offer: Rate percentages
+
+## company_payouts — Dividend/bonus history
+- symbol + ex_date + payout_type: Composite key
+- amount: Cash dividend per share or bonus percentage
+"""
+
+
+# ─── PROMPTS ───────────────────────────────────────────────────────
+
+@server.list_prompts()
+async def list_prompts() -> list[types.Prompt]:
+    return [
+        types.Prompt(
+            name="daily_market_brief",
+            description="Generate a comprehensive morning market brief for Pakistan's financial markets",
+            arguments=[],
+        ),
+        types.Prompt(
+            name="stock_deep_dive",
+            description="Comprehensive single-stock analysis",
+            arguments=[
+                types.PromptArgument(
+                    name="symbol", description="PSX stock symbol", required=True
+                ),
+            ],
+        ),
+        types.Prompt(
+            name="portfolio_review",
+            description="Multi-stock portfolio analysis",
+            arguments=[
+                types.PromptArgument(
+                    name="symbols",
+                    description="Comma-separated PSX stock symbols",
+                    required=True,
+                ),
+            ],
+        ),
+        types.Prompt(
+            name="sector_rotation",
+            description="Cross-sector comparison and rotation analysis",
+            arguments=[],
+        ),
+        types.Prompt(
+            name="yield_curve_analysis",
+            description="Fixed income landscape and yield curve analysis",
+            arguments=[],
+        ),
+        types.Prompt(
+            name="fx_outlook",
+            description="Currency market overview — PKR rates across sources",
+            arguments=[],
+        ),
+    ]
+
+
+@server.get_prompt()
+async def get_prompt(name: str, arguments: dict | None = None) -> types.GetPromptResult:
+    arguments = arguments or {}
+
+    if name == "daily_market_brief":
+        return types.GetPromptResult(
+            messages=[types.PromptMessage(
+                role="user",
+                content=types.TextContent(type="text", text="""\
+Execute these tools and synthesize into a professional market brief:
+
+1. get_market_snapshot() — Get today's market data
+2. get_top_movers(n=10, direction="both") — Top gainers and losers
+3. get_sector_performance() — Sector rotation
+4. get_fx_rates(currency="USD") — USD/PKR rate
+5. get_latest_yields() — Treasury yields
+6. get_kibor() — Interbank rates
+
+Format the output as a professional market brief with:
+- Market headline (1 line)
+- Index performance (KSE-100, KSE-30, KMI-30)
+- Top movers table
+- Sector highlights
+- Fixed income snapshot
+- Currency update
+"""),
+            )],
+        )
+
+    elif name == "stock_deep_dive":
+        symbol = arguments.get("symbol", "OGDC")
+        return types.GetPromptResult(
+            messages=[types.PromptMessage(
+                role="user",
+                content=types.TextContent(type="text", text=f"""\
+Perform a comprehensive analysis of {symbol}:
+
+1. get_company_profile(symbol="{symbol}") — Company overview
+2. get_eod(symbol="{symbol}", limit=30) — Last 30 trading days
+3. calculate_returns(symbol="{symbol}") — Multi-period returns
+4. get_correlation(symbol1="{symbol}", symbol2="KSE100", days=180) — Market correlation
+
+Provide:
+- Company overview and sector positioning
+- Price action and volume analysis
+- Technical levels (support/resistance from data)
+- Return profile vs market
+- Key risks and catalysts
+"""),
+            )],
+        )
+
+    elif name == "portfolio_review":
+        symbols_str = arguments.get("symbols", "OGDC,HBL,LUCK")
+        symbols = [s.strip() for s in symbols_str.split(",")]
+        tool_calls = "\n".join(
+            f'{i+1}. calculate_returns(symbol="{s}")' for i, s in enumerate(symbols)
+        )
+        return types.GetPromptResult(
+            messages=[types.PromptMessage(
+                role="user",
+                content=types.TextContent(type="text", text=f"""\
+Analyze this portfolio: {', '.join(symbols)}
+
+1. compare_securities(symbols={json.dumps(symbols)})
+{tool_calls}
+{len(symbols)+2}. get_sector_performance()
+
+Provide:
+- Portfolio composition and sector exposure
+- Individual stock performance
+- Correlation between holdings
+- Portfolio-level returns
+- Rebalancing suggestions
+"""),
+            )],
+        )
+
+    elif name == "sector_rotation":
+        return types.GetPromptResult(
+            messages=[types.PromptMessage(
+                role="user",
+                content=types.TextContent(type="text", text="""\
+Analyze sector rotation in Pakistan's equity market:
+
+1. get_sector_performance() — Current sector returns
+2. get_market_snapshot() — Overall market context
+3. screen_stocks(limit=10) — Top stocks by market cap
+
+Provide:
+- Sector ranking by performance
+- Leading and lagging sectors
+- Volume analysis by sector
+- Sector rotation signals
+- Top picks from leading sectors
+"""),
+            )],
+        )
+
+    elif name == "yield_curve_analysis":
+        return types.GetPromptResult(
+            messages=[types.PromptMessage(
+                role="user",
+                content=types.TextContent(type="text", text="""\
+Analyze Pakistan's fixed income landscape:
+
+1. get_yield_curve(curve_type="pkrv") — Current PKRV yield curve
+2. get_latest_yields() — All yield benchmarks
+3. get_tbill_auctions() — Recent T-Bill auctions
+4. get_pib_auctions() — Recent PIB auctions
+5. get_policy_rate(history=true) — SBP policy rate trajectory
+
+Provide:
+- Yield curve shape analysis (normal/inverted/flat)
+- Key rate levels across tenors
+- Monetary policy direction
+- Auction demand trends
+- Rate outlook
+"""),
+            )],
+        )
+
+    elif name == "fx_outlook":
+        return types.GetPromptResult(
+            messages=[types.PromptMessage(
+                role="user",
+                content=types.TextContent(type="text", text="""\
+Analyze Pakistan's currency market:
+
+1. get_fx_rates(source="all") — All FX sources
+2. get_fx_spread(currency="USD") — USD spread across sources
+3. get_fx_spread(currency="EUR") — EUR spread
+4. get_fx_spread(currency="GBP") — GBP spread
+5. get_policy_rate() — SBP policy rate context
+
+Provide:
+- USD/PKR rate across interbank, open market, and kerb
+- Spread analysis (interbank vs kerb premium)
+- Major currency pair rates
+- Policy rate context for currency outlook
+"""),
+            )],
+        )
+
+    return types.GetPromptResult(
+        messages=[types.PromptMessage(
+            role="user",
+            content=types.TextContent(type="text", text=f"Unknown prompt: {name}"),
+        )],
+    )
+
+
 # ─── ENTRY POINT ───────────────────────────────────────────────────
 
 async def main():
