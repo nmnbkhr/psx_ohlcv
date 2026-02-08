@@ -91,6 +91,10 @@ def init_schema(con: sqlite3.Connection) -> None:
     _migrate_eod_ohlcv_table(con)
     _migrate_scrape_jobs_table(con)
 
+    # Initialize new domain schemas (v3.0+)
+    from .repositories.etf import init_etf_schema
+    init_etf_schema(con)
+
 
 def _migrate_symbols_table(con: sqlite3.Connection) -> None:
     """Add new columns to symbols table if they don't exist."""

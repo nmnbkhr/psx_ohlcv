@@ -1809,6 +1809,23 @@ def main(argv: list[str] | None = None) -> int:
         help="Sync interval in seconds (default: 3600 = 1 hour)",
     )
 
+    # =========================================================================
+    # v3.0: ETF commands
+    # =========================================================================
+    etf_parser = subparsers.add_parser(
+        "etf",
+        help="ETF data collection (v3.0: NAV, metadata, premium/discount)"
+    )
+    etf_sub = etf_parser.add_subparsers(dest="etf_command", required=True)
+
+    etf_sub.add_parser("sync", help="Scrape all ETFs from PSX DPS")
+    etf_sub.add_parser("list", help="List all ETFs with latest NAV")
+
+    etf_show_parser = etf_sub.add_parser("show", help="Show ETF detail")
+    etf_show_parser.add_argument(
+        "symbol", type=str, help="ETF symbol (e.g., MZNPETF)"
+    )
+
     args = parser.parse_args(argv)
 
     try:
@@ -1853,6 +1870,9 @@ def main(argv: list[str] | None = None) -> int:
         # Phase 3.5: Fixed Income commands
         elif args.command == "fixed-income":
             return handle_fixed_income(args)
+        # v3.0 commands
+        elif args.command == "etf":
+            return handle_etf(args)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         return 130
@@ -5708,6 +5728,64 @@ def handle_fi_service(args: argparse.Namespace) -> int:
         return EXIT_SUCCESS if success else EXIT_ERROR
 
     return EXIT_ERROR
+
+
+def handle_etf(args: argparse.Namespace) -> int:
+    """Handle ETF subcommands."""
+    from .db.repositories.etf import (
+        get_all_etf_latest_nav,
+        get_etf_detail,
+        get_etf_list,
+        init_etf_schema,
+    )
+    from .sources.etf_scraper import ETFScraper
+
+    con = connect(args.db)
+    init_schema(con)
+    init_etf_schema(con)
+
+    if args.etf_command == "sync":
+        print("Scraping ETF data from PSX DPS...")
+        scraper = ETFScraper()
+        result = scraper.sync_all_etfs(con)
+        print(
+            f"Done: {result['ok']}/{result['total']} ETFs synced, "
+            f"{result['failed']} failed"
+        )
+        return 0
+
+    elif args.etf_command == "list":
+        df = get_all_etf_latest_nav(con)
+        if df.empty:
+            print("No ETF data. Run 'psxsync etf sync' first.")
+            return 0
+        print(df.to_string(index=False))
+        return 0
+
+    elif args.etf_command == "show":
+        symbol = args.symbol.upper()
+        detail = get_etf_detail(con, symbol)
+        if not detail:
+            print(f"ETF {symbol} not found. Run 'psxsync etf sync' first.")
+            return 1
+        print(f"\n{'='*50}")
+        print(f"  {detail['symbol']} — {detail['name']}")
+        print(f"{'='*50}")
+        print(f"  AMC:         {detail.get('amc', 'N/A')}")
+        print(f"  Benchmark:   {detail.get('benchmark_index', 'N/A')}")
+        print(f"  Inception:   {detail.get('inception_date', 'N/A')}")
+        print(f"  Mgmt Fee:    {detail.get('management_fee', 'N/A')}")
+        print(f"  Shariah:     {'Yes' if detail.get('shariah_compliant') else 'No'}")
+        if detail.get("latest_nav"):
+            nav = detail["latest_nav"]
+            print(f"\n  Latest NAV ({nav.get('date', 'N/A')}):")
+            print(f"    iNAV:      {nav.get('nav', 'N/A')}")
+            print(f"    Mkt Price: {nav.get('market_price', 'N/A')}")
+            print(f"    Prem/Disc: {nav.get('premium_discount', 'N/A')}%")
+            print(f"    AUM:       {nav.get('aum_millions', 'N/A')} M")
+        return 0
+
+    return 0
 
 
 if __name__ == "__main__":

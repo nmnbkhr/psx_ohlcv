@@ -38,3 +38,6 @@ from .jobs import *  # noqa: F401, F403
 
 # 9. user  (5 functions — canonical for get_symbol_activity)
 from .user import *  # noqa: F401, F403
+
+# 10. etf  (7 functions)
+from .etf import *  # noqa: F401, F403
