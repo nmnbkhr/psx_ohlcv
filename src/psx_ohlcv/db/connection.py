@@ -95,6 +95,9 @@ def init_schema(con: sqlite3.Connection) -> None:
     from .repositories.etf import init_etf_schema
     init_etf_schema(con)
 
+    from .repositories.treasury import init_treasury_schema
+    init_treasury_schema(con)
+
 
 def _migrate_symbols_table(con: sqlite3.Connection) -> None:
     """Add new columns to symbols table if they don't exist."""

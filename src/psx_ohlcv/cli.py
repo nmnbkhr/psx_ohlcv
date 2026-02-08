@@ -1826,6 +1826,33 @@ def main(argv: list[str] | None = None) -> int:
         "symbol", type=str, help="ETF symbol (e.g., MZNPETF)"
     )
 
+    # =========================================================================
+    # v3.0: Treasury commands (T-Bill + PIB auctions)
+    # =========================================================================
+    treasury_parser = subparsers.add_parser(
+        "treasury",
+        help="Treasury auction data (T-Bills, PIBs from SBP)"
+    )
+    treasury_sub = treasury_parser.add_subparsers(
+        dest="treasury_command", required=True
+    )
+
+    treasury_sub.add_parser("sync", help="Scrape latest T-Bill + PIB rates from SBP")
+    treasury_sub.add_parser("tbill-latest", help="Show latest T-Bill cutoff yields")
+    treasury_sub.add_parser("pib-latest", help="Show latest PIB cutoff yields")
+
+    treasury_list_parser = treasury_sub.add_parser(
+        "tbill-list", help="List T-Bill auction history"
+    )
+    treasury_list_parser.add_argument(
+        "--tenor", type=str, help="Filter by tenor (e.g., 3M, 6M, 12M)"
+    )
+    treasury_list_parser.add_argument(
+        "--limit", type=int, default=20, help="Max rows (default: 20)"
+    )
+
+    treasury_sub.add_parser("summary", help="Show treasury data summary")
+
     args = parser.parse_args(argv)
 
     try:
@@ -1873,6 +1900,8 @@ def main(argv: list[str] | None = None) -> int:
         # v3.0 commands
         elif args.command == "etf":
             return handle_etf(args)
+        elif args.command == "treasury":
+            return handle_treasury(args)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         return 130
@@ -5783,6 +5812,86 @@ def handle_etf(args: argparse.Namespace) -> int:
             print(f"    Mkt Price: {nav.get('market_price', 'N/A')}")
             print(f"    Prem/Disc: {nav.get('premium_discount', 'N/A')}%")
             print(f"    AUM:       {nav.get('aum_millions', 'N/A')} M")
+        return 0
+
+    return 0
+
+
+def handle_treasury(args: argparse.Namespace) -> int:
+    """Handle treasury subcommands (T-Bill + PIB auctions)."""
+    from .db.repositories.treasury import (
+        get_latest_pib_yields,
+        get_latest_tbill_yields,
+        get_tbill_auctions,
+        init_treasury_schema,
+    )
+    from .sources.sbp_treasury import SBPTreasuryScraper
+
+    con = connect(args.db)
+    init_schema(con)
+    init_treasury_schema(con)
+
+    if args.treasury_command == "sync":
+        print("Scraping latest T-Bill + PIB rates from SBP PMA page...")
+        scraper = SBPTreasuryScraper()
+        result = scraper.sync_treasury(con)
+        print(
+            f"Done: {result['tbills_ok']} T-Bills, {result['pibs_ok']} PIBs saved, "
+            f"{result['failed']} failed"
+        )
+        if result["auction_date"]:
+            print(f"Auction date: {result['auction_date']}")
+        return 0
+
+    elif args.treasury_command == "tbill-latest":
+        yields = get_latest_tbill_yields(con)
+        if not yields:
+            print("No T-Bill data. Run 'psxsync treasury sync' first.")
+            return 0
+        print(f"\n{'='*50}")
+        print("  Latest T-Bill Cutoff Yields")
+        print(f"{'='*50}")
+        for tenor, data in sorted(yields.items()):
+            print(
+                f"  {tenor:>4s}:  {data.get('cutoff_yield', 'N/A'):>8}%  "
+                f"(auction: {data.get('auction_date', 'N/A')})"
+            )
+        return 0
+
+    elif args.treasury_command == "pib-latest":
+        yields = get_latest_pib_yields(con)
+        if not yields:
+            print("No PIB data. Run 'psxsync treasury sync' first.")
+            return 0
+        print(f"\n{'='*50}")
+        print("  Latest PIB Cutoff Yields")
+        print(f"{'='*50}")
+        for key, data in sorted(yields.items()):
+            tenor = data.get("tenor", key)
+            pib_type = data.get("pib_type", "Fixed")
+            print(
+                f"  {tenor:>4s} ({pib_type}):  {data.get('cutoff_yield', 'N/A'):>8}%  "
+                f"(auction: {data.get('auction_date', 'N/A')})"
+            )
+        return 0
+
+    elif args.treasury_command == "tbill-list":
+        df = get_tbill_auctions(con, tenor=args.tenor)
+        if df.empty:
+            print("No T-Bill auction data. Run 'psxsync treasury sync' first.")
+            return 0
+        print(df.head(args.limit).to_string(index=False))
+        return 0
+
+    elif args.treasury_command == "summary":
+        scraper = SBPTreasuryScraper()
+        summary = scraper.get_summary(con)
+        print(f"\n{'='*50}")
+        print("  Treasury Data Summary")
+        print(f"{'='*50}")
+        print(f"  T-Bill tenors: {summary['tbill_tenors']}")
+        print(f"  PIB tenors:    {summary['pib_tenors']}")
+        print(f"  Total T-Bill auction records: {summary['total_tbill_records']}")
         return 0
 
     return 0
