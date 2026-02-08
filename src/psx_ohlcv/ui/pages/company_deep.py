@@ -4,13 +4,7 @@ import pandas as pd
 import streamlit as st
 import time
 
-from psx_ohlcv.query import (
-    get_company_latest_signals,
-    get_company_quote_stats,
-    get_company_quotes,
-    get_symbols_list,
-    get_symbols_with_profiles,
-)
+from psx_ohlcv.api_client import get_client
 from psx_ohlcv.sources.deep_scraper import deep_scrape_symbol
 from psx_ohlcv.ui.session_tracker import (
     track_button_click,
@@ -20,7 +14,6 @@ from psx_ohlcv.ui.session_tracker import (
 )
 from psx_ohlcv.ui.components.helpers import (
     format_volume,
-    get_connection,
     render_footer,
 )
 
@@ -28,14 +21,15 @@ from psx_ohlcv.ui.components.helpers import (
 def render_company_deep():
     """Company Analytics page for deep-dive into individual stocks."""
 
-    con = get_connection()
+    client = get_client()
+    con = client.connection  # For session tracking and raw SQL
     track_page_visit(con, "Company Analytics")
 
     # =================================================================
     # SEARCH BAR - Bloomberg Terminal Style
     # =================================================================
-    all_symbols = get_symbols_list(con)
-    symbols_with_profiles = get_symbols_with_profiles(con)
+    all_symbols = client.get_symbols()
+    symbols_with_profiles = client.get_symbols_with_profiles()
     default_symbol = st.session_state.get("company_symbol", "")
 
     # Compact search bar
@@ -114,10 +108,9 @@ def render_company_deep():
     # =================================================================
     # FETCH DATA
     # =================================================================
-    from psx_ohlcv.db import get_company_unified
-    unified_data = get_company_unified(con, symbol)
-    signals = get_company_latest_signals(con, symbol)
-    quote_stats = get_company_quote_stats(con, symbol)
+    unified_data = client.get_company_overview(symbol)
+    signals = client.get_company_latest_signals(symbol)
+    quote_stats = client.get_company_quote_stats(symbol)
 
     if not unified_data:
         st.markdown(f"""
@@ -482,7 +475,7 @@ def render_company_deep():
     st.subheader("📈 Charts")
 
     # Get quote history for charts
-    quotes_df = get_company_quotes(con, symbol, limit=100)
+    quotes_df = client.get_company_quotes(symbol, limit=100)
 
     if not quotes_df.empty and len(quotes_df) > 1:
         import plotly.graph_objects as go
@@ -557,16 +550,10 @@ def render_company_deep():
     st.markdown("---")
     st.subheader("📊 Financial Data")
 
-    # Fetch financial data from new tables
-    from psx_ohlcv.db import (
-        get_company_financials as get_financials_df,
-        get_company_ratios as get_ratios_df,
-        get_company_payouts as get_payouts_df,
-    )
-
-    financials_df = get_financials_df(con, symbol)
-    ratios_df = get_ratios_df(con, symbol)
-    payouts_df = get_payouts_df(con, symbol)
+    # Fetch financial data
+    financials_df = client.get_company_financials(symbol)
+    ratios_df = client.get_company_ratios(symbol)
+    payouts_df = client.get_company_payouts(symbol)
 
     has_financial_data = (
         not financials_df.empty or

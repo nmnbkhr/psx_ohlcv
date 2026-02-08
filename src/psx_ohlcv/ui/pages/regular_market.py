@@ -4,17 +4,14 @@ import streamlit as st
 
 from psx_ohlcv.analytics import (
     get_current_market_with_sectors,
-    get_latest_market_analytics,
-    get_top_list,
-    init_analytics_schema,
 )
+from psx_ohlcv.api_client import get_client
 from psx_ohlcv.ui.charts import (
     make_market_breadth_chart,
     make_top_movers_chart,
 )
 from psx_ohlcv.ui.components.helpers import (
     EXPORTS_DIR,
-    get_connection,
     render_footer,
     render_market_status_badge,
 )
@@ -43,9 +40,10 @@ def render_regular_market():
             upsert_current,
         )
 
-        con = get_connection()
+        client = get_client()
+        con = client.connection  # For write operations (fetch, upsert, snapshots)
         init_regular_market_schema(con)
-        init_analytics_schema(con)
+        client.init_analytics()
 
         # Initialize session state
         if "rm_fetch_result" not in st.session_state:
@@ -167,7 +165,7 @@ def render_regular_market():
         # Market overview using pre-computed analytics
         st.subheader("📈 Market Overview")
 
-        market_analytics = get_latest_market_analytics(con)
+        market_analytics = client.get_latest_market_analytics()
         if market_analytics:
             total_symbols = market_analytics.get("total_symbols", len(df))
             gainers = market_analytics.get("gainers_count", 0)
@@ -203,7 +201,7 @@ def render_regular_market():
 
             with col2:
                 # Use analytics table for top gainers
-                top_gainers_df = get_top_list(con, "gainers", limit=5)
+                top_gainers_df = client.get_top_list("gainers", limit=5)
                 if top_gainers_df.empty:
                     top_gainers_df = df.nlargest(5, "change_pct")[
                         ["symbol", "change_pct"]
@@ -227,7 +225,7 @@ def render_regular_market():
 
             with col3:
                 # Use analytics table for top losers
-                top_losers_df = get_top_list(con, "losers", limit=5)
+                top_losers_df = client.get_top_list("losers", limit=5)
                 if top_losers_df.empty:
                     top_losers_df = df.nsmallest(5, "change_pct")[
                         ["symbol", "change_pct"]

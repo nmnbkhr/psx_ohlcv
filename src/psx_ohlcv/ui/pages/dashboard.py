@@ -10,14 +10,8 @@ except ImportError:
     HAS_AUTOREFRESH = False
     st_autorefresh = None
 
-from psx_ohlcv.analytics import (
-    get_latest_market_analytics,
-    get_sector_leaderboard,
-    get_top_list,
-    init_analytics_schema,
-)
+from psx_ohlcv.api_client import get_client
 from psx_ohlcv.config import get_db_path
-from psx_ohlcv.db import get_latest_kse100
 from psx_ohlcv.services import (
     is_service_running,
     read_status as read_service_status,
@@ -30,8 +24,6 @@ from psx_ohlcv.ui.components.helpers import (
     check_data_staleness,
     DATA_QUALITY_NOTICE,
     format_volume,
-    get_connection,
-    get_data_freshness,
     get_freshness_badge,
     render_data_info,
     render_data_warning,
@@ -52,7 +44,8 @@ def render_dashboard():
         st_autorefresh(interval=60000, limit=None, key="dashboard_autorefresh")
 
     try:
-        con = get_connection()
+        client = get_client()
+        con = client.connection  # For raw SQL pass-through
 
         # =================================================================
         # HEADER: Title + Market Status + Data Freshness
@@ -69,7 +62,7 @@ def render_dashboard():
 
         with header_col3:
             # Data Freshness + Service Status
-            days_old, latest_date = get_data_freshness(con)
+            days_old, latest_date = client.get_data_freshness()
             badge_color, badge_text = get_freshness_badge(days_old)
             service_status = read_service_status()
             if latest_date:
@@ -100,7 +93,7 @@ def render_dashboard():
         # =================================================================
         try:
             # Try to get real KSE-100 index data first
-            kse100_data = get_latest_kse100(con)
+            kse100_data = client.get_latest_kse100()
 
             # Get market breadth data - use eod_ohlcv for reliable data
             market_perf = con.execute("""
@@ -646,11 +639,12 @@ def render_dashboard():
         # Market Breadth and Top Movers (from analytics tables)
         try:
             from psx_ohlcv.sources.regular_market import init_regular_market_schema
-            init_regular_market_schema(con)
-            init_analytics_schema(con)
+            if con:
+                init_regular_market_schema(con)
+            client.init_analytics()
 
             # Get analytics from pre-computed tables
-            market_analytics = get_latest_market_analytics(con)
+            market_analytics = client.get_latest_market_analytics()
 
             if market_analytics:
                 st.subheader("\U0001f4c8 Market Overview")
@@ -677,7 +671,7 @@ def render_dashboard():
 
                 with col2:
                     # Top 5 Gainers from analytics table
-                    top_gainers_df = get_top_list(con, "gainers", limit=5)
+                    top_gainers_df = client.get_top_list("gainers", limit=5)
                     if not top_gainers_df.empty:
                         gainers_fig = make_top_movers_chart(
                             top_gainers_df[["symbol", "change_pct"]],
@@ -698,7 +692,7 @@ def render_dashboard():
 
                 with col3:
                     # Top 5 Losers from analytics table
-                    top_losers_df = get_top_list(con, "losers", limit=5)
+                    top_losers_df = client.get_top_list("losers", limit=5)
                     if not top_losers_df.empty:
                         losers_fig = make_top_movers_chart(
                             top_losers_df[["symbol", "change_pct"]],
@@ -721,7 +715,7 @@ def render_dashboard():
 
                 # Sector Leaderboard
                 st.subheader("\U0001f4ca Sector Performance")
-                sector_df = get_sector_leaderboard(con)
+                sector_df = client.get_sector_leaderboard()
                 if not sector_df.empty:
                     # Display sector table
                     display_cols = [
@@ -761,16 +755,7 @@ def render_dashboard():
 
         # Recent sync runs table (limit 10)
         st.subheader("Recent Sync Runs")
-        runs_df = pd.read_sql_query(
-            """
-            SELECT run_id, started_at, ended_at, mode,
-                   symbols_total, symbols_ok, symbols_failed, rows_upserted
-            FROM sync_runs
-            ORDER BY started_at DESC
-            LIMIT 10
-            """,
-            con,
-        )
+        runs_df = client.get_sync_runs(limit=10)
 
         if runs_df.empty:
             st.info("No sync runs yet. Run `psxsync sync --all` to start.")

@@ -5,6 +5,7 @@ import pandas as pd
 import streamlit as st
 import time
 
+from psx_ohlcv.api_client import get_client
 from psx_ohlcv.config import get_db_path
 from psx_ohlcv.services import (
     is_service_running,
@@ -34,8 +35,6 @@ from psx_ohlcv.sources.announcements import (
 )
 from psx_ohlcv.sync import sync_intraday_bulk
 from psx_ohlcv.ui.components.helpers import (
-    get_connection,
-    get_data_freshness,
     get_freshness_badge,
     render_footer,
     render_market_status_badge,
@@ -514,7 +513,7 @@ def render_sync_monitor():
             try:
                 from datetime import timedelta
 
-                con = get_connection()
+                con = get_client().connection
                 stats = {"announcements": 0, "events": 0, "dividends": 0}
 
                 # Sync announcements
@@ -637,9 +636,10 @@ def render_sync_monitor():
 
     # Last Sync Summary
     try:
-        con = get_connection()
+        _client = get_client()
+        con = _client.connection
 
-        days_old, latest_date = get_data_freshness(con)
+        days_old, latest_date = _client.get_data_freshness()
         badge_color, badge_text = get_freshness_badge(days_old)
 
         col1, col2 = st.columns([2, 1])

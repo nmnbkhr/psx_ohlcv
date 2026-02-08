@@ -3,16 +3,11 @@
 from datetime import datetime, timedelta
 import streamlit as st
 
-from psx_ohlcv.query import (
-    get_ohlcv_range,
-    get_symbols_list,
-)
+from psx_ohlcv.api_client import get_client
 from psx_ohlcv.ui.charts import make_candlestick
 from psx_ohlcv.ui.components.helpers import (
     EXPORTS_DIR,
     OHLCV_TOOLTIPS,
-    get_connection,
-    get_data_freshness,
     render_footer,
     render_market_status_badge,
 )
@@ -22,7 +17,7 @@ def render_candlestick():
     """Candlestick chart explorer with SMA overlays."""
 
     try:
-        con = get_connection()
+        client = get_client()
 
         # =================================================================
         # HEADER
@@ -35,7 +30,7 @@ def render_candlestick():
             render_market_status_badge()
 
         # Load symbols
-        symbols = get_symbols_list(con, is_active_only=False)
+        symbols = client.get_symbols(active_only=False)
         if not symbols:
             st.warning("No symbols found. Run `psxsync symbols refresh` first.")
             render_footer()
@@ -70,7 +65,7 @@ def render_candlestick():
             show_sma = st.checkbox("SMA", value=True, help="Show SMA(20) and SMA(50)")
 
         with ctrl_col4:
-            days_old, latest_date = get_data_freshness(con)
+            days_old, latest_date = client.get_data_freshness()
             if latest_date:
                 st.caption(f"📅 {latest_date}")
 
@@ -83,7 +78,7 @@ def render_candlestick():
             start_date = None
 
         # Fetch OHLCV data
-        df = get_ohlcv_range(con, selected, start_date=start_date, end_date=end_date)
+        df = client.get_ohlcv_range(selected, start_date=start_date, end_date=end_date)
 
         if df.empty:
             st.warning(
