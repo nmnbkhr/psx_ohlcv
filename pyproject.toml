@@ -4,15 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "psx_ohlcv"
-version = "0.1.0"
+version = "0.2.0"
 description = "PSX OHLCV data fetcher"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 license = {text = "MIT"}
 dependencies = [
     "requests",
     "pandas",
     "lxml",
+    "tabulate",
 ]
 
 [project.scripts]
@@ -26,6 +27,11 @@ dev = [
 ui = [
     "streamlit",
     "plotly",
+]
+agentic = [
+    "anthropic>=0.40.0",
+    "openai>=1.50.0",
+    "tiktoken>=0.7.0",
 ]
 
 [tool.setuptools.packages.find]

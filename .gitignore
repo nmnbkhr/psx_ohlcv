@@ -1,3 +1,6 @@
+# Environment
+.env
+
 # Python
 __pycache__/
 *.py[cod]
@@ -42,3 +45,6 @@ htmlcov/
 
 # Ruff
 .ruff_cache/
+
+# Claude Code session state
+.claude_session_state.md

@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from psx_ohlcv.llm.cache import (
+from psx_ohlcv.agents.cache import (
     LLMCache,
     CacheEntry,
     init_llm_cache_schema,

@@ -313,15 +313,15 @@ class TestSyncAllWithMockHttp:
                 session=mock_session,
             )
 
-        # Verify data was updated
+        # per_symbol_api uses INSERT OR IGNORE — existing row is NOT overwritten
         con = connect(db_path)
         cur = con.execute(
             "SELECT close FROM eod_ohlcv WHERE symbol='HBL' AND date='2024-01-15'"
         )
         row = cur.fetchone()
-        assert row["close"] == 153.0  # Updated from 100 to 153
+        assert row["close"] == 100.0  # Unchanged: INSERT OR IGNORE keeps original
 
-        # Should still have 2 rows (1 updated + 1 new)
+        # Should have 2 rows (1 original kept + 1 new date inserted)
         cur = con.execute("SELECT COUNT(*) as cnt FROM eod_ohlcv WHERE symbol='HBL'")
         assert cur.fetchone()["cnt"] == 2
 

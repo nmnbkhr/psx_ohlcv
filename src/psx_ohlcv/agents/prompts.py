@@ -487,6 +487,8 @@ class PromptBuilder:
             "start_date": "Not specified",
             "end_date": "Not specified",
             "trading_days": "0",
+            "corporate_announcements_data": "No recent corporate announcements",
+            "corporate_events_data": "No upcoming corporate events",
         }
 
     def _format_data_fields(self, kwargs: dict) -> dict:

@@ -56,6 +56,7 @@ def sync_all(
     symbols_list: list[str] | None = None,
     session: requests.Session | None = None,
     config: SyncConfig | None = None,
+    progress_callback=None,
 ) -> SyncSummary:
     """
     Sync EOD data for all symbols.
@@ -67,6 +68,7 @@ def sync_all(
         symbols_list: Explicit list of symbols to sync (overrides DB lookup).
         session: Optional requests Session for HTTP calls.
         config: SyncConfig with options (incremental mode, retries, etc.).
+        progress_callback: Optional callback(current, total, symbol, result) for progress updates.
 
     Returns:
         SyncSummary with counts and failure details.
@@ -144,8 +146,9 @@ def sync_all(
     symbols_failed = 0
     total_rows = 0
     failures = []
+    total_symbols = len(symbols_to_sync)
 
-    for symbol in symbols_to_sync:
+    for idx, symbol in enumerate(symbols_to_sync):
         try:
             # Fetch EOD data
             payload = fetch_eod_json(symbol, session)
@@ -165,11 +168,15 @@ def sync_all(
 
             # Upsert to database
             if not df.empty:
-                rows = upsert_eod(con, df)
+                rows = upsert_eod(con, df, source="per_symbol_api")
                 total_rows += rows
                 logger.debug("%s: upserted %d rows", symbol, rows)
 
             symbols_ok += 1
+
+            # Progress callback for successful sync
+            if progress_callback:
+                progress_callback(idx + 1, total_symbols, symbol, "ok")
 
         except requests.RequestException as e:
             symbols_failed += 1
@@ -183,6 +190,10 @@ def sync_all(
             })
             logger.warning("%s: %s - %s", symbol, error_type, error_message)
 
+            # Progress callback for HTTP error
+            if progress_callback:
+                progress_callback(idx + 1, total_symbols, symbol, "error")
+
         except Exception as e:
             symbols_failed += 1
             error_type = "PARSE_ERROR"
@@ -194,6 +205,10 @@ def sync_all(
                 "error_message": error_message,
             })
             logger.warning("%s: %s - %s", symbol, error_type, error_message)
+
+            # Progress callback for parse error
+            if progress_callback:
+                progress_callback(idx + 1, total_symbols, symbol, "error")
 
     # Step 5: Record sync run end
     record_sync_run_end(con, run_id, symbols_ok, symbols_failed, total_rows)
