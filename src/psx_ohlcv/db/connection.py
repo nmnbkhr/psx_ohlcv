@@ -104,6 +104,9 @@ def init_schema(con: sqlite3.Connection) -> None:
     from .repositories.fx_extended import init_fx_extended_schema
     init_fx_extended_schema(con)
 
+    from .repositories.ipo import init_ipo_schema
+    init_ipo_schema(con)
+
 
 def _migrate_symbols_table(con: sqlite3.Connection) -> None:
     """Add new columns to symbols table if they don't exist."""

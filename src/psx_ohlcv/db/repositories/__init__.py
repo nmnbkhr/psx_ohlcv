@@ -53,3 +53,6 @@ from .fx_extended import *  # noqa: F401, F403
 
 # 14. dividends  (5 functions)
 from .dividends import *  # noqa: F401, F403
+
+# 15. ipo  (6 functions)
+from .ipo import *  # noqa: F401, F403

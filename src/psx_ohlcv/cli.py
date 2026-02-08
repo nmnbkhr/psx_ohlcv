@@ -1938,6 +1938,35 @@ def main(argv: list[str] | None = None) -> int:
 
     div_sub.add_parser("upcoming", help="Show upcoming ex-dividend dates")
 
+    # =========================================================================
+    # v3.0: IPO commands
+    # =========================================================================
+    ipo_parser = subparsers.add_parser(
+        "ipo",
+        help="IPO calendar & listing status"
+    )
+    ipo_sub = ipo_parser.add_subparsers(
+        dest="ipo_command", required=True
+    )
+
+    ipo_sub.add_parser("sync", help="Scrape IPO listings from PSX")
+
+    ipo_list_parser = ipo_sub.add_parser("list", help="List IPO records")
+    ipo_list_parser.add_argument(
+        "--status", type=str, default=None,
+        help="Filter by status (upcoming, listed, open)"
+    )
+    ipo_list_parser.add_argument(
+        "--board", type=str, default=None,
+        help="Filter by board (main, gem)"
+    )
+
+    ipo_sub.add_parser("upcoming", help="Show upcoming IPOs")
+    ipo_sub.add_parser("recent", help="Show recently listed IPOs")
+
+    ipo_show_parser = ipo_sub.add_parser("show", help="Show IPO details for a symbol")
+    ipo_show_parser.add_argument("symbol", help="Stock symbol")
+
     args = parser.parse_args(argv)
 
     try:
@@ -1993,6 +2022,8 @@ def main(argv: list[str] | None = None) -> int:
             return handle_fx_rates(args)
         elif args.command == "dividends":
             return handle_dividends(args)
+        elif args.command == "ipo":
+            return handle_ipo(args)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         return 130
@@ -6261,6 +6292,92 @@ def handle_dividends(args: argparse.Namespace) -> int:
                 f"  {row['ex_date']:>12s}  {row['symbol']:>8s}  "
                 f"{row['payout_type']:>6s}  {amt:>10s}"
             )
+        return 0
+
+    return 0
+
+
+def handle_ipo(args: argparse.Namespace) -> int:
+    """Handle ipo subcommands."""
+    from .db.repositories.ipo import (
+        get_ipo_by_symbol,
+        get_ipo_listings,
+        get_recent_listings,
+        get_upcoming_ipos,
+        init_ipo_schema,
+    )
+    from .sources.ipo_scraper import IPOScraper
+
+    con = connect(args.db)
+    init_schema(con)
+    init_ipo_schema(con)
+
+    if args.ipo_command == "sync":
+        print("Scraping IPO listings from PSX DPS...")
+        scraper = IPOScraper()
+        result = scraper.sync_listings(con)
+        print(f"Done: {result['ok']} OK, {result['failed']} failed (total {result['total']})")
+        if result["total"] == 0:
+            print("  Note: DPS listings endpoint may be unavailable (returns 500).")
+        return 0
+
+    elif args.ipo_command == "list":
+        df = get_ipo_listings(con, status=args.status, board=args.board)
+        if df.empty:
+            print("No IPO records found. Run 'psxsync ipo sync' first.")
+            return 0
+        print(f"\n  IPO Listings ({len(df)} records)")
+        print(f"  {'Symbol':>8s}  {'Board':>5s}  {'Status':>10s}  {'Listing Date':>12s}  {'Company'}")
+        for _, row in df.iterrows():
+            print(
+                f"  {row['symbol']:>8s}  {(row.get('board') or 'N/A'):>5s}  "
+                f"{(row.get('status') or 'N/A'):>10s}  "
+                f"{(row.get('listing_date') or 'N/A'):>12s}  "
+                f"{row.get('company_name') or ''}"
+            )
+        return 0
+
+    elif args.ipo_command == "upcoming":
+        df = get_upcoming_ipos(con)
+        if df.empty:
+            print("No upcoming IPOs found.")
+            return 0
+        print(f"\n  Upcoming IPOs ({len(df)} records)")
+        for _, row in df.iterrows():
+            print(f"  {row['symbol']:>8s}  {row.get('company_name') or ''}")
+            if row.get("subscription_open"):
+                print(f"           Subscription: {row['subscription_open']} - {row.get('subscription_close', 'TBD')}")
+            if row.get("offer_price"):
+                print(f"           Offer price: PKR {row['offer_price']:.2f}")
+        return 0
+
+    elif args.ipo_command == "recent":
+        df = get_recent_listings(con)
+        if df.empty:
+            print("No recent listings found.")
+            return 0
+        print(f"\n  Recent Listings ({len(df)} records)")
+        print(f"  {'Symbol':>8s}  {'Board':>5s}  {'Listing Date':>12s}  {'Company'}")
+        for _, row in df.iterrows():
+            print(
+                f"  {row['symbol']:>8s}  {(row.get('board') or 'N/A'):>5s}  "
+                f"{(row.get('listing_date') or 'N/A'):>12s}  "
+                f"{row.get('company_name') or ''}"
+            )
+        return 0
+
+    elif args.ipo_command == "show":
+        ipo = get_ipo_by_symbol(con, args.symbol)
+        if not ipo:
+            print(f"No IPO record for {args.symbol.upper()}.")
+            return 0
+        print(f"\n  IPO Details — {ipo['symbol']}")
+        for key in ["company_name", "board", "status", "offer_price",
+                     "shares_offered", "subscription_open", "subscription_close",
+                     "listing_date", "ipo_type"]:
+            val = ipo.get(key)
+            if val:
+                print(f"  {key:>22s}: {val}")
         return 0
 
     return 0
