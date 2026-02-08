@@ -12,12 +12,12 @@ Run with: uvicorn psx_ohlcv.api.main:app --reload --port 8000
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .routers import eod, tasks
+from .routers import eod, tasks, symbols, market, company, instruments, fi, ws
 
 app = FastAPI(
     title="PSX OHLCV API",
-    description="Backend API for PSX EOD data management",
-    version="1.0.0",
+    description="Backend API for PSX market data — EOD, company, instruments, fixed income",
+    version="2.0.0",
 )
 
 # CORS middleware for Streamlit frontend
@@ -32,6 +32,12 @@ app.add_middleware(
 # Include routers
 app.include_router(eod.router, prefix="/api/eod", tags=["EOD Data"])
 app.include_router(tasks.router, prefix="/api/tasks", tags=["Background Tasks"])
+app.include_router(symbols.router, prefix="/api/symbols", tags=["Symbols"])
+app.include_router(market.router, prefix="/api/market", tags=["Market Data"])
+app.include_router(company.router, prefix="/api/company", tags=["Company Data"])
+app.include_router(instruments.router, prefix="/api/instruments", tags=["Instruments"])
+app.include_router(fi.router, prefix="/api/fi", tags=["Fixed Income"])
+app.include_router(ws.router, prefix="/ws", tags=["WebSocket"])
 
 
 @app.get("/")
@@ -39,7 +45,7 @@ def root():
     """API root endpoint."""
     return {
         "name": "PSX OHLCV API",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "docs": "/docs",
     }
 

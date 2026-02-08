@@ -16,6 +16,35 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# Error Types (consolidated from former llm/client.py)
+# =============================================================================
+
+class LLMError(Exception):
+    """Base exception for LLM-related errors."""
+    pass
+
+
+class LLMRateLimitError(LLMError):
+    """Raised when API rate limit is exceeded."""
+    pass
+
+
+class LLMTimeoutError(LLMError):
+    """Raised when API request times out."""
+    pass
+
+
+class LLMAuthError(LLMError):
+    """Raised when API authentication fails."""
+    pass
+
+
+def is_api_key_configured() -> bool:
+    """Check if any LLM API key is configured in environment."""
+    return bool(get_api_key(LLMProvider.OPENAI) or get_api_key(LLMProvider.ANTHROPIC))
+
+
+# =============================================================================
 # Unified Response Types
 # =============================================================================
 

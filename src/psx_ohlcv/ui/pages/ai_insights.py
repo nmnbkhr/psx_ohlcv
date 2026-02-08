@@ -342,11 +342,12 @@ def render_ai_insights():
     # Generate insight when button clicked
     if generate_clicked:
         try:
-            # Import LLM modules (lazy import to avoid errors if not configured)
-            from psx_ohlcv.llm.client import OpenAIClient, LLMError, is_api_key_configured
-            from psx_ohlcv.llm.prompts import PromptBuilder, InsightMode as LLMInsightMode
-            from psx_ohlcv.llm.cache import LLMCache, init_llm_cache_schema, get_db_freshness_marker
-            from psx_ohlcv.llm.data_loader import DataLoader, format_data_for_prompt
+            # Import from consolidated agents module
+            from psx_ohlcv.agents.llm_client import LLMError, is_api_key_configured, create_client
+            from psx_ohlcv.agents.config import get_active_config
+            from psx_ohlcv.agents.prompts import PromptBuilder, InsightMode as LLMInsightMode
+            from psx_ohlcv.agents.cache import LLMCache, init_llm_cache_schema, get_db_freshness_marker
+            from psx_ohlcv.agents.data_loader import DataLoader, format_data_for_prompt
 
             # Initialize cache
             init_llm_cache_schema(con)
@@ -435,22 +436,23 @@ def render_ai_insights():
                 response_text = cached_response.response_text
                 was_cached = True
             else:
-                # Generate with LLM
+                # Generate with LLM (multi-provider via agents config)
                 with st.spinner("🤖 Generating AI insight (this may take a moment)..."):
-                    client = OpenAIClient(
-                        model="gpt-5.2",
-                        timeout=90,
-                        max_tokens=4096,
-                        temperature=0.3,
+                    config = get_active_config()
+                    client = create_client(config.agent_model)
+
+                    response = client.create_message(
+                        messages=[{"role": "user", "content": prompt}],
+                        system=builder.system_prompt,
                     )
 
-                    response = client.generate(
-                        prompt=prompt,
-                        system_prompt=builder.system_prompt,
-                    )
-
-                    response_text = response.content
+                    response_text = response.text
                     was_cached = False
+
+                    # Extract token usage
+                    prompt_tokens = response.usage.get("input_tokens", 0)
+                    completion_tokens = response.usage.get("output_tokens", 0)
+                    total_tokens = prompt_tokens + completion_tokens
 
                     # Cache the response
                     cache.set(
@@ -458,21 +460,21 @@ def render_ai_insights():
                         response_text=response_text,
                         symbol=cache_symbol,
                         mode=llm_mode.value,
-                        prompt_tokens=response.prompt_tokens,
-                        completion_tokens=response.completion_tokens,
-                        model=response.model,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        model=config.agent_model.model_id,
                     )
 
                     # Show token usage in metrics
                     token_cols = st.columns(4)
                     with token_cols[0]:
-                        st.metric("Prompt Tokens", f"{response.prompt_tokens:,}")
+                        st.metric("Prompt Tokens", f"{prompt_tokens:,}")
                     with token_cols[1]:
-                        st.metric("Completion", f"{response.completion_tokens:,}")
+                        st.metric("Completion", f"{completion_tokens:,}")
                     with token_cols[2]:
-                        st.metric("Total", f"{response.total_tokens:,}")
+                        st.metric("Total", f"{total_tokens:,}")
                     with token_cols[3]:
-                        est_cost = (response.prompt_tokens * 0.01 + response.completion_tokens * 0.03) / 1000
+                        est_cost = (prompt_tokens * 0.01 + completion_tokens * 0.03) / 1000
                         st.metric("Est. Cost", f"${est_cost:.4f}")
 
             # Display response with enhanced styling
@@ -636,7 +638,7 @@ def render_ai_insights():
     with settings_cols[0]:
         with st.expander("💾 Cache Management", expanded=False):
             try:
-                from psx_ohlcv.llm.cache import LLMCache, init_llm_cache_schema
+                from psx_ohlcv.agents.cache import LLMCache, init_llm_cache_schema
 
                 init_llm_cache_schema(con)
                 cache = LLMCache(con)
