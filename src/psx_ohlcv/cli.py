@@ -1851,6 +1851,8 @@ def main(argv: list[str] | None = None) -> int:
         "--limit", type=int, default=20, help="Max rows (default: 20)"
     )
 
+    treasury_sub.add_parser("gis-sync", help="Scrape GIS (Ijara Sukuk) auction data")
+    treasury_sub.add_parser("gis-list", help="List GIS auction history")
     treasury_sub.add_parser("summary", help="Show treasury data summary")
 
     args = parser.parse_args(argv)
@@ -5883,15 +5885,40 @@ def handle_treasury(args: argparse.Namespace) -> int:
         print(df.head(args.limit).to_string(index=False))
         return 0
 
+    elif args.treasury_command == "gis-sync":
+        from .sources.sbp_gsp import GSPScraper
+        print("Scraping GIS (Ijara Sukuk) auction data...")
+        gsp = GSPScraper()
+        result = gsp.sync_gis(con)
+        print(
+            f"Done: {result['ok']}/{result['total']} GIS records saved, "
+            f"{result['failed']} failed (source: {result['source']})"
+        )
+        return 0
+
+    elif args.treasury_command == "gis-list":
+        from .db.repositories.treasury import get_gis_auctions
+        df = get_gis_auctions(con)
+        if df.empty:
+            print("No GIS data. Run 'psxsync treasury gis-sync' first.")
+            return 0
+        print(df.to_string(index=False))
+        return 0
+
     elif args.treasury_command == "summary":
+        from .sources.sbp_gsp import GSPScraper
         scraper = SBPTreasuryScraper()
         summary = scraper.get_summary(con)
+        gsp = GSPScraper()
+        gis_summary = gsp.get_gis_summary(con)
         print(f"\n{'='*50}")
         print("  Treasury Data Summary")
         print(f"{'='*50}")
         print(f"  T-Bill tenors: {summary['tbill_tenors']}")
         print(f"  PIB tenors:    {summary['pib_tenors']}")
         print(f"  Total T-Bill auction records: {summary['total_tbill_records']}")
+        print(f"  GIS records:   {gis_summary['total_records']}")
+        print(f"  GIS types:     {gis_summary['gis_types']}")
         return 0
 
     return 0

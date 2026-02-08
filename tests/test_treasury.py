@@ -379,3 +379,56 @@ class TestSBPTreasuryScraper:
         yields = get_latest_tbill_yields(con)
         assert "3M" in yields
         assert "6M" in yields
+
+
+# ── GSP scraper tests ───────────────────────────────────────────────
+
+class TestGSPScraper:
+    def test_extract_gis_tenors(self):
+        from psx_ohlcv.sources.sbp_gsp import GSPScraper
+        section = "Tenor Cut-off Rental Rate/Price 3-Y 100.2842 5-Y 100.0022"
+        results = GSPScraper._extract_gis_tenors(section, "GIS FRR")
+        assert len(results) == 2
+        tenors = {r["tenor"] for r in results}
+        assert "3Y" in tenors
+        assert "5Y" in tenors
+        # gis_type should include tenor
+        types = {r["gis_type"] for r in results}
+        assert "GIS FRR 3Y" in types
+        assert "GIS FRR 5Y" in types
+
+    def test_extract_gis_tenors_empty(self):
+        from psx_ohlcv.sources.sbp_gsp import GSPScraper
+        results = GSPScraper._extract_gis_tenors("no data here", "GIS FRR")
+        assert results == []
+
+    def test_sync_gis_to_db(self, con):
+        """Test GIS sync with mocked scrape."""
+        from unittest.mock import patch
+        from psx_ohlcv.sources.sbp_gsp import GSPScraper
+
+        mock_records = [
+            {
+                "auction_date": "2023-12-21",
+                "gis_type": "GIS FRR 3Y",
+                "tenor": "3Y",
+                "cutoff_rental_rate": 100.2842,
+            },
+            {
+                "auction_date": "2023-12-21",
+                "gis_type": "GIS VRR 5Y",
+                "tenor": "5Y",
+                "cutoff_rental_rate": 98.76,
+            },
+        ]
+
+        scraper = GSPScraper()
+        with patch.object(scraper, "scrape_gis_auctions", return_value=mock_records):
+            result = scraper.sync_gis(con)
+
+        assert result["ok"] == 2
+        assert result["failed"] == 0
+
+        from psx_ohlcv.db.repositories.treasury import get_gis_auctions
+        df = get_gis_auctions(con)
+        assert len(df) == 2
