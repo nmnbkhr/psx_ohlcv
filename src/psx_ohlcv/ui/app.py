@@ -193,9 +193,8 @@ def inject_theme_css():
     st.markdown(css, unsafe_allow_html=True)
 
 
-# Initialize theme and inject CSS
-init_theme()
-inject_theme_css()
+# Theme initialised inside main() — no module-level st.markdown() calls
+# to avoid rendering outside the st.navigation() page lifecycle.
 
 
 def format_price_change(value: float, include_sign: bool = True) -> str:
@@ -921,14 +920,129 @@ def research_terminal_page():
 
 
 # -----------------------------------------------------------------------------
-# Main App with Sidebar Navigation
+# Main App — st.navigation() for framework-guaranteed page isolation
 # -----------------------------------------------------------------------------
 def main():
-    """Main app with sidebar navigation."""
+    """Main app using Streamlit's native st.navigation() API.
+
+    Each page runs as an isolated unit — the framework guarantees that ONLY
+    the selected page's render function executes per script run, eliminating
+    cross-page content bleeding.
+    """
     # Initialize session tracking
     init_session_tracking()
 
-    # Sidebar
+    # Inject theme CSS (shared across all pages)
+    init_theme()
+    inject_theme_css()
+
+    # =================================================================
+    # BUILD st.Page REGISTRY
+    # =================================================================
+    _pages = {
+        # MARKET
+        "📊 Dashboard":      st.Page(dashboard,              title="Dashboard",      url_path="dashboard",      default=True),
+        "📡 Live Market":    st.Page(live_market_page,        title="Live Market",    url_path="live-market"),
+        "📈 Market Summary": st.Page(market_summary_page,     title="Market Summary", url_path="market-summary"),
+        # EQUITY
+        "📈 Quote Monitor":  st.Page(regular_market_page,     title="Quote Monitor",  url_path="quote-monitor"),
+        "📊 Price Chart":    st.Page(candlestick_explorer,    title="Price Chart",    url_path="price-chart"),
+        "⏱ Intraday":       st.Page(intraday_trend_page,     title="Intraday",       url_path="intraday"),
+        "🏢 Company":        st.Page(company_analytics_page,  title="Company",        url_path="company"),
+        "🏆 Rankings":       st.Page(rankings_page,           title="Rankings",       url_path="rankings"),
+        "📊 Factors":        st.Page(factor_analysis_page,    title="Factors",        url_path="factors"),
+        "🧵 Symbols":        st.Page(symbols_page,            title="Symbols",        url_path="symbols"),
+        # INDICES
+        "📊 Index Monitor":  st.Page(indices_analytics_page,  title="Index Monitor",  url_path="index-monitor"),
+        "📦 Instruments":    st.Page(instruments_page,        title="Instruments",    url_path="instruments"),
+        # FIXED INCOME
+        "📈 FI Overview":    st.Page(psx_debt_market_page,    title="FI Overview",    url_path="fi-overview"),
+        "🧾 Bond Search":    st.Page(bonds_screener_page,     title="Bond Search",    url_path="bond-search"),
+        "📉 Yield Curve":    st.Page(yield_curve_page,        title="Yield Curve",    url_path="yield-curve"),
+        "🕌 Sukuk":          st.Page(sukuk_screener_page,     title="Sukuk",          url_path="sukuk"),
+        "🏛️ SBP Auctions":   st.Page(sbp_auction_archive_page, title="SBP Auctions", url_path="sbp-auctions"),
+        "🏦 Treasury":       st.Page(treasury_dashboard_page, title="Treasury",       url_path="treasury"),
+        # FX
+        "🌍 FX Monitor":     st.Page(fx_overview_page,        title="FX Monitor",     url_path="fx-monitor"),
+        "📊 FX Analytics":   st.Page(fx_impact_page,          title="FX Analytics",   url_path="fx-analytics"),
+        "💱 FX Dashboard":   st.Page(fx_dashboard_page,       title="FX Dashboard",   url_path="fx-dashboard"),
+        # FUNDS
+        "🏦 Fund Directory": st.Page(mutual_funds_page,       title="Fund Directory", url_path="fund-directory"),
+        "📊 Fund Analytics": st.Page(fund_analytics_page,     title="Fund Analytics", url_path="fund-analytics"),
+        "🔍 Fund Explorer":  st.Page(fund_explorer_page,      title="Fund Explorer",  url_path="fund-explorer"),
+        # DATA
+        "📥 Data Sync":      st.Page(data_acquisition_page,   title="Data Sync",      url_path="data-sync"),
+        "📂 EOD Loader":     st.Page(eod_data_loader_page,    title="EOD Loader",     url_path="eod-loader"),
+        "📚 History":        st.Page(history_page,             title="History",        url_path="history"),
+        "🔄 Sync Monitor":   st.Page(sync_monitor,            title="Sync Monitor",   url_path="sync-monitor"),
+        "🩺 Data Quality":   st.Page(data_quality_page,       title="Data Quality",   url_path="data-quality"),
+        # AI
+        "💬 AI Chat":        st.Page(chat_page,                title="AI Chat",        url_path="ai-chat"),
+        "🤖 AI Insights":    st.Page(ai_insights_page,        title="AI Insights",    url_path="ai-insights"),
+        # ADMIN
+        "📋 Schema":         st.Page(schema_page,              title="Schema",         url_path="schema"),
+        "🔬 Research":       st.Page(research_terminal_page,   title="Research",       url_path="research"),
+        "⚙️ Settings":       st.Page(settings_page,            title="Settings",       url_path="settings"),
+    }
+
+    # Navigation groups — Bloomberg Terminal style
+    nav_groups = {
+        "MARKET":       ["📊 Dashboard", "📡 Live Market", "📈 Market Summary"],
+        "EQUITY":       ["📈 Quote Monitor", "📊 Price Chart", "⏱ Intraday",
+                         "🏢 Company", "🏆 Rankings", "📊 Factors", "🧵 Symbols"],
+        "INDICES":      ["📊 Index Monitor", "📦 Instruments"],
+        "FIXED INCOME": ["📈 FI Overview", "🧾 Bond Search", "📉 Yield Curve",
+                         "🕌 Sukuk", "🏛️ SBP Auctions", "🏦 Treasury"],
+        "FX":           ["🌍 FX Monitor", "📊 FX Analytics", "💱 FX Dashboard"],
+        "FUNDS":        ["🏦 Fund Directory", "📊 Fund Analytics", "🔍 Fund Explorer"],
+        "DATA":         ["📥 Data Sync", "📂 EOD Loader", "📚 History",
+                         "🔄 Sync Monitor", "🩺 Data Quality"],
+        "AI":           ["💬 AI Chat", "🤖 AI Insights"],
+        "ADMIN":        ["📋 Schema", "🔬 Research", "⚙️ Settings"],
+    }
+
+    # Build grouped dict of st.Page objects for st.navigation
+    nav_dict = {}
+    for group_name, page_names in nav_groups.items():
+        nav_dict[group_name] = [_pages[name] for name in page_names]
+
+    # =================================================================
+    # REGISTER NAVIGATION — hidden (we render our own Bloomberg sidebar)
+    # =================================================================
+    pg = st.navigation(nav_dict, position="hidden")
+
+    # =================================================================
+    # HANDLE PROGRAMMATIC NAVIGATION (nav_to from page_views)
+    # =================================================================
+    if "nav_to" in st.session_state and st.session_state.nav_to:
+        nav_target = st.session_state.nav_to
+        st.session_state.nav_to = None
+
+        # Map old page names to new names for backwards compatibility
+        page_mapping = {
+            "📊 Regular Market": "📈 Quote Monitor",
+            "📈 Candlestick Explorer": "📊 Price Chart",
+            "⏱ Intraday Trend": "⏱ Intraday",
+            "🏢 Company Analytics": "🏢 Company",
+            "📊 Factor Analysis": "📊 Factors",
+            "📊 Indices": "📊 Index Monitor",
+            "📈 PSX Debt Market": "📈 FI Overview",
+            "🧾 Bonds Screener": "🧾 Bond Search",
+            "🕌 Sukuk Screener": "🕌 Sukuk",
+            "🏛️ SBP Archive": "🏛️ SBP Auctions",
+            "🌍 FX Overview": "🌍 FX Monitor",
+            "📊 FX Impact": "📊 FX Analytics",
+            "🏦 Mutual Funds": "🏦 Fund Directory",
+            "📥 Data Acquisition": "📥 Data Sync",
+            "📥 Market Summary": "📈 Market Summary",
+        }
+        nav_target = page_mapping.get(nav_target, nav_target)
+        if nav_target in _pages:
+            st.switch_page(_pages[nav_target])
+
+    # =================================================================
+    # CUSTOM BLOOMBERG-STYLE SIDEBAR
+    # =================================================================
     st.sidebar.title("PSX OHLCV Explorer")
 
     # Theme toggle
@@ -951,105 +1065,11 @@ def main():
 
     st.sidebar.markdown("---")
 
-    # =================================================================
-    # BLOOMBERG-STYLE GROUPED NAVIGATION
-    # =================================================================
-
-    # Navigation groups - Bloomberg Terminal style
-    nav_groups = {
-        "MARKET": [
-            "📊 Dashboard",
-            "📡 Live Market",
-            "📈 Market Summary",
-        ],
-        "EQUITY": [
-            "📈 Quote Monitor",      # Regular Market
-            "📊 Price Chart",        # Candlestick Explorer
-            "⏱ Intraday",            # Intraday Trend
-            "🏢 Company",            # Company Analytics
-            "🏆 Rankings",
-            "📊 Factors",            # Factor Analysis
-            "🧵 Symbols",
-        ],
-        "INDICES": [
-            "📊 Index Monitor",      # Indices
-            "📦 Instruments",
-        ],
-        "FIXED INCOME": [
-            "📈 FI Overview",        # PSX Debt Market
-            "🧾 Bond Search",        # Bonds Screener
-            "📉 Yield Curve",
-            "🕌 Sukuk",              # Sukuk Screener
-            "🏛️ SBP Auctions",       # SBP Archive
-            "🏦 Treasury",           # Treasury Dashboard (v3)
-        ],
-        "FX": [
-            "🌍 FX Monitor",         # FX Overview
-            "📊 FX Analytics",       # FX Impact
-            "💱 FX Dashboard",       # FX Dashboard (v3)
-        ],
-        "FUNDS": [
-            "🏦 Fund Directory",     # Mutual Funds
-            "📊 Fund Analytics",
-            "🔍 Fund Explorer",      # Fund Explorer (v3)
-        ],
-        "DATA": [
-            "📥 Data Sync",          # Data Acquisition
-            "📂 EOD Loader",         # EOD Data Loader
-            "📚 History",
-            "🔄 Sync Monitor",
-            "🩺 Data Quality",
-        ],
-        "AI": [
-            "💬 AI Chat",            # Agentic chat interface
-            "🤖 AI Insights",        # GPT-powered insights
-        ],
-        "ADMIN": [
-            "📋 Schema",
-            "🔬 Research",           # SQL Research Terminal (v3)
-            "⚙️ Settings",
-        ],
-    }
-
-    # Build flat pages list for routing
-    all_pages = []
-    for group_pages in nav_groups.values():
-        all_pages.extend(group_pages)
-
-    # Map old page names to new names for backwards compatibility
-    page_mapping = {
-        "📊 Regular Market": "📈 Quote Monitor",
-        "📈 Candlestick Explorer": "📊 Price Chart",
-        "⏱ Intraday Trend": "⏱ Intraday",
-        "🏢 Company Analytics": "🏢 Company",
-        "📊 Factor Analysis": "📊 Factors",
-        "📊 Indices": "📊 Index Monitor",
-        "📈 PSX Debt Market": "📈 FI Overview",
-        "🧾 Bonds Screener": "🧾 Bond Search",
-        "🕌 Sukuk Screener": "🕌 Sukuk",
-        "🏛️ SBP Archive": "🏛️ SBP Auctions",
-        "🌍 FX Overview": "🌍 FX Monitor",
-        "📊 FX Impact": "📊 FX Analytics",
-        "🏦 Mutual Funds": "🏦 Fund Directory",
-        "📥 Data Acquisition": "📥 Data Sync",
-        "📥 Market Summary": "📈 Market Summary",
-    }
-
-    # Initialize current page in session state
-    if "current_page" not in st.session_state:
-        st.session_state.current_page = "📊 Dashboard"
-
-    # Handle programmatic navigation (nav_to from other pages)
-    if "nav_to" in st.session_state and st.session_state.nav_to:
-        nav_target = st.session_state.nav_to
-        nav_target = page_mapping.get(nav_target, nav_target)
-        if nav_target in all_pages:
-            st.session_state.current_page = nav_target
-        st.session_state.nav_to = None
+    # Identify current page for button highlighting
+    current_url = pg.url_path
 
     # Render grouped navigation with section headers
-    for group_name, group_pages in nav_groups.items():
-        # Section header with Bloomberg-style formatting
+    for group_name, page_names in nav_groups.items():
         st.sidebar.markdown(
             f'<div style="font-size: 10px; font-weight: 600; color: #ff9800; '
             f'letter-spacing: 1px; margin: 12px 0 4px 0; padding: 4px 0; '
@@ -1057,22 +1077,17 @@ def main():
             unsafe_allow_html=True
         )
 
-        # Pages in this group - use buttons with session state
-        for page_name in group_pages:
-            is_selected = (page_name == st.session_state.current_page)
+        for page_name in page_names:
+            page_ref = _pages[page_name]
+            is_selected = (page_ref.url_path == current_url)
 
-            # Custom styled button for each page
             if st.sidebar.button(
                 page_name,
                 key=f"nav_{page_name}",
                 use_container_width=True,
                 type="primary" if is_selected else "secondary",
             ):
-                st.session_state.current_page = page_name
-                st.rerun()
-
-    # Get selected page from session state
-    page = st.session_state.current_page
+                st.switch_page(page_ref)
 
     st.sidebar.markdown("---")
 
@@ -1096,74 +1111,9 @@ def main():
     st.sidebar.caption(f"DB: `{get_db_path()}`")
 
     # =================================================================
-    # PAGE ROUTING - Maps new Bloomberg-style names to existing functions
+    # EXECUTE SELECTED PAGE — framework guarantees isolation
     # =================================================================
-
-    # Page function mapping
-    page_functions = {
-        # MARKET
-        "📊 Dashboard": dashboard,
-        "📡 Live Market": live_market_page,
-        "📈 Market Summary": market_summary_page,
-
-        # EQUITY
-        "📈 Quote Monitor": regular_market_page,
-        "📊 Price Chart": candlestick_explorer,
-        "⏱ Intraday": intraday_trend_page,
-        "🏢 Company": company_analytics_page,
-        "🏆 Rankings": rankings_page,
-        "📊 Factors": factor_analysis_page,
-        "🧵 Symbols": symbols_page,
-
-        # INDICES
-        "📊 Index Monitor": indices_analytics_page,
-        "📦 Instruments": instruments_page,
-
-        # FIXED INCOME
-        "📈 FI Overview": psx_debt_market_page,
-        "🧾 Bond Search": bonds_screener_page,
-        "📉 Yield Curve": yield_curve_page,
-        "🕌 Sukuk": sukuk_screener_page,
-        "🏛️ SBP Auctions": sbp_auction_archive_page,
-        "🏦 Treasury": treasury_dashboard_page,
-
-        # FX
-        "🌍 FX Monitor": fx_overview_page,
-        "📊 FX Analytics": fx_impact_page,
-        "💱 FX Dashboard": fx_dashboard_page,
-
-        # FUNDS
-        "🏦 Fund Directory": mutual_funds_page,
-        "📊 Fund Analytics": fund_analytics_page,
-        "🔍 Fund Explorer": fund_explorer_page,
-
-        # DATA
-        "📥 Data Sync": data_acquisition_page,
-        "📂 EOD Loader": eod_data_loader_page,
-        "📚 History": history_page,
-        "🔄 Sync Monitor": sync_monitor,
-        "🩺 Data Quality": data_quality_page,
-
-        # AI
-        "💬 AI Chat": chat_page,
-        "🤖 AI Insights": ai_insights_page,
-
-        # ADMIN
-        "📋 Schema": schema_page,
-        "🔬 Research": research_terminal_page,
-        "⚙️ Settings": settings_page,
-    }
-
-    # Execute the selected page function inside a KEYED container.
-    # The key changes when the page changes, which forces Streamlit's
-    # React frontend to unmount the old container and mount a fresh one
-    # instead of diffing children (which leaves "ghost" elements from
-    # longer pages bleeding into shorter ones).
-    with st.container(key=f"page_{page}"):
-        if page in page_functions:
-            page_functions[page]()
-        else:
-            st.error(f"Page not found: {page}")
+    pg.run()
 
 
 if __name__ == "__main__":
