@@ -5,6 +5,8 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from psx_ohlcv.ui.components.helpers import get_connection, render_footer
+from psx_ohlcv.sources.sbp_fx import SBPFXScraper
+from psx_ohlcv.sources.forex_scraper import ForexPKScraper
 
 
 _KEY_CURRENCIES = ["USD", "EUR", "GBP", "SAR", "AED"]
@@ -40,6 +42,31 @@ def render_fx_dashboard():
 
     except Exception as e:
         st.error(f"Error loading FX data: {e}")
+
+    # Sync section
+    st.markdown("---")
+    with st.expander("Sync FX Data"):
+        col1, col2 = st.columns(2)
+
+        with col1:
+            if st.button("Sync SBP Interbank", type="primary", key="fx_sync_interbank"):
+                with st.spinner("Syncing SBP interbank rates..."):
+                    try:
+                        result = SBPFXScraper().sync_interbank(con)
+                        st.success(f"Interbank: {result.get('ok', 0)} rates synced")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Sync failed: {e}")
+
+        with col2:
+            if st.button("Sync Kerb (forex.pk)", key="fx_sync_kerb"):
+                with st.spinner("Syncing kerb rates from forex.pk..."):
+                    try:
+                        result = ForexPKScraper().sync_kerb(con)
+                        st.success(f"Kerb: {result.get('ok', 0)} rates synced")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Sync failed: {e}")
 
     render_footer()
 

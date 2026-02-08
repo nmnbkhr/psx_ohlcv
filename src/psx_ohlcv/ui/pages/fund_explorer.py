@@ -5,6 +5,8 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from psx_ohlcv.ui.components.helpers import get_connection, render_footer
+from psx_ohlcv.sync_mufap import seed_mutual_funds, sync_mutual_funds
+from psx_ohlcv.sources.etf_scraper import ETFScraper
 
 
 def render_fund_explorer():
@@ -28,6 +30,50 @@ def render_fund_explorer():
 
     except Exception as e:
         st.error(f"Error loading fund data: {e}")
+
+    # Sync section
+    st.markdown("---")
+    with st.expander("Sync Fund Data"):
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            if st.button("Seed Funds", type="primary", key="fexp_seed_funds"):
+                with st.spinner("Seeding mutual funds from MUFAP..."):
+                    try:
+                        result = seed_mutual_funds()
+                        st.success(
+                            f"Seeded {result.get('inserted', 0)} funds "
+                            f"(Failed: {result.get('failed', 0)})"
+                        )
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Sync failed: {e}")
+
+        with col2:
+            if st.button("Sync NAV Data", key="fexp_sync_nav"):
+                with st.spinner("Syncing NAV data from MUFAP..."):
+                    try:
+                        summary = sync_mutual_funds(source="AUTO")
+                        st.success(
+                            f"Synced {summary.ok} funds, "
+                            f"{summary.rows_upserted} NAV records"
+                        )
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Sync failed: {e}")
+
+        with col3:
+            if st.button("Sync ETFs", key="fexp_sync_etfs"):
+                with st.spinner("Syncing ETF data..."):
+                    try:
+                        result = ETFScraper().sync_all_etfs(con)
+                        st.success(
+                            f"ETFs: {result.get('ok', 0)} synced, "
+                            f"{result.get('failed', 0)} failed"
+                        )
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Sync failed: {e}")
 
     render_footer()
 

@@ -5,6 +5,9 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from psx_ohlcv.ui.components.helpers import get_connection, render_footer
+from psx_ohlcv.sources.sbp_treasury import SBPTreasuryScraper
+from psx_ohlcv.sources.sbp_rates import SBPRatesScraper
+from psx_ohlcv.sources.sbp_gsp import GSPScraper
 
 
 def render_treasury_dashboard():
@@ -36,6 +39,47 @@ def render_treasury_dashboard():
 
     except Exception as e:
         st.error(f"Error loading treasury data: {e}")
+
+    # Sync section
+    st.markdown("---")
+    with st.expander("Sync Treasury Data"):
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            if st.button("Sync T-Bill / PIB", type="primary", key="tsy_sync_treasury"):
+                with st.spinner("Syncing treasury auctions from SBP..."):
+                    try:
+                        result = SBPTreasuryScraper().sync_treasury(con)
+                        st.success(
+                            f"T-Bills: {result['tbills_ok']}, PIBs: {result['pibs_ok']}, "
+                            f"Failed: {result['failed']}"
+                        )
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Sync failed: {e}")
+
+        with col2:
+            if st.button("Sync Rates (KIBOR/KONIA/PKRV)", key="tsy_sync_rates"):
+                with st.spinner("Syncing rates from SBP..."):
+                    try:
+                        result = SBPRatesScraper().sync_rates(con)
+                        st.success(
+                            f"KIBOR: {result['kibor_ok']}, PKRV points: {result['pkrv_points']}, "
+                            f"KONIA: {'OK' if result['konia_ok'] else 'N/A'}"
+                        )
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Sync failed: {e}")
+
+        with col3:
+            if st.button("Sync GIS Auctions", key="tsy_sync_gis"):
+                with st.spinner("Syncing GIS auctions from SBP..."):
+                    try:
+                        result = GSPScraper().sync_gis(con)
+                        st.success(f"GIS auctions: {result.get('ok', 0)} synced")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Sync failed: {e}")
 
     render_footer()
 
