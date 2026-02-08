@@ -1905,6 +1905,39 @@ def main(argv: list[str] | None = None) -> int:
 
     fxe_sub.add_parser("summary", help="Show FX data summary")
 
+    # =========================================================================
+    # v3.0: Dividends commands
+    # =========================================================================
+    div_parser = subparsers.add_parser(
+        "dividends",
+        help="Dividend history, yields, and rankings"
+    )
+    div_sub = div_parser.add_subparsers(
+        dest="div_command", required=True
+    )
+
+    div_show_parser = div_sub.add_parser("show", help="Show dividend history for a symbol")
+    div_show_parser.add_argument("symbol", help="Stock symbol (e.g. OGDC)")
+    div_show_parser.add_argument(
+        "--years", type=int, default=None, help="Limit to last N years"
+    )
+
+    div_yield_parser = div_sub.add_parser("yield", help="Show dividend yield for a symbol")
+    div_yield_parser.add_argument("symbol", help="Stock symbol (e.g. OGDC)")
+    div_yield_parser.add_argument(
+        "--years", type=int, default=1, help="Lookback period (default: 1 year)"
+    )
+
+    div_top_parser = div_sub.add_parser("top", help="Top dividend yield stocks")
+    div_top_parser.add_argument(
+        "--n", type=int, default=20, help="Number of stocks to show (default: 20)"
+    )
+    div_top_parser.add_argument(
+        "--years", type=int, default=1, help="Lookback period (default: 1 year)"
+    )
+
+    div_sub.add_parser("upcoming", help="Show upcoming ex-dividend dates")
+
     args = parser.parse_args(argv)
 
     try:
@@ -1958,6 +1991,8 @@ def main(argv: list[str] | None = None) -> int:
             return handle_rates(args)
         elif args.command == "fx-rates":
             return handle_fx_rates(args)
+        elif args.command == "dividends":
+            return handle_dividends(args)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         return 130
@@ -6159,6 +6194,73 @@ def handle_fx_rates(args: argparse.Namespace) -> int:
             print(f"  Latest interbank:     {ib.iloc[0]['date']}")
         if not kerb.empty:
             print(f"  Latest kerb:          {kerb.iloc[0]['date']}")
+        return 0
+
+    return 0
+
+
+def handle_dividends(args: argparse.Namespace) -> int:
+    """Handle dividends subcommands."""
+    from .db.repositories.dividends import (
+        get_dividend_history,
+        get_dividend_yield,
+        get_highest_dividend_stocks,
+        get_upcoming_dividends,
+    )
+
+    con = connect(args.db)
+    init_schema(con)
+
+    if args.div_command == "show":
+        df = get_dividend_history(con, args.symbol, years=args.years)
+        if df.empty:
+            print(f"No dividend data for {args.symbol.upper()}.")
+            return 0
+        print(f"\n  Dividend History — {args.symbol.upper()} ({len(df)} payouts)")
+        print(f"  {'Ex-Date':>12s}  {'Amount':>10s}  {'Fiscal Year'}")
+        for _, row in df.iterrows():
+            fy = row.get("fiscal_year") or ""
+            print(f"  {row['ex_date']:>12s}  {row['amount']:>10.1f}  {fy}")
+        return 0
+
+    elif args.div_command == "yield":
+        yld = get_dividend_yield(con, args.symbol, years=args.years)
+        if yld is None:
+            print(f"No dividend yield data for {args.symbol.upper()}.")
+            return 0
+        print(
+            f"\n  {args.symbol.upper()} trailing {args.years}Y dividend yield: {yld:.2f}%"
+        )
+        return 0
+
+    elif args.div_command == "top":
+        df = get_highest_dividend_stocks(con, n=args.n, years=args.years)
+        if df.empty:
+            print("No dividend data available.")
+            return 0
+        print(f"\n  Top {len(df)} Dividend Yield Stocks ({args.years}Y trailing)")
+        print(f"  {'#':>3s}  {'Symbol':>8s}  {'Yield%':>8s}  {'DPS':>10s}  {'Price':>10s}  {'Payouts':>8s}")
+        for i, (_, row) in enumerate(df.iterrows(), 1):
+            print(
+                f"  {i:>3d}  {row['symbol']:>8s}  {row['yield_pct']:>8.2f}  "
+                f"{row['total_dps']:>10.1f}  {row['latest_price']:>10.2f}  "
+                f"{int(row['num_payouts']):>8d}"
+            )
+        return 0
+
+    elif args.div_command == "upcoming":
+        df = get_upcoming_dividends(con)
+        if df.empty:
+            print("No upcoming dividends in the next 30 days.")
+            return 0
+        print(f"\n  Upcoming Ex-Dividend Dates ({len(df)} records)")
+        print(f"  {'Ex-Date':>12s}  {'Symbol':>8s}  {'Type':>6s}  {'Amount':>10s}")
+        for _, row in df.iterrows():
+            amt = f"{row['amount']:.1f}" if row["amount"] else "N/A"
+            print(
+                f"  {row['ex_date']:>12s}  {row['symbol']:>8s}  "
+                f"{row['payout_type']:>6s}  {amt:>10s}"
+            )
         return 0
 
     return 0

@@ -50,3 +50,6 @@ from .yield_curves import *  # noqa: F401, F403
 
 # 13. fx_extended  (8 functions)
 from .fx_extended import *  # noqa: F401, F403
+
+# 14. dividends  (5 functions)
+from .dividends import *  # noqa: F401, F403
