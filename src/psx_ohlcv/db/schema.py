@@ -1100,6 +1100,16 @@ CREATE TABLE IF NOT EXISTS mutual_funds (
     launch_date         TEXT,                       -- Fund inception date
     expense_ratio       REAL,                       -- Annual expense ratio (%)
     management_fee      REAL,                       -- Management fee (%)
+    mufap_fund_id       TEXT,                       -- MUFAP GUID (FundID field)
+    mufap_int_id        TEXT,                       -- MUFAP integer ID (fund field) for historical NAV API
+    mufap_amc_id        TEXT,                       -- MUFAP AMC ID for API calls
+    front_load          REAL,                       -- Front-end load (%)
+    back_load           REAL,                       -- Back-end load (%)
+    risk_profile        TEXT,                       -- Risk classification
+    benchmark           TEXT,                       -- Benchmark index name
+    rating              TEXT,                       -- Fund rating
+    trustee             TEXT,                       -- Trustee name
+    fund_manager        TEXT,                       -- Fund manager name
     is_active           INTEGER NOT NULL DEFAULT 1,
     source              TEXT NOT NULL DEFAULT 'MUFAP',
     created_at          TEXT NOT NULL DEFAULT (datetime('now')),

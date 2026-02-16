@@ -365,9 +365,17 @@ def upsert_mutual_fund(con: sqlite3.Connection, fund_data: dict) -> bool:
             INSERT INTO mutual_funds (
                 fund_id, symbol, fund_name, amc_code, amc_name,
                 fund_type, category, is_shariah, launch_date,
-                expense_ratio, management_fee, is_active, source,
+                expense_ratio, management_fee,
+                mufap_fund_id, mufap_int_id, mufap_amc_id,
+                front_load, back_load, risk_profile, benchmark,
+                rating, trustee, fund_manager,
+                is_active, source,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, datetime('now'), datetime('now')
+            )
             ON CONFLICT(fund_id) DO UPDATE SET
                 symbol = excluded.symbol,
                 fund_name = excluded.fund_name,
@@ -379,6 +387,16 @@ def upsert_mutual_fund(con: sqlite3.Connection, fund_data: dict) -> bool:
                 launch_date = excluded.launch_date,
                 expense_ratio = excluded.expense_ratio,
                 management_fee = excluded.management_fee,
+                mufap_fund_id = COALESCE(excluded.mufap_fund_id, mutual_funds.mufap_fund_id),
+                mufap_int_id = COALESCE(excluded.mufap_int_id, mutual_funds.mufap_int_id),
+                mufap_amc_id = COALESCE(excluded.mufap_amc_id, mutual_funds.mufap_amc_id),
+                front_load = COALESCE(excluded.front_load, mutual_funds.front_load),
+                back_load = COALESCE(excluded.back_load, mutual_funds.back_load),
+                risk_profile = COALESCE(excluded.risk_profile, mutual_funds.risk_profile),
+                benchmark = COALESCE(excluded.benchmark, mutual_funds.benchmark),
+                rating = COALESCE(excluded.rating, mutual_funds.rating),
+                trustee = COALESCE(excluded.trustee, mutual_funds.trustee),
+                fund_manager = COALESCE(excluded.fund_manager, mutual_funds.fund_manager),
                 is_active = excluded.is_active,
                 source = excluded.source,
                 updated_at = datetime('now')
@@ -394,6 +412,16 @@ def upsert_mutual_fund(con: sqlite3.Connection, fund_data: dict) -> bool:
             fund_data.get("launch_date"),
             fund_data.get("expense_ratio"),
             fund_data.get("management_fee"),
+            fund_data.get("mufap_fund_id"),
+            fund_data.get("mufap_int_id"),
+            fund_data.get("mufap_amc_id"),
+            fund_data.get("front_load"),
+            fund_data.get("back_load"),
+            fund_data.get("risk_profile"),
+            fund_data.get("benchmark"),
+            fund_data.get("rating"),
+            fund_data.get("trustee"),
+            fund_data.get("fund_manager"),
             fund_data.get("is_active", 1),
             fund_data.get("source", "MUFAP"),
         ))

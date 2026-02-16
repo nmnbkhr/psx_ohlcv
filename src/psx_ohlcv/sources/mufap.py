@@ -1,36 +1,69 @@
 """
-MUFAP (Mutual Funds Association of Pakistan) data source module for Phase 2.5.
+MUFAP (Mutual Funds Association of Pakistan) data source module.
 
-This module provides mutual fund data fetching from various sources:
-- MUFAP website (primary source) - https://www.mufap.com.pk
-- Sample/mock data - for testing when website unavailable
+Scrapes live data from mufap.com.pk:
+- Fund master list (1,100+ funds across 26 AMCs)
+- Daily NAV + loads from HTML table (519 active funds)
+- Historical NAV via JSON API per fund
+- Performance returns (YTD, MTD, 1D..3Y)
+- Asset allocation / portfolio breakdown
 
-Mutual fund data is used for analytics only, NOT for investment recommendations.
+All endpoints are POST-based JSON APIs (X-Requested-With: XMLHttpRequest).
 """
 
 import json
 import logging
-import random
-from datetime import datetime, timedelta
+import re
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import requests
+from lxml import html
 
 from ..config import DATA_ROOT
 
 logger = logging.getLogger(__name__)
 
-# MUFAP API endpoints
-MUFAP_BASE_URL = "https://www.mufap.com.pk"
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+MUFAP_BASE = "https://www.mufap.com.pk"
 
-# API Headers
-MUFAP_HEADERS = {
+_HEADERS_HTML = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept": "text/html,application/xhtml+xml",
 }
 
-# Fund categories (MUFAP standard)
+_HEADERS_API = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "application/json",
+    "X-Requested-With": "XMLHttpRequest",
+}
+
+_HEADERS_JSON = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    "X-Requested-With": "XMLHttpRequest",
+}
+
+_TIMEOUT = 60
+
+# Map MUFAP sector names to our fund_type codes
+_SECTOR_MAP = {
+    "Open-End Funds": "OPEN_END",
+    "Exchange Traded Fund (ETF)": "ETF",
+    "Dedicated Equity Funds": "DEDICATED",
+    "Voluntary Pension Scheme (VPS)": "VPS",
+    "Employer Pension Funds": "EMPLOYER_PENSION",
+    "Pension Funds (Open-End Funds)": "VPS",
+}
+
+MUFAP_CONFIG_PATH = DATA_ROOT / "mufap_config.json"
+
+# Fund categories (MUFAP standard) — kept for backward compat
 FUND_CATEGORIES = [
     {"code": "Equity", "name": "Equity"},
     {"code": "Money Market", "name": "Money Market"},
@@ -46,271 +79,402 @@ FUND_CATEGORIES = [
     {"code": "Capital Protected", "name": "Capital Protected"},
 ]
 
-# Config file paths
-MUFAP_CONFIG_PATH = DATA_ROOT / "mufap_config.json"
 
-# Default mutual funds - major AMCs and popular funds
-DEFAULT_MUTUAL_FUNDS = [
-    # ABL Asset Management
-    {
-        "fund_id": "MUFAP:ABL-ISF",
-        "symbol": "ABL-ISF",
-        "fund_name": "ABL Islamic Stock Fund",
-        "amc_code": "ABL",
-        "amc_name": "ABL Asset Management",
-        "fund_type": "OPEN_END",
-        "category": "Islamic Equity",
-        "is_shariah": 1,
-        "launch_date": "2010-01-01",
-        "expense_ratio": 2.5,
-        "management_fee": 2.0,
-    },
-    {
-        "fund_id": "MUFAP:ABL-CSF",
-        "symbol": "ABL-CSF",
-        "fund_name": "ABL Cash Fund",
-        "amc_code": "ABL",
-        "amc_name": "ABL Asset Management",
-        "fund_type": "OPEN_END",
-        "category": "Money Market",
-        "is_shariah": 0,
-        "launch_date": "2009-01-01",
-        "expense_ratio": 1.0,
-        "management_fee": 0.75,
-    },
-    # Alfalah GHP
-    {
-        "fund_id": "MUFAP:AGISF",
-        "symbol": "AGISF",
-        "fund_name": "Alfalah GHP Islamic Stock Fund",
-        "amc_code": "ALFALAH",
-        "amc_name": "Alfalah GHP Investment Management",
-        "fund_type": "OPEN_END",
-        "category": "Islamic Equity",
-        "is_shariah": 1,
-        "launch_date": "2007-01-01",
-        "expense_ratio": 2.5,
-        "management_fee": 2.0,
-    },
-    {
-        "fund_id": "MUFAP:AGCSF",
-        "symbol": "AGCSF",
-        "fund_name": "Alfalah GHP Cash Fund",
-        "amc_code": "ALFALAH",
-        "amc_name": "Alfalah GHP Investment Management",
-        "fund_type": "OPEN_END",
-        "category": "Money Market",
-        "is_shariah": 0,
-        "launch_date": "2008-01-01",
-        "expense_ratio": 1.0,
-        "management_fee": 0.75,
-    },
-    # MCB Arif Habib
-    {
-        "fund_id": "MUFAP:MCB-ISF",
-        "symbol": "MCB-ISF",
-        "fund_name": "MCB Pakistan Islamic Stock Fund",
-        "amc_code": "MCB",
-        "amc_name": "MCB-Arif Habib Savings and Investments",
-        "fund_type": "OPEN_END",
-        "category": "Islamic Equity",
-        "is_shariah": 1,
-        "launch_date": "2009-01-01",
-        "expense_ratio": 2.5,
-        "management_fee": 2.0,
-    },
-    {
-        "fund_id": "MUFAP:MCB-CF",
-        "symbol": "MCB-CF",
-        "fund_name": "MCB Cash Management Optimizer",
-        "amc_code": "MCB",
-        "amc_name": "MCB-Arif Habib Savings and Investments",
-        "fund_type": "OPEN_END",
-        "category": "Money Market",
-        "is_shariah": 0,
-        "launch_date": "2008-01-01",
-        "expense_ratio": 0.8,
-        "management_fee": 0.5,
-    },
-    # NIT
-    {
-        "fund_id": "MUFAP:NITEF",
-        "symbol": "NITEF",
-        "fund_name": "NIT Equity Fund",
-        "amc_code": "NIT",
-        "amc_name": "National Investment Trust",
-        "fund_type": "OPEN_END",
-        "category": "Equity",
-        "is_shariah": 0,
-        "launch_date": "2000-01-01",
-        "expense_ratio": 2.0,
-        "management_fee": 1.5,
-    },
-    {
-        "fund_id": "MUFAP:NITISF",
-        "symbol": "NITISF",
-        "fund_name": "NIT Islamic Stock Fund",
-        "amc_code": "NIT",
-        "amc_name": "National Investment Trust",
-        "fund_type": "OPEN_END",
-        "category": "Islamic Equity",
-        "is_shariah": 1,
-        "launch_date": "2005-01-01",
-        "expense_ratio": 2.0,
-        "management_fee": 1.5,
-    },
-    # HBL Asset Management
-    {
-        "fund_id": "MUFAP:HBL-ISF",
-        "symbol": "HBL-ISF",
-        "fund_name": "HBL Islamic Stock Fund",
-        "amc_code": "HBL",
-        "amc_name": "HBL Asset Management",
-        "fund_type": "OPEN_END",
-        "category": "Islamic Equity",
-        "is_shariah": 1,
-        "launch_date": "2010-01-01",
-        "expense_ratio": 2.5,
-        "management_fee": 2.0,
-    },
-    {
-        "fund_id": "MUFAP:HBL-MMF",
-        "symbol": "HBL-MMF",
-        "fund_name": "HBL Money Market Fund",
-        "amc_code": "HBL",
-        "amc_name": "HBL Asset Management",
-        "fund_type": "OPEN_END",
-        "category": "Money Market",
-        "is_shariah": 0,
-        "launch_date": "2009-01-01",
-        "expense_ratio": 0.9,
-        "management_fee": 0.5,
-    },
-    # UBL Fund Managers
-    {
-        "fund_id": "MUFAP:UBL-ISF",
-        "symbol": "UBL-ISF",
-        "fund_name": "UBL Islamic Stock Fund",
-        "amc_code": "UBL",
-        "amc_name": "UBL Fund Managers",
-        "fund_type": "OPEN_END",
-        "category": "Islamic Equity",
-        "is_shariah": 1,
-        "launch_date": "2008-01-01",
-        "expense_ratio": 2.5,
-        "management_fee": 2.0,
-    },
-    {
-        "fund_id": "MUFAP:UBL-LF",
-        "symbol": "UBL-LF",
-        "fund_name": "UBL Liquidity Plus Fund",
-        "amc_code": "UBL",
-        "amc_name": "UBL Fund Managers",
-        "fund_type": "OPEN_END",
-        "category": "Money Market",
-        "is_shariah": 0,
-        "launch_date": "2007-01-01",
-        "expense_ratio": 0.8,
-        "management_fee": 0.5,
-    },
-    # Faysal Asset Management
-    {
-        "fund_id": "MUFAP:FAYSAL-ISF",
-        "symbol": "FAYSAL-ISF",
-        "fund_name": "Faysal Islamic Stock Fund",
-        "amc_code": "FAYSAL",
-        "amc_name": "Faysal Asset Management",
-        "fund_type": "OPEN_END",
-        "category": "Islamic Equity",
-        "is_shariah": 1,
-        "launch_date": "2012-01-01",
-        "expense_ratio": 2.5,
-        "management_fee": 2.0,
-    },
-    # Income Funds
-    {
-        "fund_id": "MUFAP:ABL-IF",
-        "symbol": "ABL-IF",
-        "fund_name": "ABL Income Fund",
-        "amc_code": "ABL",
-        "amc_name": "ABL Asset Management",
-        "fund_type": "OPEN_END",
-        "category": "Income",
-        "is_shariah": 0,
-        "launch_date": "2008-01-01",
-        "expense_ratio": 1.5,
-        "management_fee": 1.0,
-    },
-    {
-        "fund_id": "MUFAP:MCB-IF",
-        "symbol": "MCB-IF",
-        "fund_name": "MCB Pakistan Income Fund",
-        "amc_code": "MCB",
-        "amc_name": "MCB-Arif Habib Savings and Investments",
-        "fund_type": "OPEN_END",
-        "category": "Income",
-        "is_shariah": 0,
-        "launch_date": "2010-01-01",
-        "expense_ratio": 1.5,
-        "management_fee": 1.0,
-    },
-    # Islamic Income
-    {
-        "fund_id": "MUFAP:ABL-IIF",
-        "symbol": "ABL-IIF",
-        "fund_name": "ABL Islamic Income Fund",
-        "amc_code": "ABL",
-        "amc_name": "ABL Asset Management",
-        "fund_type": "OPEN_END",
-        "category": "Islamic Income",
-        "is_shariah": 1,
-        "launch_date": "2011-01-01",
-        "expense_ratio": 1.5,
-        "management_fee": 1.0,
-    },
-    # Balanced Fund
-    {
-        "fund_id": "MUFAP:ABL-BAL",
-        "symbol": "ABL-BAL",
-        "fund_name": "ABL Balanced Fund",
-        "amc_code": "ABL",
-        "amc_name": "ABL Asset Management",
-        "fund_type": "OPEN_END",
-        "category": "Balanced",
-        "is_shariah": 0,
-        "launch_date": "2009-01-01",
-        "expense_ratio": 2.0,
-        "management_fee": 1.5,
-    },
-    # VPS Funds
-    {
-        "fund_id": "MUFAP:ABL-VPS-EQ",
-        "symbol": "ABL-VPS-EQ",
-        "fund_name": "ABL Pension Fund - Equity Sub-Fund",
-        "amc_code": "ABL",
-        "amc_name": "ABL Asset Management",
-        "fund_type": "VPS",
-        "category": "VPS",
-        "is_shariah": 0,
-        "launch_date": "2015-01-01",
-        "expense_ratio": 2.0,
-        "management_fee": 1.5,
-    },
-    {
-        "fund_id": "MUFAP:MCB-VPS-ISL",
-        "symbol": "MCB-VPS-ISL",
-        "fund_name": "MCB Islamic Pension Fund",
-        "amc_code": "MCB",
-        "amc_name": "MCB-Arif Habib Savings and Investments",
-        "fund_type": "VPS",
-        "category": "VPS",
-        "is_shariah": 1,
-        "launch_date": "2016-01-01",
-        "expense_ratio": 2.0,
-        "management_fee": 1.5,
-    },
-]
+# ---------------------------------------------------------------------------
+# Low-level API helpers
+# ---------------------------------------------------------------------------
 
+def _post_json(path: str, data: dict | None = None, timeout: int = _TIMEOUT) -> dict:
+    """POST to MUFAP JSON API and return parsed response."""
+    url = f"{MUFAP_BASE}{path}"
+    if data:
+        r = requests.post(url, headers=_HEADERS_API, data=data, timeout=timeout)
+    else:
+        r = requests.post(url, headers=_HEADERS_API, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
+
+
+def _get_html(path: str, params: dict | None = None) -> html.HtmlElement:
+    """GET an HTML page and return parsed tree."""
+    url = f"{MUFAP_BASE}{path}"
+    r = requests.get(url, headers=_HEADERS_HTML, params=params, timeout=_TIMEOUT)
+    r.raise_for_status()
+    return html.fromstring(r.text)
+
+
+# ---------------------------------------------------------------------------
+# Fund master data (API)
+# ---------------------------------------------------------------------------
+
+def fetch_amc_list() -> list[dict]:
+    """Fetch all Asset Management Companies from MUFAP API.
+
+    Returns list of dicts with keys: AMCId, AMC_Desc, etc.
+    """
+    resp = _post_json("/AMC/GetAMCList")
+    return resp.get("data", [])
+
+
+def fetch_fund_profiles() -> list[dict]:
+    """Fetch all fund profiles (1,100+ funds) from MUFAP API.
+
+    Returns list of dicts with rich metadata:
+    AMCId, AMC_Code, AMC_Desc, FundID, Fund_Desc, Fund_Code,
+    inception, Sector_Desc, Cat_Desc, FrontLoad, BackLoad,
+    ManagementFee, ProfileRiskOfFund, BenchMark, etc.
+    """
+    resp = _post_json("/FundProfile/GetAllFundProfile")
+    return resp.get("data", [])
+
+
+def fetch_fund_categories() -> list[dict]:
+    """Fetch fund categories from MUFAP API."""
+    resp = _post_json("/Industry/GetCategory")
+    return resp.get("data", [])
+
+
+def fetch_fund_types() -> list[dict]:
+    """Fetch fund types (Open-End, ETF, VPS, etc.)."""
+    resp = _post_json("/FundProfile/GetAllFundType")
+    return resp.get("data", [])
+
+
+# ---------------------------------------------------------------------------
+# Daily NAV (HTML table scrape — all funds in one call)
+# ---------------------------------------------------------------------------
+
+def fetch_daily_nav_html() -> pd.DataFrame:
+    """Scrape today's NAV for all ~519 active funds from HTML table.
+
+    Returns DataFrame with columns:
+        sector, amc, fund_name, category, inception_date,
+        offer_price, repurchase_price, nav, validity_date,
+        front_load, back_load, contingent_load, market_price, trustee
+    """
+    tree = _get_html("/Industry/IndustryStatDaily", params={"tab": "3"})
+    table = tree.xpath('//table[@id="table_id"]')
+    if not table:
+        logger.warning("MUFAP: NAV table not found on IndustryStatDaily?tab=3")
+        return pd.DataFrame()
+
+    rows = table[0].xpath(".//tr")
+    if len(rows) < 2:
+        return pd.DataFrame()
+
+    records = []
+    for row in rows[1:]:  # skip header
+        cells = [c.text_content().strip() for c in row.xpath(".//td")]
+        if len(cells) < 14:
+            continue
+
+        # Parse numeric fields safely
+        def _num(s):
+            try:
+                return float(s.replace(",", "")) if s and s != "N/A" else None
+            except ValueError:
+                return None
+
+        records.append({
+            "sector": cells[0],
+            "amc": cells[1],
+            "fund_name": cells[2],
+            "category": cells[3],
+            "inception_date": _parse_mufap_date(cells[4]),
+            "offer_price": _num(cells[5]),
+            "repurchase_price": _num(cells[6]),
+            "nav": _num(cells[7]),
+            "validity_date": _parse_mufap_date(cells[8]),
+            "front_load": _num(cells[9]),
+            "back_load": _num(cells[10]),
+            "contingent_load": _num(cells[11]),
+            "market_price": _num(cells[12]),
+            "trustee": cells[13],
+        })
+
+    return pd.DataFrame(records)
+
+
+def fetch_daily_performance_html() -> pd.DataFrame:
+    """Scrape today's performance returns for all funds from HTML table.
+
+    Returns DataFrame with columns:
+        sector, category, fund_name, rating, benchmark, validity_date,
+        nav, ytd, mtd, day_1, day_15, day_30, day_90, day_180, day_270,
+        year_1, year_2, year_3
+    """
+    tree = _get_html("/Industry/IndustryStatDaily", params={"tab": "1"})
+    table = tree.xpath("//table")
+    if not table:
+        return pd.DataFrame()
+
+    rows = table[0].xpath(".//tr")
+    if len(rows) < 2:
+        return pd.DataFrame()
+
+    records = []
+    for row in rows[1:]:
+        cells = [c.text_content().strip() for c in row.xpath(".//td")]
+        if len(cells) < 18:
+            continue
+
+        def _num(s):
+            try:
+                return float(s.replace(",", "")) if s and s not in ("N/A", "-", "") else None
+            except ValueError:
+                return None
+
+        records.append({
+            "sector": cells[0],
+            "category": cells[1],
+            "fund_name": cells[2],
+            "rating": cells[3] if cells[3] != "N/A" else None,
+            "benchmark": cells[4] if cells[4] != "N/A" else None,
+            "validity_date": _parse_mufap_date(cells[5]),
+            "nav": _num(cells[6]),
+            "ytd": _num(cells[7]),
+            "mtd": _num(cells[8]),
+            "day_1": _num(cells[9]),
+            "day_15": _num(cells[10]),
+            "day_30": _num(cells[11]),
+            "day_90": _num(cells[12]),
+            "day_180": _num(cells[13]),
+            "day_270": _num(cells[14]),
+            "year_1": _num(cells[15]),
+            "year_2": _num(cells[16]),
+            "year_3": _num(cells[17]),
+        })
+
+    return pd.DataFrame(records)
+
+
+# ---------------------------------------------------------------------------
+# Historical NAV per fund (JSON API)
+# ---------------------------------------------------------------------------
+
+def fetch_fund_detail(mufap_int_id: str, date: str | None = None) -> dict[str, Any]:
+    """Fetch full fund detail via MUFAP JSON API.
+
+    Uses /AMC/GetFundDetailbyAMCByDate which returns full NAV history
+    (thousands of records back to inception).
+
+    Args:
+        mufap_int_id: Integer fund ID from the 'fund' field in FundProfile API.
+        date: Date string (YYYY-M-D format accepted). Defaults to today.
+
+    Returns dict with keys:
+        profile    — fund metadata (AMC, category, loads, benchmark, etc.)
+        nav_history — list of {FundID, netval, entryDate, CalDate}
+        portfolio  — asset allocation breakdown
+        returns    — performance returns (YTD, MTD, 1D..3Y)
+        expenses   — expense ratios
+    """
+    if date is None:
+        date = datetime.now().strftime("%Y-%m-%d")
+    # MUFAP accepts "YYYY-M-D" format
+    url = f"{MUFAP_BASE}/AMC/GetFundDetailbyAMCByDate"
+    body = {"FundID": str(mufap_int_id), "Date": date}
+    r = requests.post(url, headers=_HEADERS_JSON, json=body, timeout=120)
+    r.raise_for_status()
+    resp = r.json()
+
+    # Response has double-encoded JSON: {"data": "<json_string>"}
+    inner_str = resp.get("data", "{}")
+    if isinstance(inner_str, str):
+        inner = json.loads(inner_str) if inner_str else {}
+    else:
+        inner = inner_str
+
+    result: dict[str, Any] = {
+        "profile": None,
+        "nav_history": [],
+        "portfolio": None,
+        "returns": None,
+        "expenses": None,
+    }
+
+    # Table = fund profile (1 row)
+    if inner.get("Table"):
+        result["profile"] = inner["Table"][0]
+
+    # Table1 = NAV history (thousands of rows)
+    if inner.get("Table1"):
+        result["nav_history"] = inner["Table1"]
+
+    # Table2 = portfolio/asset allocation
+    if inner.get("Table2"):
+        result["portfolio"] = inner["Table2"][0] if inner["Table2"] else None
+
+    # Table4 = performance returns
+    if inner.get("Table4"):
+        result["returns"] = inner["Table4"][0] if inner["Table4"] else None
+
+    # Table5 = expense ratios
+    if inner.get("Table5"):
+        result["expenses"] = inner["Table5"][0] if inner["Table5"] else None
+
+    return result
+
+
+def fetch_nav_history(mufap_int_id: str, date: str | None = None) -> pd.DataFrame:
+    """Fetch full NAV history for a single fund.
+
+    Args:
+        mufap_int_id: Integer fund ID from the 'fund' field in FundProfile.
+        date: Optional date (defaults to today).
+
+    Returns DataFrame with columns: fund_id, date, nav, offer_price, redemption_price
+    """
+    detail = fetch_fund_detail(mufap_int_id, date)
+    history = detail.get("nav_history", [])
+    if not history:
+        return pd.DataFrame()
+
+    records = []
+    for row in history:
+        date_str = row.get("entryDate") or row.get("CalDate")
+        nav_val = row.get("netval")
+        if date_str and nav_val is not None:
+            # Normalize date (comes as "YYYY-MM-DD" or "YYYY-MM-DDT...")
+            date_clean = str(date_str)[:10]
+            try:
+                nav_float = float(nav_val)
+            except (ValueError, TypeError):
+                continue
+            offer = _safe_float(row.get("offer_price") or row.get("OfferPrice"))
+            redemp = _safe_float(row.get("repurchase_price") or row.get("RedemptionPrice"))
+            records.append({
+                "fund_id": str(row.get("FundID", mufap_int_id)),
+                "date": date_clean,
+                "nav": nav_float,
+                "offer_price": offer or nav_float,
+                "redemption_price": redemp or nav_float,
+                "aum": None,
+                "nav_change_pct": None,
+                "source": "MUFAP",
+            })
+
+    return pd.DataFrame(records)
+
+
+# ---------------------------------------------------------------------------
+# Conversion helpers: MUFAP API → our DB schema
+# ---------------------------------------------------------------------------
+
+def _parse_mufap_date(s: str) -> str | None:
+    """Parse MUFAP date formats to YYYY-MM-DD."""
+    if not s or s in ("N/A", "-", ""):
+        return None
+    # "Feb 13, 2026" or "Oct 22, 2024"
+    for fmt in ("%b %d, %Y", "%B %d, %Y", "%Y-%m-%d", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(s.strip(), fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
+
+
+def map_mufap_category(raw_category: str) -> tuple[str, bool]:
+    """Map MUFAP raw category to standardized category and Shariah flag."""
+    raw_lower = raw_category.lower()
+    is_shariah = any(w in raw_lower for w in ("islamic", "shariah", "sharia"))
+
+    if "equity" in raw_lower or "stock" in raw_lower:
+        cat = "Islamic Equity" if is_shariah else "Equity"
+    elif "money market" in raw_lower or "cash" in raw_lower or "liquidity" in raw_lower:
+        cat = "Islamic Money Market" if is_shariah else "Money Market"
+    elif "income" in raw_lower or "debt" in raw_lower or "fixed" in raw_lower:
+        cat = "Islamic Income" if is_shariah else "Income"
+    elif "balanced" in raw_lower or "hybrid" in raw_lower:
+        cat = "Balanced"
+    elif "pension" in raw_lower or "vps" in raw_lower:
+        cat = "VPS"
+    elif "allocation" in raw_lower:
+        cat = "Asset Allocation"
+    elif "fund of" in raw_lower or "fof" in raw_lower:
+        cat = "Fund of Funds"
+    elif "protected" in raw_lower or "capital" in raw_lower:
+        cat = "Capital Protected"
+    elif "etf" in raw_lower or "exchange traded" in raw_lower:
+        cat = "ETF"
+    else:
+        cat = raw_category  # pass through unmapped
+    return cat, is_shariah
+
+
+def profile_to_fund_dict(p: dict) -> dict:
+    """Convert a MUFAP FundProfile API record to our mutual_funds schema dict."""
+    raw_cat = p.get("Cat_Desc", "")
+    category, is_shariah = map_mufap_category(raw_cat)
+    sector = p.get("Sector_Desc", "")
+    fund_type = _SECTOR_MAP.get(sector, "OPEN_END")
+
+    # Build a clean symbol from Fund_Code or Fund_Desc
+    symbol = (p.get("Fund_Code") or "").strip()
+    if not symbol:
+        # Fallback: slugify fund name
+        symbol = re.sub(r"[^A-Za-z0-9]+", "-", p.get("Fund_Desc", "")[:40]).strip("-")
+
+    amc_code = (p.get("AMC_Code") or "").strip()
+    fund_id = f"MUFAP:{p['FundID']}" if p.get("FundID") else f"MUFAP:{symbol}"
+
+    # Integer fund ID (the "fund" field) — needed for historical NAV API
+    mufap_int_id = p.get("fund")
+    if mufap_int_id is not None:
+        mufap_int_id = str(mufap_int_id)
+
+    return {
+        "fund_id": fund_id,
+        "mufap_fund_id": str(p.get("FundID", "")),
+        "mufap_int_id": mufap_int_id,
+        "mufap_amc_id": str(p.get("AMCId", "")),
+        "symbol": symbol,
+        "fund_name": (p.get("Fund_Desc") or "").strip(),
+        "amc_code": amc_code,
+        "amc_name": (p.get("AMC_Desc") or "").strip(),
+        "fund_type": fund_type,
+        "category": category,
+        "is_shariah": 1 if is_shariah else 0,
+        "launch_date": _parse_mufap_date(p.get("inception") or p.get("LaunchDate", "")),
+        "expense_ratio": None,
+        "management_fee": _safe_float(p.get("ManagementFee")),
+        "front_load": _safe_float(p.get("FrontLoad")),
+        "back_load": _safe_float(p.get("BackLoad")),
+        "risk_profile": (p.get("ProfileRiskOfFund") or "").strip() or None,
+        "benchmark": (p.get("BenchMark") or "").strip() or None,
+        "rating": (p.get("Rating1") or "").strip() or None,
+        "trustee": (p.get("TrusteeCode") or "").strip() or None,
+        "fund_manager": (p.get("FundManager") or "").strip() or None,
+    }
+
+
+def nav_row_to_dict(fund_id: str, row: dict) -> dict:
+    """Convert a MUFAP daily NAV HTML row to our mutual_fund_nav schema dict."""
+    return {
+        "fund_id": fund_id,
+        "date": row.get("validity_date"),
+        "nav": row.get("nav"),
+        "offer_price": row.get("offer_price"),
+        "redemption_price": row.get("repurchase_price"),
+        "aum": None,
+        "nav_change_pct": None,
+        "source": "MUFAP",
+    }
+
+
+def _safe_float(v) -> float | None:
+    """Safely convert to float."""
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatible functions (used by sync_mufap.py)
+# ---------------------------------------------------------------------------
 
 def get_fund_categories() -> list[dict]:
     """Get all MUFAP fund categories."""
@@ -318,36 +482,30 @@ def get_fund_categories() -> list[dict]:
 
 
 def get_default_funds() -> list[dict]:
-    """Get the default mutual funds configuration."""
-    return DEFAULT_MUTUAL_FUNDS.copy()
+    """Get default/seed funds — now fetches live from MUFAP API."""
+    try:
+        profiles = fetch_fund_profiles()
+        return [profile_to_fund_dict(p) for p in profiles]
+    except Exception as e:
+        logger.warning("MUFAP API unavailable, using static defaults: %s", e)
+        return _STATIC_DEFAULTS
 
 
 def load_mufap_config(config_path: Path | None = None) -> dict:
-    """
-    Load MUFAP configuration from JSON file.
-
-    Args:
-        config_path: Path to config file, or None for default
-
-    Returns:
-        Config dict with 'funds' key
-    """
+    """Load MUFAP configuration from JSON file."""
     path = config_path or MUFAP_CONFIG_PATH
-
     if path.exists():
         try:
             with open(path) as f:
                 return json.load(f)
         except (json.JSONDecodeError, IOError):
             pass
-
-    return {"funds": DEFAULT_MUTUAL_FUNDS}
+    return {"funds": []}
 
 
 def save_mufap_config(config: dict, config_path: Path | None = None) -> bool:
     """Save MUFAP configuration to JSON file."""
     path = config_path or MUFAP_CONFIG_PATH
-
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w") as f:
@@ -357,181 +515,30 @@ def save_mufap_config(config: dict, config_path: Path | None = None) -> bool:
         return False
 
 
-def fetch_funds_from_mufap(
-    category: str | None = None,
-    fund_type: str = "OPEN_END",
-) -> list[dict]:
-    """
-    Fetch mutual fund master data from MUFAP.
-
-    Currently returns default funds as MUFAP website requires
-    scraping which may be unreliable. When MUFAP is available,
-    this can be extended to fetch live data.
-
-    Args:
-        category: Filter by category (None = all)
-        fund_type: 'OPEN_END' | 'VPS' | 'ETF' | 'ALL'
-
-    Returns:
-        List of fund metadata dicts
-    """
-    # Use default funds (MUFAP website scraping not implemented)
+def fetch_funds_from_mufap(category: str | None = None, fund_type: str = "OPEN_END") -> list[dict]:
+    """Fetch mutual fund master data from MUFAP API."""
     funds = get_default_funds()
-
     if category:
         funds = [f for f in funds if f.get("category") == category]
     if fund_type != "ALL":
         funds = [f for f in funds if f.get("fund_type") == fund_type]
-
     return funds
 
 
 def fetch_nav_from_mufap(
-    fund_id: str | None = None,
-    start_date: str | None = None,
-    end_date: str | None = None,
+    fund_id: str | None = None, start_date: str | None = None, end_date: str | None = None,
 ) -> pd.DataFrame:
-    """
-    Fetch NAV data from MUFAP.
-
-    Note: MUFAP requires login for historical NAV data, so this
-    falls back to sample data generation.
-
-    Args:
-        fund_id: Specific fund ID or None for all
-        start_date: Start date (YYYY-MM-DD)
-        end_date: End date (YYYY-MM-DD)
-
-    Returns:
-        DataFrame with fund_id, date, nav, offer_price, redemption_price columns
-    """
-    # MUFAP historical NAV data requires authentication
-    # Fall back to sample data
-    return fetch_nav_sample_data(fund_id, start_date, end_date)
-
-
-def fetch_nav_sample_data(
-    fund_id: str | None = None,
-    start_date: str | None = None,
-    end_date: str | None = None,
-) -> pd.DataFrame:
-    """
-    Generate sample NAV data for testing and development.
-
-    This provides realistic-looking NAV data when MUFAP is unavailable.
-    Different fund categories have different NAV behaviors:
-    - Equity funds: Higher volatility, growth trend
-    - Money Market: Low volatility, steady growth (KIBOR-like returns)
-    - Income: Medium volatility, moderate growth
-    - Balanced: Mix of equity and income behavior
-
-    Args:
-        fund_id: Fund ID (required to determine category behavior)
-        start_date: Start date
-        end_date: End date
-
-    Returns:
-        DataFrame with sample NAV data
-    """
-    if not fund_id:
+    """Fetch NAV data — now uses live HTML scrape for daily data."""
+    try:
+        df = fetch_daily_nav_html()
+        if df.empty:
+            return df
+        if fund_id:
+            df = df[df["fund_name"].str.contains(fund_id.replace("MUFAP:", ""), case=False, na=False)]
+        return df
+    except Exception as e:
+        logger.warning("MUFAP NAV fetch failed: %s", e)
         return pd.DataFrame()
-
-    # Find fund to determine category
-    funds = get_default_funds()
-    fund_info = next((f for f in funds if f.get("fund_id") == fund_id), None)
-
-    if not fund_info:
-        # Try matching by symbol
-        fund_info = next((f for f in funds if f.get("symbol") == fund_id), None)
-
-    category = fund_info.get("category", "Equity") if fund_info else "Equity"
-
-    # Set parameters based on fund category
-    # Base NAV and volatility parameters (nav, daily_vol, annual_return)
-    category_params = {
-        "Equity": {"base_nav": 50.0, "daily_vol": 0.015, "annual_return": 0.12},
-        "Islamic Equity": {"base_nav": 45.0, "daily_vol": 0.015, "annual_return": 0.11},
-        "Money Market": {"base_nav": 10.5, "daily_vol": 0.0001, "annual_return": 0.15},
-        "Islamic Money Market": {
-            "base_nav": 10.5, "daily_vol": 0.0001, "annual_return": 0.14
-        },
-        "Income": {"base_nav": 15.0, "daily_vol": 0.002, "annual_return": 0.14},
-        "Islamic Income": {"base_nav": 14.0, "daily_vol": 0.002, "annual_return": 0.13},
-        "Balanced": {"base_nav": 25.0, "daily_vol": 0.008, "annual_return": 0.10},
-        "VPS": {"base_nav": 20.0, "daily_vol": 0.012, "annual_return": 0.09},
-        "Asset Allocation": {
-            "base_nav": 20.0, "daily_vol": 0.006, "annual_return": 0.08
-        },
-        "Fund of Funds": {"base_nav": 15.0, "daily_vol": 0.010, "annual_return": 0.08},
-        "Capital Protected": {
-            "base_nav": 10.5, "daily_vol": 0.001, "annual_return": 0.07
-        },
-        "ETF": {"base_nav": 100.0, "daily_vol": 0.012, "annual_return": 0.10},
-    }
-
-    params = category_params.get(category, category_params["Equity"])
-    base_nav = params["base_nav"]
-    daily_vol = params["daily_vol"]
-    annual_return = params["annual_return"]
-
-    # Daily drift for expected return
-    daily_drift = annual_return / 252
-
-    # Date range
-    if end_date:
-        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-    else:
-        end_dt = datetime.now()
-
-    if start_date:
-        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-    else:
-        start_dt = end_dt - timedelta(days=365)
-
-    # Generate data
-    data = []
-    current_nav = base_nav
-
-    # Use fund_id hash for reproducible but fund-specific randomness
-    random.seed(hash(fund_id) % (2**32))
-
-    current_dt = start_dt
-
-    while current_dt <= end_dt:
-        # Skip weekends (no NAV updates on weekends)
-        if current_dt.weekday() < 5:
-            # Random walk with drift
-            daily_return = daily_drift + random.gauss(0, daily_vol)
-            current_nav *= (1 + daily_return)
-
-            # Ensure NAV doesn't go negative or too extreme
-            current_nav = max(current_nav, base_nav * 0.3)
-
-            # Calculate offer and redemption prices
-            # Typically offer > NAV > redemption (fund loads)
-            front_load = 0.01  # 1% front load
-            back_load = 0.005  # 0.5% back load
-
-            offer_price = round(current_nav * (1 + front_load), 4)
-            redemption_price = round(current_nav * (1 - back_load), 4)
-
-            # Calculate daily change
-            nav_change_pct = daily_return * 100 if len(data) > 0 else 0.0
-
-            data.append({
-                "fund_id": fund_id,
-                "date": current_dt.strftime("%Y-%m-%d"),
-                "nav": round(current_nav, 4),
-                "offer_price": offer_price,
-                "redemption_price": redemption_price,
-                "aum": round(random.uniform(500, 5000), 2),  # AUM in millions
-                "nav_change_pct": round(nav_change_pct, 4),
-                "source": "SAMPLE",
-            })
-
-        current_dt += timedelta(days=1)
-
-    return pd.DataFrame(data)
 
 
 def fetch_mutual_fund_data(
@@ -539,111 +546,51 @@ def fetch_mutual_fund_data(
     start_date: str | None = None,
     end_date: str | None = None,
     source: str = "AUTO",
+    mufap_int_id: str | None = None,
 ) -> pd.DataFrame:
-    """
-    Fetch NAV data from the best available source.
+    """Fetch NAV data from MUFAP for a specific fund.
 
-    Args:
-        fund_id: Fund ID to fetch
-        start_date: Start date
-        end_date: End date
-        source: Data source ("MUFAP", "SAMPLE", "AUTO")
-
-    Returns:
-        DataFrame with normalized NAV data
+    If mufap_int_id is provided, fetches full history via the historical API.
+    Otherwise falls back to the daily HTML scrape.
     """
-    if source == "MUFAP":
-        return fetch_nav_from_mufap(fund_id, start_date, end_date)
-    elif source == "SAMPLE":
-        return fetch_nav_sample_data(fund_id, start_date, end_date)
-    else:
-        # AUTO: Try MUFAP first, then sample
-        df = fetch_nav_from_mufap(fund_id, start_date, end_date)
-        if not df.empty:
+    if mufap_int_id:
+        try:
+            df = fetch_nav_history(mufap_int_id)
+            if not df.empty and start_date:
+                df = df[df["date"] >= start_date]
+            if not df.empty and end_date:
+                df = df[df["date"] <= end_date]
             return df
-
-        # Fall back to sample data
-        return fetch_nav_sample_data(fund_id, start_date, end_date)
+        except Exception as e:
+            logger.warning("Historical NAV fetch failed for int_id=%s: %s", mufap_int_id, e)
+    return fetch_nav_from_mufap(fund_id, start_date, end_date)
 
 
 def normalize_nav_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Normalize NAV DataFrame to standard schema.
-
-    Args:
-        df: Raw DataFrame from any source
-
-    Returns:
-        DataFrame with standard columns
-    """
+    """Normalize NAV DataFrame to standard schema."""
     if df.empty:
-        return pd.DataFrame(columns=[
-            "fund_id", "date", "nav", "offer_price",
-            "redemption_price", "aum", "nav_change_pct", "source"
-        ])
-
-    # Ensure required columns
-    required = ["date", "nav"]
-    for col in required:
+        cols = ["fund_id", "date", "nav", "offer_price", "redemption_price", "aum", "nav_change_pct", "source"]
+        return pd.DataFrame(columns=cols)
+    for col in ("offer_price", "redemption_price"):
         if col not in df.columns:
-            return pd.DataFrame(columns=[
-                "fund_id", "date", "nav", "offer_price",
-                "redemption_price", "aum", "nav_change_pct", "source"
-            ])
-
-    # Fill missing columns with defaults
-    if "offer_price" not in df.columns:
-        df["offer_price"] = df["nav"]
-    if "redemption_price" not in df.columns:
-        df["redemption_price"] = df["nav"]
-    if "aum" not in df.columns:
-        df["aum"] = None
-    if "nav_change_pct" not in df.columns:
-        df["nav_change_pct"] = None
+            df[col] = df.get("nav")
+    for col in ("aum", "nav_change_pct"):
+        if col not in df.columns:
+            df[col] = None
     if "source" not in df.columns:
-        df["source"] = "UNKNOWN"
-
-    cols = ["fund_id", "date", "nav", "offer_price",
-            "redemption_price", "aum", "nav_change_pct", "source"]
-
-    return df[[c for c in cols if c in df.columns]]
+        df["source"] = "MUFAP"
+    return df
 
 
-def map_mufap_category(raw_category: str) -> tuple[str, bool]:
-    """
-    Map MUFAP raw category to standardized category and Shariah flag.
+# ---------------------------------------------------------------------------
+# Static defaults (fallback when MUFAP API is unreachable)
+# ---------------------------------------------------------------------------
 
-    Args:
-        raw_category: Raw category string from MUFAP
-
-    Returns:
-        Tuple of (category_name, is_shariah)
-    """
-    raw_lower = raw_category.lower()
-
-    # Check for Islamic/Shariah keywords
-    is_shariah = any(word in raw_lower for word in ["islamic", "shariah", "sharia"])
-
-    # Map to standard categories
-    if "equity" in raw_lower or "stock" in raw_lower:
-        category = "Islamic Equity" if is_shariah else "Equity"
-    elif "money market" in raw_lower or "cash" in raw_lower or "liquidity" in raw_lower:
-        category = "Islamic Money Market" if is_shariah else "Money Market"
-    elif "income" in raw_lower or "debt" in raw_lower or "fixed" in raw_lower:
-        category = "Islamic Income" if is_shariah else "Income"
-    elif "balanced" in raw_lower or "hybrid" in raw_lower:
-        category = "Balanced"
-    elif "pension" in raw_lower or "vps" in raw_lower:
-        category = "VPS"
-    elif "allocation" in raw_lower:
-        category = "Asset Allocation"
-    elif "fund of" in raw_lower or "fof" in raw_lower:
-        category = "Fund of Funds"
-    elif "protected" in raw_lower or "capital" in raw_lower:
-        category = "Capital Protected"
-    elif "etf" in raw_lower or "exchange traded" in raw_lower:
-        category = "ETF"
-    else:
-        category = "Equity"  # Default to equity
-
-    return category, is_shariah
+_STATIC_DEFAULTS = [
+    {"fund_id": "MUFAP:ABL-ISF", "symbol": "ABL-ISF", "fund_name": "ABL Islamic Stock Fund",
+     "amc_code": "ABL", "amc_name": "ABL Asset Management", "fund_type": "OPEN_END",
+     "category": "Islamic Equity", "is_shariah": 1, "launch_date": "2010-01-01"},
+    {"fund_id": "MUFAP:ABL-CSF", "symbol": "ABL-CSF", "fund_name": "ABL Cash Fund",
+     "amc_code": "ABL", "amc_name": "ABL Asset Management", "fund_type": "OPEN_END",
+     "category": "Money Market", "is_shariah": 0, "launch_date": "2009-01-01"},
+]

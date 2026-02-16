@@ -90,6 +90,7 @@ def init_schema(con: sqlite3.Connection) -> None:
     _migrate_symbols_table(con)
     _migrate_eod_ohlcv_table(con)
     _migrate_scrape_jobs_table(con)
+    _migrate_mutual_funds_table(con)
 
     # Initialize new domain schemas (v3.0+)
     from .repositories.etf import init_etf_schema
@@ -155,6 +156,31 @@ def _migrate_eod_ohlcv_table(con: sqlite3.Connection) -> None:
     # Add processname column if missing
     if "processname" not in existing_cols:
         con.execute("ALTER TABLE eod_ohlcv ADD COLUMN processname TEXT")
+
+    con.commit()
+
+
+def _migrate_mutual_funds_table(con: sqlite3.Connection) -> None:
+    """Add MUFAP API ID columns to mutual_funds table if they don't exist."""
+    cursor = con.execute("PRAGMA table_info(mutual_funds)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+
+    new_columns = [
+        ("mufap_fund_id", "TEXT"),
+        ("mufap_int_id", "TEXT"),
+        ("mufap_amc_id", "TEXT"),
+        ("front_load", "REAL"),
+        ("back_load", "REAL"),
+        ("risk_profile", "TEXT"),
+        ("benchmark", "TEXT"),
+        ("rating", "TEXT"),
+        ("trustee", "TEXT"),
+        ("fund_manager", "TEXT"),
+    ]
+
+    for col_name, col_def in new_columns:
+        if col_name not in existing_cols:
+            con.execute(f"ALTER TABLE mutual_funds ADD COLUMN {col_name} {col_def}")
 
     con.commit()
 

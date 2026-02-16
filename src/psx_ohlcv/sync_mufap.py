@@ -7,12 +7,16 @@ into the local database for analytics purposes.
 Mutual fund data is READ-ONLY and used for analytics, not investment recommendations.
 """
 
+import json
+import logging
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
+from .config import DATA_ROOT
 from .db import (
     connect,
     get_mf_data_summary,
@@ -137,6 +141,7 @@ def sync_fund_nav(
             return 0, f"Fund not found: {fund_id}"
 
         actual_fund_id = fund["fund_id"]
+        mufap_int_id = fund.get("mufap_int_id")
 
         # Determine start date for incremental sync
         start_date = None
@@ -147,9 +152,12 @@ def sync_fund_nav(
                 latest_dt = datetime.strptime(latest, "%Y-%m-%d")
                 start_date = (latest_dt + timedelta(days=1)).strftime("%Y-%m-%d")
 
-        # Fetch data
+        # Fetch data (uses historical API if mufap_int_id available)
         df = fetch_mutual_fund_data(
-            actual_fund_id, start_date=start_date, source=source
+            actual_fund_id,
+            start_date=start_date,
+            source=source,
+            mufap_int_id=mufap_int_id,
         )
 
         if df.empty:
@@ -267,3 +275,120 @@ def get_data_summary(db_path: Path | str | None = None) -> dict:
     summary = get_mf_data_summary(con)
     con.close()
     return summary
+
+
+# ---------------------------------------------------------------------------
+# Bulk NAV history sync (background job)
+# ---------------------------------------------------------------------------
+
+NAV_SYNC_PROGRESS_FILE = DATA_ROOT / "nav_sync_progress.json"
+
+log = logging.getLogger("psx_ohlcv.sync_mufap")
+
+
+def _write_progress(data: dict) -> None:
+    """Write progress dict to JSON file atomically."""
+    tmp = NAV_SYNC_PROGRESS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data))
+    tmp.replace(NAV_SYNC_PROGRESS_FILE)
+
+
+def read_nav_sync_progress() -> dict | None:
+    """Read the current bulk NAV sync progress. Returns None if no job has run."""
+    if not NAV_SYNC_PROGRESS_FILE.exists():
+        return None
+    try:
+        return json.loads(NAV_SYNC_PROGRESS_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def sync_all_nav_history(db_path: Path | str | None = None) -> None:
+    """
+    Sync full NAV history for ALL funds that have mufap_int_id.
+
+    Writes progress to NAV_SYNC_PROGRESS_FILE so the UI can poll it.
+    Designed to run in a background thread.
+    """
+    con = connect(db_path)
+    init_schema(con)
+
+    # Get all funds with mufap_int_id
+    all_funds = get_mutual_funds(con, active_only=False)
+    funds = [f for f in all_funds if f.get("mufap_int_id")]
+    con.close()
+
+    total = len(funds)
+    progress = {
+        "status": "running",
+        "started_at": datetime.now().isoformat(),
+        "total": total,
+        "current": 0,
+        "ok": 0,
+        "failed": 0,
+        "rows_total": 0,
+        "current_fund": "",
+        "errors": [],
+    }
+    _write_progress(progress)
+
+    for i, fund in enumerate(funds):
+        fund_id = fund["fund_id"]
+        symbol = fund.get("symbol", fund_id)
+        progress["current"] = i + 1
+        progress["current_fund"] = symbol
+        _write_progress(progress)
+
+        try:
+            rows, error = sync_fund_nav(fund_id, db_path=db_path, incremental=False)
+            if error:
+                progress["failed"] += 1
+                progress["errors"].append(f"{symbol}: {error}")
+                # Keep only last 20 errors
+                progress["errors"] = progress["errors"][-20:]
+            else:
+                progress["ok"] += 1
+                progress["rows_total"] += rows
+        except Exception as e:
+            progress["failed"] += 1
+            progress["errors"].append(f"{symbol}: {e}")
+            progress["errors"] = progress["errors"][-20:]
+            log.exception("Error syncing %s", symbol)
+
+        _write_progress(progress)
+
+    progress["status"] = "completed"
+    progress["finished_at"] = datetime.now().isoformat()
+    _write_progress(progress)
+    log.info(
+        "Bulk NAV sync complete: %d/%d ok, %d rows",
+        progress["ok"], total, progress["rows_total"],
+    )
+
+
+_bulk_sync_thread: threading.Thread | None = None
+
+
+def start_bulk_nav_sync(db_path: Path | str | None = None) -> bool:
+    """
+    Launch bulk NAV sync in a background thread.
+
+    Returns True if started, False if already running.
+    """
+    global _bulk_sync_thread
+    if _bulk_sync_thread is not None and _bulk_sync_thread.is_alive():
+        return False
+
+    _bulk_sync_thread = threading.Thread(
+        target=sync_all_nav_history,
+        kwargs={"db_path": db_path},
+        daemon=True,
+        name="bulk-nav-sync",
+    )
+    _bulk_sync_thread.start()
+    return True
+
+
+def is_bulk_nav_sync_running() -> bool:
+    """Check if a bulk NAV sync thread is currently running."""
+    return _bulk_sync_thread is not None and _bulk_sync_thread.is_alive()

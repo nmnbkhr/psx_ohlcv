@@ -106,8 +106,9 @@ def render_factor_analysis():
                         json_extract(cs.trading_data, '$.REG.pe_ratio_ttm') as pe_ratio,
                         json_extract(cs.trading_data, '$.REG.ytd_change') as ytd_change,
                         json_extract(cs.trading_data, '$.REG.year_1_change') as year_1_change,
-                        -- From equity_data: market cap
+                        -- From equity_data: market cap + shares
                         json_extract(cs.equity_data, '$.market_cap') as market_cap,
+                        json_extract(cs.equity_data, '$.outstanding_shares') as outstanding_shares,
                         json_extract(cs.equity_data, '$.free_float_percent') as free_float_pct,
                         -- From financials_data: EPS (latest annual)
                         json_extract(cs.financials_data, '$.annual[0].eps') as eps,
@@ -149,22 +150,31 @@ def render_factor_analysis():
                 WHERE ls.price > 0
             """
 
-            factor_df = pd.read_sql_query(factor_query, con)
+            with st.spinner("Calculating factor scores..."):
+                factor_df = pd.read_sql_query(factor_query, con)
 
             if factor_df.empty:
                 st.info("No factor data available. Scrape company data first.")
             else:
                 # Convert numeric columns
+                factor_df["price"] = pd.to_numeric(factor_df["price"], errors="coerce")
                 factor_df["pe_ratio"] = pd.to_numeric(factor_df["pe_ratio"], errors="coerce")
                 factor_df["return_20d"] = pd.to_numeric(factor_df["return_20d"], errors="coerce")
                 factor_df["return_60d"] = pd.to_numeric(factor_df["return_60d"], errors="coerce")
                 factor_df["market_cap"] = pd.to_numeric(factor_df["market_cap"], errors="coerce")
+                factor_df["outstanding_shares"] = pd.to_numeric(factor_df["outstanding_shares"], errors="coerce")
                 factor_df["eps"] = pd.to_numeric(factor_df["eps"], errors="coerce")
                 factor_df["net_margin"] = pd.to_numeric(factor_df["net_margin"], errors="coerce")
                 factor_df["ytd_change"] = pd.to_numeric(factor_df["ytd_change"], errors="coerce")
 
+                # Compute market_cap from price × shares when scraper value is missing/zero
+                missing_mcap = factor_df["market_cap"].fillna(0) == 0
+                factor_df.loc[missing_mcap, "market_cap"] = (
+                    factor_df.loc[missing_mcap, "price"] * factor_df.loc[missing_mcap, "outstanding_shares"]
+                )
+
                 # Value Score: Low P/E + High Net Margin (profitable at low valuation)
-                factor_df["value_score"] = 0
+                factor_df["value_score"] = 0.0
                 if factor_df["pe_ratio"].notna().sum() > 5:
                     # Invert P/E (lower is better)
                     pe_valid = factor_df["pe_ratio"] > 0
@@ -175,7 +185,7 @@ def render_factor_analysis():
                     factor_df.loc[margin_valid, "value_score"] += factor_df.loc[margin_valid, "net_margin"].rank(pct=True) * 0.4
 
                 # Momentum Score: 20-day, 60-day returns, and YTD change
-                factor_df["momentum_score"] = 0
+                factor_df["momentum_score"] = 0.0
                 if factor_df["return_20d"].notna().sum() > 5:
                     factor_df["momentum_score"] += factor_df["return_20d"].rank(pct=True).fillna(0) * 0.4
                 if factor_df["return_60d"].notna().sum() > 5:
@@ -184,7 +194,7 @@ def render_factor_analysis():
                     factor_df["momentum_score"] += factor_df["ytd_change"].rank(pct=True).fillna(0) * 0.2
 
                 # Quality Score: Higher EPS + larger market cap + higher margins
-                factor_df["quality_score"] = 0
+                factor_df["quality_score"] = 0.0
                 if factor_df["eps"].notna().sum() > 5:
                     eps_positive = factor_df["eps"] > 0
                     factor_df.loc[eps_positive, "quality_score"] += factor_df.loc[eps_positive, "eps"].rank(pct=True) * 0.4
@@ -198,7 +208,7 @@ def render_factor_analysis():
                 factor_df["wk52_low"] = pd.to_numeric(factor_df["wk52_low"], errors="coerce")
                 factor_df["wk52_high"] = pd.to_numeric(factor_df["wk52_high"], errors="coerce")
                 factor_df["volatility_range"] = (factor_df["wk52_high"] - factor_df["wk52_low"]) / factor_df["wk52_low"]
-                factor_df["volatility_score"] = 0
+                factor_df["volatility_score"] = 0.0
                 if factor_df["volatility_range"].notna().sum() > 5:
                     # Invert - lower volatility is better
                     factor_df["volatility_score"] = 1 - factor_df["volatility_range"].rank(pct=True).fillna(0.5)

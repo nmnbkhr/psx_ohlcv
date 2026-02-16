@@ -275,10 +275,13 @@ def parse_equity_data(tree: html.HtmlElement) -> dict[str, Any]:
     if equity_div:
         text = equity_div[0].text_content()
 
-        # Extract market cap
-        match = re.search(r"Market Cap.*?([0-9,]+\.?\d*)", text, re.IGNORECASE)
+        # Extract market cap — value is in 000's (thousands)
+        # Regex skips "(000's)" label to avoid capturing "000" from it
+        match = re.search(r"Market Cap\s*\([^)]*\)\s*([0-9,]+\.?\d*)", text, re.IGNORECASE)
         if match:
-            data["market_cap"] = _parse_numeric(match.group(1))
+            raw = _parse_numeric(match.group(1))
+            if raw is not None:
+                data["market_cap"] = raw * 1000  # PSX reports in 000's
 
         # Extract shares
         match = re.search(r"Shares.*?([0-9,]+)", text, re.IGNORECASE)

@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from psx_ohlcv.ui.components.helpers import get_connection, render_footer
-from psx_ohlcv.sync_mufap import seed_mutual_funds, sync_mutual_funds
+from psx_ohlcv.sync_mufap import seed_mutual_funds, sync_fund_nav, sync_mutual_funds
 from psx_ohlcv.sources.etf_scraper import ETFScraper
 
 
@@ -166,10 +166,28 @@ def _render_fund_detail(con, fund_id):
         return
 
     st.markdown(f"### {fund['fund_name']}")
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Category", fund["category"])
     col2.metric("AMC", fund["amc_name"] or "N/A")
     col3.metric("Shariah", "Yes" if fund["is_shariah"] else "No")
+
+    # Sync full history button — sqlite3.Row doesn't have .get(), use try/except
+    try:
+        mufap_int_id = fund["mufap_int_id"]
+    except (KeyError, IndexError):
+        mufap_int_id = None
+    with col4:
+        if mufap_int_id and st.button("Sync Full History", key=f"sync_hist_{fund_id}"):
+            with st.spinner("Fetching full NAV history from MUFAP..."):
+                try:
+                    rows, error = sync_fund_nav(fund_id, incremental=False)
+                    if error:
+                        st.error(error)
+                    else:
+                        st.success(f"Synced {rows} NAV records")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Sync failed: {e}")
 
     # NAV history chart
     df = pd.read_sql_query(
@@ -177,8 +195,12 @@ def _render_fund_detail(con, fund_id):
         con, params=(fund_id,),
     )
     if df.empty:
-        st.info("No NAV history available")
+        st.info("No NAV history available. Click 'Sync Full History' to fetch.")
         return
+
+    nav_count = len(df)
+    date_range = f"{df.iloc[0]['date']} to {df.iloc[-1]['date']}" if nav_count > 1 else df.iloc[0]["date"]
+    st.caption(f"{nav_count} NAV records | {date_range}")
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
@@ -194,11 +216,15 @@ def _render_fund_detail(con, fund_id):
     st.plotly_chart(fig, use_container_width=True)
 
     # Return calculation
-    if len(df) >= 2:
+    if nav_count >= 2:
         latest = df.iloc[-1]["nav"]
         first = df.iloc[0]["nav"]
-        total_return = (latest - first) / first * 100
-        st.metric("Total Return", f"{total_return:.2f}%", help=f"From {df.iloc[0]['date']} to {df.iloc[-1]['date']}")
+        if first > 0:
+            total_return = (latest - first) / first * 100
+            st.metric(
+                "Total Return", f"{total_return:.2f}%",
+                help=f"From {df.iloc[0]['date']} to {df.iloc[-1]['date']}",
+            )
 
 
 def _render_etf_section(con):
