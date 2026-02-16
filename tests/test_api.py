@@ -390,6 +390,7 @@ class TestAPIIntegration:
         from psx_ohlcv.api.client import get_client
 
         client = get_client()
+        client.timeout = 120  # EOD stats query is slow on large databases
 
         # Get initial stats
         stats = client.get_eod_stats()
