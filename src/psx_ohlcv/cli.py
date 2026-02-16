@@ -1997,6 +1997,24 @@ def main(argv: list[str] | None = None) -> int:
         "sync-all",
         help="Run all data scrapers (treasury, rates, FX, ETF, IPO)"
     )
+
+    # backfill-rates: Historical rates backfill from SBP PDFs
+    backfill_parser = subparsers.add_parser(
+        "backfill-rates",
+        help="Backfill historical rates from SBP PDFs (SIR, PIB archive, KIBOR daily)"
+    )
+    backfill_parser.add_argument(
+        "--source",
+        choices=["sir", "pib", "kibor", "all"],
+        default="all",
+        help="Data source to backfill (default: all)",
+    )
+    backfill_parser.add_argument(
+        "--start-year",
+        type=int,
+        default=2008,
+        help="Start year for KIBOR PDF backfill (default: 2008)",
+    )
     subparsers.add_parser(
         "status",
         help="Show data freshness dashboard for all domains"
@@ -2063,6 +2081,8 @@ def main(argv: list[str] | None = None) -> int:
             return handle_vps(args)
         elif args.command == "sync-all":
             return handle_sync_all(args)
+        elif args.command == "backfill-rates":
+            return handle_backfill_rates(args)
         elif args.command == "status":
             return handle_status(args)
     except KeyboardInterrupt:
@@ -6551,6 +6571,13 @@ def handle_sync_all(args: argparse.Namespace) -> int:
         return s.sync_listings(con)
     _add_step("IPO listings", _sync_ipo)
 
+    # 8. SIR PDF backfill (T-Bills, PIBs, KIBOR, GIS history)
+    def _sync_sir():
+        from .sources.sbp_sir import SBPSirScraper
+        s = SBPSirScraper()
+        return s.sync_sir(con)
+    _add_step("SIR PDF (treasury history)", _sync_sir)
+
     print(f"\n{'='*60}")
     print(f"  Unified Sync — {len(steps)} data sources")
     print(f"{'='*60}\n")
@@ -6670,6 +6697,80 @@ def handle_status(args: argparse.Namespace) -> int:
         pass
 
     return 0
+
+
+def handle_backfill_rates(args: argparse.Namespace) -> int:
+    """Backfill historical rates from SBP PDFs."""
+    import time
+
+    con = connect(args.db)
+    init_schema(con)
+
+    source = args.source
+    total_ok = 0
+    total_fail = 0
+    t0 = time.time()
+
+    # ── SIR PDF (T-Bills, PIBs, KIBOR, GIS) ──
+    if source in ("sir", "all"):
+        print("\n  [SIR] Downloading Structure of Interest Rates PDF...", flush=True)
+        try:
+            from .sources.sbp_sir import SBPSirScraper
+            scraper = SBPSirScraper()
+            counts = scraper.sync_sir(con)
+            print(f"  [SIR] OK: T-Bills={counts['tbills']}, PIBs={counts['pibs']}, "
+                  f"KIBOR={counts['kibor']}, GIS={counts['gis']}, failed={counts['failed']}")
+            total_ok += counts["tbills"] + counts["pibs"] + counts["kibor"] + counts["gis"]
+            total_fail += counts["failed"]
+        except Exception as e:
+            print(f"  [SIR] FAILED: {e}")
+            total_fail += 1
+
+    # ── PIB Archive PDF (25 years) ──
+    if source in ("pib", "all"):
+        print("\n  [PIB] Downloading PIB auction archive PDF (42 pages)...", flush=True)
+        try:
+            from .sources.sbp_pib_archive import SBPPibArchiveScraper
+            scraper = SBPPibArchiveScraper()
+            counts = scraper.sync_pib_archive(con)
+            print(f"  [PIB] OK: {counts['inserted']}/{counts['total']} inserted, "
+                  f"failed={counts['failed']}")
+            total_ok += counts["inserted"]
+            total_fail += counts["failed"]
+        except Exception as e:
+            print(f"  [PIB] FAILED: {e}")
+            total_fail += 1
+
+    # ── KIBOR Daily PDFs (2008-present) ──
+    if source in ("kibor", "all"):
+        start_year = getattr(args, "start_year", 2008)
+        print(f"\n  [KIBOR] Backfilling daily KIBOR PDFs from {start_year}...")
+        print(f"          (incremental — skips dates already in DB)")
+        print(f"          This may take a while. Press Ctrl+C to stop.", flush=True)
+        try:
+            from .sources.sbp_kibor_history import SBPKiborHistoryScraper
+            scraper = SBPKiborHistoryScraper()
+            counts = scraper.sync_kibor_history(
+                con, start_year=start_year, incremental=True,
+            )
+            print(f"  [KIBOR] OK: {counts['dates_processed']} dates, "
+                  f"{counts['records_inserted']} records, "
+                  f"skipped={counts['skipped']}, failed={counts['failed']}")
+            total_ok += counts["records_inserted"]
+            total_fail += counts["failed"]
+        except KeyboardInterrupt:
+            print("\n  [KIBOR] Interrupted by user (progress saved).")
+        except Exception as e:
+            print(f"  [KIBOR] FAILED: {e}")
+            total_fail += 1
+
+    elapsed = time.time() - t0
+    print(f"\n  {'='*50}")
+    print(f"  Backfill done: {total_ok} records, {total_fail} failures ({elapsed:.1f}s)")
+    print(f"  {'='*50}")
+
+    con.close()
+    return 0 if total_fail == 0 else 1
 
 
 if __name__ == "__main__":

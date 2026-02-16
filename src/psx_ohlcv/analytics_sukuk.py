@@ -225,7 +225,11 @@ def calculate_modified_duration(
         return None
 
     r = ytm / 100
-    mod_duration = macaulay_duration / (1 + r / frequency)
+    if frequency == 0:
+        # Zero-coupon: modified duration = macaulay / (1 + r)
+        mod_duration = macaulay_duration / (1 + r)
+    else:
+        mod_duration = macaulay_duration / (1 + r / frequency)
     return round(mod_duration, 4)
 
 
@@ -251,6 +255,11 @@ def calculate_convexity(
     """
     if ytm <= 0 or years_to_maturity <= 0:
         return None
+
+    if frequency == 0:
+        # Zero-coupon: convexity = n*(n+1) / (1+r)^2
+        r = ytm / 100
+        return round(years_to_maturity * (years_to_maturity + 1) / (1 + r) ** 2, 4)
 
     r = ytm / (100 * frequency)
     c = coupon_rate / (100 * frequency)
@@ -376,7 +385,8 @@ def compute_sukuk_analytics(
     result.days_to_maturity = days_to_maturity
 
     # Get pricing info
-    face_value = sukuk.get("face_value", 100.0)
+    # PSX prices are quoted per Rs.100 par, so always use 100 for analytics
+    face_value = 100.0
     coupon_rate = sukuk.get("coupon_rate") or 0.0
     frequency = sukuk.get("coupon_frequency", 2)
 
@@ -393,9 +403,10 @@ def compute_sukuk_analytics(
     result.dirty_price = dirty_price
 
     # Calculate YTM if we have price but no YTM
-    if dirty_price and not ytm:
+    price_for_ytm = dirty_price or clean_price
+    if price_for_ytm and not ytm:
         ytm = calculate_ytm(
-            price=dirty_price,
+            price=price_for_ytm,
             face_value=face_value,
             coupon_rate=coupon_rate,
             years_to_maturity=years_to_maturity,

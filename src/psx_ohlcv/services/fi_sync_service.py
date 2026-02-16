@@ -575,9 +575,23 @@ def run_single_sync(status: FISyncStatus, logger) -> FISyncStatus:
         status.curves_synced += curves_synced
         all_errors.extend(curve_errors)
 
-        # 4. Try to create instruments from docs
+        # 4. Backfill from SIR PDF (T-Bills, PIBs, KIBOR, GIS history)
+        status.progress_message = "Syncing SIR PDF (treasury history)..."
+        status.progress = 70.0
+        write_fi_status(status)
+
+        try:
+            from ..sources.sbp_sir import SBPSirScraper
+            sir_counts = SBPSirScraper().sync_sir(con)
+            sir_total = sir_counts["tbills"] + sir_counts["pibs"] + sir_counts["kibor"] + sir_counts["gis"]
+            logger.info("SIR PDF: %d records synced", sir_total)
+        except Exception as e:
+            logger.error("SIR PDF sync failed: %s", e)
+            all_errors.append(f"SIR sync failed: {e}")
+
+        # 5. Try to create instruments from docs
         status.progress_message = "Updating instruments..."
-        status.progress = 80.0
+        status.progress = 85.0
         write_fi_status(status)
 
         docs = fetch_and_parse_pma()

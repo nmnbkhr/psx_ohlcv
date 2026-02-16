@@ -126,7 +126,7 @@ def parse_policy_rates(soup: BeautifulSoup) -> PolicyRates | None:
         re.IGNORECASE
     )
     if policy_match:
-        policy_rate = float(policy_match.group(1)) / 100
+        policy_rate = float(policy_match.group(1))
 
     # Pattern: "Overnight Reverse Repo (Ceiling): 11.50%"
     ceiling_match = re.search(
@@ -135,7 +135,7 @@ def parse_policy_rates(soup: BeautifulSoup) -> PolicyRates | None:
         re.IGNORECASE
     )
     if ceiling_match:
-        ceiling_rate = float(ceiling_match.group(1)) / 100
+        ceiling_rate = float(ceiling_match.group(1))
 
     # Pattern: "Overnight Repo (Floor): 9.50%"
     floor_match = re.search(
@@ -144,7 +144,7 @@ def parse_policy_rates(soup: BeautifulSoup) -> PolicyRates | None:
         re.IGNORECASE
     )
     if floor_match:
-        floor_rate = float(floor_match.group(1)) / 100
+        floor_rate = float(floor_match.group(1))
 
     # Pattern: "Weighted-average Overnight Repo Rate: 9.82%"
     overnight_match = re.search(
@@ -153,7 +153,7 @@ def parse_policy_rates(soup: BeautifulSoup) -> PolicyRates | None:
         re.IGNORECASE
     )
     if overnight_match:
-        overnight_rate = float(overnight_match.group(1)) / 100
+        overnight_rate = float(overnight_match.group(1))
 
     if any([policy_rate, ceiling_rate, floor_rate, overnight_rate]):
         return PolicyRates(
@@ -456,10 +456,10 @@ def get_sample_msm_data() -> dict:
     return {
         "policy_rates": PolicyRates(
             date=today,
-            policy_rate=0.1050,
-            ceiling_rate=0.1150,
-            floor_rate=0.0950,
-            overnight_repo_rate=0.0982,
+            policy_rate=10.50,
+            ceiling_rate=11.50,
+            floor_rate=9.50,
+            overnight_repo_rate=9.82,
         ),
         "kibor_rates": [
             KIBORRate(date=today, tenor_months=3, bid=0.1024, offer=0.1049),

@@ -81,13 +81,14 @@ def _security_to_fi_instrument(security: DebtSecurity) -> dict:
                 category = val
                 break
 
-    # Map rental frequency to coupon frequency
-    coupon_freq = "S"  # Semi-annual default
-    if security.rental_frequency:
-        if "maturity" in security.rental_frequency.lower():
-            coupon_freq = "Z"  # Zero coupon (at maturity)
-        elif "quarterly" in security.rental_frequency.lower():
-            coupon_freq = "Q"
+    # Determine coupon frequency from security type
+    coupon_freq = 2  # Semi-annual default
+    if security.security_type:
+        st = security.security_type.lower()
+        if "t-bill" in st or "frz" in st or "gis" in st:
+            coupon_freq = 0  # Zero coupon / discount
+        elif "tfc" in st or "corporate" in st:
+            coupon_freq = 4  # Quarterly for corporates
 
     # Determine issuer based on is_government flag
     issuer = "GOVT_OF_PAKISTAN" if security.is_government else "CORPORATE"
@@ -108,7 +109,7 @@ def _security_to_fi_instrument(security: DebtSecurity) -> dict:
         "currency": "PKR",
         "issue_date": security.issue_date,
         "maturity_date": security.maturity_date,
-        "coupon_rate": security.coupon_rate / 100 if security.coupon_rate else None,
+        "coupon_rate": security.coupon_rate,
         "coupon_frequency": coupon_freq,
         "day_count": "ACT/ACT",
         "face_value": security.face_value or 5000,
@@ -134,15 +135,18 @@ def _ohlcv_to_fi_quote(symbol: str, ohlcv: dict) -> dict:
 
 def sync_debt_instruments(
     db_path: Path | str | None = None,
-    fetch_details: bool = True,
+    fetch_details: bool = False,
     progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> DebtSyncSummary:
     """
-    Sync debt instruments from PSX DPS.
+    Sync debt instruments from PSX DPS /debt-market page.
+
+    Parses the HTML table which has all master data (name, dates, coupon,
+    face value, etc.) in a single request — no need for 271 detail fetches.
 
     Args:
         db_path: Database path
-        fetch_details: If True, fetch full details for each security
+        fetch_details: If True, also fetch individual detail pages (slow)
         progress_callback: Optional callback(current, total, symbol)
 
     Returns:
@@ -151,57 +155,40 @@ def sync_debt_instruments(
     con = connect(db_path)
     init_schema(con)
 
-    # Record sync run
     run_id = str(uuid.uuid4())[:8]
     record_fi_sync_run(con, run_id, "SYNC_PSX_DEBT_INSTRUMENTS", [])
 
     summary = DebtSyncSummary()
 
     try:
-        # Fetch symbols from PSX
-        symbols = fetch_debt_symbols()
+        # Fetch and parse the full debt-market HTML table (single request)
+        securities_by_cat = fetch_all_debt_securities()
+        all_securities = get_securities_flat_list(securities_by_cat)
 
-        if not symbols:
-            # Use fallback list
-            logger.warning("No symbols from PSX, using fallback list")
-            symbols = KNOWN_DEBT_SYMBOLS
+        if not all_securities:
+            logger.warning("No securities from PSX debt-market page")
+            update_fi_sync_run(con, run_id, "failed", 0, "No data from PSX")
+            con.close()
+            return summary
 
-        summary.total = len(symbols)
-        logger.info(f"Found {len(symbols)} debt symbols")
+        summary.total = len(all_securities)
+        logger.info(f"Parsed {len(all_securities)} debt securities from PSX")
 
-        for i, symbol in enumerate(symbols):
+        for i, security in enumerate(all_securities):
             if progress_callback:
-                progress_callback(i + 1, len(symbols), symbol)
+                progress_callback(i + 1, len(all_securities), security.symbol)
 
             try:
-                if fetch_details:
-                    security = fetch_debt_security_detail(symbol)
-                else:
-                    # Use parsed symbol info only
-                    parsed = parse_symbol_info(symbol)
-                    security = DebtSecurity(
-                        symbol=symbol,
-                        security_type=parsed.get("security_type"),
-                        tenor_years=parsed.get("tenor_years"),
-                        is_islamic=parsed.get("is_islamic", False),
-                        is_government=parsed.get("is_government", True),
-                    )
-
-                if security:
-                    fi_data = _security_to_fi_instrument(security)
-                    if upsert_fi_instrument(con, fi_data):
-                        summary.ok += 1
-                        summary.rows_upserted += 1
-                    else:
-                        summary.failed += 1
-                        summary.errors.append((symbol, "upsert failed"))
+                fi_data = _security_to_fi_instrument(security)
+                if upsert_fi_instrument(con, fi_data):
+                    summary.ok += 1
+                    summary.rows_upserted += 1
                 else:
                     summary.failed += 1
-                    summary.errors.append((symbol, "fetch failed"))
-
+                    summary.errors.append((security.symbol, "upsert failed"))
             except Exception as e:
                 summary.failed += 1
-                summary.errors.append((symbol, str(e)))
+                summary.errors.append((security.symbol, str(e)))
 
         status = "completed" if summary.failed == 0 else "partial"
         error_msg = None
@@ -355,6 +342,13 @@ def sync_all_psx_debt(
             "rows_upserted": quote_summary.rows_upserted,
         }
 
+    # 3. Bridge sukuk data to sukuk_master/sukuk_quotes tables
+    if progress_callback:
+        progress_callback("bridge_sukuk", 0, 1)
+
+    bridge_result = bridge_to_sukuk_tables(db_path=db_path)
+    results["sukuk_bridge"] = bridge_result
+
     return results
 
 
@@ -481,3 +475,94 @@ def get_debt_securities_list(
 
     con.close()
     return securities
+
+
+def bridge_to_sukuk_tables(db_path: Path | str | None = None) -> dict:
+    """
+    Copy shariah-compliant instruments and quotes from fi_* tables
+    into sukuk_master and sukuk_quotes so the Sukuk UI page can display them.
+
+    Returns:
+        Summary dict with counts
+    """
+    con = connect(db_path)
+    init_schema(con)
+
+    result = {"instruments": 0, "quotes": 0}
+
+    try:
+        # 1. Copy shariah-compliant instruments from fi_instruments → sukuk_master
+        cur = con.execute("""
+            SELECT instrument_id, issuer, name, category, currency,
+                   issue_date, maturity_date, coupon_rate, coupon_frequency,
+                   face_value, shariah_compliant, is_active, source
+            FROM fi_instruments
+            WHERE shariah_compliant = 1 AND source = 'PSX_DPS'
+        """)
+        for row in cur.fetchall():
+            r = dict(row)
+            try:
+                con.execute("""
+                    INSERT INTO sukuk_master (
+                        instrument_id, issuer, name, category, currency,
+                        issue_date, maturity_date, coupon_rate, coupon_frequency,
+                        face_value, shariah_compliant, is_active, source
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(instrument_id) DO UPDATE SET
+                        name = excluded.name,
+                        category = excluded.category,
+                        maturity_date = excluded.maturity_date,
+                        coupon_rate = excluded.coupon_rate,
+                        is_active = excluded.is_active,
+                        source = excluded.source
+                """, (
+                    r["instrument_id"], r["issuer"], r["name"],
+                    r["category"], r["currency"], r["issue_date"],
+                    r["maturity_date"], r["coupon_rate"], r["coupon_frequency"],
+                    r["face_value"], r["shariah_compliant"], r["is_active"],
+                    r["source"],
+                ))
+                result["instruments"] += 1
+            except Exception as e:
+                logger.warning(f"Bridge sukuk_master {r['instrument_id']}: {e}")
+
+        con.commit()
+
+        # 2. Copy quotes from fi_quotes → sukuk_quotes for sukuk instruments
+        cur = con.execute("""
+            SELECT fq.instrument_id, fq.quote_date, fq.clean_price,
+                   fq.ytm, fq.bid, fq.ask, fq.volume, fq.source
+            FROM fi_quotes fq
+            JOIN fi_instruments fi ON fq.instrument_id = fi.instrument_id
+            WHERE fi.shariah_compliant = 1 AND fq.source = 'PSX_DPS'
+        """)
+        for row in cur.fetchall():
+            r = dict(row)
+            try:
+                con.execute("""
+                    INSERT INTO sukuk_quotes (
+                        instrument_id, quote_date, clean_price,
+                        yield_to_maturity, bid_yield, ask_yield,
+                        volume, source
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(instrument_id, quote_date) DO UPDATE SET
+                        clean_price = excluded.clean_price,
+                        yield_to_maturity = excluded.yield_to_maturity,
+                        volume = excluded.volume,
+                        source = excluded.source
+                """, (
+                    r["instrument_id"], r["quote_date"], r["clean_price"],
+                    r["ytm"], r["bid"], r["ask"],
+                    r["volume"], r["source"],
+                ))
+                result["quotes"] += 1
+            except Exception as e:
+                logger.warning(f"Bridge sukuk_quote {r['instrument_id']}: {e}")
+
+        con.commit()
+
+    except Exception as e:
+        logger.exception(f"Error bridging to sukuk tables: {e}")
+
+    con.close()
+    return result
