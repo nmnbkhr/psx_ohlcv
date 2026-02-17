@@ -354,11 +354,15 @@ def parse_financials_data(tree: html.HtmlElement) -> dict[str, Any]:
     tables = financials_div[0].xpath('.//table[contains(@class, "tbl")]')
 
     for table in tables:
-        # Get headers to identify periods
-        headers = table.xpath('.//thead//th//text() | .//tr[1]//th//text() | .//tr[1]//td//text()')
-        headers = [h.strip() for h in headers if h.strip()]
+        # Extract headers PER-ELEMENT (not per-text-node) to preserve column positions.
+        # The first <th> is the metric-label column (empty text) — must keep it so
+        # period indices align with data-row <td> positions.
+        header_elems = table.xpath('.//thead/tr/th')
+        if not header_elems:
+            header_elems = table.xpath('.//tr[1]/th | .//tr[1]/td')
+        headers = [elem.text_content().strip() for elem in header_elems]
 
-        # Identify period columns
+        # Identify period columns (indices now match <td> positions in data rows)
         period_cols = []
         for i, h in enumerate(headers):
             if re.match(r"^\d{4}$", h):
@@ -374,11 +378,11 @@ def parse_financials_data(tree: html.HtmlElement) -> dict[str, Any]:
         for idx, period, ptype in period_cols:
             period_data[period] = {"period_end": period, "period_type": ptype}
 
-        # Extract row data
+        # Extract row data — per-element to stay aligned with header positions
         rows = table.xpath('.//tbody//tr | .//tr[position()>1]')
         for row in rows:
-            cells = row.xpath('.//td//text() | .//th//text()')
-            cells = [c.strip() for c in cells if c.strip()]
+            cell_elems = row.xpath('./td | ./th')
+            cells = [c.text_content().strip() for c in cell_elems]
 
             if len(cells) < 2:
                 continue
@@ -386,15 +390,23 @@ def parse_financials_data(tree: html.HtmlElement) -> dict[str, Any]:
             metric = cells[0].upper()
 
             # Map metric to key
+            # Non-banks: Sales/Revenue → sales, Gross Profit → gross_profit
+            # Banks: Total Income → sales, Mark-up Earned → markup_earned
+            # Bank GM = (markup_earned - markup_expensed) / markup_earned
+            # markup_expensed comes from PDF financial reports (not on PSX DPS page)
             key = None
-            if "SALES" in metric or "REVENUE" in metric:
-                key = "sales"
+            if "TOTAL INCOME" in metric:
+                key = "sales"  # Banks: net revenue (the operating top-line)
+            elif "MARK-UP EARNED" in metric or "MARKUP EARNED" in metric or "INTEREST EARNED" in metric:
+                key = "markup_earned"  # Banks: interest/markup income (top-line)
+            elif "SALES" in metric or "REVENUE" in metric:
+                key = "sales"  # Non-banks: top-line revenue
             elif "PROFIT AFTER" in metric or "NET INCOME" in metric or "PAT" in metric:
                 key = "profit_after_tax"
             elif "EPS" in metric or "EARNINGS PER" in metric:
                 key = "eps"
             elif "GROSS PROFIT" in metric and "MARGIN" not in metric:
-                key = "gross_profit"
+                key = "gross_profit"  # Non-banks: sales minus COGS
             elif "OPERATING" in metric and "MARGIN" not in metric:
                 key = "operating_profit"
 
@@ -427,8 +439,11 @@ def parse_ratios_data(tree: html.HtmlElement) -> dict[str, Any]:
     tables = ratios_div[0].xpath('.//table[contains(@class, "tbl")]')
 
     for table in tables:
-        headers = table.xpath('.//thead//th//text() | .//tr[1]//th//text() | .//tr[1]//td//text()')
-        headers = [h.strip() for h in headers if h.strip()]
+        # Extract headers per-element to preserve column positions (same fix as financials)
+        header_elems = table.xpath('.//thead/tr/th')
+        if not header_elems:
+            header_elems = table.xpath('.//tr[1]/th | .//tr[1]/td')
+        headers = [elem.text_content().strip() for elem in header_elems]
 
         period_cols = []
         for i, h in enumerate(headers):
@@ -446,8 +461,8 @@ def parse_ratios_data(tree: html.HtmlElement) -> dict[str, Any]:
 
         rows = table.xpath('.//tbody//tr | .//tr[position()>1]')
         for row in rows:
-            cells = row.xpath('.//td//text() | .//th//text()')
-            cells = [c.strip() for c in cells if c.strip()]
+            cell_elems = row.xpath('./td | ./th')
+            cells = [c.text_content().strip() for c in cell_elems]
 
             if len(cells) < 2:
                 continue
@@ -728,7 +743,11 @@ def save_company_snapshot(
         Status dict
     """
     from ..db import (
+        get_last_quote_hash,
+        insert_quote_snapshot,
+        upsert_company_financials,
         upsert_company_payouts,
+        upsert_company_ratios,
         upsert_company_snapshot,
         upsert_corporate_announcement,
         upsert_equity_structure,
@@ -741,6 +760,7 @@ def save_company_snapshot(
     result = {
         "symbol": symbol,
         "snapshot_saved": False,
+        "quote_snapshot_saved": False,
         "trading_sessions_saved": 0,
         "announcements_saved": 0,
         "equity_saved": False,
@@ -753,6 +773,34 @@ def save_company_snapshot(
         con, symbol, snapshot_date, data, raw_html
     )
     result["snapshot_saved"] = snapshot_result.get("status") == "ok"
+
+    # Save quote snapshot (for charts)
+    quote_data = data.get("quote_data", {})
+    trading_data = data.get("trading_data", {})
+    reg_data = trading_data.get("REG", {})
+
+    if quote_data.get("close"):
+        import hashlib
+        import json as _json
+        ts = data.get("ingested_at", snapshot_date)
+        quote_record = {
+            "price": quote_data.get("close"),
+            "change": quote_data.get("change"),
+            "change_pct": quote_data.get("change_pct"),
+            "open": reg_data.get("open"),
+            "high": reg_data.get("high"),
+            "low": reg_data.get("low"),
+            "volume": reg_data.get("volume"),
+            "as_of": quote_data.get("as_of"),
+            "raw_hash": hashlib.md5(
+                _json.dumps(quote_data, sort_keys=True, default=str).encode()
+            ).hexdigest(),
+        }
+        # Only insert if data changed since last snapshot
+        last_hash = get_last_quote_hash(con, symbol)
+        if last_hash != quote_record["raw_hash"]:
+            inserted = insert_quote_snapshot(con, symbol, ts, quote_record)
+            result["quote_snapshot_saved"] = inserted
 
     # Save trading sessions for each market type
     trading_data = data.get("trading_data", {})
@@ -787,6 +835,20 @@ def save_company_snapshot(
     if payouts_data:
         payouts_saved = upsert_company_payouts(con, symbol, payouts_data)
         result["payouts_saved"] = payouts_saved
+
+    # Save financials (annual + quarterly)
+    financials_data = data.get("financials_data", {})
+    all_financials = financials_data.get("annual", []) + financials_data.get("quarterly", [])
+    if all_financials:
+        financials_saved = upsert_company_financials(con, symbol, all_financials)
+        result["financials_saved"] = financials_saved
+
+    # Save ratios (annual + quarterly)
+    ratios_data = data.get("ratios_data", {})
+    all_ratios = ratios_data.get("annual", []) + ratios_data.get("quarterly", [])
+    if all_ratios:
+        ratios_saved = upsert_company_ratios(con, symbol, all_ratios)
+        result["ratios_saved"] = ratios_saved
 
     return result
 

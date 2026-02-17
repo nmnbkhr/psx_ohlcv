@@ -304,12 +304,16 @@ CREATE TABLE IF NOT EXISTS company_financials (
     period_type         TEXT NOT NULL,      -- 'annual' or 'quarterly'
 
     -- Income Statement
-    sales               REAL,               -- Total Revenue/Sales
-    gross_profit        REAL,
+    sales               REAL,               -- Total Revenue/Sales (non-banks) or Total Income (banks)
+    gross_profit        REAL,               -- Gross Profit (non-banks) or Net Interest Income (banks)
     operating_profit    REAL,
     profit_before_tax   REAL,
     profit_after_tax    REAL,               -- Net Income
     eps                 REAL,               -- Earnings Per Share
+
+    -- Banking-specific (interest income/expense for gross margin)
+    markup_earned       REAL,               -- Mark-up/Interest earned (banks: top-line)
+    markup_expensed     REAL,               -- Mark-up/Interest expensed (banks: cost of funds)
 
     -- Balance Sheet (optional)
     total_assets        REAL,

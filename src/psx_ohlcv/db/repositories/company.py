@@ -247,7 +247,7 @@ def get_last_quote_hash(con: sqlite3.Connection, symbol: str) -> str | None:
         (symbol.upper(),),
     )
     row = cur.fetchone()
-    return row["raw_hash"] if row else None
+    return row[0] if row else None
 
 
 def get_quote_snapshots(
@@ -653,19 +653,22 @@ def upsert_company_financials(
                 symbol, period_end, period_type,
                 sales, gross_profit, operating_profit,
                 profit_before_tax, profit_after_tax, eps,
+                markup_earned, markup_expensed,
                 total_assets, total_liabilities, total_equity,
                 currency, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(symbol, period_end, period_type) DO UPDATE SET
-                sales = excluded.sales,
-                gross_profit = excluded.gross_profit,
-                operating_profit = excluded.operating_profit,
-                profit_before_tax = excluded.profit_before_tax,
-                profit_after_tax = excluded.profit_after_tax,
-                eps = excluded.eps,
-                total_assets = excluded.total_assets,
-                total_liabilities = excluded.total_liabilities,
-                total_equity = excluded.total_equity,
+                sales = COALESCE(excluded.sales, company_financials.sales),
+                gross_profit = COALESCE(excluded.gross_profit, company_financials.gross_profit),
+                operating_profit = COALESCE(excluded.operating_profit, company_financials.operating_profit),
+                profit_before_tax = COALESCE(excluded.profit_before_tax, company_financials.profit_before_tax),
+                profit_after_tax = COALESCE(excluded.profit_after_tax, company_financials.profit_after_tax),
+                eps = COALESCE(excluded.eps, company_financials.eps),
+                markup_earned = COALESCE(excluded.markup_earned, company_financials.markup_earned),
+                markup_expensed = COALESCE(excluded.markup_expensed, company_financials.markup_expensed),
+                total_assets = COALESCE(excluded.total_assets, company_financials.total_assets),
+                total_liabilities = COALESCE(excluded.total_liabilities, company_financials.total_liabilities),
+                total_equity = COALESCE(excluded.total_equity, company_financials.total_equity),
                 currency = excluded.currency,
                 updated_at = excluded.updated_at
             """,
@@ -679,6 +682,8 @@ def upsert_company_financials(
                 item.get("profit_before_tax"),
                 item.get("profit_after_tax"),
                 item.get("eps"),
+                item.get("markup_earned"),
+                item.get("markup_expensed"),
                 item.get("total_assets"),
                 item.get("total_liabilities"),
                 item.get("total_equity"),
@@ -714,6 +719,7 @@ def get_company_financials(
         SELECT symbol, period_end, period_type,
                sales, gross_profit, operating_profit,
                profit_before_tax, profit_after_tax, eps,
+               markup_earned, markup_expensed,
                total_assets, total_liabilities, total_equity,
                currency, updated_at
         FROM company_financials

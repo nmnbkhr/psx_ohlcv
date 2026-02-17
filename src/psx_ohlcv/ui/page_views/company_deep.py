@@ -95,6 +95,24 @@ def render_company_deep():
                         parts.append(f"{result['trading_sessions_saved']} markets")
                     if result.get("announcements_saved", 0) > 0:
                         parts.append(f"{result['announcements_saved']} announcements")
+                    if result.get("financials_saved", 0) > 0:
+                        parts.append(f"{result['financials_saved']} financials")
+                    if result.get("ratios_saved", 0) > 0:
+                        parts.append(f"{result['ratios_saved']} ratios")
+                    if result.get("payouts_saved", 0) > 0:
+                        parts.append(f"{result['payouts_saved']} payouts")
+
+                    # For banks, also sync markup_expensed from PDF reports
+                    try:
+                        from psx_ohlcv.sources.report_parser import is_bank_symbol, sync_bank_financials
+                        if is_bank_symbol(con, symbol):
+                            for rtype in ("quarterly", "annual"):
+                                pdf_result = sync_bank_financials(con, symbol, rtype)
+                                if pdf_result.get("periods_matched", 0) > 0:
+                                    parts.append(f"{pdf_result['periods_matched']} bank margins ({rtype})")
+                    except Exception:
+                        pass  # PDF sync is best-effort
+
                     track_refresh(con, "deep_scrape", symbol, "Company Analytics", True, {})
                     st.success(f"✓ Updated: {', '.join(parts)}" if parts else "✓ Refreshed")
                     st.rerun()
@@ -567,93 +585,128 @@ def render_company_deep():
         # FINANCIALS Tab
         with fin_tabs[0]:
             if not financials_df.empty:
-                st.markdown("*All numbers in thousands (000's) except EPS*")
+                # Detect bank: has markup_earned data
+                is_bank = financials_df["markup_earned"].notna().any()
+
+                if is_bank:
+                    st.markdown("*All numbers in thousands (000s) except EPS. Bank: Gross Profit = Markup Earned − Markup Expensed*")
+                else:
+                    st.markdown("*All numbers in thousands (000s) except EPS*")
 
                 # Pivot for better display
                 annual_df = financials_df[financials_df["period_type"] == "annual"]
                 quarterly_df = financials_df[financials_df["period_type"] == "quarterly"]
 
-                if not annual_df.empty:
-                    st.markdown("**Annual Financials**")
-                    display_cols = ["period_end", "sales", "profit_after_tax", "eps"]
-                    available_cols = [c for c in display_cols if c in annual_df.columns]
-                    col_config = {
-                        "period_end": st.column_config.TextColumn("Year"),
-                        "sales": st.column_config.NumberColumn("Sales (000s)", format="%,.0f"),
-                        "profit_after_tax": st.column_config.NumberColumn("Profit After Tax (000s)", format="%,.0f"),
-                        "eps": st.column_config.NumberColumn("EPS", format="%.2f"),
-                    }
-                    st.dataframe(
-                        annual_df[available_cols].head(10),
-                        use_container_width=True,
-                        hide_index=True,
-                        column_config=col_config,
-                    )
+                # Bank-specific and non-bank columns
+                all_fin_cols = [
+                    "period_end", "markup_earned", "markup_expensed",
+                    "sales", "gross_profit", "operating_profit",
+                    "profit_after_tax", "eps",
+                ]
+                fin_col_config = {
+                    "period_end": st.column_config.TextColumn("Period"),
+                    "markup_earned": st.column_config.NumberColumn("Markup Earned (000s)", format="%,.0f"),
+                    "markup_expensed": st.column_config.NumberColumn("Markup Expensed (000s)", format="%,.0f"),
+                    "sales": st.column_config.NumberColumn("Revenue (000s)", format="%,.0f"),
+                    "gross_profit": st.column_config.NumberColumn("Gross Profit (000s)", format="%,.0f"),
+                    "operating_profit": st.column_config.NumberColumn("Operating Profit (000s)", format="%,.0f"),
+                    "profit_after_tax": st.column_config.NumberColumn("Profit After Tax (000s)", format="%,.0f"),
+                    "eps": st.column_config.NumberColumn("EPS", format="%.2f"),
+                }
 
-                if not quarterly_df.empty:
-                    st.markdown("**Quarterly Financials**")
-                    display_cols = ["period_end", "sales", "profit_after_tax", "eps"]
-                    available_cols = [c for c in display_cols if c in quarterly_df.columns]
-                    st.dataframe(
-                        quarterly_df[available_cols].head(10),
-                        use_container_width=True,
-                        hide_index=True,
-                        column_config=col_config,
-                    )
+                for label, sub_df in [("Annual Financials", annual_df), ("Quarterly Financials", quarterly_df)]:
+                    if not sub_df.empty:
+                        st.markdown(f"**{label}**")
+                        available_cols = [
+                            c for c in all_fin_cols
+                            if c in sub_df.columns and (c == "period_end" or sub_df[c].notna().any())
+                        ]
+                        st.dataframe(
+                            sub_df[available_cols].head(10),
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={k: v for k, v in fin_col_config.items() if k in available_cols},
+                        )
             else:
-                st.info("No financial data available. Click 'Refresh Profile' to fetch data.")
+                st.info("No financial data available. Click 'Refresh' to fetch data.")
 
         # RATIOS Tab
         with fin_tabs[1]:
             if not ratios_df.empty:
+                all_ratio_cols = [
+                    "period_end", "gross_profit_margin", "net_profit_margin",
+                    "operating_margin", "eps_growth", "peg_ratio",
+                ]
+                ratio_col_config = {
+                    "period_end": st.column_config.TextColumn("Period"),
+                    "gross_profit_margin": st.column_config.NumberColumn("Gross Margin %", format="%.2f%%"),
+                    "net_profit_margin": st.column_config.NumberColumn("Net Margin %", format="%.2f%%"),
+                    "operating_margin": st.column_config.NumberColumn("Operating Margin %", format="%.2f%%"),
+                    "eps_growth": st.column_config.NumberColumn("EPS Growth %", format="%.2f%%"),
+                    "peg_ratio": st.column_config.NumberColumn("PEG", format="%.2f"),
+                }
+
+                # Show bank margin formula note
+                is_bank = financials_df["markup_earned"].notna().any() if not financials_df.empty else False
+                if is_bank:
+                    st.caption("Bank Gross Margin = (Markup Earned − Markup Expensed) / Markup Earned")
+
+                for label, sub_df in [
+                    ("Annual Ratios", ratios_df[ratios_df["period_type"] == "annual"]),
+                    ("Quarterly Ratios", ratios_df[ratios_df["period_type"] == "quarterly"]),
+                ]:
+                    if not sub_df.empty:
+                        st.markdown(f"**{label}**")
+                        available_cols = [
+                            c for c in all_ratio_cols
+                            if c in sub_df.columns and (c == "period_end" or sub_df[c].notna().any())
+                        ]
+                        st.dataframe(
+                            sub_df[available_cols].head(10),
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={k: v for k, v in ratio_col_config.items() if k in available_cols},
+                        )
+
+                # Show key ratios summary from latest available data (prefer annual, fallback quarterly)
                 annual_ratios = ratios_df[ratios_df["period_type"] == "annual"]
+                quarterly_ratios = ratios_df[ratios_df["period_type"] == "quarterly"]
 
-                if not annual_ratios.empty:
-                    st.markdown("**Annual Ratios**")
-                    display_cols = [
-                        "period_end", "gross_profit_margin", "net_profit_margin",
-                        "eps_growth", "peg_ratio"
-                    ]
-                    available_cols = [c for c in display_cols if c in annual_ratios.columns]
-                    col_config = {
-                        "period_end": st.column_config.TextColumn("Year"),
-                        "gross_profit_margin": st.column_config.NumberColumn("Gross Margin %", format="%.2f%%"),
-                        "net_profit_margin": st.column_config.NumberColumn("Net Margin %", format="%.2f%%"),
-                        "eps_growth": st.column_config.NumberColumn("EPS Growth %", format="%.2f%%"),
-                        "peg_ratio": st.column_config.NumberColumn("PEG", format="%.2f"),
-                    }
-                    st.dataframe(
-                        annual_ratios[available_cols].head(10),
-                        use_container_width=True,
-                        hide_index=True,
-                        column_config=col_config,
-                    )
-
-                # Show key ratios summary
-                if len(annual_ratios) > 0:
+                latest = None
+                if not annual_ratios.empty and annual_ratios.iloc[0].get("gross_profit_margin") is not None:
                     latest = annual_ratios.iloc[0]
+                    latest_label = f"({latest['period_end']} Annual)"
+                elif not quarterly_ratios.empty:
+                    latest = quarterly_ratios.iloc[0]
+                    latest_label = f"({latest['period_end']})"
+                elif not annual_ratios.empty:
+                    latest = annual_ratios.iloc[0]
+                    latest_label = f"({latest['period_end']} Annual)"
+
+                if latest is not None:
                     ratio_cols = st.columns(4)
 
                     with ratio_cols[0]:
                         gpm = latest.get("gross_profit_margin")
-                        st.metric("Gross Margin", f"{gpm:.1f}%" if gpm else "N/A")
+                        st.metric("Gross Margin", f"{gpm:.1f}%" if pd.notna(gpm) else "N/A",
+                                  help=f"Latest: {latest_label}")
 
                     with ratio_cols[1]:
                         npm = latest.get("net_profit_margin")
-                        st.metric("Net Margin", f"{npm:.1f}%" if npm else "N/A")
+                        st.metric("Net Margin", f"{npm:.1f}%" if pd.notna(npm) else "N/A")
 
                     with ratio_cols[2]:
                         epsg = latest.get("eps_growth")
-                        if epsg:
+                        if pd.notna(epsg):
                             st.metric("EPS Growth", f"{epsg:+.1f}%", delta=f"{epsg:+.1f}%")
                         else:
                             st.metric("EPS Growth", "N/A")
 
                     with ratio_cols[3]:
                         peg = latest.get("peg_ratio")
-                        st.metric("PEG Ratio", f"{peg:.2f}" if peg else "N/A")
+                        st.metric("PEG Ratio", f"{peg:.2f}" if pd.notna(peg) else "N/A")
             else:
-                st.info("No ratio data available. Click 'Refresh Profile' to fetch data.")
+                st.info("No ratio data available. Click 'Refresh' to fetch data.")
 
         # PAYOUTS Tab
         with fin_tabs[2]:
@@ -695,7 +748,7 @@ def render_company_deep():
     else:
         st.info(
             "No financial data available yet. "
-            "Click 'Refresh Profile' to fetch financial data from PSX."
+            "Click 'Refresh' to fetch financial data from PSX."
         )
 
     render_footer()
