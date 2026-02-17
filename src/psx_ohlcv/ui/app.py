@@ -919,6 +919,11 @@ def research_terminal_page():
     render_research_terminal()
 
 
+def website_scan_page():
+    from psx_ohlcv.ui.page_views.website_scan import render_website_scan
+    render_website_scan()
+
+
 # -----------------------------------------------------------------------------
 # Main App — st.navigation() for framework-guaranteed page isolation
 # -----------------------------------------------------------------------------
@@ -976,6 +981,7 @@ def main():
         "📚 History":        st.Page(history_page,             title="History",        url_path="history"),
         "🔄 Sync Monitor":   st.Page(sync_monitor,            title="Sync Monitor",   url_path="sync-monitor"),
         "🩺 Data Quality":   st.Page(data_quality_page,       title="Data Quality",   url_path="data-quality"),
+        "🔗 Website Scan":   st.Page(website_scan_page,       title="Website Scan",   url_path="website-scan"),
         # AI
         "💬 AI Chat":        st.Page(chat_page,                title="AI Chat",        url_path="ai-chat"),
         "🤖 AI Insights":    st.Page(ai_insights_page,        title="AI Insights",    url_path="ai-insights"),
@@ -996,7 +1002,7 @@ def main():
         "FX":           ["🌍 FX Monitor", "📊 FX Analytics", "💱 FX Dashboard"],
         "FUNDS":        ["🏦 Fund Directory", "📊 Fund Analytics", "🔍 Fund Explorer"],
         "DATA":         ["📥 Data Sync", "📂 EOD Loader", "📚 History",
-                         "🔄 Sync Monitor", "🩺 Data Quality"],
+                         "🔄 Sync Monitor", "🩺 Data Quality", "🔗 Website Scan"],
         "AI":           ["💬 AI Chat", "🤖 AI Insights"],
         "ADMIN":        ["📋 Schema", "🔬 Research", "⚙️ Settings"],
     }
