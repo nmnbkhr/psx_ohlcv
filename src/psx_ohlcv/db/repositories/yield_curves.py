@@ -8,6 +8,8 @@ import pandas as pd
 __all__ = [
     "init_yield_curve_schema",
     "upsert_pkrv_point",
+    "upsert_pkisrv_point",
+    "upsert_pkfrv_point",
     "upsert_konia_rate",
     "upsert_kibor_rate",
     "get_pkrv_curve",
@@ -23,12 +25,38 @@ CREATE TABLE IF NOT EXISTS pkrv_daily (
     date TEXT NOT NULL,
     tenor_months INTEGER NOT NULL,
     yield_pct REAL NOT NULL,
+    change_bps REAL,
     source TEXT DEFAULT 'SBP',
     scraped_at TEXT DEFAULT (datetime('now')),
     PRIMARY KEY (date, tenor_months)
 );
 
 CREATE INDEX IF NOT EXISTS idx_pkrv_date ON pkrv_daily(date);
+
+CREATE TABLE IF NOT EXISTS pkisrv_daily (
+    date TEXT NOT NULL,
+    tenor TEXT NOT NULL,
+    yield_pct REAL NOT NULL,
+    source TEXT DEFAULT 'MUFAP',
+    scraped_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (date, tenor)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pkisrv_date ON pkisrv_daily(date);
+
+CREATE TABLE IF NOT EXISTS pkfrv_daily (
+    date TEXT NOT NULL,
+    bond_code TEXT NOT NULL,
+    issue_date TEXT,
+    maturity_date TEXT,
+    coupon_frequency TEXT,
+    fma_price REAL,
+    source TEXT DEFAULT 'MUFAP',
+    scraped_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (date, bond_code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pkfrv_date ON pkfrv_daily(date);
 
 CREATE TABLE IF NOT EXISTS konia_daily (
     date TEXT PRIMARY KEY,
@@ -62,10 +90,11 @@ def upsert_pkrv_point(con: sqlite3.Connection, data: dict) -> bool:
     """Insert or update a PKRV yield curve point."""
     try:
         con.execute(
-            """INSERT INTO pkrv_daily (date, tenor_months, yield_pct, source, scraped_at)
-               VALUES (?, ?, ?, ?, datetime('now'))
+            """INSERT INTO pkrv_daily (date, tenor_months, yield_pct, change_bps, source, scraped_at)
+               VALUES (?, ?, ?, ?, ?, datetime('now'))
                ON CONFLICT(date, tenor_months) DO UPDATE SET
                  yield_pct=excluded.yield_pct,
+                 change_bps=excluded.change_bps,
                  source=excluded.source,
                  scraped_at=datetime('now')
             """,
@@ -73,7 +102,63 @@ def upsert_pkrv_point(con: sqlite3.Connection, data: dict) -> bool:
                 data["date"],
                 data["tenor_months"],
                 data["yield_pct"],
+                data.get("change_bps"),
                 data.get("source", "SBP"),
+            ),
+        )
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def upsert_pkisrv_point(con: sqlite3.Connection, data: dict) -> bool:
+    """Insert or update a PKISRV yield curve point."""
+    try:
+        con.execute(
+            """INSERT INTO pkisrv_daily (date, tenor, yield_pct, source, scraped_at)
+               VALUES (?, ?, ?, ?, datetime('now'))
+               ON CONFLICT(date, tenor) DO UPDATE SET
+                 yield_pct=excluded.yield_pct,
+                 source=excluded.source,
+                 scraped_at=datetime('now')
+            """,
+            (
+                data["date"],
+                data["tenor"],
+                data["yield_pct"],
+                data.get("source", "MUFAP"),
+            ),
+        )
+        con.commit()
+        return True
+    except Exception:
+        return False
+
+
+def upsert_pkfrv_point(con: sqlite3.Connection, data: dict) -> bool:
+    """Insert or update a PKFRV (floating rate valuation) point."""
+    try:
+        con.execute(
+            """INSERT INTO pkfrv_daily (date, bond_code, issue_date, maturity_date,
+                   coupon_frequency, fma_price, source, scraped_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+               ON CONFLICT(date, bond_code) DO UPDATE SET
+                 issue_date=excluded.issue_date,
+                 maturity_date=excluded.maturity_date,
+                 coupon_frequency=excluded.coupon_frequency,
+                 fma_price=excluded.fma_price,
+                 source=excluded.source,
+                 scraped_at=datetime('now')
+            """,
+            (
+                data["date"],
+                data["bond_code"],
+                data.get("issue_date"),
+                data.get("maturity_date"),
+                data.get("coupon_frequency"),
+                data.get("fma_price"),
+                data.get("source", "MUFAP"),
             ),
         )
         con.commit()

@@ -267,6 +267,8 @@ def render_data_quality():
             ("IPO Calendar", "ipo_listings", "listing_date"),
             ("Dividends", "company_payouts", "ex_date"),
             ("Sukuk Master", "sukuk_master", "created_at"),
+            ("PKISRV Islamic Curve", "pkisrv_daily", "date"),
+            ("PKFRV Float Rate", "pkfrv_daily", "date"),
         ]
         for label, table, date_col in _v3_domains:
             try:

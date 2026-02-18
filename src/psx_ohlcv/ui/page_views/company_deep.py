@@ -18,6 +18,20 @@ from psx_ohlcv.ui.components.helpers import (
 )
 
 
+def _fmt_pkr(value) -> str:
+    """Format a PKR value for display (B/M/K suffixes)."""
+    if value is None or (isinstance(value, float) and value != value):
+        return "N/A"
+    v = float(value)
+    if abs(v) >= 1e12:
+        return f"Rs. {v / 1e12:,.1f}T"
+    if abs(v) >= 1e9:
+        return f"Rs. {v / 1e9:,.1f}B"
+    if abs(v) >= 1e6:
+        return f"Rs. {v / 1e6:,.1f}M"
+    return f"Rs. {v:,.0f}"
+
+
 def render_company_deep():
     """Company Analytics page for deep-dive into individual stocks."""
 
@@ -102,14 +116,13 @@ def render_company_deep():
                     if result.get("payouts_saved", 0) > 0:
                         parts.append(f"{result['payouts_saved']} payouts")
 
-                    # For banks, also sync markup_expensed from PDF reports
+                    # Also sync comprehensive financials from PSX PDF reports
                     try:
-                        from psx_ohlcv.sources.report_parser import is_bank_symbol, sync_bank_financials
-                        if is_bank_symbol(con, symbol):
-                            for rtype in ("quarterly", "annual"):
-                                pdf_result = sync_bank_financials(con, symbol, rtype)
-                                if pdf_result.get("periods_matched", 0) > 0:
-                                    parts.append(f"{pdf_result['periods_matched']} bank margins ({rtype})")
+                        from psx_ohlcv.sources.financial_sync import sync_psx_financials
+                        pdf_result = sync_psx_financials(con, symbols=[symbol], years=2)
+                        parsed = pdf_result.get("pdfs_parsed", 0)
+                        if parsed > 0:
+                            parts.append(f"{parsed} PDF financials")
                     except Exception:
                         pass  # PDF sync is best-effort
 
@@ -580,41 +593,66 @@ def render_company_deep():
     )
 
     if has_financial_data:
-        fin_tabs = st.tabs(["📈 Financials", "📊 Ratios", "💰 Payouts"])
+        fin_tabs = st.tabs(["📈 Income Statement", "🏦 Balance Sheet", "📊 Ratios", "💰 Payouts"])
 
-        # FINANCIALS Tab
+        # INCOME STATEMENT Tab
         with fin_tabs[0]:
             if not financials_df.empty:
                 # Detect bank: has markup_earned data
                 is_bank = financials_df["markup_earned"].notna().any()
 
+                # Check if we have PDF-parsed data (in full PKR)
+                has_pdf_data = financials_df["source"].isin(["psx_pdf", "ir_pdf"]).any() if "source" in financials_df.columns else False
+
                 if is_bank:
-                    st.markdown("*All numbers in thousands (000s) except EPS. Bank: Gross Profit = Markup Earned − Markup Expensed*")
-                else:
-                    st.markdown("*All numbers in thousands (000s) except EPS*")
+                    st.caption("Bank P&L: Gross Profit = Markup Earned − Markup Expensed")
+                if has_pdf_data:
+                    st.caption("Amounts in PKR (sourced from PSX financial reports)")
 
                 # Pivot for better display
                 annual_df = financials_df[financials_df["period_type"] == "annual"]
                 quarterly_df = financials_df[financials_df["period_type"] == "quarterly"]
 
-                # Bank-specific and non-bank columns
-                all_fin_cols = [
+                # Bank P&L columns
+                bank_cols = [
                     "period_end", "markup_earned", "markup_expensed",
-                    "sales", "gross_profit", "operating_profit",
+                    "net_interest_income", "non_markup_income", "total_income",
+                    "provisions", "profit_before_tax", "taxation",
                     "profit_after_tax", "eps",
                 ]
+                # Non-bank P&L columns
+                nonbank_cols = [
+                    "period_end", "sales", "cost_of_sales", "gross_profit",
+                    "operating_expenses", "operating_profit",
+                    "finance_cost", "other_income",
+                    "profit_before_tax", "taxation",
+                    "profit_after_tax", "eps",
+                ]
+
+                all_fin_cols = bank_cols if is_bank else nonbank_cols
+
                 fin_col_config = {
                     "period_end": st.column_config.TextColumn("Period"),
-                    "markup_earned": st.column_config.NumberColumn("Markup Earned (000s)", format="%,.0f"),
-                    "markup_expensed": st.column_config.NumberColumn("Markup Expensed (000s)", format="%,.0f"),
-                    "sales": st.column_config.NumberColumn("Revenue (000s)", format="%,.0f"),
-                    "gross_profit": st.column_config.NumberColumn("Gross Profit (000s)", format="%,.0f"),
-                    "operating_profit": st.column_config.NumberColumn("Operating Profit (000s)", format="%,.0f"),
-                    "profit_after_tax": st.column_config.NumberColumn("Profit After Tax (000s)", format="%,.0f"),
+                    "markup_earned": st.column_config.NumberColumn("Markup Earned", format="%,.0f"),
+                    "markup_expensed": st.column_config.NumberColumn("Markup Expensed", format="%,.0f"),
+                    "net_interest_income": st.column_config.NumberColumn("Net Interest Income", format="%,.0f"),
+                    "non_markup_income": st.column_config.NumberColumn("Non-Markup Income", format="%,.0f"),
+                    "total_income": st.column_config.NumberColumn("Total Income", format="%,.0f"),
+                    "provisions": st.column_config.NumberColumn("Provisions", format="%,.0f"),
+                    "sales": st.column_config.NumberColumn("Revenue", format="%,.0f"),
+                    "cost_of_sales": st.column_config.NumberColumn("Cost of Sales", format="%,.0f"),
+                    "gross_profit": st.column_config.NumberColumn("Gross Profit", format="%,.0f"),
+                    "operating_expenses": st.column_config.NumberColumn("Operating Expenses", format="%,.0f"),
+                    "operating_profit": st.column_config.NumberColumn("Operating Profit", format="%,.0f"),
+                    "finance_cost": st.column_config.NumberColumn("Finance Cost", format="%,.0f"),
+                    "other_income": st.column_config.NumberColumn("Other Income", format="%,.0f"),
+                    "profit_before_tax": st.column_config.NumberColumn("PBT", format="%,.0f"),
+                    "taxation": st.column_config.NumberColumn("Taxation", format="%,.0f"),
+                    "profit_after_tax": st.column_config.NumberColumn("PAT", format="%,.0f"),
                     "eps": st.column_config.NumberColumn("EPS", format="%.2f"),
                 }
 
-                for label, sub_df in [("Annual Financials", annual_df), ("Quarterly Financials", quarterly_df)]:
+                for label, sub_df in [("Annual", annual_df), ("Quarterly", quarterly_df)]:
                     if not sub_df.empty:
                         st.markdown(f"**{label}**")
                         available_cols = [
@@ -630,45 +668,180 @@ def render_company_deep():
             else:
                 st.info("No financial data available. Click 'Refresh' to fetch data.")
 
-        # RATIOS Tab
+        # BALANCE SHEET Tab
         with fin_tabs[1]:
+            if not financials_df.empty:
+                has_bs = any(
+                    financials_df[c].notna().any()
+                    for c in ["total_assets", "total_equity", "total_liabilities"]
+                    if c in financials_df.columns
+                )
+
+                if has_bs:
+                    st.caption("Amounts in PKR (sourced from PSX financial reports)")
+
+                    annual_df = financials_df[financials_df["period_type"] == "annual"]
+                    quarterly_df = financials_df[financials_df["period_type"] == "quarterly"]
+
+                    bs_cols = [
+                        "period_end", "total_assets", "total_equity",
+                        "total_liabilities", "current_assets", "non_current_assets",
+                        "current_liabilities", "non_current_liabilities",
+                        "cash_and_equivalents", "share_capital",
+                    ]
+                    bs_col_config = {
+                        "period_end": st.column_config.TextColumn("Period"),
+                        "total_assets": st.column_config.NumberColumn("Total Assets", format="%,.0f"),
+                        "total_equity": st.column_config.NumberColumn("Total Equity", format="%,.0f"),
+                        "total_liabilities": st.column_config.NumberColumn("Total Liabilities", format="%,.0f"),
+                        "current_assets": st.column_config.NumberColumn("Current Assets", format="%,.0f"),
+                        "non_current_assets": st.column_config.NumberColumn("Non-Current Assets", format="%,.0f"),
+                        "current_liabilities": st.column_config.NumberColumn("Current Liabilities", format="%,.0f"),
+                        "non_current_liabilities": st.column_config.NumberColumn("Non-Current Liab.", format="%,.0f"),
+                        "cash_and_equivalents": st.column_config.NumberColumn("Cash & Equiv.", format="%,.0f"),
+                        "share_capital": st.column_config.NumberColumn("Share Capital", format="%,.0f"),
+                    }
+
+                    for label, sub_df in [("Annual", annual_df), ("Quarterly", quarterly_df)]:
+                        if not sub_df.empty:
+                            st.markdown(f"**{label}**")
+                            available_cols = [
+                                c for c in bs_cols
+                                if c in sub_df.columns and (c == "period_end" or sub_df[c].notna().any())
+                            ]
+                            if len(available_cols) > 1:
+                                st.dataframe(
+                                    sub_df[available_cols].head(10),
+                                    use_container_width=True,
+                                    hide_index=True,
+                                    column_config={k: v for k, v in bs_col_config.items() if k in available_cols},
+                                )
+
+                    # Latest balance sheet metrics
+                    latest_bs = financials_df.dropna(subset=["total_assets"]).head(1)
+                    if not latest_bs.empty:
+                        row = latest_bs.iloc[0]
+                        ta = row.get("total_assets")
+                        te = row.get("total_equity")
+                        tl = row.get("total_liabilities")
+
+                        bs_metric_cols = st.columns(4)
+                        with bs_metric_cols[0]:
+                            st.metric("Total Assets", _fmt_pkr(ta))
+                        with bs_metric_cols[1]:
+                            st.metric("Total Equity", _fmt_pkr(te))
+                        with bs_metric_cols[2]:
+                            st.metric("Total Liabilities", _fmt_pkr(tl))
+                        with bs_metric_cols[3]:
+                            if ta and te and tl:
+                                check = abs(ta - (te + tl)) / ta * 100
+                                st.metric("A = E + L Check", f"{check:.1f}%",
+                                          help="Should be ~0%. Validates balance sheet integrity.")
+                else:
+                    st.info("No balance sheet data. Click 'Refresh' to parse PSX financial reports.")
+
+        # RATIOS Tab
+        with fin_tabs[2]:
             if not ratios_df.empty:
-                all_ratio_cols = [
+                # Profitability ratios
+                profitability_cols = [
                     "period_end", "gross_profit_margin", "net_profit_margin",
-                    "operating_margin", "eps_growth", "peg_ratio",
+                    "operating_margin", "return_on_equity", "return_on_assets",
                 ]
+                # Leverage & efficiency ratios
+                leverage_cols = [
+                    "period_end", "debt_to_equity", "current_ratio",
+                    "interest_coverage", "asset_turnover", "equity_multiplier",
+                ]
+                # Growth ratios
+                growth_cols = [
+                    "period_end", "sales_growth", "profit_growth",
+                    "eps_growth", "peg_ratio",
+                ]
+
                 ratio_col_config = {
                     "period_end": st.column_config.TextColumn("Period"),
-                    "gross_profit_margin": st.column_config.NumberColumn("Gross Margin %", format="%.2f%%"),
-                    "net_profit_margin": st.column_config.NumberColumn("Net Margin %", format="%.2f%%"),
-                    "operating_margin": st.column_config.NumberColumn("Operating Margin %", format="%.2f%%"),
-                    "eps_growth": st.column_config.NumberColumn("EPS Growth %", format="%.2f%%"),
+                    "gross_profit_margin": st.column_config.NumberColumn("Gross Margin %", format="%.2f"),
+                    "net_profit_margin": st.column_config.NumberColumn("Net Margin %", format="%.2f"),
+                    "operating_margin": st.column_config.NumberColumn("Op. Margin %", format="%.2f"),
+                    "return_on_equity": st.column_config.NumberColumn("ROE %", format="%.2f"),
+                    "return_on_assets": st.column_config.NumberColumn("ROA %", format="%.2f"),
+                    "debt_to_equity": st.column_config.NumberColumn("D/E", format="%.2f"),
+                    "current_ratio": st.column_config.NumberColumn("Current Ratio", format="%.2f"),
+                    "interest_coverage": st.column_config.NumberColumn("Interest Coverage", format="%.2f"),
+                    "asset_turnover": st.column_config.NumberColumn("Asset Turnover", format="%.2f"),
+                    "equity_multiplier": st.column_config.NumberColumn("Equity Multiplier", format="%.2f"),
+                    "sales_growth": st.column_config.NumberColumn("Revenue Growth %", format="%+.2f"),
+                    "profit_growth": st.column_config.NumberColumn("Profit Growth %", format="%+.2f"),
+                    "eps_growth": st.column_config.NumberColumn("EPS Growth %", format="%+.2f"),
                     "peg_ratio": st.column_config.NumberColumn("PEG", format="%.2f"),
                 }
 
-                # Show bank margin formula note
                 is_bank = financials_df["markup_earned"].notna().any() if not financials_df.empty else False
                 if is_bank:
                     st.caption("Bank Gross Margin = (Markup Earned − Markup Expensed) / Markup Earned")
 
-                for label, sub_df in [
-                    ("Annual Ratios", ratios_df[ratios_df["period_type"] == "annual"]),
-                    ("Quarterly Ratios", ratios_df[ratios_df["period_type"] == "quarterly"]),
-                ]:
-                    if not sub_df.empty:
-                        st.markdown(f"**{label}**")
-                        available_cols = [
-                            c for c in all_ratio_cols
-                            if c in sub_df.columns and (c == "period_end" or sub_df[c].notna().any())
-                        ]
-                        st.dataframe(
-                            sub_df[available_cols].head(10),
-                            use_container_width=True,
-                            hide_index=True,
-                            column_config={k: v for k, v in ratio_col_config.items() if k in available_cols},
-                        )
+                # Sub-tabs for ratio categories
+                ratio_subtabs = st.tabs(["Profitability", "Leverage & Efficiency", "Growth"])
 
-                # Show key ratios summary from latest available data (prefer annual, fallback quarterly)
+                with ratio_subtabs[0]:
+                    for label, sub_df in [
+                        ("Annual", ratios_df[ratios_df["period_type"] == "annual"]),
+                        ("Quarterly", ratios_df[ratios_df["period_type"] == "quarterly"]),
+                    ]:
+                        if not sub_df.empty:
+                            st.markdown(f"**{label}**")
+                            available_cols = [
+                                c for c in profitability_cols
+                                if c in sub_df.columns and (c == "period_end" or sub_df[c].notna().any())
+                            ]
+                            if len(available_cols) > 1:
+                                st.dataframe(
+                                    sub_df[available_cols].head(10),
+                                    use_container_width=True,
+                                    hide_index=True,
+                                    column_config={k: v for k, v in ratio_col_config.items() if k in available_cols},
+                                )
+
+                with ratio_subtabs[1]:
+                    for label, sub_df in [
+                        ("Annual", ratios_df[ratios_df["period_type"] == "annual"]),
+                        ("Quarterly", ratios_df[ratios_df["period_type"] == "quarterly"]),
+                    ]:
+                        if not sub_df.empty:
+                            st.markdown(f"**{label}**")
+                            available_cols = [
+                                c for c in leverage_cols
+                                if c in sub_df.columns and (c == "period_end" or sub_df[c].notna().any())
+                            ]
+                            if len(available_cols) > 1:
+                                st.dataframe(
+                                    sub_df[available_cols].head(10),
+                                    use_container_width=True,
+                                    hide_index=True,
+                                    column_config={k: v for k, v in ratio_col_config.items() if k in available_cols},
+                                )
+
+                with ratio_subtabs[2]:
+                    for label, sub_df in [
+                        ("Annual", ratios_df[ratios_df["period_type"] == "annual"]),
+                        ("Quarterly", ratios_df[ratios_df["period_type"] == "quarterly"]),
+                    ]:
+                        if not sub_df.empty:
+                            st.markdown(f"**{label}**")
+                            available_cols = [
+                                c for c in growth_cols
+                                if c in sub_df.columns and (c == "period_end" or sub_df[c].notna().any())
+                            ]
+                            if len(available_cols) > 1:
+                                st.dataframe(
+                                    sub_df[available_cols].head(10),
+                                    use_container_width=True,
+                                    hide_index=True,
+                                    column_config={k: v for k, v in ratio_col_config.items() if k in available_cols},
+                                )
+
+                # Key ratios summary from latest available data
                 annual_ratios = ratios_df[ratios_df["period_type"] == "annual"]
                 quarterly_ratios = ratios_df[ratios_df["period_type"] == "quarterly"]
 
@@ -684,32 +857,68 @@ def render_company_deep():
                     latest_label = f"({latest['period_end']} Annual)"
 
                 if latest is not None:
-                    ratio_cols = st.columns(4)
+                    st.markdown(f"**Key Ratios** {latest_label if latest is not None else ''}")
 
-                    with ratio_cols[0]:
+                    r1, r2, r3, r4 = st.columns(4)
+                    with r1:
                         gpm = latest.get("gross_profit_margin")
-                        st.metric("Gross Margin", f"{gpm:.1f}%" if pd.notna(gpm) else "N/A",
-                                  help=f"Latest: {latest_label}")
-
-                    with ratio_cols[1]:
+                        st.metric("Gross Margin", f"{gpm:.1f}%" if pd.notna(gpm) else "N/A")
+                    with r2:
                         npm = latest.get("net_profit_margin")
                         st.metric("Net Margin", f"{npm:.1f}%" if pd.notna(npm) else "N/A")
+                    with r3:
+                        roe = latest.get("return_on_equity")
+                        st.metric("ROE", f"{roe:.1f}%" if pd.notna(roe) else "N/A")
+                    with r4:
+                        de = latest.get("debt_to_equity")
+                        st.metric("D/E Ratio", f"{de:.2f}" if pd.notna(de) else "N/A")
 
-                    with ratio_cols[2]:
-                        epsg = latest.get("eps_growth")
-                        if pd.notna(epsg):
-                            st.metric("EPS Growth", f"{epsg:+.1f}%", delta=f"{epsg:+.1f}%")
-                        else:
-                            st.metric("EPS Growth", "N/A")
-
-                    with ratio_cols[3]:
-                        peg = latest.get("peg_ratio")
-                        st.metric("PEG Ratio", f"{peg:.2f}" if pd.notna(peg) else "N/A")
+                    # Interest rate context for banks
+                    if is_bank:
+                        st.markdown("**Rate Environment**")
+                        rc1, rc2, rc3, rc4 = st.columns(4)
+                        try:
+                            pr_row = con.execute(
+                                "SELECT rate_pct, effective_date FROM sbp_policy_rates ORDER BY effective_date DESC LIMIT 1"
+                            ).fetchone()
+                            kb_row = con.execute(
+                                "SELECT bid, offer, date FROM kibor_daily WHERE tenor='3M' ORDER BY date DESC LIMIT 1"
+                            ).fetchone()
+                            kb6_row = con.execute(
+                                "SELECT bid, offer, date FROM kibor_daily WHERE tenor='6M' ORDER BY date DESC LIMIT 1"
+                            ).fetchone()
+                            konia_row = con.execute(
+                                "SELECT rate_pct, date FROM konia_daily ORDER BY date DESC LIMIT 1"
+                            ).fetchone()
+                            with rc1:
+                                if pr_row:
+                                    st.metric("Policy Rate", f"{pr_row[0]:.1f}%", help=f"Since {pr_row[1]}")
+                                else:
+                                    st.metric("Policy Rate", "—")
+                            with rc2:
+                                if kb_row:
+                                    mid = (kb_row[0] + kb_row[1]) / 2 if kb_row[0] and kb_row[1] else kb_row[0]
+                                    st.metric("KIBOR 3M", f"{mid:.2f}%" if mid else "—", help=f"As of {kb_row[2]}")
+                                else:
+                                    st.metric("KIBOR 3M", "—")
+                            with rc3:
+                                if kb6_row:
+                                    mid6 = (kb6_row[0] + kb6_row[1]) / 2 if kb6_row[0] and kb6_row[1] else kb6_row[0]
+                                    st.metric("KIBOR 6M", f"{mid6:.2f}%" if mid6 else "—", help=f"As of {kb6_row[2]}")
+                                else:
+                                    st.metric("KIBOR 6M", "—")
+                            with rc4:
+                                if konia_row:
+                                    st.metric("KONIA", f"{konia_row[0]:.2f}%", help=f"As of {konia_row[1]}")
+                                else:
+                                    st.metric("KONIA", "—")
+                        except Exception:
+                            pass  # Tables may not exist yet
             else:
                 st.info("No ratio data available. Click 'Refresh' to fetch data.")
 
         # PAYOUTS Tab
-        with fin_tabs[2]:
+        with fin_tabs[3]:
             if not payouts_df.empty:
                 st.markdown("**Dividend / Payout History**")
                 display_cols = [

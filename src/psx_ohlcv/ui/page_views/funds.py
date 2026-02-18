@@ -184,7 +184,22 @@ def render_mutual_funds():
                     st.subheader("NAV History")
                     chart_df = nav_df.sort_values("date")
                     st.caption(f"{len(chart_df)} records | {chart_df.iloc[0]['date']} to {chart_df.iloc[-1]['date']}")
-                    st.line_chart(chart_df.set_index("date")["nav"], height=300)
+                    import plotly.graph_objects as go
+                    nav_min = chart_df["nav"].min()
+                    nav_max = chart_df["nav"].max()
+                    pad = max((nav_max - nav_min) * 0.1, nav_min * 0.01)
+                    fig = go.Figure(go.Scatter(
+                        x=chart_df["date"], y=chart_df["nav"],
+                        mode="lines", line=dict(width=2, color="#00d4aa"),
+                        hovertemplate="Date: %{x}<br>NAV: Rs. %{y:.4f}<extra></extra>",
+                    ))
+                    fig.update_layout(
+                        height=300, margin=dict(l=20, r=20, t=10, b=20),
+                        yaxis=dict(range=[nav_min - pad, nav_max + pad]),
+                        xaxis_title=None, yaxis_title="NAV (Rs.)",
+                        template="plotly_dark",
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
                 else:
                     st.info("No NAV data. Click 'Sync Full NAV History' above to fetch.")
 

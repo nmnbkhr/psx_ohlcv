@@ -197,23 +197,35 @@ def render_bonds_screener():
 
 
 def render_yield_curve():
-    """Yield Curve - Interest rate term structure."""
+    """Yield Curve - PKRV/PKISRV term structure with interpolation."""
     import pandas as pd
     import plotly.graph_objects as go
 
-    from psx_ohlcv.analytics_bonds import (
-        build_yield_curve,
-        interpolate_yield,
-    )
-    from psx_ohlcv.db import get_latest_yield_curve, get_yield_curve
+    from psx_ohlcv.analytics_bonds import interpolate_yield
 
     # =================================================================
     # HEADER
     # =================================================================
     st.markdown("## 📉 Yield Curve")
-    st.caption("Government Securities Term Structure (Phase 3)")
+    st.caption("MUFAP Revaluation Rate Curves — PKRV (Government) / PKISRV (Islamic)")
 
     con = get_connection()
+
+    # Tenor label helpers
+    _TENOR_LABELS = {
+        1: "1M", 3: "3M", 6: "6M", 9: "9M", 12: "1Y",
+        24: "2Y", 36: "3Y", 60: "5Y", 84: "7Y", 120: "10Y",
+        180: "15Y", 240: "20Y", 360: "30Y",
+    }
+
+    def _pkisrv_tenor_to_months(t: str) -> int:
+        """Convert PKISRV tenor string like '3M', '1Y' to months."""
+        t = t.strip().upper()
+        if t.endswith("M"):
+            return int(t[:-1])
+        if t.endswith("Y"):
+            return int(t[:-1]) * 12
+        return 12
 
     # =================================================================
     # CONTROLS
@@ -221,136 +233,292 @@ def render_yield_curve():
     ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 2, 1])
 
     with ctrl_col1:
-        bond_type = st.selectbox(
+        curve_type = st.selectbox(
             "Curve Type",
-            ["PIB", "T-Bill", "Sukuk", "ALL"],
-            key="yc_bond_type"
+            ["PKRV (Government)", "PKISRV (Islamic)", "Both (Overlay)"],
+            key="yc_curve_type",
         )
+
+    # Get available dates based on curve type
+    if curve_type == "PKISRV (Islamic)":
+        date_rows = con.execute(
+            "SELECT DISTINCT date FROM pkisrv_daily ORDER BY date DESC"
+        ).fetchall()
+    elif curve_type == "PKRV (Government)":
+        date_rows = con.execute(
+            "SELECT DISTINCT date FROM pkrv_daily ORDER BY date DESC"
+        ).fetchall()
+    else:
+        date_rows = con.execute(
+            "SELECT DISTINCT date FROM pkrv_daily "
+            "UNION SELECT DISTINCT date FROM pkisrv_daily "
+            "ORDER BY date DESC"
+        ).fetchall()
+    date_list = [r["date"] for r in date_rows]
 
     with ctrl_col2:
-        curve_date = st.date_input(
-            "Curve Date",
-            value=None,
-            key="yc_date"
-        )
-        curve_date_str = curve_date.strftime("%Y-%m-%d") if curve_date else None
+        if date_list:
+            sel_date = st.selectbox("Curve Date", date_list[:500], index=0, key="yc_date")
+        else:
+            sel_date = None
 
     with ctrl_col3:
-        if st.button("Build Curve", key="yc_build"):
-            with st.spinner("Building yield curve..."):
-                points = build_yield_curve(con, curve_date_str, bond_type)
-                if points:
-                    st.success(f"Built curve with {len(points)} points")
-                    st.rerun()
-                else:
-                    st.warning("No data to build curve")
+        show_compare = st.checkbox("Compare", key="yc_compare")
+        cmp_date = None
+        if show_compare and date_list and len(date_list) > 1:
+            cmp_date = st.selectbox(
+                "Compare to", date_list[:500],
+                index=min(30, len(date_list) - 1), key="yc_cmp_date",
+            )
 
     # =================================================================
     # YIELD CURVE CHART
     # =================================================================
     st.markdown("### Term Structure")
 
-    if curve_date_str:
-        points = get_yield_curve(con, curve_date_str, bond_type)
-    else:
-        curve_date_str, points = get_latest_yield_curve(con, bond_type)
-
-    if not points:
-        st.info("No yield curve data available. Click 'Build Curve' to generate.")
-        st.markdown("""
-        **To build a yield curve:**
-        1. First initialize bonds: `psxsync bonds init`
-        2. Generate sample quotes: `psxsync bonds load --sample`
-        3. Compute analytics: `psxsync bonds compute --curve`
-        """)
-    else:
-        st.caption(f"Curve Date: {curve_date_str}")
-
-        # Prepare data
-        df = pd.DataFrame(points)
-
-        tenor_labels = {
-            3: "3M", 6: "6M", 12: "1Y", 24: "2Y",
-            36: "3Y", 60: "5Y", 84: "7Y", 120: "10Y",
-            180: "15Y", 240: "20Y",
-        }
-        df["tenor_label"] = df["tenor_months"].apply(
-            lambda x: tenor_labels.get(x, f"{x}M")
+    if not sel_date:
+        st.info(
+            "No yield curve data available. Go to **Treasury** page and "
+            "click **Sync MUFAP Rates** to download curve data."
         )
-        df["yield_pct"] = df["yield_rate"] * 100
+    else:
+        st.caption(f"Curve Date: {sel_date}")
 
-        # Create chart
         fig = go.Figure()
+        # Collect points for interpolation (from primary curve)
+        interp_points = []
+        has_data = False
 
-        fig.add_trace(go.Scatter(
-            x=df["tenor_months"],
-            y=df["yield_pct"],
-            mode="lines+markers",
-            name=f"{bond_type} Curve",
-            line=dict(width=3, color="#1f77b4"),
-            marker=dict(size=10),
-            hovertemplate=(
-                "<b>%{text}</b><br>"
-                "Yield: %{y:.2f}%<br>"
-                "<extra></extra>"
-            ),
-            text=df["tenor_label"],
-        ))
-
-        fig.update_layout(
-            title=f"Yield Curve - {bond_type}",
-            xaxis_title="Tenor (Months)",
-            yaxis_title="Yield (%)",
-            height=400,
-            showlegend=False,
-            hovermode="x unified",
-        )
-
-        # Add tenor labels on x-axis
-        fig.update_xaxes(
-            tickmode="array",
-            tickvals=df["tenor_months"].tolist(),
-            ticktext=df["tenor_label"].tolist(),
-        )
-
-        st.plotly_chart(fig, use_container_width=True)
-
-        # =================================================================
-        # CURVE DATA TABLE
-        # =================================================================
-        st.markdown("### Curve Points")
-
-        table_df = df[["tenor_label", "tenor_months", "yield_pct"]].copy()
-        table_df.columns = ["Tenor", "Months", "Yield (%)"]
-        table_df["Yield (%)"] = table_df["Yield (%)"].apply(lambda x: f"{x:.4f}%")
-
-        st.dataframe(table_df, use_container_width=True, hide_index=True)
-
-        # =================================================================
-        # INTERPOLATION TOOL
-        # =================================================================
-        st.markdown("### Yield Interpolation")
-
-        interp_col1, interp_col2 = st.columns([1, 2])
-
-        with interp_col1:
-            target_tenor = st.number_input(
-                "Target Tenor (months)",
-                min_value=1,
-                max_value=360,
-                value=48,
-                key="yc_target_tenor"
+        # --- PKRV ---
+        if curve_type in ("PKRV (Government)", "Both (Overlay)"):
+            df_pkrv = pd.read_sql_query(
+                "SELECT tenor_months, yield_pct FROM pkrv_daily "
+                "WHERE date = ? ORDER BY tenor_months",
+                con, params=(sel_date,),
             )
-
-        with interp_col2:
-            interp_yield = interpolate_yield(points, target_tenor, "LINEAR")
-            if interp_yield:
-                st.metric(
-                    f"Interpolated Yield ({target_tenor}M)",
-                    f"{interp_yield * 100:.4f}%"
+            if not df_pkrv.empty:
+                has_data = True
+                df_pkrv["tenor_label"] = df_pkrv["tenor_months"].apply(
+                    lambda m: _TENOR_LABELS.get(m, f"{m}M")
                 )
+                df_pkrv["days"] = (df_pkrv["tenor_months"] / 12 * 365).astype(int)
+
+                fig.add_trace(go.Scatter(
+                    x=df_pkrv["tenor_months"], y=df_pkrv["yield_pct"],
+                    mode="lines+markers", name=f"PKRV ({sel_date})",
+                    line=dict(width=3, color="#00d4aa"),
+                    marker=dict(size=8),
+                    text=df_pkrv["tenor_label"],
+                    customdata=df_pkrv["days"],
+                    hovertemplate="<b>%{text}</b> (~%{customdata}d)<br>Yield: %{y:.4f}%<extra>PKRV</extra>",
+                ))
+
+                # Build interpolation points from PKRV
+                for _, row in df_pkrv.iterrows():
+                    interp_points.append({
+                        "tenor_months": int(row["tenor_months"]),
+                        "yield_rate": row["yield_pct"] / 100,
+                    })
+
+                # Comparison
+                if cmp_date:
+                    df_cmp = pd.read_sql_query(
+                        "SELECT tenor_months, yield_pct FROM pkrv_daily "
+                        "WHERE date = ? ORDER BY tenor_months",
+                        con, params=(cmp_date,),
+                    )
+                    if not df_cmp.empty:
+                        df_cmp["tenor_label"] = df_cmp["tenor_months"].apply(
+                            lambda m: _TENOR_LABELS.get(m, f"{m}M")
+                        )
+                        fig.add_trace(go.Scatter(
+                            x=df_cmp["tenor_months"], y=df_cmp["yield_pct"],
+                            mode="lines+markers", name=f"PKRV ({cmp_date})",
+                            line=dict(width=2, color="#00d4aa", dash="dot"),
+                            marker=dict(size=5),
+                            text=df_cmp["tenor_label"],
+                            hovertemplate="<b>%{text}</b><br>Yield: %{y:.4f}%<extra>PKRV (cmp)</extra>",
+                        ))
+
+        # --- PKISRV ---
+        if curve_type in ("PKISRV (Islamic)", "Both (Overlay)"):
+            df_pkisrv = pd.read_sql_query(
+                "SELECT tenor, yield_pct FROM pkisrv_daily WHERE date = ?",
+                con, params=(sel_date,),
+            )
+            if not df_pkisrv.empty:
+                has_data = True
+                df_pkisrv["tenor_months"] = df_pkisrv["tenor"].apply(_pkisrv_tenor_to_months)
+                df_pkisrv = df_pkisrv.sort_values("tenor_months").reset_index(drop=True)
+                df_pkisrv["days"] = (df_pkisrv["tenor_months"] / 12 * 365).astype(int)
+
+                clr = "#f4a261" if "Both" in curve_type else "#00d4aa"
+                fig.add_trace(go.Scatter(
+                    x=df_pkisrv["tenor_months"], y=df_pkisrv["yield_pct"],
+                    mode="lines+markers", name=f"PKISRV ({sel_date})",
+                    line=dict(width=3, color=clr),
+                    marker=dict(size=8),
+                    text=df_pkisrv["tenor"],
+                    customdata=df_pkisrv["days"],
+                    hovertemplate="<b>%{text}</b> (~%{customdata}d)<br>Yield: %{y:.4f}%<extra>PKISRV</extra>",
+                ))
+
+                # If no PKRV points for interpolation, use PKISRV
+                if not interp_points:
+                    for _, row in df_pkisrv.iterrows():
+                        interp_points.append({
+                            "tenor_months": int(row["tenor_months"]),
+                            "yield_rate": row["yield_pct"] / 100,
+                        })
+
+                if cmp_date:
+                    df_cmp_i = pd.read_sql_query(
+                        "SELECT tenor, yield_pct FROM pkisrv_daily WHERE date = ?",
+                        con, params=(cmp_date,),
+                    )
+                    if not df_cmp_i.empty:
+                        df_cmp_i["tenor_months"] = df_cmp_i["tenor"].apply(_pkisrv_tenor_to_months)
+                        df_cmp_i = df_cmp_i.sort_values("tenor_months").reset_index(drop=True)
+                        fig.add_trace(go.Scatter(
+                            x=df_cmp_i["tenor_months"], y=df_cmp_i["yield_pct"],
+                            mode="lines+markers", name=f"PKISRV ({cmp_date})",
+                            line=dict(width=2, color=clr, dash="dot"),
+                            marker=dict(size=5),
+                            text=df_cmp_i["tenor"],
+                            hovertemplate="<b>%{text}</b><br>Yield: %{y:.4f}%<extra>PKISRV (cmp)</extra>",
+                        ))
+
+        if has_data:
+            # Collect all tenor months for x-axis labels
+            all_tenors = sorted(set(
+                int(t["tenor_months"]) for t in interp_points
+            ))
+            fig.update_layout(
+                title=f"Yield Curve — {sel_date}",
+                xaxis_title="Tenor (Months)",
+                yaxis_title="Yield (%)",
+                height=450,
+                template="plotly_dark",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                hovermode="x unified",
+            )
+            fig.update_xaxes(
+                tickmode="array",
+                tickvals=all_tenors,
+                ticktext=[_TENOR_LABELS.get(m, f"{m}M") for m in all_tenors],
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            # =============================================================
+            # CURVE STATISTICS
+            # =============================================================
+            if interp_points:
+                stat_cols = st.columns(4)
+                short = [p["yield_rate"] * 100 for p in interp_points if p["tenor_months"] < 12]
+                med = [p["yield_rate"] * 100 for p in interp_points if 12 <= p["tenor_months"] < 60]
+                lng = [p["yield_rate"] * 100 for p in interp_points if p["tenor_months"] >= 60]
+                with stat_cols[0]:
+                    if short:
+                        st.metric("Short Term (<1Y)", f"{sum(short)/len(short):.2f}%")
+                with stat_cols[1]:
+                    if med:
+                        st.metric("Medium Term (1-5Y)", f"{sum(med)/len(med):.2f}%")
+                with stat_cols[2]:
+                    if lng:
+                        st.metric("Long Term (>5Y)", f"{sum(lng)/len(lng):.2f}%")
+                with stat_cols[3]:
+                    if short and lng:
+                        spread = (sum(lng) / len(lng) - sum(short) / len(short)) * 100
+                        st.metric("Spread (bps)", f"{spread:.0f}")
+
+            # =============================================================
+            # CURVE DATA TABLE
+            # =============================================================
+            st.markdown("### Curve Points")
+
+            table_rows = []
+            if curve_type in ("PKRV (Government)", "Both (Overlay)") and 'df_pkrv' in dir() and not df_pkrv.empty:
+                for _, r in df_pkrv.iterrows():
+                    table_rows.append({
+                        "Curve": "PKRV", "Tenor": r["tenor_label"],
+                        "Months": int(r["tenor_months"]),
+                        "Days": int(r["days"]), "Yield (%)": r["yield_pct"],
+                    })
+            if curve_type in ("PKISRV (Islamic)", "Both (Overlay)") and 'df_pkisrv' in dir() and not df_pkisrv.empty:
+                for _, r in df_pkisrv.iterrows():
+                    table_rows.append({
+                        "Curve": "PKISRV", "Tenor": r["tenor"],
+                        "Months": int(r["tenor_months"]),
+                        "Days": int(r["days"]), "Yield (%)": r["yield_pct"],
+                    })
+            if table_rows:
+                st.dataframe(
+                    pd.DataFrame(table_rows),
+                    use_container_width=True, hide_index=True,
+                    column_config={
+                        "Yield (%)": st.column_config.NumberColumn(format="%.4f%%"),
+                    },
+                )
+
+            # =============================================================
+            # INTERPOLATION TOOL
+            # =============================================================
+            st.markdown("### Yield Interpolation")
+            st.caption("Linear interpolation between actual curve points")
+
+            if interp_points:
+                min_tenor = min(p["tenor_months"] for p in interp_points)
+                max_tenor = max(p["tenor_months"] for p in interp_points)
+
+                interp_col1, interp_col2 = st.columns([1, 2])
+
+                with interp_col1:
+                    target_tenor = st.number_input(
+                        "Target Tenor (months)",
+                        min_value=1,
+                        max_value=360,
+                        value=48,
+                        key="yc_target_tenor",
+                    )
+                    st.caption(
+                        f"Curve range: {_TENOR_LABELS.get(min_tenor, f'{min_tenor}M')} "
+                        f"to {_TENOR_LABELS.get(max_tenor, f'{max_tenor}M')}"
+                    )
+
+                with interp_col2:
+                    result = interpolate_yield(interp_points, target_tenor, "LINEAR")
+                    target_label = _TENOR_LABELS.get(target_tenor, f"{target_tenor}M")
+                    if result is not None:
+                        st.metric(
+                            f"Interpolated Yield ({target_label})",
+                            f"{result * 100:.4f}%",
+                        )
+                        # Find bracketing points
+                        sorted_pts = sorted(interp_points, key=lambda x: x["tenor_months"])
+                        lower = upper = None
+                        for i in range(len(sorted_pts) - 1):
+                            if sorted_pts[i]["tenor_months"] <= target_tenor <= sorted_pts[i + 1]["tenor_months"]:
+                                lower = sorted_pts[i]
+                                upper = sorted_pts[i + 1]
+                                break
+                        if lower and upper:
+                            l_label = _TENOR_LABELS.get(lower["tenor_months"], f"{lower['tenor_months']}M")
+                            u_label = _TENOR_LABELS.get(upper["tenor_months"], f"{upper['tenor_months']}M")
+                            st.caption(
+                                f"Interpolated between {l_label} ({lower['yield_rate']*100:.4f}%) "
+                                f"and {u_label} ({upper['yield_rate']*100:.4f}%)"
+                            )
+                        elif target_tenor <= sorted_pts[0]["tenor_months"]:
+                            st.caption("At or below curve minimum — using shortest tenor yield")
+                        elif target_tenor >= sorted_pts[-1]["tenor_months"]:
+                            st.caption("At or above curve maximum — using longest tenor yield")
+                    else:
+                        st.info("Cannot interpolate for this tenor")
             else:
-                st.info("Cannot interpolate for this tenor")
+                st.info("No curve points available for interpolation")
+
+        else:
+            st.warning(f"No yield curve data for {sel_date}. Try a different date or run MUFAP sync.")
 
     render_footer()
 
@@ -551,7 +719,7 @@ def render_sukuk_screener():
 
 
 def render_sukuk_yield_curve():
-    """Sukuk Yield Curve - Term structure for sukuk instruments."""
+    """Sukuk Yield Curve - Term structure for sukuk instruments + PKISRV."""
     import pandas as pd
     import plotly.graph_objects as go
 
@@ -561,125 +729,232 @@ def render_sukuk_yield_curve():
     )
     from psx_ohlcv.sync_sukuk import sync_sample_yield_curves
 
-    st.markdown("## 📈 Sukuk Yield Curve")
-    st.caption("Term structure of sukuk yields (GOP Sukuk, PIB, T-Bill)")
+    st.markdown("## Sukuk Yield Curve")
+    st.caption("Term structure of sukuk yields (GOP Sukuk, PIB, T-Bill) + PKISRV from MUFAP")
+
+    con = get_connection()
+
+    # Tabs: PKISRV (real data) vs Simulated sukuk curves
+    tab_pkisrv, tab_simulated = st.tabs(["PKISRV (MUFAP Islamic Curve)", "Simulated Sukuk Curves"])
 
     # =================================================================
-    # CONTROLS
+    # TAB 1: PKISRV (real MUFAP data)
     # =================================================================
-    col1, col2, col3 = st.columns([1, 1, 2])
+    with tab_pkisrv:
+        st.markdown("### PKISRV — Pakistan Islamic Revaluation Rate")
+        st.caption("Daily Islamic yield curve from MUFAP (Shariah-compliant securities)")
 
-    with col1:
-        curve_name = st.selectbox(
-            "Curve",
-            ["GOP_SUKUK", "PIB", "TBILL"],
-            key="sukuk_curve_name"
-        )
-
-    with col2:
-        curve_date = st.date_input(
-            "Date (blank for latest)",
-            value=None,
-            key="sukuk_curve_date"
-        )
-
-    with col3:
-        if st.button("Generate Sample Curves", key="sukuk_gen_curves"):
-            with st.spinner("Generating yield curves..."):
-                summary = sync_sample_yield_curves(days=30)
-                st.success(f"Generated {summary.rows_upserted} curve points")
-            st.rerun()
-
-    # =================================================================
-    # YIELD CURVE CHART
-    # =================================================================
-    date_str = curve_date.isoformat() if curve_date else None
-    curve_data = get_yield_curve_data(
-        curve_name=curve_name,
-        curve_date=date_str,
-    )
-
-    points = curve_data.get("points", [])
-
-    if not points:
-        st.info("No yield curve data. Click 'Generate Sample Curves' to create.")
-        st.markdown("""
-        **To build a yield curve:**
-        1. Seed sukuk data: `psxsync sukuk seed`
-        2. Sync sample quotes: `psxsync sukuk sync --include-curves`
-        """)
-        render_footer()
-        return
-
-    # Build DataFrame
-    df = pd.DataFrame(points)
-    df["yield_pct"] = df["yield_rate"]
-
-    # Create chart
-    fig = go.Figure()
-
-    fig.add_trace(go.Scatter(
-        x=df["tenor_days"],
-        y=df["yield_pct"],
-        mode="lines+markers",
-        name=curve_name,
-        line=dict(width=2),
-        marker=dict(size=8),
-    ))
-
-    fig.update_layout(
-        title=f"Sukuk Yield Curve - {curve_name}",
-        xaxis_title="Tenor (Days)",
-        yaxis_title="Yield (%)",
-        height=450,
-        hovermode="x unified",
-    )
-
-    # Add tenor labels on x-axis
-    fig.update_xaxes(
-        tickmode="array",
-        tickvals=df["tenor_days"].tolist(),
-        ticktext=df["tenor_label"].tolist(),
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-
-    # =================================================================
-    # CURVE DATA TABLE
-    # =================================================================
-    st.markdown("### Curve Points")
-
-    table_df = df[["tenor_label", "tenor_days", "yield_pct"]].copy()
-    table_df.columns = ["Tenor", "Days", "Yield (%)"]
-    table_df["Yield (%)"] = table_df["Yield (%)"].apply(lambda x: f"{x:.4f}%")
-
-    st.dataframe(table_df, use_container_width=True, hide_index=True)
-
-    # =================================================================
-    # INTERPOLATION TOOL
-    # =================================================================
-    st.markdown("### Yield Interpolation")
-
-    interp_col1, interp_col2 = st.columns([1, 2])
-
-    with interp_col1:
-        target_days = st.number_input(
-            "Target Tenor (days)",
-            min_value=1,
-            max_value=3650,
-            value=365,
-            key="sukuk_target_tenor"
-        )
-
-    with interp_col2:
-        interp_yield = interpolate_yield_curve(points, target_days)
-        if interp_yield:
-            st.metric(
-                f"Interpolated Yield ({target_days} days)",
-                f"{interp_yield:.4f}%"
-            )
+        if con is None:
+            st.error("Database connection not available")
         else:
-            st.info("Cannot interpolate for this tenor")
+            row_count_row = con.execute(
+                "SELECT COUNT(*) as cnt FROM pkisrv_daily"
+            ).fetchone()
+            row_count = row_count_row["cnt"] if row_count_row else 0
+
+            if row_count == 0:
+                st.info(
+                    "No PKISRV data available. Go to Treasury Dashboard and click "
+                    "'Sync MUFAP Rates' to download Islamic yield curve data."
+                )
+            else:
+                dates = con.execute(
+                    "SELECT DISTINCT date FROM pkisrv_daily ORDER BY date DESC"
+                ).fetchall()
+                date_list = [r["date"] for r in dates]
+
+                ctrl1, ctrl2 = st.columns(2)
+                with ctrl1:
+                    selected_date = st.selectbox(
+                        "Curve date", date_list, index=0, key="sukuk_pkisrv_date"
+                    )
+                with ctrl2:
+                    compare_date = st.selectbox(
+                        "Compare with", ["None"] + date_list, index=0,
+                        key="sukuk_pkisrv_compare"
+                    )
+
+                df = pd.read_sql_query(
+                    "SELECT tenor, yield_pct FROM pkisrv_daily"
+                    " WHERE date = ? ORDER BY tenor",
+                    con, params=(selected_date,),
+                )
+
+                if not df.empty:
+                    # Tenor → days mapping for hover + sort
+                    _tenor_days = {
+                        "1M": 30, "2M": 60, "3M": 91, "6M": 182,
+                        "9M": 274, "1Y": 365, "2Y": 730, "3Y": 1095,
+                        "5Y": 1826, "10Y": 3652,
+                    }
+                    df["days"] = df["tenor"].map(
+                        lambda t: _tenor_days.get(t.strip(), 9999)
+                    )
+                    df = df.sort_values("days").reset_index(drop=True)
+
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=df["tenor"], y=df["yield_pct"],
+                        mode="lines+markers", name=f"PKISRV ({selected_date})",
+                        line=dict(width=3, color="#2ECC71"),
+                        marker=dict(size=8),
+                        customdata=df["days"],
+                        hovertemplate="%{x} (~%{customdata}d)<br>"
+                                      "Yield: %{y:.4f}%<extra></extra>",
+                    ))
+
+                    if compare_date != "None":
+                        cdf = pd.read_sql_query(
+                            "SELECT tenor, yield_pct FROM pkisrv_daily"
+                            " WHERE date = ? ORDER BY tenor",
+                            con, params=(compare_date,),
+                        )
+                        if not cdf.empty:
+                            cdf["days"] = cdf["tenor"].map(
+                                lambda t: _tenor_days.get(t.strip(), 9999)
+                            )
+                            cdf = cdf.sort_values("days").reset_index(drop=True)
+                            fig.add_trace(go.Scatter(
+                                x=cdf["tenor"], y=cdf["yield_pct"],
+                                mode="lines+markers", name=compare_date,
+                                line=dict(width=2, dash="dash", color="#E67E22"),
+                            ))
+
+                    # Overlay PKRV for spread comparison
+                    pkrv = pd.read_sql_query(
+                        "SELECT tenor_months, yield_pct FROM pkrv_daily"
+                        " WHERE date = ? ORDER BY tenor_months",
+                        con, params=(selected_date,),
+                    )
+                    if not pkrv.empty:
+                        tenor_map = {
+                            1: "1M", 3: "3M", 6: "6M", 12: "1Y",
+                            24: "2Y", 36: "3Y", 60: "5Y", 120: "10Y",
+                        }
+                        pkrv["tenor_label"] = pkrv["tenor_months"].map(tenor_map)
+                        pkrv_mapped = pkrv.dropna(subset=["tenor_label"])
+                        if not pkrv_mapped.empty:
+                            fig.add_trace(go.Scatter(
+                                x=pkrv_mapped["tenor_label"],
+                                y=pkrv_mapped["yield_pct"],
+                                mode="lines+markers",
+                                name=f"PKRV ({selected_date})",
+                                line=dict(width=2, dash="dot", color="#3498DB"),
+                                marker=dict(size=6),
+                            ))
+
+                    fig.update_layout(
+                        xaxis_title="Tenor", yaxis_title="Yield (%)",
+                        height=450, hovermode="x unified",
+                        legend=dict(orientation="h", y=-0.15),
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    st.caption(f"{row_count} total records | {len(date_list)} dates")
+
+                    # Data table with Days column
+                    st.markdown("### Curve Points")
+                    st.dataframe(
+                        df.rename(columns={
+                            "tenor": "Tenor", "days": "Days",
+                            "yield_pct": "Yield (%)",
+                        }),
+                        use_container_width=True, hide_index=True,
+                    )
+                else:
+                    st.info("No data points for selected date")
+
+    # =================================================================
+    # TAB 2: Simulated sukuk curves (existing logic)
+    # =================================================================
+    with tab_simulated:
+        st.markdown("### Simulated Sukuk Curves")
+        col1, col2, col3 = st.columns([1, 1, 2])
+
+        with col1:
+            curve_name = st.selectbox(
+                "Curve",
+                ["GOP_SUKUK", "PIB", "TBILL"],
+                key="sukuk_curve_name"
+            )
+
+        with col2:
+            curve_date = st.date_input(
+                "Date (blank for latest)",
+                value=None,
+                key="sukuk_curve_date"
+            )
+
+        with col3:
+            if st.button("Generate Sample Curves", key="sukuk_gen_curves"):
+                with st.spinner("Generating yield curves..."):
+                    summary = sync_sample_yield_curves(days=30)
+                    st.success(f"Generated {summary.rows_upserted} curve points")
+                st.rerun()
+
+        date_str = curve_date.isoformat() if curve_date else None
+        curve_data = get_yield_curve_data(
+            curve_name=curve_name,
+            curve_date=date_str,
+        )
+
+        points = curve_data.get("points", [])
+
+        if not points:
+            st.info("No yield curve data. Click 'Generate Sample Curves' to create.")
+        else:
+            df = pd.DataFrame(points)
+            df["yield_pct"] = df["yield_rate"]
+
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=df["tenor_days"],
+                y=df["yield_pct"],
+                mode="lines+markers",
+                name=curve_name,
+                line=dict(width=2),
+                marker=dict(size=8),
+            ))
+
+            fig.update_layout(
+                title=f"Sukuk Yield Curve - {curve_name}",
+                xaxis_title="Tenor (Days)",
+                yaxis_title="Yield (%)",
+                height=450,
+                hovermode="x unified",
+            )
+
+            fig.update_xaxes(
+                tickmode="array",
+                tickvals=df["tenor_days"].tolist(),
+                ticktext=df["tenor_label"].tolist(),
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.markdown("### Curve Points")
+            table_df = df[["tenor_label", "tenor_days", "yield_pct"]].copy()
+            table_df.columns = ["Tenor", "Days", "Yield (%)"]
+            table_df["Yield (%)"] = table_df["Yield (%)"].apply(lambda x: f"{x:.4f}%")
+            st.dataframe(table_df, use_container_width=True, hide_index=True)
+
+            st.markdown("### Yield Interpolation")
+            interp_col1, interp_col2 = st.columns([1, 2])
+            with interp_col1:
+                target_days = st.number_input(
+                    "Target Tenor (days)",
+                    min_value=1, max_value=3650, value=365,
+                    key="sukuk_target_tenor"
+                )
+            with interp_col2:
+                interp_yield = interpolate_yield_curve(points, target_days)
+                if interp_yield:
+                    st.metric(
+                        f"Interpolated Yield ({target_days} days)",
+                        f"{interp_yield:.4f}%"
+                    )
+                else:
+                    st.info("Cannot interpolate for this tenor")
 
     render_footer()
 
@@ -1441,7 +1716,6 @@ def render_psx_debt_market():
     )
     from psx_ohlcv.fi_analytics import (
         analyze_security,
-        build_yield_curve,
         FREQ_SEMI_ANNUAL,
         FREQ_ZERO,
     )
@@ -1871,153 +2145,184 @@ def render_psx_debt_market():
             else:
                 st.warning("Security not found in data")
 
-    # --- Yield Curve Tab ---
+    # --- Yield Curve Tab (uses PKRV/PKISRV from DB — instant) ---
     with tabs[6]:
         st.markdown("### 📉 PKR Yield Curve")
-        st.caption("Government Securities Yield Curve Analysis")
+        st.caption("MUFAP Revaluation Rate Curves (PKRV / PKISRV)")
 
-        # Build yield curves from available data
+        con = get_connection()
+
+        # Tenor-months to years mapping for PKRV
+        _MONTHS_YRS = {
+            1: 1 / 12, 3: 0.25, 6: 0.5, 9: 0.75, 12: 1,
+            24: 2, 36: 3, 60: 5, 84: 7, 120: 10,
+            180: 15, 240: 20, 360: 30,
+        }
+
         curve_col1, curve_col2 = st.columns([3, 1])
 
         with curve_col2:
             curve_type = st.selectbox(
                 "Curve Type",
-                ["Government (PIB + T-Bill)", "Sukuk (GIS + FRR)", "All Securities"],
-                key="yield_curve_type"
+                ["PKRV (Government)", "PKISRV (Islamic)", "Both (Overlay)"],
+                key="yield_curve_type",
             )
 
+            # Date picker — get available dates
+            pkrv_dates = pd.read_sql_query(
+                "SELECT DISTINCT date FROM pkrv_daily ORDER BY date DESC", con
+            )["date"].tolist()
+            pkisrv_dates = pd.read_sql_query(
+                "SELECT DISTINCT date FROM pkisrv_daily ORDER BY date DESC", con
+            )["date"].tolist()
+
+            all_dates = sorted(set(pkrv_dates + pkisrv_dates), reverse=True)
+            if all_dates:
+                sel_date = st.selectbox("Date", all_dates[:500], index=0, key="yc_date")
+                # Comparison date
+                show_compare = st.checkbox("Compare date", key="yc_cmp")
+                cmp_date = None
+                if show_compare and len(all_dates) > 1:
+                    cmp_date = st.selectbox("Compare to", all_dates[:500], index=min(30, len(all_dates) - 1), key="yc_cmp_dt")
+            else:
+                sel_date = None
+
         with curve_col1:
-            # Filter securities based on curve type
-            if curve_type == "Government (PIB + T-Bill)":
-                curve_securities = [s for s in all_securities
-                                  if s.security_type in ["PIB", "T-Bill", "Floating"]
-                                  and s.outstanding_days and s.outstanding_days > 30]
-            elif curve_type == "Sukuk (GIS + FRR)":
-                curve_securities = [s for s in all_securities
-                                  if s.is_islamic and s.outstanding_days and s.outstanding_days > 30]
+            if not sel_date:
+                st.warning("No yield curve data in database. Run MUFAP sync first.")
             else:
-                curve_securities = [s for s in all_securities
-                                  if s.outstanding_days and s.outstanding_days > 30]
-
-            st.info(f"Building curve from {len(curve_securities)} securities with price data...")
-
-            # Calculate YTM for each security
-            curve_data = []
-            for sec in curve_securities:
-                ohlcv = fetch_debt_ohlcv(sec.symbol)
-                if ohlcv and sec.maturity_date:
-                    price = ohlcv[0]['price']
-                    coupon_pct = sec.coupon_rate if sec.coupon_rate else 0
-                    freq = FREQ_ZERO if coupon_pct == 0 else FREQ_SEMI_ANNUAL
-
-                    analytics = analyze_security(
-                        symbol=sec.symbol,
-                        name=sec.name,
-                        security_type=sec.security_type,
-                        face_value=sec.face_value or 5000,
-                        coupon_rate=coupon_pct / 100,
-                        maturity_date=sec.maturity_date,
-                        price=price,
-                        frequency=freq,
-                        price_is_per_100=True,
-                    )
-
-                    if analytics.yield_metrics and analytics.yield_metrics.ytm is not None:
-                        ytm = analytics.yield_metrics.ytm
-                        # Filter out extreme values
-                        if 0 < ytm < 0.5:  # 0-50% yield range
-                            curve_data.append({
-                                "symbol": sec.symbol,
-                                "name": sec.name,
-                                "type": sec.security_type,
-                                "years_to_maturity": analytics.years_to_maturity,
-                                "ytm": ytm,
-                                "price": price,
-                            })
-
-            if curve_data:
-                # Sort by maturity
-                curve_data.sort(key=lambda x: x["years_to_maturity"])
-                df_curve = pd.DataFrame(curve_data)
-
-                # Plot yield curve
                 fig = go.Figure()
+                has_data = False
 
-                # Scatter plot with symbols
-                fig.add_trace(go.Scatter(
-                    x=df_curve["years_to_maturity"],
-                    y=df_curve["ytm"] * 100,  # Convert to percentage
-                    mode="markers+text",
-                    text=df_curve["type"],
-                    textposition="top center",
-                    textfont=dict(size=8),
-                    marker=dict(
-                        size=10,
-                        color=df_curve["ytm"] * 100,
-                        colorscale="Viridis",
-                        showscale=True,
-                        colorbar=dict(title="YTM %"),
-                    ),
-                    hovertemplate=(
-                        "<b>%{customdata[0]}</b><br>" +
-                        "Maturity: %{x:.2f}Y<br>" +
-                        "YTM: %{y:.2f}%<br>" +
-                        "Price: %{customdata[1]:.2f}<extra></extra>"
-                    ),
-                    customdata=list(zip(df_curve["symbol"], df_curve["price"])),
-                ))
+                # --- PKRV curve ---
+                if curve_type in ("PKRV (Government)", "Both (Overlay)"):
+                    df_pkrv = pd.read_sql_query(
+                        "SELECT tenor_months, yield_pct FROM pkrv_daily WHERE date = ? ORDER BY tenor_months",
+                        con, params=(sel_date,),
+                    )
+                    if not df_pkrv.empty:
+                        has_data = True
+                        df_pkrv["years"] = df_pkrv["tenor_months"].map(_MONTHS_YRS).fillna(df_pkrv["tenor_months"] / 12)
+                        df_pkrv["label"] = df_pkrv["tenor_months"].apply(
+                            lambda m: f"{m}M" if m < 12 else f"{m // 12}Y"
+                        )
+                        df_pkrv["days"] = (df_pkrv["years"] * 365).astype(int)
+                        fig.add_trace(go.Scatter(
+                            x=df_pkrv["years"], y=df_pkrv["yield_pct"],
+                            mode="lines+markers", name=f"PKRV ({sel_date})",
+                            line=dict(color="#00d4aa", width=2),
+                            marker=dict(size=8),
+                            customdata=list(zip(df_pkrv["label"], df_pkrv["days"])),
+                            hovertemplate="<b>%{customdata[0]}</b> (%{customdata[1]}d)<br>Yield: %{y:.2f}%<extra>PKRV</extra>",
+                        ))
 
-                # Add smoothed curve line
-                if len(df_curve) > 2:
-                    fig.add_trace(go.Scatter(
-                        x=df_curve["years_to_maturity"],
-                        y=df_curve["ytm"] * 100,
-                        mode="lines",
-                        line=dict(color="#00d4aa", width=2, dash="dash"),
-                        name="Trend",
-                    ))
+                        # Comparison
+                        if cmp_date:
+                            df_cmp = pd.read_sql_query(
+                                "SELECT tenor_months, yield_pct FROM pkrv_daily WHERE date = ? ORDER BY tenor_months",
+                                con, params=(cmp_date,),
+                            )
+                            if not df_cmp.empty:
+                                df_cmp["years"] = df_cmp["tenor_months"].map(_MONTHS_YRS).fillna(df_cmp["tenor_months"] / 12)
+                                fig.add_trace(go.Scatter(
+                                    x=df_cmp["years"], y=df_cmp["yield_pct"],
+                                    mode="lines+markers", name=f"PKRV ({cmp_date})",
+                                    line=dict(color="#00d4aa", width=1, dash="dot"),
+                                    marker=dict(size=5),
+                                ))
 
-                fig.update_layout(
-                    title=f"PKR {curve_type} Yield Curve",
-                    xaxis_title="Years to Maturity",
-                    yaxis_title="Yield to Maturity (%)",
-                    template="plotly_dark",
-                    height=500,
-                    showlegend=False,
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                # --- PKISRV curve ---
+                if curve_type in ("PKISRV (Islamic)", "Both (Overlay)"):
+                    df_pkisrv = pd.read_sql_query(
+                        "SELECT tenor, yield_pct FROM pkisrv_daily WHERE date = ? ORDER BY tenor",
+                        con, params=(sel_date,),
+                    )
+                    if not df_pkisrv.empty:
+                        has_data = True
+                        # Tenor is like '3M', '6M', '1Y', '3Y' etc.
+                        def _tenor_to_years(t: str) -> float:
+                            t = t.strip().upper()
+                            if t.endswith("M"):
+                                return float(t[:-1]) / 12
+                            if t.endswith("Y"):
+                                return float(t[:-1])
+                            return 1.0
 
-                # Curve statistics
-                stat_cols = st.columns(4)
-                short_term = [d["ytm"] for d in curve_data if d["years_to_maturity"] < 1]
-                med_term = [d["ytm"] for d in curve_data if 1 <= d["years_to_maturity"] < 5]
-                long_term = [d["ytm"] for d in curve_data if d["years_to_maturity"] >= 5]
+                        df_pkisrv["years"] = df_pkisrv["tenor"].apply(_tenor_to_years)
+                        df_pkisrv = df_pkisrv.sort_values("years").reset_index(drop=True)
+                        df_pkisrv["days"] = (df_pkisrv["years"] * 365).astype(int)
+                        clr = "#f4a261" if "Both" in curve_type else "#00d4aa"
+                        fig.add_trace(go.Scatter(
+                            x=df_pkisrv["years"], y=df_pkisrv["yield_pct"],
+                            mode="lines+markers", name=f"PKISRV ({sel_date})",
+                            line=dict(color=clr, width=2),
+                            marker=dict(size=8),
+                            customdata=list(zip(df_pkisrv["tenor"], df_pkisrv["days"])),
+                            hovertemplate="<b>%{customdata[0]}</b> (%{customdata[1]}d)<br>Yield: %{y:.2f}%<extra>PKISRV</extra>",
+                        ))
 
-                with stat_cols[0]:
-                    if short_term:
-                        avg_st = sum(short_term) / len(short_term) * 100
-                        st.metric("Short Term (<1Y)", f"{avg_st:.2f}%")
-                with stat_cols[1]:
-                    if med_term:
-                        avg_mt = sum(med_term) / len(med_term) * 100
-                        st.metric("Medium Term (1-5Y)", f"{avg_mt:.2f}%")
-                with stat_cols[2]:
-                    if long_term:
-                        avg_lt = sum(long_term) / len(long_term) * 100
-                        st.metric("Long Term (>5Y)", f"{avg_lt:.2f}%")
-                with stat_cols[3]:
-                    if short_term and long_term:
-                        spread = (sum(long_term)/len(long_term) - sum(short_term)/len(short_term)) * 10000
-                        st.metric("Curve Spread (bps)", f"{spread:.0f}")
+                        if cmp_date:
+                            df_cmp_i = pd.read_sql_query(
+                                "SELECT tenor, yield_pct FROM pkisrv_daily WHERE date = ? ORDER BY tenor",
+                                con, params=(cmp_date,),
+                            )
+                            if not df_cmp_i.empty:
+                                df_cmp_i["years"] = df_cmp_i["tenor"].apply(_tenor_to_years)
+                                df_cmp_i = df_cmp_i.sort_values("years").reset_index(drop=True)
+                                fig.add_trace(go.Scatter(
+                                    x=df_cmp_i["years"], y=df_cmp_i["yield_pct"],
+                                    mode="lines+markers", name=f"PKISRV ({cmp_date})",
+                                    line=dict(color=clr, width=1, dash="dot"),
+                                    marker=dict(size=5),
+                                ))
 
-                # Data table
-                with st.expander("📋 Curve Points Data"):
-                    display_df = df_curve.copy()
-                    display_df["ytm_pct"] = display_df["ytm"] * 100
-                    display_df = display_df[["symbol", "type", "years_to_maturity", "ytm_pct", "price"]]
-                    display_df.columns = ["Symbol", "Type", "Years to Mat", "YTM %", "Price"]
-                    st.dataframe(display_df, use_container_width=True, hide_index=True)
-            else:
-                st.warning("Not enough securities with price data to build yield curve")
+                if has_data:
+                    fig.update_layout(
+                        title=f"PKR Yield Curve — {sel_date}",
+                        xaxis_title="Years to Maturity",
+                        yaxis_title="Yield (%)",
+                        template="plotly_dark",
+                        height=500,
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    # Curve statistics from PKRV
+                    if curve_type in ("PKRV (Government)", "Both (Overlay)") and 'df_pkrv' in dir() and not df_pkrv.empty:
+                        stat_cols = st.columns(4)
+                        short = df_pkrv.loc[df_pkrv["years"] < 1, "yield_pct"]
+                        med = df_pkrv.loc[(df_pkrv["years"] >= 1) & (df_pkrv["years"] < 5), "yield_pct"]
+                        lng = df_pkrv.loc[df_pkrv["years"] >= 5, "yield_pct"]
+                        with stat_cols[0]:
+                            if not short.empty:
+                                st.metric("Short Term (<1Y)", f"{short.mean():.2f}%")
+                        with stat_cols[1]:
+                            if not med.empty:
+                                st.metric("Medium Term (1-5Y)", f"{med.mean():.2f}%")
+                        with stat_cols[2]:
+                            if not lng.empty:
+                                st.metric("Long Term (>5Y)", f"{lng.mean():.2f}%")
+                        with stat_cols[3]:
+                            if not short.empty and not lng.empty:
+                                spread_bps = (lng.mean() - short.mean()) * 100
+                                st.metric("Curve Spread (bps)", f"{spread_bps:.0f}")
+
+                    # Data table
+                    with st.expander("📋 Curve Points Data"):
+                        tables = []
+                        if curve_type in ("PKRV (Government)", "Both (Overlay)") and 'df_pkrv' in dir() and not df_pkrv.empty:
+                            t = df_pkrv[["label", "years", "yield_pct", "days"]].copy()
+                            t.columns = ["Tenor", "Years", "Yield %", "Days"]
+                            t.insert(0, "Curve", "PKRV")
+                            tables.append(t)
+                        if curve_type in ("PKISRV (Islamic)", "Both (Overlay)") and 'df_pkisrv' in dir() and not df_pkisrv.empty:
+                            t = df_pkisrv[["tenor", "years", "yield_pct", "days"]].copy()
+                            t.columns = ["Tenor", "Years", "Yield %", "Days"]
+                            t.insert(0, "Curve", "PKISRV")
+                            tables.append(t)
+                        if tables:
+                            st.dataframe(pd.concat(tables, ignore_index=True), use_container_width=True, hide_index=True)
+                else:
+                    st.warning(f"No yield curve data for {sel_date}. Try a different date or run MUFAP sync.")
 
     render_footer()

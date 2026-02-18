@@ -1,6 +1,6 @@
 """PSX OHLCV data fetcher."""
 
-__version__ = "0.1.0"
+__version__ = "3.3.0"
 
 from .db import (
     connect,

@@ -1,5 +1,7 @@
 """Treasury Market Dashboard — yield curves, auctions, and rate comparisons."""
 
+from datetime import datetime
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -8,6 +10,40 @@ from psx_ohlcv.sources.sbp_gsp import GSPScraper
 from psx_ohlcv.sources.sbp_rates import SBPRatesScraper
 from psx_ohlcv.sources.sbp_treasury import SBPTreasuryScraper
 from psx_ohlcv.ui.components.helpers import get_connection, render_footer
+
+# Tenor label → approximate days mapping
+_TENOR_DAYS = {
+    "1W": 7, "2W": 14, "1M": 30, "2M": 60, "3M": 91, "4M": 122,
+    "6M": 182, "9M": 274, "1Y": 365, "2Y": 730, "3Y": 1095,
+    "4Y": 1461, "5Y": 1826, "6Y": 2191, "7Y": 2557, "8Y": 2922,
+    "9Y": 3287, "10Y": 3652, "12M": 365, "15Y": 5479, "20Y": 7305,
+    "25Y": 9131, "30Y": 10957,
+}
+
+# Months → approximate days
+_MONTHS_TO_DAYS = {
+    1: 30, 2: 60, 3: 91, 4: 122, 6: 182, 9: 274, 12: 365, 24: 730,
+    36: 1095, 48: 1461, 60: 1826, 72: 2191, 84: 2557, 96: 2922,
+    108: 3287, 120: 3652, 180: 5479, 240: 7305, 300: 9131, 360: 10957,
+}
+
+
+def _days_ago(date_str: str) -> int:
+    """Calculate days between a date string (YYYY-MM-DD) and today."""
+    try:
+        return (datetime.now() - datetime.strptime(str(date_str)[:10], "%Y-%m-%d")).days
+    except (ValueError, TypeError):
+        return -1
+
+
+def _remaining_days(maturity_str: str) -> int | None:
+    """Calculate remaining days to maturity from today."""
+    try:
+        dt = datetime.strptime(str(maturity_str)[:10], "%Y-%m-%d")
+        delta = (dt - datetime.now()).days
+        return delta if delta > 0 else 0
+    except (ValueError, TypeError):
+        return None
 
 
 def render_treasury_dashboard():
@@ -39,6 +75,13 @@ def render_treasury_dashboard():
 
         st.divider()
         _render_kibor_history(con)
+
+        st.divider()
+        col1, col2 = st.columns(2)
+        with col1:
+            _render_pkisrv_curve(con)
+        with col2:
+            _render_pkfrv_bonds(con)
 
     except Exception as e:
         st.error(f"Error loading treasury data: {e}")
@@ -84,6 +127,23 @@ def render_treasury_dashboard():
                         st.rerun()
                     except Exception as e:
                         st.error(f"Sync failed: {e}")
+
+        st.markdown("##### MUFAP Yield Curves (PKRV/PKISRV/PKFRV)")
+        if st.button("Sync MUFAP Rates", key="tsy_sync_mufap",
+                      help="Download PKRV, PKISRV, PKFRV files from MUFAP and parse into DB"):
+            with st.spinner("Downloading & parsing MUFAP rate files..."):
+                try:
+                    from psx_ohlcv.sources.mufap_rates import download_and_sync
+                    result = download_and_sync(con)
+                    st.success(
+                        f"Downloaded: {result['downloaded']}, Skipped: {result['skipped']} | "
+                        f"PKRV: {result['pkrv_records']} records, "
+                        f"PKISRV: {result['pkisrv_records']}, "
+                        f"PKFRV: {result['pkfrv_records']}"
+                    )
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"MUFAP sync failed: {e}")
 
         st.markdown("##### Historical Backfill (SBP PDFs)")
         col1, col2, col3 = st.columns(3)
@@ -161,7 +221,7 @@ def _render_kibor_backfill_button():
 
 
 def _render_rate_metrics(con):
-    """Rate comparison metrics row."""
+    """Rate comparison metrics row with days-old tooltips."""
     cols = st.columns(4)
 
     # Policy Rate
@@ -170,41 +230,64 @@ def _render_rate_metrics(con):
     ).fetchone()
     with cols[0]:
         if row:
-            st.metric("SBP Policy Rate", f"{row['policy_rate']:.1f}%", help=f"As of {row['rate_date']}")
+            age = _days_ago(row["rate_date"])
+            st.metric(
+                "SBP Policy Rate", f"{row['policy_rate']:.1f}%",
+                help=f"As of {row['rate_date']} ({age}d ago)",
+            )
         else:
             st.metric("SBP Policy Rate", "N/A")
 
     # KIBOR 3M
     kibor = con.execute(
-        "SELECT bid, offer FROM kibor_daily WHERE tenor = '3M' ORDER BY date DESC LIMIT 1"
+        "SELECT date, bid, offer FROM kibor_daily WHERE tenor = '3M' ORDER BY date DESC LIMIT 1"
     ).fetchone()
     with cols[1]:
         if kibor:
-            st.metric("KIBOR 3M", f"{kibor['offer']:.2f}%", help="Offer rate")
+            age = _days_ago(kibor["date"])
+            st.metric(
+                "KIBOR 3M", f"{kibor['offer']:.2f}%",
+                help=f"Offer rate | {kibor['date']} ({age}d ago) | 3M = ~91 days",
+            )
         else:
             kibor = con.execute(
-                "SELECT tenor, bid, offer FROM kibor_daily ORDER BY date DESC LIMIT 1"
+                "SELECT date, tenor, bid, offer FROM kibor_daily ORDER BY date DESC LIMIT 1"
             ).fetchone()
             if kibor:
-                st.metric(f"KIBOR {kibor['tenor']}", f"{kibor['offer']:.2f}%")
+                age = _days_ago(kibor["date"])
+                days = _TENOR_DAYS.get(kibor["tenor"], "?")
+                st.metric(
+                    f"KIBOR {kibor['tenor']}", f"{kibor['offer']:.2f}%",
+                    help=f"{kibor['date']} ({age}d ago) | {kibor['tenor']} = ~{days} days",
+                )
             else:
                 st.metric("KIBOR", "N/A")
 
     # T-Bill 3M yield
     tbill = con.execute(
-        "SELECT cutoff_yield FROM tbill_auctions"
+        "SELECT cutoff_yield, auction_date FROM tbill_auctions"
         " WHERE tenor LIKE '%3M%' OR tenor LIKE '%3 M%'"
         " ORDER BY auction_date DESC LIMIT 1"
     ).fetchone()
     with cols[2]:
         if tbill:
-            st.metric("T-Bill 3M Yield", f"{tbill['cutoff_yield']:.2f}%")
+            age = _days_ago(tbill["auction_date"])
+            st.metric(
+                "T-Bill 3M Yield", f"{tbill['cutoff_yield']:.2f}%",
+                help=f"Auction {tbill['auction_date']} ({age}d ago) | 3M = ~91 days",
+            )
         else:
             tbill = con.execute(
-                "SELECT tenor, cutoff_yield FROM tbill_auctions ORDER BY auction_date DESC LIMIT 1"
+                "SELECT tenor, cutoff_yield, auction_date"
+                " FROM tbill_auctions ORDER BY auction_date DESC LIMIT 1"
             ).fetchone()
             if tbill:
-                st.metric(f"T-Bill {tbill['tenor']}", f"{tbill['cutoff_yield']:.2f}%")
+                age = _days_ago(tbill["auction_date"])
+                days = _TENOR_DAYS.get(tbill["tenor"], "?")
+                st.metric(
+                    f"T-Bill {tbill['tenor']}", f"{tbill['cutoff_yield']:.2f}%",
+                    help=f"Auction {tbill['auction_date']} ({age}d ago) | {tbill['tenor']} = ~{days} days",
+                )
             else:
                 st.metric("T-Bill Yield", "N/A")
 
@@ -214,68 +297,114 @@ def _render_rate_metrics(con):
     ).fetchone()
     with cols[3]:
         if konia:
-            st.metric("KONIA", f"{konia['rate_pct']:.2f}%", help=f"As of {konia['date']}")
+            age = _days_ago(konia["date"])
+            st.metric(
+                "KONIA", f"{konia['rate_pct']:.2f}%",
+                help=f"Overnight rate | {konia['date']} ({age}d ago) | Duration: 1 day",
+            )
         else:
             st.metric("KONIA", "N/A")
 
 
 def _render_yield_curve(con):
-    """PKRV yield curve chart with comparison dates."""
+    """PKRV yield curve chart with date picker and comparison."""
     st.markdown("### PKRV Yield Curve")
 
     # Get available dates
     dates = con.execute(
-        "SELECT DISTINCT date FROM pkrv_daily ORDER BY date DESC LIMIT 10"
+        "SELECT DISTINCT date FROM pkrv_daily ORDER BY date DESC"
     ).fetchall()
 
     if not dates:
-        st.info("No PKRV yield curve data available. Run `psxsync rates yield-curve` to fetch.")
+        st.info("No PKRV yield curve data available. Sync MUFAP rates to fetch.")
         return
 
     date_list = [r["date"] for r in dates]
-    latest_date = date_list[0]
 
-    # Current curve
+    # Date picker for primary curve
+    selected_date = st.selectbox(
+        "Curve date", date_list, index=0, key="pkrv_date_select"
+    )
+
+    # Comparison date (optional)
+    compare_date = st.selectbox(
+        "Compare with", ["None"] + date_list, index=0, key="pkrv_compare_date"
+    )
+
+    # Primary curve
     df = pd.read_sql_query(
-        "SELECT tenor_months, yield_pct FROM pkrv_daily WHERE date = ? ORDER BY tenor_months",
-        con, params=(latest_date,),
+        "SELECT tenor_months, yield_pct, change_bps FROM pkrv_daily"
+        " WHERE date = ? ORDER BY tenor_months",
+        con, params=(selected_date,),
     )
 
     if df.empty:
-        st.info("No yield curve points available")
+        st.info("No yield curve points for selected date")
         return
+
+    tenor_labels = {
+        1: "1M", 2: "2M", 3: "3M", 4: "4M", 6: "6M", 9: "9M",
+        12: "1Y", 24: "2Y", 36: "3Y", 48: "4Y", 60: "5Y",
+        72: "6Y", 84: "7Y", 96: "8Y", 108: "9Y", 120: "10Y",
+        180: "15Y", 240: "20Y", 300: "25Y", 360: "30Y",
+    }
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=df["tenor_months"], y=df["yield_pct"],
-        mode="lines+markers", name=f"Current ({latest_date})",
+        mode="lines+markers", name=selected_date,
         line=dict(width=3, color="#FF6B35"),
+        hovertemplate="%{text}<br>Yield: %{y:.4f}%<extra></extra>",
+        text=[
+            f"{tenor_labels.get(t, f'{t}M')} (~{_MONTHS_TO_DAYS.get(t, t * 30)}d)"
+            for t in df["tenor_months"]
+        ],
     ))
 
-    # Comparison dates from yield_curve_points table
-    comp_dates = con.execute(
-        "SELECT DISTINCT curve_date FROM yield_curve_points ORDER BY curve_date DESC LIMIT 5"
-    ).fetchall()
-    colors = ["#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7", "#DDA0DD"]
-    for i, row in enumerate(comp_dates):
+    # Comparison curve
+    if compare_date != "None":
         cdf = pd.read_sql_query(
-            "SELECT tenor_months, yield_rate as yield_pct FROM yield_curve_points"
-            " WHERE curve_date = ? ORDER BY tenor_months",
-            con, params=(row["curve_date"],),
+            "SELECT tenor_months, yield_pct FROM pkrv_daily"
+            " WHERE date = ? ORDER BY tenor_months",
+            con, params=(compare_date,),
         )
         if not cdf.empty:
             fig.add_trace(go.Scatter(
                 x=cdf["tenor_months"], y=cdf["yield_pct"],
-                mode="lines+markers", name=row["curve_date"],
-                line=dict(width=1, dash="dash", color=colors[i % len(colors)]),
+                mode="lines+markers", name=compare_date,
+                line=dict(width=2, dash="dash", color="#4ECDC4"),
             ))
 
     fig.update_layout(
-        xaxis_title="Tenor (Months)", yaxis_title="Yield (%)",
-        height=400, margin=dict(l=20, r=20, t=30, b=20),
+        xaxis_title="Tenor", yaxis_title="Yield (%)",
+        height=420, margin=dict(l=20, r=20, t=30, b=20),
         legend=dict(orientation="h", y=-0.15),
+        xaxis=dict(
+            tickmode="array",
+            tickvals=df["tenor_months"].tolist(),
+            ticktext=[tenor_labels.get(t, f"{t}M") for t in df["tenor_months"]],
+        ),
     )
     st.plotly_chart(fig, use_container_width=True)
+
+    # Data table
+    with st.expander("Curve Data"):
+        display = df.copy()
+        display["Tenor"] = display["tenor_months"].map(
+            lambda t: tenor_labels.get(t, f"{t}M")
+        )
+        display["Days"] = display["tenor_months"].map(
+            lambda t: _MONTHS_TO_DAYS.get(t, t * 30)
+        )
+        st.dataframe(
+            display[["Tenor", "tenor_months", "Days", "yield_pct", "change_bps"]].rename(
+                columns={
+                    "tenor_months": "Months", "yield_pct": "Yield (%)",
+                    "change_bps": "Change (bps)",
+                }
+            ),
+            use_container_width=True, hide_index=True,
+        )
 
 
 def _render_rate_history(con):
@@ -372,10 +501,12 @@ def _render_tbill_auctions(con):
         con, params=params,
     )
 
+    df["days"] = df["tenor"].map(lambda t: _TENOR_DAYS.get(t.strip(), ""))
+
     st.caption(f"{row_count} total records")
     st.dataframe(
         df.rename(columns={
-            "auction_date": "Date", "tenor": "Tenor",
+            "auction_date": "Date", "tenor": "Tenor", "days": "Days",
             "cutoff_yield": "Cutoff (%)", "weighted_avg_yield": "WA Yield (%)",
         }),
         use_container_width=True, hide_index=True,
@@ -409,12 +540,14 @@ def _render_pib_auctions(con):
         con, params=params,
     )
 
+    df["days"] = df["tenor"].map(lambda t: _TENOR_DAYS.get(t.strip(), ""))
+
     st.caption(f"{row_count} total records")
     st.dataframe(
         df.rename(columns={
-            "auction_date": "Date", "tenor": "Tenor", "pib_type": "Type",
-            "cutoff_yield": "Yield (%)", "coupon_rate": "Coupon (%)",
-            "amount_accepted_billions": "Amt (B)",
+            "auction_date": "Date", "tenor": "Tenor", "days": "Days",
+            "pib_type": "Type", "cutoff_yield": "Yield (%)",
+            "coupon_rate": "Coupon (%)", "amount_accepted_billions": "Amt (B)",
         }),
         use_container_width=True, hide_index=True,
     )
@@ -444,11 +577,14 @@ def _render_kibor_history(con):
         colors = {"1M": "#FF6B35", "3M": "#4ECDC4", "6M": "#45B7D1", "1Y": "#96CEB4"}
         for tenor in ["1M", "3M", "6M", "1Y"]:
             tdf = df_chart[df_chart["tenor"] == tenor]
+            days = _TENOR_DAYS.get(tenor, "?")
             if not tdf.empty:
                 fig.add_trace(go.Scatter(
                     x=tdf["date"], y=tdf["offer"],
-                    mode="lines", name=f"KIBOR {tenor}",
+                    mode="lines", name=f"KIBOR {tenor} (~{days}d)",
                     line=dict(width=2, color=colors.get(tenor, "#999")),
+                    hovertemplate=f"KIBOR {tenor} (~{days}d)<br>"
+                                  "Date: %{x}<br>Offer: %{y:.2f}%<extra></extra>",
                 ))
         fig.update_layout(
             xaxis_title="Date", yaxis_title="Offer Rate (%)",
@@ -468,11 +604,166 @@ def _render_kibor_history(con):
     )
 
     if not df_latest.empty:
+        df_latest["days"] = df_latest["tenor"].map(lambda t: _TENOR_DAYS.get(t.strip(), ""))
         st.markdown("**Latest KIBOR Rates**")
         st.dataframe(
             df_latest.rename(columns={
-                "date": "Date", "tenor": "Tenor",
+                "date": "Date", "tenor": "Tenor", "days": "Days",
                 "bid": "Bid (%)", "offer": "Offer (%)",
             }),
             use_container_width=True, hide_index=True,
         )
+
+
+def _render_pkisrv_curve(con):
+    """PKISRV (Islamic Revaluation Rate) yield curve."""
+    st.markdown("### PKISRV (Islamic Yield Curve)")
+
+    row_count_row = con.execute(
+        "SELECT COUNT(*) as cnt FROM pkisrv_daily"
+    ).fetchone()
+    row_count = row_count_row["cnt"] if row_count_row else 0
+
+    if row_count == 0:
+        st.info("No PKISRV data. Sync MUFAP rates to fetch Islamic yield curve data.")
+        return
+
+    # Available dates
+    dates = con.execute(
+        "SELECT DISTINCT date FROM pkisrv_daily ORDER BY date DESC"
+    ).fetchall()
+    date_list = [r["date"] for r in dates]
+
+    selected_date = st.selectbox(
+        "Curve date", date_list, index=0, key="pkisrv_date_select"
+    )
+
+    df = pd.read_sql_query(
+        "SELECT tenor, yield_pct FROM pkisrv_daily WHERE date = ? ORDER BY tenor",
+        con, params=(selected_date,),
+    )
+
+    if df.empty:
+        st.info("No data points for selected date")
+        return
+
+    df["days"] = df["tenor"].map(lambda t: _TENOR_DAYS.get(t.strip(), 9999))
+    df = df.sort_values("days").reset_index(drop=True)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df["tenor"], y=df["yield_pct"],
+        mode="lines+markers", name=f"PKISRV ({selected_date})",
+        line=dict(width=3, color="#2ECC71"),
+        marker=dict(size=8),
+        hovertemplate="%{x} (~%{customdata}d)<br>Yield: %{y:.4f}%<extra></extra>",
+        customdata=df["days"],
+    ))
+
+    fig.update_layout(
+        xaxis_title="Tenor", yaxis_title="Yield (%)",
+        height=380, margin=dict(l=20, r=20, t=30, b=20),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.caption(f"{row_count} total records | {len(date_list)} dates")
+
+    with st.expander("PKISRV Data"):
+        st.dataframe(
+            df.rename(columns={"tenor": "Tenor", "days": "Days", "yield_pct": "Yield (%)"}),
+            use_container_width=True, hide_index=True,
+        )
+
+
+def _render_pkfrv_bonds(con):
+    """PKFRV (Floating Rate Bond Valuations) table and chart."""
+    st.markdown("### PKFRV (Floating Rate Bonds)")
+
+    row_count_row = con.execute(
+        "SELECT COUNT(*) as cnt FROM pkfrv_daily"
+    ).fetchone()
+    row_count = row_count_row["cnt"] if row_count_row else 0
+
+    if row_count == 0:
+        st.info("No PKFRV data. Sync MUFAP rates to fetch floating rate bond valuations.")
+        return
+
+    # Available dates
+    dates = con.execute(
+        "SELECT DISTINCT date FROM pkfrv_daily ORDER BY date DESC"
+    ).fetchall()
+    date_list = [r["date"] for r in dates]
+
+    selected_date = st.selectbox(
+        "Valuation date", date_list, index=0, key="pkfrv_date_select"
+    )
+
+    df = pd.read_sql_query(
+        "SELECT bond_code, issue_date, maturity_date, coupon_frequency, fma_price"
+        " FROM pkfrv_daily WHERE date = ? ORDER BY bond_code",
+        con, params=(selected_date,),
+    )
+
+    if df.empty:
+        st.info("No bonds for selected date")
+        return
+
+    # Calculate remaining days to maturity
+    df["remaining_days"] = df["maturity_date"].apply(_remaining_days)
+
+    st.caption(f"{len(df)} bonds on {selected_date} | {row_count} total records | {len(date_list)} dates")
+
+    # FMA price chart (bar chart sorted by maturity)
+    df_chart = df[df["fma_price"].notna()].copy()
+    if not df_chart.empty:
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=df_chart["bond_code"], y=df_chart["fma_price"],
+            marker_color="#3498DB",
+            customdata=df_chart[["maturity_date", "remaining_days"]].values,
+            hovertemplate=(
+                "<b>%{x}</b><br>FMA: %{y:.4f}<br>"
+                "Maturity: %{customdata[0]}<br>"
+                "Remaining: %{customdata[1]} days<extra></extra>"
+            ),
+        ))
+        fig.update_layout(
+            xaxis_title="Bond", yaxis_title="FMA Price",
+            height=380, margin=dict(l=20, r=20, t=30, b=20),
+            xaxis_tickangle=-45,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Data table
+    with st.expander("PKFRV Bond Data"):
+        st.dataframe(
+            df.rename(columns={
+                "bond_code": "Bond", "issue_date": "Issue Date",
+                "maturity_date": "Maturity", "remaining_days": "Rem. Days",
+                "coupon_frequency": "Coupon Freq", "fma_price": "FMA Price",
+            }),
+            use_container_width=True, hide_index=True,
+        )
+
+    # Price history for a selected bond
+    bonds = df["bond_code"].tolist()
+    if bonds:
+        selected_bond = st.selectbox("Bond history", bonds, key="pkfrv_bond_select")
+        if selected_bond:
+            hist = pd.read_sql_query(
+                "SELECT date, fma_price FROM pkfrv_daily"
+                " WHERE bond_code = ? AND fma_price IS NOT NULL ORDER BY date",
+                con, params=(selected_bond,),
+            )
+            if len(hist) > 1:
+                fig2 = go.Figure()
+                fig2.add_trace(go.Scatter(
+                    x=hist["date"], y=hist["fma_price"],
+                    mode="lines", name=selected_bond,
+                    line=dict(width=2, color="#E74C3C"),
+                ))
+                fig2.update_layout(
+                    xaxis_title="Date", yaxis_title="FMA Price",
+                    height=300, margin=dict(l=20, r=20, t=30, b=20),
+                )
+                st.plotly_chart(fig2, use_container_width=True)

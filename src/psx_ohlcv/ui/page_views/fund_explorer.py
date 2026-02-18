@@ -203,15 +203,19 @@ def _render_fund_detail(con, fund_id):
     st.caption(f"{nav_count} NAV records | {date_range}")
 
     fig = go.Figure()
+    nav_min = df["nav"].min()
+    nav_max = df["nav"].max()
+    pad = max((nav_max - nav_min) * 0.1, nav_min * 0.01)
     fig.add_trace(go.Scatter(
         x=df["date"], y=df["nav"],
         mode="lines", name="NAV",
         line=dict(width=2, color="#FF6B35"),
-        fill="tozeroy", fillcolor="rgba(255, 107, 53, 0.1)",
+        hovertemplate="Date: %{x}<br>NAV: Rs. %{y:.4f}<extra></extra>",
     ))
     fig.update_layout(
         xaxis_title="Date", yaxis_title="NAV (PKR)",
         height=350, margin=dict(l=20, r=20, t=30, b=20),
+        yaxis=dict(range=[nav_min - pad, nav_max + pad]),
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -323,3 +327,24 @@ def _render_top_performers(con):
         }),
         use_container_width=True, hide_index=True,
     )
+
+    # Rate benchmarks for comparison
+    try:
+        bm_cols = st.columns(4)
+        pr = con.execute("SELECT rate_pct FROM sbp_policy_rates ORDER BY effective_date DESC LIMIT 1").fetchone()
+        kb = con.execute("SELECT bid, offer FROM kibor_daily WHERE tenor='3M' ORDER BY date DESC LIMIT 1").fetchone()
+        tb = con.execute("SELECT cutoff_yield FROM tbill_auctions WHERE tenor='3M' ORDER BY auction_date DESC LIMIT 1").fetchone()
+        tb6 = con.execute("SELECT cutoff_yield FROM tbill_auctions WHERE tenor='6M' ORDER BY auction_date DESC LIMIT 1").fetchone()
+        with bm_cols[0]:
+            st.metric("Policy Rate", f"{pr[0]:.1f}%" if pr else "—", help="SBP benchmark")
+        with bm_cols[1]:
+            if kb and kb[0] and kb[1]:
+                st.metric("KIBOR 3M", f"{(kb[0]+kb[1])/2:.2f}%", help="Money market benchmark")
+            else:
+                st.metric("KIBOR 3M", "—")
+        with bm_cols[2]:
+            st.metric("T-Bill 3M", f"{tb[0]:.2f}%" if tb else "—", help="Risk-free 3M")
+        with bm_cols[3]:
+            st.metric("T-Bill 6M", f"{tb6[0]:.2f}%" if tb6 else "—", help="Risk-free 6M")
+    except Exception:
+        pass

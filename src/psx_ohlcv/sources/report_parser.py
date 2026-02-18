@@ -178,7 +178,7 @@ def _extract_period_info(lines: list[str]) -> dict[str, str | None]:
 
         # Period: "For the year/nine months/quarter ended <Month> <Day>, <Year>"
         period_match = re.search(
-            r"for the\s+(year|.*?months?|quarter|half[\s-]?year)\s+ended\s+"
+            r"for the\s+(year|.*?months?(?:\s+period)?|quarter|half[\s-]?year)\s+ended\s+"
             r"(January|February|March|April|May|June|July|August|September|"
             r"October|November|December)\s+(\d{1,2}),?\s+(\d{4})",
             line_stripped,
@@ -206,6 +206,33 @@ def _extract_period_info(lines: list[str]) -> dict[str, str | None]:
     return info
 
 
+def _filter_note_refs(numbers: list[float]) -> list[float]:
+    """Remove note reference numbers (small integers 1-99) from extracted numbers.
+
+    Bank PDFs have note references like "24" between value groups, e.g.:
+        "Mark-up earned  1,389,424  1,460,380  23  245,252,121  257,776,834"
+    The "23" is a note reference, not a financial value.
+
+    Also handles note refs at the start: "24  503,403,470  410,299,000"
+    """
+    if len(numbers) <= 2:
+        # 2 or fewer numbers: only strip leading note ref
+        if len(numbers) == 2 and abs(numbers[0]) < 100 and abs(numbers[1]) > 1000:
+            return [numbers[1]]
+        return numbers
+
+    # For 3+ numbers, filter out any value < 100 that sits between larger values
+    filtered = []
+    for i, n in enumerate(numbers):
+        if abs(n) < 100:
+            # Keep small numbers only if ALL numbers are small (e.g., ratios)
+            has_big = any(abs(x) > 1000 for x in numbers)
+            if has_big:
+                continue  # skip note reference
+        filtered.append(n)
+    return filtered if filtered else numbers
+
+
 def parse_bank_pl(pdf_content: bytes) -> dict[str, Any]:
     """Parse bank P&L from PDF to extract markup earned/expensed.
 
@@ -213,7 +240,9 @@ def parse_bank_pl(pdf_content: bytes) -> dict[str, Any]:
     - "Mark-up earned" / "Mark-up / return earned" / "Mark-up / return / interest earned"
     - "Mark-up expensed" / "Mark-up / return expensed" / "Mark-up / return / interest expensed"
 
-    Also extracts period info (date, type) and currency scale from headers.
+    When a page has both consolidated and unconsolidated columns (4 values per line),
+    only the first 2 values are kept (current period + prior year). The GPM ratio
+    is the same regardless of entity type since ME and MEX come from the same columns.
 
     Args:
         pdf_content: Raw PDF bytes
@@ -263,14 +292,18 @@ def parse_bank_pl(pdf_content: bytes) -> dict[str, Any]:
                 if not numbers:
                     continue
 
-                # Filter out small note reference numbers (1-99) that precede actual values
-                # e.g., "Mark-up earned 24 503,403,470" — the "24" is a note ref
-                if len(numbers) > 1 and numbers[0] < 100 and numbers[1] > 1000:
-                    numbers = numbers[1:]
+                # Filter out note reference numbers (small integers like 23, 24)
+                numbers = _filter_note_refs(numbers)
+
+                # When PDF has consolidated + unconsolidated side by side (4 values),
+                # keep only first 2 (current period + prior year from same entity)
+                if len(numbers) > 2:
+                    numbers = numbers[:2]
+
+                if not numbers:
+                    continue
 
                 # Mark-up / return / interest earned (NOT expensed)
-                # Matches: "MARK-UP EARNED", "MARK-UP / RETURN EARNED",
-                #          "MARK-UP / RETURN / INTEREST EARNED", "INTEREST EARNED"
                 if "EARNED" in line_upper and ("MARK" in line_upper or "INTEREST" in line_upper or "RETURN" in line_upper):
                     if "EXPENS" not in line_upper and not result["markup_earned"]:
                         result["markup_earned"] = numbers
@@ -496,58 +529,43 @@ def _resolve_period_end(report_period_ended: str, report_type: str) -> tuple[str
     return None
 
 
-def sync_bank_financials(
+def _sync_one_report(
     con: sqlite3.Connection,
     symbol: str,
-    report_type: str = "quarterly",
+    report: dict,
 ) -> dict[str, Any]:
-    """Fetch latest bank report, parse it, and update company_financials with markup_expensed.
+    """Download one bank report PDF, parse it, and upsert markup data.
 
-    Uses period info from the DPS report metadata and PDF header to match DB periods,
-    instead of the fragile value-based matching.
-
-    Args:
-        con: Database connection
-        symbol: Bank symbol (e.g., 'HBL')
-        report_type: 'annual' or 'quarterly'
-
-    Returns:
-        Result dict with counts.
+    Returns result dict with periods_matched count.
     """
     from ..db import upsert_company_financials, upsert_company_ratios
 
-    symbol = symbol.upper()
-    result = fetch_and_parse_report(symbol, report_type, con=con)
+    result: dict[str, Any] = {"success": False, "periods_matched": 0}
 
-    if not result["success"]:
+    # Download PDF
+    try:
+        pdf_content = _download_pdf(report["url"])
+    except Exception as e:
+        result["error"] = f"Failed to download PDF: {e}"
         return result
 
-    data = result["data"]
+    data = parse_bank_pl(pdf_content)
     markup_earned = data.get("markup_earned", [])
     markup_expensed = data.get("markup_expensed", [])
 
     if not markup_earned or not markup_expensed:
-        result["error"] = "Could not extract markup earned/expensed from PDF"
-        result["success"] = False
         return result
 
-    # Resolve the report period from DPS metadata
-    dps_period = result.get("period_ended", "")
-    resolved = _resolve_period_end(dps_period, result.get("report_type", ""))
-
+    # Resolve period from DPS metadata
+    resolved = _resolve_period_end(report["period_ended"], report["report_type"])
     if not resolved:
-        result["error"] = f"Cannot resolve period from '{dps_period}'"
-        result["success"] = False
         return result
 
     period_end, period_type = resolved
 
-    # PDF columns: first column is current period, second is prior-year same period
-    # For a quarterly report "9M 2025": col0 = 9M 2025, col1 = 9M 2024
-    # For an annual report "2024": col0 = 2024, col1 = 2023
+    # PDF columns: col0 = current period, col1 = prior-year same period
     periods_to_update = [{"period_end": period_end, "period_type": period_type}]
 
-    # Derive prior-year period
     year_match = re.search(r"(\d{4})", period_end)
     if year_match and len(markup_earned) >= 2:
         prior_year = str(int(year_match.group(1)) - 1)
@@ -566,7 +584,11 @@ def sync_bank_financials(
         pe = period_info["period_end"]
         pt = period_info["period_type"]
 
-        # Compute bank gross profit and margin
+        # Sanity check: ME must be a meaningful positive number and > MEX
+        if me_val < 1000 or mex_val < 0 or mex_val >= me_val:
+            logger.debug("Skipping %s %s: ME=%.0f MEX=%.0f (sanity failed)", pe, pt, me_val, mex_val)
+            continue
+
         net_interest = me_val - mex_val
         gross_margin = (net_interest / me_val * 100) if me_val > 0 else None
 
@@ -585,19 +607,80 @@ def sync_bank_financials(
                 "gross_profit_margin": round(gross_margin, 2),
             })
 
-    # Upsert the markup_expensed and gross_profit
     if updates:
-        upserted = upsert_company_financials(con, symbol, updates)
-        result["financials_updated"] = upserted
-
+        upsert_company_financials(con, symbol, updates)
     if ratios_updates:
-        ratios_upserted = upsert_company_ratios(con, symbol, ratios_updates)
-        result["ratios_updated"] = ratios_upserted
+        upsert_company_ratios(con, symbol, ratios_updates)
 
+    result["success"] = bool(updates)
     result["periods_matched"] = len(updates)
+    return result
+
+
+def sync_bank_financials(
+    con: sqlite3.Connection,
+    symbol: str,
+    report_type: str = "quarterly",
+    process_all: bool = False,
+    max_years: int = 4,
+) -> dict[str, Any]:
+    """Fetch bank report(s), parse, and update company_financials with markup data.
+
+    Args:
+        con: Database connection
+        symbol: Bank symbol (e.g., 'HBL')
+        report_type: 'annual' or 'quarterly'
+        process_all: If True, process reports for the last max_years years (not just latest).
+                     Each annual report yields 2 years of data.
+        max_years: How many years of reports to process (default 4).
+
+    Returns:
+        Result dict with total periods_matched.
+    """
+    from datetime import datetime
+
+    symbol = symbol.upper()
+    result: dict[str, Any] = {"symbol": symbol, "success": False, "periods_matched": 0}
+
+    try:
+        reports = get_report_links(symbol)
+    except Exception as e:
+        result["error"] = f"Failed to get reports: {e}"
+        return result
+
+    typed_reports = [r for r in reports if r["report_type"] == report_type]
+    if not typed_reports:
+        result["error"] = f"No {report_type} reports available"
+        return result
+
+    if process_all:
+        cutoff_year = datetime.now().year - max_years
+        to_process = []
+        for rpt in typed_reports:
+            # Skip Q4 quarterly reports (Dec-31) — they resolve to annual periods
+            # and would overwrite data from annual report PDFs.
+            if report_type == "quarterly":
+                resolved = _resolve_period_end(rpt["period_ended"], rpt["report_type"])
+                if resolved and resolved[1] == "annual":
+                    continue
+            # Only process recent reports (within max_years)
+            year_match = re.search(r"(\d{4})", rpt["period_ended"])
+            if year_match and int(year_match.group(1)) < cutoff_year:
+                continue
+            to_process.append(rpt)
+    else:
+        to_process = [typed_reports[-1]]  # latest only
+
+    total_matched = 0
+    for rpt in to_process:
+        sub = _sync_one_report(con, symbol, rpt)
+        total_matched += sub.get("periods_matched", 0)
+
+    result["success"] = total_matched > 0
+    result["periods_matched"] = total_matched
     logger.info(
-        "%s: updated %d periods with markup data from PDF",
-        symbol, len(updates),
+        "%s: updated %d periods with markup data from %d %s PDFs",
+        symbol, total_matched, len(to_process), report_type,
     )
 
     return result

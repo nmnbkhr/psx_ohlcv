@@ -89,6 +89,51 @@ def render_dashboard():
             )
 
         # =================================================================
+        # MACRO RATES CONTEXT — Policy Rate, KIBOR, T-Bill, PIB
+        # =================================================================
+        try:
+            rate_cols = st.columns(4)
+            # Policy rate
+            pr_row = con.execute(
+                "SELECT rate_pct, effective_date FROM sbp_policy_rates ORDER BY effective_date DESC LIMIT 1"
+            ).fetchone()
+            with rate_cols[0]:
+                if pr_row:
+                    st.metric("SBP Policy Rate", f"{pr_row[0]:.1f}%", help=f"Since {pr_row[1]}")
+                else:
+                    st.metric("SBP Policy Rate", "—")
+            # KIBOR 3M
+            kb_row = con.execute(
+                "SELECT bid, offer, date FROM kibor_daily WHERE tenor='3M' ORDER BY date DESC LIMIT 1"
+            ).fetchone()
+            with rate_cols[1]:
+                if kb_row:
+                    mid = (kb_row[0] + kb_row[1]) / 2 if kb_row[0] and kb_row[1] else kb_row[0] or kb_row[1]
+                    st.metric("KIBOR 3M", f"{mid:.2f}%" if mid else "—", help=f"As of {kb_row[2]}")
+                else:
+                    st.metric("KIBOR 3M", "—")
+            # T-Bill 3M cutoff
+            tb_row = con.execute(
+                "SELECT cutoff_yield, auction_date FROM tbill_auctions WHERE tenor='3M' ORDER BY auction_date DESC LIMIT 1"
+            ).fetchone()
+            with rate_cols[2]:
+                if tb_row:
+                    st.metric("T-Bill 3M", f"{tb_row[0]:.2f}%", help=f"Auction {tb_row[1]}")
+                else:
+                    st.metric("T-Bill 3M", "—")
+            # PKRV 10Y
+            pv_row = con.execute(
+                "SELECT yield_pct, date FROM pkrv_daily WHERE tenor_months=120 ORDER BY date DESC LIMIT 1"
+            ).fetchone()
+            with rate_cols[3]:
+                if pv_row:
+                    st.metric("PKRV 10Y", f"{pv_row[0]:.2f}%", help=f"As of {pv_row[1]}")
+                else:
+                    st.metric("PKRV 10Y", "—")
+        except Exception:
+            pass  # Tables may not exist yet
+
+        # =================================================================
         # KSE-100 INDEX DISPLAY - Primary Market Benchmark
         # =================================================================
         try:
