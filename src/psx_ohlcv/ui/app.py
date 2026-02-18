@@ -924,6 +924,11 @@ def website_scan_page():
     render_website_scan()
 
 
+def live_ohlcv_page():
+    from psx_ohlcv.ui.page_views.live_ohlcv import render_live_ohlcv
+    render_live_ohlcv()
+
+
 # -----------------------------------------------------------------------------
 # Main App — st.navigation() for framework-guaranteed page isolation
 # -----------------------------------------------------------------------------
@@ -949,6 +954,7 @@ def main():
         "📊 Dashboard":      st.Page(dashboard,              title="Dashboard",      url_path="dashboard",      default=True),
         "📡 Live Market":    st.Page(live_market_page,        title="Live Market",    url_path="live-market"),
         "📈 Market Summary": st.Page(market_summary_page,     title="Market Summary", url_path="market-summary"),
+        "🔴 Live OHLCV":    st.Page(live_ohlcv_page,          title="Live OHLCV",    url_path="live-ohlcv"),
         # EQUITY
         "📈 Quote Monitor":  st.Page(regular_market_page,     title="Quote Monitor",  url_path="quote-monitor"),
         "📊 Price Chart":    st.Page(candlestick_explorer,    title="Price Chart",    url_path="price-chart"),
@@ -993,7 +999,7 @@ def main():
 
     # Navigation groups — Bloomberg Terminal style
     nav_groups = {
-        "MARKET":       ["📊 Dashboard", "📡 Live Market", "📈 Market Summary"],
+        "MARKET":       ["📊 Dashboard", "📡 Live Market", "📈 Market Summary", "🔴 Live OHLCV"],
         "EQUITY":       ["📈 Quote Monitor", "📊 Price Chart", "⏱ Intraday",
                          "🏢 Company", "🏆 Rankings", "📊 Factors", "🧵 Symbols"],
         "INDICES":      ["📊 Index Monitor", "📦 Instruments"],

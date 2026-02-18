@@ -341,11 +341,13 @@ def get_connection():
 
     db_path = get_db_path()
     # Use check_same_thread=False to allow connection to be used across threads
-    con = _sqlite3.connect(str(db_path), check_same_thread=False)
+    # timeout=30 waits up to 30s if DB is locked (e.g. during bulk sync)
+    con = _sqlite3.connect(str(db_path), check_same_thread=False, timeout=30)
     con.row_factory = _sqlite3.Row
 
     # Enable WAL mode for better concurrent access
     con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA busy_timeout=30000")
 
     # Initialize schema
     init_schema(con)

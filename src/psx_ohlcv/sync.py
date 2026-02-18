@@ -45,6 +45,7 @@ class SyncSummary:
     symbols_ok: int
     symbols_failed: int
     rows_upserted: int
+    symbols_skipped: int = 0
     indices_synced: int = 0  # KSE-100 and other indices
     failures: list[dict] = field(default_factory=list)
 

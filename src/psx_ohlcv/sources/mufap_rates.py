@@ -237,10 +237,21 @@ def _read_rate_file(filepath: Path) -> str:
 def sync_rates_from_files(
     con: sqlite3.Connection,
     rates_dir: Path | None = None,
+    since_dates: dict[str, str | None] | None = None,
 ) -> dict:
-    """Parse all downloaded rate files and insert into DB."""
+    """Parse downloaded rate files and insert into DB.
+
+    Args:
+        con: SQLite connection.
+        rates_dir: Directory with pkrv/pkisrv/pkfrv subdirs.
+        since_dates: Optional dict {"pkrv": "2026-02-15", ...}.
+            If provided, only files with dates AFTER the cutoff are parsed.
+            Pass None to parse all files (full re-sync).
+    """
     if rates_dir is None:
         rates_dir = RATES_DIR
+    if since_dates is None:
+        since_dates = {}
 
     init_yield_curve_schema(con)
 
@@ -248,6 +259,7 @@ def sync_rates_from_files(
         "pkrv_files": 0, "pkrv_records": 0,
         "pkisrv_files": 0, "pkisrv_records": 0,
         "pkfrv_files": 0, "pkfrv_records": 0,
+        "skipped_parsed": 0,
         "failed": 0,
     }
 
@@ -259,12 +271,17 @@ def sync_rates_from_files(
         subdir = rates_dir / curve_type
         if not subdir.exists():
             continue
+        cutoff = since_dates.get(curve_type)
         for f in sorted(subdir.iterdir()):
             if f.suffix.lower() not in (".csv", ".xlsx"):
                 continue
             date = _extract_date_from_filename(f.name)
             if not date:
                 stats["failed"] += 1
+                continue
+            # Skip files already in DB
+            if cutoff and date <= cutoff:
+                stats["skipped_parsed"] += 1
                 continue
             try:
                 content = _read_rate_file(f)
@@ -282,22 +299,42 @@ def sync_rates_from_files(
     return stats
 
 
+def _get_latest_dates(con: sqlite3.Connection) -> dict[str, str | None]:
+    """Get the latest rate_date from each yield curve table.
+
+    Returns dict like {"pkrv": "2026-02-15", "pkisrv": "2026-02-10", "pkfrv": None}.
+    """
+    init_yield_curve_schema(con)
+    result = {}
+    for table in ("pkrv_daily", "pkisrv_daily", "pkfrv_daily"):
+        key = table.replace("_daily", "")
+        try:
+            row = con.execute(f"SELECT MAX(date) AS d FROM {table}").fetchone()
+            result[key] = row["d"] if row and row["d"] else None
+        except Exception:
+            result[key] = None
+    return result
+
+
 def download_and_sync(
     con: sqlite3.Connection,
     rates_dir: Path | None = None,
 ) -> dict:
-    """Download all files from MUFAP and sync to DB."""
+    """Download new files from MUFAP (since last DB date) and sync to DB."""
     if rates_dir is None:
         rates_dir = RATES_DIR
 
     for sub in ("pkrv", "pkisrv", "pkfrv"):
         (rates_dir / sub).mkdir(parents=True, exist_ok=True)
 
+    # Get latest dates already in DB — only download files newer than these
+    latest_dates = _get_latest_dates(con)
+
     session = requests.Session()
     session.headers["User-Agent"] = "Mozilla/5.0 (compatible; PSX-OHLCV/1.0)"
 
     file_list = fetch_mufap_file_list()
-    dl_stats = {"downloaded": 0, "skipped": 0, "failed": 0}
+    dl_stats = {"downloaded": 0, "skipped": 0, "skipped_old": 0, "failed": 0}
 
     import time
 
@@ -307,14 +344,22 @@ def download_and_sync(
         url = MUFAP_BASE + path
 
         if title.upper().startswith("PKISRV"):
-            subdir = rates_dir / "pkisrv"
+            curve = "pkisrv"
         elif title.upper().startswith("PKFRV"):
-            subdir = rates_dir / "pkfrv"
+            curve = "pkfrv"
         else:
-            subdir = rates_dir / "pkrv"
+            curve = "pkrv"
 
+        subdir = rates_dir / curve
         fname = path.rsplit("/", 1)[-1]
         dest = subdir / fname
+
+        # Skip files whose date is already in DB
+        file_date = _extract_date_from_filename(fname)
+        cutoff = latest_dates.get(curve)
+        if file_date and cutoff and file_date <= cutoff:
+            dl_stats["skipped_old"] += 1
+            continue
 
         if dest.exists() and dest.stat().st_size > 0:
             dl_stats["skipped"] += 1
@@ -332,6 +377,6 @@ def download_and_sync(
 
         time.sleep(0.1)
 
-    # Now parse all files
-    sync_stats = sync_rates_from_files(con, rates_dir)
+    # Only parse files newer than the latest DB date
+    sync_stats = sync_rates_from_files(con, rates_dir, since_dates=latest_dates)
     return {**dl_stats, **sync_stats}

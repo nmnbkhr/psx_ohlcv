@@ -111,6 +111,9 @@ def init_schema(con: sqlite3.Connection) -> None:
     from .repositories.financials import init_financials_schema
     init_financials_schema(con)
 
+    from .repositories.tick import init_tick_schema
+    init_tick_schema(con)
+
 
 def _migrate_symbols_table(con: sqlite3.Connection) -> None:
     """Add new columns to symbols table if they don't exist."""

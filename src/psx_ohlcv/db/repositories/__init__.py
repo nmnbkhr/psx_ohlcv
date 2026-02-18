@@ -65,3 +65,6 @@ from .website_scan import *  # noqa: F401, F403
 
 # 18. financials  (7 functions)
 from .financials import *  # noqa: F401, F403
+
+# 19. tick  (8 functions)
+from .tick import *  # noqa: F401, F403

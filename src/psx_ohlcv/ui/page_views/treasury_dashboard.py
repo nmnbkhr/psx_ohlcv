@@ -130,13 +130,14 @@ def render_treasury_dashboard():
 
         st.markdown("##### MUFAP Yield Curves (PKRV/PKISRV/PKFRV)")
         if st.button("Sync MUFAP Rates", key="tsy_sync_mufap",
-                      help="Download PKRV, PKISRV, PKFRV files from MUFAP and parse into DB"):
-            with st.spinner("Downloading & parsing MUFAP rate files..."):
+                      help="Download new PKRV/PKISRV/PKFRV files from MUFAP (incremental — skips dates already in DB)"):
+            with st.spinner("Downloading & parsing new MUFAP rate files..."):
                 try:
                     from psx_ohlcv.sources.mufap_rates import download_and_sync
                     result = download_and_sync(con)
                     st.success(
-                        f"Downloaded: {result['downloaded']}, Skipped: {result['skipped']} | "
+                        f"New: {result['downloaded']}, Skipped (on disk): {result['skipped']}, "
+                        f"Skipped (in DB): {result.get('skipped_old', 0)} | "
                         f"PKRV: {result['pkrv_records']} records, "
                         f"PKISRV: {result['pkisrv_records']}, "
                         f"PKFRV: {result['pkfrv_records']}"

@@ -2020,6 +2020,18 @@ def main(argv: list[str] | None = None) -> int:
         help="Show data freshness dashboard for all domains"
     )
 
+    # Tick collector — live OHLCV from market-watch polling
+    tick_parser = subparsers.add_parser(
+        "collect-ticks",
+        help="Start live tick collector (polls market-watch every N seconds)"
+    )
+    tick_parser.add_argument(
+        "--interval",
+        type=int,
+        default=5,
+        help="Poll interval in seconds (default: 5)",
+    )
+
     args = parser.parse_args(argv)
 
     try:
@@ -2085,6 +2097,8 @@ def main(argv: list[str] | None = None) -> int:
             return handle_backfill_rates(args)
         elif args.command == "status":
             return handle_status(args)
+        elif args.command == "collect-ticks":
+            return handle_collect_ticks(args)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         return 130
@@ -2093,6 +2107,46 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     return 0
+
+
+def handle_collect_ticks(args: argparse.Namespace) -> int:
+    """Start live tick collector in foreground. Ctrl+C to stop (auto-saves OHLCV)."""
+    from .collectors.tick_collector import TickCollector
+    from .db.repositories.tick import init_tick_schema
+
+    interval = getattr(args, "interval", 5)
+    con = connect()
+    init_schema(con)
+    init_tick_schema(con)
+
+    collector = TickCollector(interval=interval)
+    print(f"Starting tick collector (interval={interval}s). Press Ctrl+C to stop.")
+    print("OHLCV will be auto-saved to DB on stop.\n")
+
+    collector._session = __import__("psx_ohlcv.http", fromlist=["create_session"]).create_session()
+    collector.started_at = __import__("datetime").datetime.now()
+
+    try:
+        while True:
+            stats = collector.poll_once()
+            ts = collector.last_poll_time.strftime("%H:%M:%S") if collector.last_poll_time else "?"
+            print(
+                f"[{ts}] Poll #{collector.poll_count}: "
+                f"+{stats['new_ticks']} ticks, "
+                f"{stats['skipped']} skipped, "
+                f"{len(collector.running_ohlcv)} symbols tracked, "
+                f"total={collector.total_ticks}",
+                flush=True,
+            )
+            import time as _time
+            _time.sleep(interval)
+    except KeyboardInterrupt:
+        print("\nStopping collector...")
+        n = collector.save_ohlcv_to_db()
+        print(f"Saved {n} OHLCV rows to tick_ohlcv table.")
+        nt = collector.save_ticks_to_db()
+        print(f"Saved {nt} raw ticks to tick_data table.")
+        return 0
 
 
 def handle_symbols(args: argparse.Namespace) -> int:

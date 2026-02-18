@@ -20,6 +20,11 @@ from psx_ohlcv.services import (
     read_status as read_service_status,
 )
 from psx_ohlcv.sync import sync_intraday
+from psx_ohlcv.sync_timeseries import (
+    is_intraday_sync_running,
+    read_intraday_sync_progress,
+    start_intraday_sync,
+)
 from psx_ohlcv.ui.charts import (
     make_intraday_chart,
     make_volume_chart,
@@ -65,6 +70,80 @@ def render_intraday():
         else:
             st.info("🔴 Auto-Sync OFF")
             st.caption("Start service on Data Sync page")
+
+    # =================================================================
+    # BULK INTRADAY SYNC (all symbols)
+    # =================================================================
+    with st.expander("Sync All Symbols — Today's Intraday Ticks", expanded=False):
+        running = is_intraday_sync_running()
+        progress = read_intraday_sync_progress()
+
+        if running and progress:
+            pct = progress["current"] / max(progress["total"], 1)
+            st.progress(pct, text=f"{progress['current']}/{progress['total']} — {progress.get('current_symbol', '')}")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("OK", progress["ok"])
+            c2.metric("Failed", progress["failed"])
+            c3.metric("Ticks", f"{progress['rows_total']:,}")
+            if st.button("Refresh", key="int_bulk_refresh"):
+                st.rerun()
+        else:
+            if progress and progress.get("status") == "completed":
+                st.success(
+                    f"Last run: {progress['ok']}/{progress['total']} symbols, "
+                    f"{progress['rows_total']:,} ticks — {progress.get('finished_at', '')[:19]}"
+                )
+            if st.button("Sync All Intraday Now", key="int_bulk_btn", type="primary"):
+                started = start_intraday_sync()
+                if started:
+                    st.success("Bulk intraday sync started in background!")
+                else:
+                    st.warning("Already running.")
+                st.rerun()
+
+    # =================================================================
+    # LATEST TICKS TABLE — all symbols, today only
+    # =================================================================
+    import pandas as pd
+    try:
+        con = get_connection()
+        today_str = __import__("datetime").date.today().isoformat()
+        latest_df = pd.read_sql_query(
+            """SELECT symbol, MAX(ts) as last_tick,
+                      COUNT(*) as ticks,
+                      MIN(close) as low, MAX(close) as high,
+                      (SELECT close FROM intraday_bars b2
+                       WHERE b2.symbol = b.symbol AND b2.ts LIKE ? || '%'
+                       ORDER BY b2.ts DESC LIMIT 1) as last_price,
+                      SUM(volume) as total_vol
+               FROM intraday_bars b
+               WHERE ts LIKE ? || '%'
+               GROUP BY symbol
+               ORDER BY ticks DESC""",
+            con, params=[today_str, today_str],
+        )
+        if not latest_df.empty:
+            st.markdown(f"### Today's Intraday Summary ({today_str}) — {len(latest_df)} symbols")
+            st.dataframe(
+                latest_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "symbol": st.column_config.TextColumn("Symbol", width="small"),
+                    "last_tick": st.column_config.TextColumn("Last Tick"),
+                    "ticks": st.column_config.NumberColumn("Ticks", format="%d"),
+                    "low": st.column_config.NumberColumn("Low", format="%.2f"),
+                    "high": st.column_config.NumberColumn("High", format="%.2f"),
+                    "last_price": st.column_config.NumberColumn("Last Price", format="%.2f"),
+                    "total_vol": st.column_config.NumberColumn("Volume", format="%,.0f"),
+                },
+            )
+        else:
+            st.info("No intraday ticks for today. Click 'Sync All Intraday Now' above.")
+    except Exception as e:
+        st.warning(f"Could not load latest ticks: {e}")
+
+    st.markdown("---")
 
     # Initialize session state for intraday sync
     if "intraday_sync_result" not in st.session_state:
