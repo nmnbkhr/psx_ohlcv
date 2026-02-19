@@ -69,7 +69,7 @@ def _upsert_intraday(con: sqlite3.Connection, symbol: str, records: list) -> int
         return 0
 
     con.executemany(
-        """INSERT OR REPLACE INTO intraday_bars
+        """INSERT OR IGNORE INTO intraday_bars
            (symbol, ts, ts_epoch, open, high, low, close, volume, interval)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         rows,

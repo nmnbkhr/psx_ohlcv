@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS intraday_bars (
     volume      REAL NULL,
     interval    TEXT NOT NULL DEFAULT 'int',
     ingested_at TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (symbol, ts)
+    PRIMARY KEY (symbol, ts, close)
 );
 
 CREATE INDEX IF NOT EXISTS idx_intraday_bars_symbol ON intraday_bars(symbol);
