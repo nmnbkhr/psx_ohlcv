@@ -12,9 +12,22 @@ except ImportError:
 
 from psx_ohlcv.api_client import get_client
 from psx_ohlcv.config import get_db_path
+from psx_ohlcv.sources.fx_client import FXClient
+
+_fx = FXClient()
 from psx_ohlcv.services import (
     is_service_running,
     read_status as read_service_status,
+    # EOD sync service
+    is_eod_sync_running,
+    read_eod_status,
+    start_eod_sync_background,
+    stop_eod_sync,
+    # Announcements service
+    is_announcements_service_running,
+    read_announcements_status,
+    start_announcements_service,
+    stop_announcements_service,
 )
 from psx_ohlcv.ui.charts import (
     make_market_breadth_chart,
@@ -30,6 +43,47 @@ from psx_ohlcv.ui.components.helpers import (
     render_footer,
     render_market_status_badge,
 )
+
+
+def _sync_market_data(con):
+    """Fetch market-watch, update current, recompute analytics."""
+    from psx_ohlcv.sources.regular_market import (
+        fetch_regular_market,
+        get_all_current_hashes,
+        init_regular_market_schema,
+        insert_snapshots,
+        upsert_current,
+    )
+    from psx_ohlcv.analytics import compute_all_analytics
+    from datetime import datetime
+
+    init_regular_market_schema(con)
+    df = fetch_regular_market()
+    prev_hashes = get_all_current_hashes(con)
+    insert_snapshots(con, df, prev_hashes=prev_hashes)
+    n = upsert_current(con, df)
+    ts = df["ts"].iloc[0] if not df.empty else datetime.now().isoformat()
+    compute_all_analytics(con, ts)
+    return n
+
+
+def _sync_indices(con):
+    """Fetch all PSX indices and save to psx_indices."""
+    from psx_ohlcv.sources.indices import fetch_indices_data, save_index_data
+
+    indices_data = fetch_indices_data()
+    synced = sum(1 for d in indices_data if save_index_data(con, d))
+    return synced
+
+
+def _sync_rates(con):
+    """Sync SBP rates (KIBOR/KONIA/PKRV) + treasury (T-Bill/PIB)."""
+    from psx_ohlcv.sources.sbp_rates import SBPRatesScraper
+    from psx_ohlcv.sources.sbp_treasury import SBPTreasuryScraper
+
+    rates = SBPRatesScraper().sync_rates(con)
+    treas = SBPTreasuryScraper().sync_treasury(con)
+    return rates, treas
 
 
 def render_dashboard():
@@ -48,19 +102,24 @@ def render_dashboard():
         con = client.connection  # For raw SQL pass-through
 
         # =================================================================
-        # HEADER: Title + Market Status + Data Freshness
+        # HEADER: Title + Refresh All + Market Status + Data Freshness
         # =================================================================
-        header_col1, header_col2, header_col3 = st.columns([2, 1, 1])
+        header_col1, header_col2, header_col3, header_col4 = st.columns([2, 0.8, 0.8, 1])
 
         with header_col1:
             st.markdown("## \U0001f4ca Market Dashboard")
             st.caption("Pakistan Stock Exchange \u2022 Real-time Analytics")
 
         with header_col2:
+            st.markdown("")  # spacing
+            refresh_all = st.button("\U0001f504 Refresh All", type="primary",
+                                    key="dash_refresh_all", use_container_width=True)
+
+        with header_col3:
             # Market Status Badge
             render_market_status_badge()
 
-        with header_col3:
+        with header_col4:
             # Data Freshness + Service Status
             days_old, latest_date = client.get_data_freshness()
             badge_color, badge_text = get_freshness_badge(days_old)
@@ -76,6 +135,42 @@ def render_dashboard():
                     unsafe_allow_html=True
                 )
 
+        # ── Refresh All logic ────────────────────────────────────────
+        if refresh_all:
+            with st.status("Refreshing dashboard data...", expanded=True) as status:
+                errors = []
+                # Step 1: Market Data (~3s)
+                status.update(label="Fetching market data...")
+                try:
+                    n = _sync_market_data(con)
+                    st.write(f"Market: {n} symbols synced, analytics recomputed")
+                except Exception as e:
+                    errors.append(str(e))
+                    st.write(f"Market: FAILED - {e}")
+                # Step 2: Indices (~5s, parallel)
+                status.update(label="Fetching indices...")
+                try:
+                    synced = _sync_indices(con)
+                    st.write(f"Indices: {synced} synced")
+                except Exception as e:
+                    errors.append(str(e))
+                    st.write(f"Indices: FAILED - {e}")
+                # Step 3: SBP Rates + Treasury (~2s)
+                status.update(label="Fetching SBP rates & treasury...")
+                try:
+                    rates, treas = _sync_rates(con)
+                    st.write(f"Rates: KIBOR {rates.get('kibor_ok', 0)}, "
+                             f"T-Bill {treas.get('tbills_ok', 0)}, PIB {treas.get('pibs_ok', 0)}")
+                except Exception as e:
+                    errors.append(str(e))
+                    st.write(f"Rates: FAILED - {e}")
+
+                if errors:
+                    status.update(label=f"Refresh done with {len(errors)} error(s)", state="error")
+                else:
+                    status.update(label="All data refreshed!", state="complete")
+            st.rerun()
+
         st.markdown("---")
 
         # =================================================================
@@ -84,7 +179,7 @@ def render_dashboard():
         is_stale, stale_msg = check_data_staleness(con)
         if is_stale:
             render_data_warning(
-                f"{stale_msg}. Consider syncing fresh data from the Settings page.",
+                f"{stale_msg}. Use Refresh All above to update.",
                 icon="\U0001f4c5"
             )
 
@@ -92,10 +187,10 @@ def render_dashboard():
         # MACRO RATES CONTEXT — Policy Rate, KIBOR, T-Bill, PIB
         # =================================================================
         try:
-            rate_cols = st.columns(4)
+            rate_cols = st.columns([1, 1, 1, 1, 0.4])
             # Policy rate
             pr_row = con.execute(
-                "SELECT rate_pct, effective_date FROM sbp_policy_rates ORDER BY effective_date DESC LIMIT 1"
+                "SELECT policy_rate, rate_date FROM sbp_policy_rates ORDER BY rate_date DESC LIMIT 1"
             ).fetchone()
             with rate_cols[0]:
                 if pr_row:
@@ -130,12 +225,63 @@ def render_dashboard():
                     st.metric("PKRV 10Y", f"{pv_row[0]:.2f}%", help=f"As of {pv_row[1]}")
                 else:
                     st.metric("PKRV 10Y", "—")
+            # Sync Rates button
+            with rate_cols[4]:
+                st.markdown("")  # vertical spacing
+                if st.button("\U0001f504", key="dash_sync_rates",
+                             help="Sync SBP rates & treasury"):
+                    with st.spinner(""):
+                        _sync_rates(con)
+                    st.toast("Rates & treasury synced")
+                    st.rerun()
         except Exception:
             pass  # Tables may not exist yet
 
         # =================================================================
+        # FX SNAPSHOT — Live rates from FX microservice
+        # =================================================================
+        try:
+            if _fx.is_healthy():
+                snap = _fx.get_snapshot()
+                if snap:
+                    rates = snap.get("rates", {})
+                    kibor = snap.get("kibor", {})
+                    fx_cols = st.columns(5)
+                    pairs = [("USD/PKR", 0), ("EUR/PKR", 1), ("GBP/PKR", 2), ("AED/PKR", 3)]
+                    for pair, idx in pairs:
+                        r = rates.get(pair, {})
+                        mid = r.get("mid")
+                        with fx_cols[idx]:
+                            if mid:
+                                st.metric(pair, f"{mid:,.2f}", help=f"{r.get('source', '')} {r.get('date', '')}")
+                            else:
+                                st.metric(pair, "—")
+                    with fx_cols[4]:
+                        k_mid = kibor.get("mid")
+                        if k_mid:
+                            st.metric(f"KIBOR {kibor.get('tenor', '6M')}", f"{k_mid:.2f}%",
+                                      help=f"As of {kibor.get('date', '')}")
+                        else:
+                            st.metric("KIBOR 6M", "—")
+
+                    # Assessment caption
+                    assessment = snap.get("signals", {}).get("assessment")
+                    if assessment:
+                        st.caption(f"FX: {assessment}")
+        except Exception:
+            pass  # FX service down — silent
+
+        # =================================================================
         # KSE-100 INDEX DISPLAY - Primary Market Benchmark
         # =================================================================
+        idx_hdr1, idx_hdr2 = st.columns([5, 1])
+        with idx_hdr2:
+            if st.button("\U0001f504 Indices", key="dash_sync_indices",
+                         help="Fetch latest KSE-100 and other indices"):
+                with st.spinner(""):
+                    synced = _sync_indices(con)
+                st.toast(f"{synced} indices synced")
+                st.rerun()
         try:
             # Try to get real KSE-100 index data first
             kse100_data = client.get_latest_kse100()
@@ -688,11 +834,22 @@ def render_dashboard():
                 init_regular_market_schema(con)
             client.init_analytics()
 
+            # Sync Market button
+            mkt_hdr1, mkt_hdr2 = st.columns([5, 1])
+            with mkt_hdr2:
+                if st.button("\U0001f504 Market", key="dash_sync_market",
+                             help="Fetch live market data & recompute analytics"):
+                    with st.spinner(""):
+                        n = _sync_market_data(con)
+                    st.toast(f"{n} symbols synced, analytics recomputed")
+                    st.rerun()
+
             # Get analytics from pre-computed tables
             market_analytics = client.get_latest_market_analytics()
 
             if market_analytics:
-                st.subheader("\U0001f4c8 Market Overview")
+                with mkt_hdr1:
+                    st.subheader("\U0001f4c8 Market Overview")
 
                 # Use pre-computed analytics
                 gainers = market_analytics.get("gainers_count", 0)
@@ -798,12 +955,64 @@ def render_dashboard():
         except Exception:
             pass  # Analytics data not available
 
-        # Recent sync runs table (limit 10)
-        st.subheader("Recent Sync Runs")
+        # =================================================================
+        # SYNC & DATA MANAGEMENT
+        # =================================================================
+        st.subheader("\U0001f504 Sync & Data Management")
+
+        sync_col1, sync_col2 = st.columns(2)
+
+        with sync_col1:
+            st.markdown("**EOD OHLCV Sync**")
+            eod_running, eod_pid = is_eod_sync_running()
+            if eod_running:
+                eod_st = read_eod_status()
+                pct = getattr(eod_st, "progress", 0) or 0
+                msg = getattr(eod_st, "progress_message", "") or "Syncing EOD..."
+                st.progress(min(pct / 100.0, 1.0), text=msg)
+                if st.button("\U0001f6d1 Stop EOD Sync", key="dash_stop_eod"):
+                    stop_eod_sync()
+                    st.rerun()
+            else:
+                eod_st = read_eod_status()
+                last = getattr(eod_st, "completed_at", None) or getattr(eod_st, "ended_at", None)
+                if last:
+                    ok = getattr(eod_st, "symbols_ok", "?")
+                    st.caption(f"Last: {ok} symbols OK ({last})")
+                if st.button("\u25b6\ufe0f Sync EOD Data", key="dash_sync_eod",
+                             help="Background EOD sync (~2-5 min)"):
+                    success, msg = start_eod_sync_background(incremental=True)
+                    st.toast(msg)
+                    st.rerun()
+
+        with sync_col2:
+            st.markdown("**Announcements Sync**")
+            ann_running, ann_pid = is_announcements_service_running()
+            if ann_running:
+                ann_st = read_announcements_status()
+                st.info(f"Running (PID: {ann_pid})")
+                if st.button("\U0001f6d1 Stop Announcements", key="dash_stop_ann"):
+                    stop_announcements_service()
+                    st.rerun()
+            else:
+                ann_st = read_announcements_status()
+                last = getattr(ann_st, "last_run_at", None)
+                if last:
+                    st.caption(f"Last sync: {last}")
+                if st.button("\u25b6\ufe0f Sync Announcements", key="dash_sync_ann",
+                             help="Fetch latest announcements (~30-60s)"):
+                    success, msg = start_announcements_service()
+                    st.toast(msg)
+                    st.rerun()
+
+        st.markdown("---")
+
+        # Recent sync runs table
+        st.markdown("**Recent Sync Runs**")
         runs_df = client.get_sync_runs(limit=10)
 
         if runs_df.empty:
-            st.info("No sync runs yet. Run `psxsync sync --all` to start.")
+            st.info("No sync runs yet. Use Refresh All or Sync EOD above.")
         else:
             runs_df.columns = [
                 "Run ID", "Started", "Ended", "Mode",

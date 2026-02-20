@@ -929,6 +929,21 @@ def live_ohlcv_page():
     render_live_ohlcv()
 
 
+def live_ticker_page():
+    from psx_ohlcv.ui.page_views.live_ticker import render_live_ticker
+    render_live_ticker()
+
+
+def live_indices_page():
+    from psx_ohlcv.ui.page_views.live_indices import render_live_indices
+    render_live_indices()
+
+
+def ws_relay_status_page():
+    from psx_ohlcv.ui.page_views.ws_relay_status import render_ws_relay_status
+    render_ws_relay_status()
+
+
 # -----------------------------------------------------------------------------
 # Main App — st.navigation() for framework-guaranteed page isolation
 # -----------------------------------------------------------------------------
@@ -955,6 +970,9 @@ def main():
         "📡 Live Market":    st.Page(live_market_page,        title="Live Market",    url_path="live-market"),
         "📈 Market Summary": st.Page(market_summary_page,     title="Market Summary", url_path="market-summary"),
         "🔴 Live OHLCV":    st.Page(live_ohlcv_page,          title="Live OHLCV",    url_path="live-ohlcv"),
+        "⚡ Live Ticker":   st.Page(live_ticker_page,         title="Live Ticker",   url_path="live-ticker"),
+        "📊 Live Indices":  st.Page(live_indices_page,        title="Live Indices",  url_path="live-indices"),
+        "📡 WS Relay":      st.Page(ws_relay_status_page,     title="WS Relay",      url_path="ws-relay"),
         # EQUITY
         "📈 Quote Monitor":  st.Page(regular_market_page,     title="Quote Monitor",  url_path="quote-monitor"),
         "📊 Price Chart":    st.Page(candlestick_explorer,    title="Price Chart",    url_path="price-chart"),
@@ -999,7 +1017,7 @@ def main():
 
     # Navigation groups — Bloomberg Terminal style
     nav_groups = {
-        "MARKET":       ["📊 Dashboard", "📡 Live Market", "📈 Market Summary", "🔴 Live OHLCV"],
+        "MARKET":       ["📊 Dashboard", "📡 Live Market", "📈 Market Summary", "🔴 Live OHLCV", "⚡ Live Ticker", "📊 Live Indices", "📡 WS Relay"],
         "EQUITY":       ["📈 Quote Monitor", "📊 Price Chart", "⏱ Intraday",
                          "🏢 Company", "🏆 Rankings", "📊 Factors", "🧵 Symbols"],
         "INDICES":      ["📊 Index Monitor", "📦 Instruments"],

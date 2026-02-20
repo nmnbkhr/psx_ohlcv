@@ -12,7 +12,7 @@ Run with: uvicorn psx_ohlcv.api.main:app --reload --port 8000
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .routers import eod, tasks, symbols, market, company, instruments, fi, ws, treasury, funds, rates
+from .routers import eod, tasks, symbols, market, company, instruments, fi, ws, treasury, funds, rates, fx, live
 
 app = FastAPI(
     title="PSX OHLCV API",
@@ -40,7 +40,9 @@ app.include_router(fi.router, prefix="/api/fi", tags=["Fixed Income"])
 app.include_router(treasury.router, prefix="/api/treasury", tags=["Treasury"])
 app.include_router(funds.router, prefix="/api/funds", tags=["Funds"])
 app.include_router(rates.router, prefix="/api/rates", tags=["Rates"])
+app.include_router(fx.router, prefix="/api/fx", tags=["FX"])
 app.include_router(ws.router, prefix="/ws", tags=["WebSocket"])
+app.include_router(live.router, prefix="/api/live", tags=["Live Data"])
 
 
 @app.get("/")

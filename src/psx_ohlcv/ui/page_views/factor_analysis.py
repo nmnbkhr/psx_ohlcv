@@ -4,6 +4,7 @@ import pandas as pd
 import streamlit as st
 
 from psx_ohlcv.db import get_latest_kse100
+from psx_ohlcv.sources.fx_client import FXClient
 from psx_ohlcv.ui.session_tracker import track_page_visit
 from psx_ohlcv.ui.components.helpers import (
     get_connection,
@@ -11,6 +12,35 @@ from psx_ohlcv.ui.components.helpers import (
     render_footer,
     render_market_status_badge,
 )
+
+_fx = FXClient()
+
+# How each PSX sector responds to PKR moves
+# Positive = benefits from weak PKR, Negative = hurt by weak PKR
+SECTOR_FX_SENSITIVITY = {
+    "Textile Composite": 0.8,
+    "Textile Spinning": 0.7,
+    "Textile Weaving": 0.7,
+    "Technology & Communication": 0.6,
+    "Leather & Tanneries": 0.5,
+    "Sugar & Allied": 0.3,
+    "Fertilizer": 0.1,
+    "Oil & Gas Exploration Companies": 0.0,
+    "Oil & Gas Marketing Companies": -0.3,
+    "Cement": -0.2,
+    "Chemical": -0.4,
+    "Automobile Assembler": -0.6,
+    "Automobile Parts & Accessories": -0.5,
+    "Pharmaceutical": -0.5,
+    "Engineering": -0.3,
+    "Power Generation & Distribution": -0.4,
+    "Food & Personal Care Products": -0.2,
+    "Insurance": 0.0,
+    "Inv. Banks / Inv. Cos. / Securities Cos.": 0.0,
+    "Commercial Banks": 0.1,
+    "Modarabas": 0.0,
+    "Miscellaneous": 0.0,
+}
 
 
 def render_factor_analysis():
@@ -347,16 +377,63 @@ def render_factor_analysis():
                 sector_exposure["Sector"] = sector_exposure["Sector Code"].map(sector_map).fillna(sector_exposure["Sector Code"])
                 sector_exposure = sector_exposure.sort_values("Count", ascending=False)
 
+                # ── FX Regime Overlay ──────────────────────────────
+                fx_regime = None
+                if _fx.is_healthy():
+                    fx_regime = _fx.get_regime()
+
+                sector_exposure["FX Sens."] = sector_exposure["Sector"].map(
+                    SECTOR_FX_SENSITIVITY
+                ).fillna(0.0)
+
+                if fx_regime:
+                    regime_type = fx_regime.get("regime", "pkr_stable")
+                    regime_label = regime_type.replace("_", " ").title()
+                    equity_signal = fx_regime.get("equity_signal", "neutral")
+                    usd_pkr = fx_regime.get("metrics", {}).get("last_close")
+
+                    # Direction multiplier: weakening=+1, strengthening=-1, stable=0
+                    if "weakening" in regime_type:
+                        direction = 1.0
+                    elif "strengthening" in regime_type:
+                        direction = -1.0
+                    else:
+                        direction = 0.0
+
+                    sector_exposure["FX Boost"] = (
+                        sector_exposure["FX Sens."] * 0.1 * direction
+                    ).round(3)
+
+                    # Show regime badge
+                    usd_str = f" | USD/PKR {usd_pkr:.2f}" if usd_pkr else ""
+                    st.info(
+                        f"FX Regime: **{regime_label}** | "
+                        f"Equity signal: **{equity_signal}** | "
+                        f"Bias: {fx_regime.get('sector_bias', 'n/a')}{usd_str}"
+                    )
+                else:
+                    sector_exposure["FX Boost"] = None
+                    if not _fx.is_healthy():
+                        st.caption("FX service offline — no FX overlay")
+
+                # Build display columns
+                display_cols = ["Sector", "Count", "Value", "Momentum", "Quality", "LowVol", "FX Sens."]
+                col_config = {
+                    "Value": st.column_config.ProgressColumn(min_value=0, max_value=1, format="%.2f"),
+                    "Momentum": st.column_config.ProgressColumn(min_value=0, max_value=1, format="%.2f"),
+                    "Quality": st.column_config.ProgressColumn(min_value=0, max_value=1, format="%.2f"),
+                    "LowVol": st.column_config.ProgressColumn(min_value=0, max_value=1, format="%.2f"),
+                    "FX Sens.": st.column_config.NumberColumn(format="%.1f"),
+                }
+                if fx_regime:
+                    display_cols.append("FX Boost")
+                    col_config["FX Boost"] = st.column_config.NumberColumn(format="%+.3f")
+
                 st.dataframe(
-                    sector_exposure[["Sector", "Count", "Value", "Momentum", "Quality", "LowVol"]],
+                    sector_exposure[display_cols],
                     use_container_width=True,
                     hide_index=True,
-                    column_config={
-                        "Value": st.column_config.ProgressColumn(min_value=0, max_value=1, format="%.2f"),
-                        "Momentum": st.column_config.ProgressColumn(min_value=0, max_value=1, format="%.2f"),
-                        "Quality": st.column_config.ProgressColumn(min_value=0, max_value=1, format="%.2f"),
-                        "LowVol": st.column_config.ProgressColumn(min_value=0, max_value=1, format="%.2f"),
-                    }
+                    column_config=col_config,
                 )
 
                 # Bar chart

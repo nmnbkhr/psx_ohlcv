@@ -1,6 +1,7 @@
 """Intraday bar data repository."""
 
 import sqlite3
+from datetime import datetime
 
 import pandas as pd
 
@@ -81,18 +82,10 @@ def upsert_intraday(con: sqlite3.Connection, df: pd.DataFrame) -> int:
 
         cur = con.execute(
             """
-            INSERT INTO intraday_bars
+            INSERT OR IGNORE INTO intraday_bars
                 (symbol, ts, ts_epoch, open, high, low, close, volume,
                  interval, ingested_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'int', ?)
-            ON CONFLICT(symbol, ts) DO UPDATE SET
-                ts_epoch = excluded.ts_epoch,
-                open = excluded.open,
-                high = excluded.high,
-                low = excluded.low,
-                close = excluded.close,
-                volume = excluded.volume,
-                ingested_at = excluded.ingested_at
             """,
             (
                 row["symbol"],
@@ -285,3 +278,103 @@ def get_intraday_stats(con: sqlite3.Connection, symbol: str) -> dict:
             "row_count": row["row_count"],
         }
     return {"min_ts": None, "max_ts": None, "row_count": 0}
+
+
+def promote_intraday_to_eod(
+    con: sqlite3.Connection, date: str | None = None
+) -> int:
+    """Aggregate intraday_bars into eod_ohlcv with REAL high/low from actual trades.
+
+    For each symbol on the given date:
+    - open  = close price of the FIRST tick (earliest ts_epoch)
+    - high  = MAX(close) across all ticks
+    - low   = MIN(close) across all ticks
+    - close = close price of the LAST tick (latest ts_epoch)
+    - volume = MAX(volume) (cumulative, so max = final)
+
+    Only promotes symbols with >= 2 ticks to avoid single-tick noise.
+
+    Args:
+        con: Database connection
+        date: Date string YYYY-MM-DD. Defaults to today.
+
+    Returns:
+        Number of rows promoted to eod_ohlcv.
+    """
+    if date is None:
+        date = datetime.now().strftime("%Y-%m-%d")
+
+    now = datetime.now().isoformat()
+
+    # Step 1: aggregate intraday_bars into OHLCV per symbol
+    rows = con.execute(
+        """
+        WITH ranked AS (
+            SELECT
+                symbol,
+                close,
+                volume,
+                ROW_NUMBER() OVER (
+                    PARTITION BY symbol ORDER BY ts_epoch ASC
+                ) AS rn_first,
+                ROW_NUMBER() OVER (
+                    PARTITION BY symbol ORDER BY ts_epoch DESC
+                ) AS rn_last
+            FROM intraday_bars
+            WHERE DATE(ts) = ?
+        )
+        SELECT
+            symbol,
+            MAX(CASE WHEN rn_first = 1 THEN close END) AS open,
+            MAX(close)                                  AS high,
+            MIN(close)                                  AS low,
+            MAX(CASE WHEN rn_last  = 1 THEN close END) AS close,
+            MAX(volume)                                 AS volume
+        FROM ranked
+        GROUP BY symbol
+        HAVING COUNT(*) >= 2
+        """,
+        (date,),
+    ).fetchall()
+
+    if not rows:
+        return 0
+
+    # Step 2: upsert each aggregated row into eod_ohlcv
+    count = 0
+    for r in rows:
+        con.execute(
+            """
+            INSERT INTO eod_ohlcv
+                (symbol, date, open, high, low, close, volume,
+                 ingested_at, source, processname)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'intraday_aggregation', 'sync_timeseries')
+            ON CONFLICT(symbol, date) DO UPDATE SET
+                open        = excluded.open,
+                high        = excluded.high,
+                low         = excluded.low,
+                close       = excluded.close,
+                volume      = excluded.volume,
+                ingested_at = excluded.ingested_at,
+                source      = excluded.source,
+                processname = excluded.processname
+            """,
+            (r["symbol"], date, r["open"], r["high"], r["low"],
+             r["close"], r["volume"], now),
+        )
+        count += 1
+
+    con.commit()
+    return count
+
+
+def get_intraday_dates(con: sqlite3.Connection) -> list[str]:
+    """Get distinct dates available in intraday_bars, newest first.
+
+    Returns:
+        List of date strings (YYYY-MM-DD).
+    """
+    rows = con.execute(
+        "SELECT DISTINCT DATE(ts) AS d FROM intraday_bars ORDER BY d DESC"
+    ).fetchall()
+    return [r["d"] for r in rows if r["d"]]

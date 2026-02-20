@@ -2032,6 +2032,17 @@ def main(argv: list[str] | None = None) -> int:
         help="Poll interval in seconds (default: 5)",
     )
 
+    # WebSocket tick service — real-time from psxterminal.com
+    ts_parser = subparsers.add_parser(
+        "tick-service",
+        help="Manage WebSocket tick service (psxterminal.com)"
+    )
+    ts_sub = ts_parser.add_subparsers(dest="ts_action")
+    ts_sub.add_parser("start", help="Start tick service in foreground")
+    ts_sub.add_parser("daemon", help="Start tick service as background daemon")
+    ts_sub.add_parser("stop", help="Stop running tick service")
+    ts_sub.add_parser("status", help="Show tick service status")
+
     args = parser.parse_args(argv)
 
     try:
@@ -2099,6 +2110,8 @@ def main(argv: list[str] | None = None) -> int:
             return handle_status(args)
         elif args.command == "collect-ticks":
             return handle_collect_ticks(args)
+        elif args.command == "tick-service":
+            return handle_tick_service(args)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         return 130
@@ -2147,6 +2160,53 @@ def handle_collect_ticks(args: argparse.Namespace) -> int:
         nt = collector.save_ticks_to_db()
         print(f"Saved {nt} raw ticks to tick_data table.")
         return 0
+
+
+def handle_tick_service(args: argparse.Namespace) -> int:
+    """Manage WebSocket tick service."""
+    from .services.tick_service import (
+        is_tick_service_running,
+        read_status,
+        stop_tick_service,
+        start_tick_service_background,
+    )
+
+    action = getattr(args, "ts_action", None)
+    if action is None:
+        print("Usage: psxsync tick-service {start|daemon|stop|status}")
+        return 1
+
+    if action == "start":
+        import asyncio
+        from .services.tick_service import main as ts_main
+        asyncio.run(ts_main())
+        return 0
+
+    elif action == "daemon":
+        ok, msg = start_tick_service_background()
+        print(msg)
+        return 0 if ok else 1
+
+    elif action == "stop":
+        ok, msg = stop_tick_service()
+        print(msg)
+        return 0 if ok else 1
+
+    elif action == "status":
+        running, pid = is_tick_service_running()
+        status = read_status()
+        if running:
+            print(f"Tick service: RUNNING (PID {pid})")
+            print(f"  Connected: {status.connected}")
+            print(f"  Ticks:     {status.tick_count:,}")
+            print(f"  Bars:      {status.bars_saved:,}")
+            print(f"  Symbols:   {status.symbol_count}")
+            print(f"  Started:   {status.started_at}")
+        else:
+            print("Tick service: STOPPED")
+        return 0
+
+    return 1
 
 
 def handle_symbols(args: argparse.Namespace) -> int:
@@ -6618,7 +6678,13 @@ def handle_sync_all(args: argparse.Namespace) -> int:
         return s.sync_kerb(con)
     _add_step("Kerb FX (forex.pk)", _sync_kerb)
 
-    # 7. IPO listings
+    # 7. FX microservice (interbank + KIBOR overlay)
+    def _sync_fx_micro():
+        from .sources.fx_sync import sync_fx_rates
+        return sync_fx_rates(con)
+    _add_step("FX microservice (interbank + KIBOR)", _sync_fx_micro)
+
+    # 8. IPO listings
     def _sync_ipo():
         from .sources.ipo_scraper import IPOScraper
         s = IPOScraper()

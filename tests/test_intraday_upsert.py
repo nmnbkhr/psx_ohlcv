@@ -9,6 +9,10 @@ from psx_ohlcv.db import (
     update_intraday_sync_state,
     upsert_intraday,
 )
+from psx_ohlcv.db.repositories.intraday import (
+    get_intraday_dates,
+    promote_intraday_to_eod,
+)
 
 
 @pytest.fixture
@@ -66,8 +70,8 @@ class TestUpsertIntraday:
         cur = db.execute("SELECT COUNT(*) as cnt FROM intraday_bars")
         assert cur.fetchone()["cnt"] == 2
 
-    def test_upsert_updates_existing(self, db):
-        """Upserting should update existing record."""
+    def test_different_close_creates_new_row(self, db):
+        """Same (symbol, ts) with different close should create separate rows."""
         df1 = pd.DataFrame([
             {
                 "symbol": "ABOT",
@@ -81,32 +85,31 @@ class TestUpsertIntraday:
         ])
         upsert_intraday(db, df1)
 
-        # Update with new close price
+        # Insert with different close price (same-second multi-price trade)
         df2 = pd.DataFrame([
             {
                 "symbol": "ABOT",
                 "ts": "2024-01-15 10:00:00",
                 "open": 100.0,
-                "high": 102.0,  # Higher high
+                "high": 102.0,
                 "low": 99.0,
-                "close": 101.0,  # Different close
+                "close": 101.0,  # Different close → different PK
                 "volume": 1200,
             },
         ])
         upsert_intraday(db, df2)
 
-        cur = db.execute(
-            "SELECT close, volume, high FROM intraday_bars "
-            "WHERE symbol='ABOT' AND ts='2024-01-15 10:00:00'"
-        )
-        row = cur.fetchone()
-        assert row["close"] == 101.0
-        assert row["volume"] == 1200
-        assert row["high"] == 102.0
-
-        # Should still be just one row
+        # Should have two rows (PK is symbol, ts, close)
         cur = db.execute("SELECT COUNT(*) as cnt FROM intraday_bars")
-        assert cur.fetchone()["cnt"] == 1
+        assert cur.fetchone()["cnt"] == 2
+
+        # Both prices preserved
+        rows = db.execute(
+            "SELECT close FROM intraday_bars "
+            "WHERE symbol='ABOT' AND ts='2024-01-15 10:00:00' ORDER BY close"
+        ).fetchall()
+        assert rows[0]["close"] == 100.5
+        assert rows[1]["close"] == 101.0
 
     def test_upsert_no_duplicates(self, db):
         """Upserting same records twice should not create duplicates."""
@@ -357,3 +360,179 @@ class TestIntradayQueryHelpers:
         assert stats["row_count"] == 0
         assert stats["min_ts"] is None
         assert stats["max_ts"] is None
+
+
+class TestPromoteIntradayToEod:
+    """Tests for promote_intraday_to_eod function."""
+
+    def _insert_ticks(self, db, symbol, date, prices_volumes):
+        """Helper: insert ticks into intraday_bars for a symbol+date.
+
+        Args:
+            prices_volumes: list of (hour, minute, close_price, cumulative_volume)
+        """
+        rows = []
+        for hour, minute, price, vol in prices_volumes:
+            ts = f"{date} {hour:02d}:{minute:02d}:00"
+            rows.append({
+                "symbol": symbol,
+                "ts": ts,
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+                "volume": vol,
+            })
+        upsert_intraday(db, pd.DataFrame(rows))
+
+    def test_basic_promotion(self, db):
+        """Promote 3 ticks into 1 EOD row with correct OHLCV."""
+        self._insert_ticks(db, "HBL", "2026-02-19", [
+            (9, 30, 200.0, 1000),    # first tick → open
+            (11, 0, 210.0, 5000),     # high
+            (13, 0, 195.0, 8000),     # low
+            (15, 30, 205.0, 12000),   # last tick → close, max vol
+        ])
+
+        n = promote_intraday_to_eod(db, "2026-02-19")
+        assert n == 1
+
+        row = db.execute(
+            "SELECT * FROM eod_ohlcv WHERE symbol='HBL' AND date='2026-02-19'"
+        ).fetchone()
+
+        assert row["open"] == 200.0     # first tick close
+        assert row["high"] == 210.0     # MAX(close)
+        assert row["low"] == 195.0      # MIN(close)
+        assert row["close"] == 205.0    # last tick close
+        assert row["volume"] == 12000   # MAX(volume) = cumulative
+        assert row["source"] == "intraday_aggregation"
+        assert row["processname"] == "sync_timeseries"
+
+    def test_skips_single_tick_symbols(self, db):
+        """Symbols with < 2 ticks should NOT be promoted."""
+        self._insert_ticks(db, "ABOT", "2026-02-19", [
+            (10, 0, 50.0, 100),  # only 1 tick
+        ])
+
+        n = promote_intraday_to_eod(db, "2026-02-19")
+        assert n == 0
+
+    def test_multiple_symbols(self, db):
+        """Promote multiple symbols in one call."""
+        self._insert_ticks(db, "HBL", "2026-02-19", [
+            (9, 30, 200.0, 1000),
+            (15, 30, 205.0, 5000),
+        ])
+        self._insert_ticks(db, "MCB", "2026-02-19", [
+            (9, 30, 300.0, 2000),
+            (12, 0, 310.0, 6000),
+            (15, 30, 305.0, 9000),
+        ])
+
+        n = promote_intraday_to_eod(db, "2026-02-19")
+        assert n == 2
+
+        hbl = db.execute(
+            "SELECT * FROM eod_ohlcv WHERE symbol='HBL' AND date='2026-02-19'"
+        ).fetchone()
+        assert hbl["open"] == 200.0
+        assert hbl["close"] == 205.0
+
+        mcb = db.execute(
+            "SELECT * FROM eod_ohlcv WHERE symbol='MCB' AND date='2026-02-19'"
+        ).fetchone()
+        assert mcb["open"] == 300.0
+        assert mcb["high"] == 310.0
+        assert mcb["close"] == 305.0
+
+    def test_upsert_overwrites_existing_eod(self, db):
+        """Re-promoting should update existing eod_ohlcv rows."""
+        self._insert_ticks(db, "HBL", "2026-02-19", [
+            (9, 30, 200.0, 1000),
+            (15, 30, 205.0, 5000),
+        ])
+
+        # First promote
+        promote_intraday_to_eod(db, "2026-02-19")
+
+        # Insert more ticks (late trades)
+        self._insert_ticks(db, "HBL", "2026-02-19", [
+            (15, 45, 208.0, 15000),  # new close, higher volume
+        ])
+
+        # Re-promote
+        n = promote_intraday_to_eod(db, "2026-02-19")
+        assert n == 1
+
+        row = db.execute(
+            "SELECT * FROM eod_ohlcv WHERE symbol='HBL' AND date='2026-02-19'"
+        ).fetchone()
+        assert row["close"] == 208.0    # updated to last tick
+        assert row["volume"] == 15000   # updated to max vol
+
+    def test_date_isolation(self, db):
+        """Promoting one date should not affect another."""
+        self._insert_ticks(db, "HBL", "2026-02-18", [
+            (9, 30, 100.0, 500),
+            (15, 30, 105.0, 2000),
+        ])
+        self._insert_ticks(db, "HBL", "2026-02-19", [
+            (9, 30, 200.0, 1000),
+            (15, 30, 210.0, 5000),
+        ])
+
+        n = promote_intraday_to_eod(db, "2026-02-19")
+        assert n == 1
+
+        # Only Feb 19 should be in eod_ohlcv
+        rows = db.execute("SELECT * FROM eod_ohlcv").fetchall()
+        assert len(rows) == 1
+        assert rows[0]["date"] == "2026-02-19"
+        assert rows[0]["close"] == 210.0
+
+    def test_defaults_to_today(self, db):
+        """When no date given, should use today."""
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        self._insert_ticks(db, "HBL", today, [
+            (9, 30, 200.0, 1000),
+            (15, 30, 205.0, 5000),
+        ])
+
+        n = promote_intraday_to_eod(db)  # no date arg
+        assert n == 1
+
+        row = db.execute(
+            "SELECT * FROM eod_ohlcv WHERE symbol='HBL' AND date=?", (today,)
+        ).fetchone()
+        assert row is not None
+        assert row["close"] == 205.0
+
+    def test_empty_date_returns_zero(self, db):
+        """Promoting a date with no data should return 0."""
+        n = promote_intraday_to_eod(db, "2099-01-01")
+        assert n == 0
+
+
+class TestGetIntradayDates:
+    """Tests for get_intraday_dates function."""
+
+    def test_returns_dates_newest_first(self, db):
+        """Should return distinct dates in descending order."""
+        rows = []
+        for date in ["2026-02-17", "2026-02-18", "2026-02-19"]:
+            rows.append({
+                "symbol": "HBL", "ts": f"{date} 10:00:00",
+                "close": 100, "volume": 1000,
+            })
+        upsert_intraday(db, pd.DataFrame(rows))
+
+        dates = get_intraday_dates(db)
+        assert dates == ["2026-02-19", "2026-02-18", "2026-02-17"]
+
+    def test_empty_table(self, db):
+        """Empty table should return empty list."""
+        dates = get_intraday_dates(db)
+        assert dates == []

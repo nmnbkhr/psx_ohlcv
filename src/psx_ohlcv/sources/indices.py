@@ -60,87 +60,90 @@ INDEX_CODES = [
 ]
 
 
-def fetch_indices_data(timeout: int = 30) -> list[dict[str, Any]]:
-    """
-    Fetch all indices data from PSX DPS timeseries API.
+def _fetch_single_index(index_code: str, timeout: int = 5) -> dict[str, Any] | None:
+    """Fetch data for a single index code. Returns dict or None on failure."""
+    try:
+        url = f"{PSX_BASE_URL}/timeseries/eod/{index_code}"
+        response = requests.get(
+            url,
+            timeout=timeout,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+        )
+        response.raise_for_status()
 
-    Uses the same endpoint as EOD stock data: /timeseries/eod/{INDEX_CODE}
-    Format: [[timestamp, value, volume, vwap], ...]
+        data = response.json()
+        if data.get("status") == 1 and data.get("data"):
+            latest = data["data"][0]
+            timestamp = latest[0]
+            value = latest[1]
+            volume = latest[2] if len(latest) > 2 else None
+
+            prev_value = None
+            if len(data["data"]) > 1:
+                prev_value = data["data"][1][1]
+
+            index_date = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d")
+            index_time = datetime.fromtimestamp(timestamp).strftime("%H:%M:%S")
+
+            change = None
+            change_pct = None
+            if prev_value and value:
+                change = value - prev_value
+                change_pct = (change / prev_value) * 100
+
+            high = max(d[1] for d in data["data"][:5]) if len(data["data"]) >= 5 else value
+            low = min(d[1] for d in data["data"][:5]) if len(data["data"]) >= 5 else value
+
+            logger.debug(f"Fetched {index_code}: {value:,.2f}")
+            return {
+                "index_code": index_code,
+                "index_date": index_date,
+                "index_time": index_time,
+                "value": value,
+                "change": change,
+                "change_pct": change_pct,
+                "open": None,
+                "high": high,
+                "low": low,
+                "volume": volume,
+                "previous_close": prev_value,
+                "ytd_change_pct": None,
+                "one_year_change_pct": None,
+                "week_52_low": min(d[1] for d in data["data"]) if data["data"] else None,
+                "week_52_high": max(d[1] for d in data["data"]) if data["data"] else None,
+            }
+
+    except requests.RequestException as e:
+        logger.warning(f"Failed to fetch {index_code}: {e}")
+    except (KeyError, IndexError, ValueError) as e:
+        logger.warning(f"Failed to parse {index_code}: {e}")
+    return None
+
+
+def fetch_indices_data(timeout: int = 5) -> list[dict[str, Any]]:
+    """
+    Fetch all indices data from PSX DPS timeseries API (parallel).
+
+    Uses ThreadPoolExecutor to fetch 18 indices concurrently (~2-3s)
+    instead of sequentially (~30s).
 
     Returns:
         List of dicts with index data
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     indices_data = []
-
-    # Fetch data for all indices using the timeseries API
-    key_indices = INDEX_CODES
-
-    for index_code in key_indices:
-        try:
-            url = f"{PSX_BASE_URL}/timeseries/eod/{index_code}"
-            response = requests.get(
-                url,
-                timeout=timeout,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                }
-            )
-            response.raise_for_status()
-
-            data = response.json()
-            if data.get("status") == 1 and data.get("data"):
-                # Get the most recent data point (first in the list)
-                latest = data["data"][0]
-                # Format: [timestamp, value, volume, vwap]
-                timestamp = latest[0]
-                value = latest[1]
-                volume = latest[2] if len(latest) > 2 else None
-                vwap = latest[3] if len(latest) > 3 else None
-
-                # Get previous day for change calculation
-                prev_value = None
-                if len(data["data"]) > 1:
-                    prev_value = data["data"][1][1]
-
-                # Convert timestamp to date
-                index_date = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d")
-                index_time = datetime.fromtimestamp(timestamp).strftime("%H:%M:%S")
-
-                # Calculate change
-                change = None
-                change_pct = None
-                if prev_value and value:
-                    change = value - prev_value
-                    change_pct = (change / prev_value) * 100
-
-                # Get high/low from recent data
-                high = max(d[1] for d in data["data"][:5]) if len(data["data"]) >= 5 else value
-                low = min(d[1] for d in data["data"][:5]) if len(data["data"]) >= 5 else value
-
-                indices_data.append({
-                    "index_code": index_code,
-                    "index_date": index_date,
-                    "index_time": index_time,
-                    "value": value,
-                    "change": change,
-                    "change_pct": change_pct,
-                    "open": None,
-                    "high": high,
-                    "low": low,
-                    "volume": volume,
-                    "previous_close": prev_value,
-                    "ytd_change_pct": None,
-                    "one_year_change_pct": None,
-                    "week_52_low": min(d[1] for d in data["data"]) if data["data"] else None,
-                    "week_52_high": max(d[1] for d in data["data"]) if data["data"] else None,
-                })
-
-                logger.debug(f"Fetched {index_code}: {value:,.2f}")
-
-        except requests.RequestException as e:
-            logger.warning(f"Failed to fetch {index_code}: {e}")
-        except (KeyError, IndexError, ValueError) as e:
-            logger.warning(f"Failed to parse {index_code}: {e}")
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {
+            pool.submit(_fetch_single_index, code, timeout): code
+            for code in INDEX_CODES
+        }
+        for fut in as_completed(futures):
+            result = fut.result()
+            if result:
+                indices_data.append(result)
 
     return indices_data
 

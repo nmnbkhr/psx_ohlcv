@@ -12,6 +12,10 @@ import streamlit as st
 
 from psx_ohlcv.collectors.tick_collector import TickCollector
 from psx_ohlcv.db.connection import connect, init_schema
+from psx_ohlcv.db.repositories.intraday import (
+    get_intraday_dates,
+    promote_intraday_to_eod,
+)
 from psx_ohlcv.db.repositories.tick import (
     cleanup_old_ticks,
     init_tick_schema,
@@ -110,10 +114,13 @@ def render_live_ohlcv():
             con = get_connection()
             if con:
                 init_tick_schema(con)
-                # First save running OHLCV
+                # Save running OHLCV from poller, then promote both sources
                 collector.save_ohlcv_to_db()
-                n = promote_tick_ohlcv_to_eod(con)
-                st.toast(f"Promoted {n} rows to eod_ohlcv (source=tick_aggregation)")
+                n_tick = promote_tick_ohlcv_to_eod(con)
+                n_intra = promote_intraday_to_eod(con)
+                st.toast(
+                    f"Promoted to eod_ohlcv: {n_tick} tick, {n_intra} intraday"
+                )
 
     with c6:
         if st.button("Reset", use_container_width=True):
@@ -135,6 +142,36 @@ def render_live_ohlcv():
                 f"Last sync: {prog['ok']}/{prog['total']} ok, "
                 f"{prog['rows_total']:,} rows | {prog.get('finished_at', '')[:19]}"
             )
+
+    # =================================================================
+    # INTRADAY → EOD PROMOTION (historical dates)
+    # =================================================================
+    with st.expander("Promote Intraday to EOD (by date)"):
+        con = get_connection()
+        if con:
+            dates = get_intraday_dates(con)
+            if dates:
+                p1, p2, p3 = st.columns([2, 1, 2])
+                with p1:
+                    sel_date = st.selectbox(
+                        "Intraday date",
+                        dates,
+                        key="promote_intraday_date",
+                    )
+                with p2:
+                    if st.button("Promote", key="promote_intraday_btn"):
+                        n = promote_intraday_to_eod(con, sel_date)
+                        st.toast(f"Promoted {n} symbols for {sel_date}")
+                        st.rerun()
+                with p3:
+                    if st.button("Promote All Dates", key="promote_all_btn"):
+                        total = 0
+                        for d in dates:
+                            total += promote_intraday_to_eod(con, d)
+                        st.toast(f"Promoted {total} total rows across {len(dates)} dates")
+                        st.rerun()
+            else:
+                st.info("No intraday data available yet.")
 
     st.divider()
 

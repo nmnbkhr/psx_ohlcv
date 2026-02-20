@@ -7,6 +7,9 @@ import plotly.graph_objects as go
 from psx_ohlcv.ui.components.helpers import get_connection, render_footer
 from psx_ohlcv.sources.sbp_fx import SBPFXScraper
 from psx_ohlcv.sources.forex_scraper import ForexPKScraper
+from psx_ohlcv.sources.fx_client import FXClient
+
+_fx = FXClient()
 
 
 _KEY_CURRENCIES = ["USD", "EUR", "GBP", "SAR", "AED"]
@@ -43,6 +46,10 @@ def render_fx_dashboard():
     except Exception as e:
         st.error(f"Error loading FX data: {e}")
 
+    # ── FX Microservice Signals ─────────────────────────────────────
+    st.divider()
+    _render_fx_signals()
+
     # Sync section
     st.markdown("---")
     with st.expander("Sync FX Data"):
@@ -67,6 +74,36 @@ def render_fx_dashboard():
                         st.rerun()
                     except Exception as e:
                         st.error(f"Sync failed: {e}")
+
+        # FX microservice sync
+        if _fx.is_healthy():
+            col3, col4 = st.columns(2)
+            with col3:
+                if st.button("Sync from FX Microservice", key="fx_sync_micro"):
+                    with st.spinner("Syncing rates from FX microservice..."):
+                        try:
+                            from psx_ohlcv.sources.fx_sync import sync_fx_rates
+                            result = sync_fx_rates(con)
+                            st.success(
+                                f"FX micro: {result.get('rates_stored', 0)} rates, "
+                                f"{result.get('kibor_stored', 0)} KIBOR tenors"
+                            )
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"FX micro sync failed: {e}")
+            with col4:
+                if st.button("Backfill FX History", key="fx_backfill"):
+                    with st.spinner("Backfilling FX history from microservice..."):
+                        try:
+                            from psx_ohlcv.sources.fx_sync import backfill_fx_history
+                            result = backfill_fx_history(con)
+                            st.success(
+                                f"Backfill: {result.get('inserted', 0)} inserted, "
+                                f"{result.get('skipped', 0)} skipped"
+                            )
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Backfill failed: {e}")
 
     render_footer()
 
@@ -229,3 +266,194 @@ def _render_all_currencies(con):
         }),
         use_container_width=True, hide_index=True,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# FX Microservice Signal Sections
+# ═══════════════════════════════════════════════════════════════════
+
+def _render_fx_signals():
+    """Render FX microservice signal sections (regime, carry, intervention)."""
+    if not _fx.is_healthy():
+        st.info("FX microservice not running — showing DB-sourced rates only. "
+                "Start it: `uvicorn api.service:app --port 8100`")
+        return
+
+    st.markdown("### FX Trading Signals")
+
+    # ── KIBOR Live Rates ──────────────────────────────────────────
+    _render_kibor_live()
+
+    # ── FX-Equity Regime ──────────────────────────────────────────
+    _render_regime()
+
+    col1, col2 = st.columns(2)
+    with col1:
+        _render_carry_trade()
+    with col2:
+        _render_premium_spread()
+
+    # ── SBP Intervention ──────────────────────────────────────────
+    _render_intervention()
+
+
+def _render_kibor_live():
+    """KIBOR rates from FX microservice."""
+    data = _fx.get_kibor()
+    if not data:
+        return
+
+    rates = data.get("rates", data.get("kibor", []))
+    if not rates:
+        return
+
+    st.markdown("#### KIBOR Rates (Live)")
+    rows = []
+    for r in rates:
+        if isinstance(r, dict):
+            rows.append({
+                "Tenor": r.get("tenor", ""),
+                "Bid": r.get("bid", ""),
+                "Offer": r.get("offer", ""),
+                "Mid": r.get("mid", ""),
+            })
+    if rows:
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+def _render_regime():
+    """FX-Equity regime signal."""
+    data = _fx.get_regime()
+    if not data:
+        return
+
+    st.markdown("#### FX-Equity Regime")
+
+    regime = data.get("regime", "unknown")
+    equity_signal = data.get("equity_signal", "")
+    sector_bias = data.get("sector_bias", "")
+
+    # Regime badge
+    regime_colors = {
+        "pkr_weakening": "red",
+        "pkr_strengthening": "green",
+        "stable": "blue",
+    }
+    color = regime_colors.get(regime, "gray")
+    regime_label = regime.replace("_", " ").title()
+    st.markdown(f"**Regime:** :{color}[{regime_label}]")
+
+    cols = st.columns(3)
+    cols[0].metric("Equity Signal", equity_signal or "N/A")
+    cols[1].metric("Sector Bias", sector_bias or "N/A")
+
+    # Metrics
+    metrics = data.get("metrics", {})
+    if metrics:
+        cols[2].metric("USD/PKR", f"{metrics.get('last_close', 0):.2f}")
+
+    # Sector exposures
+    exposures = data.get("sector_exposures", {})
+    if exposures:
+        with st.expander("Sector FX Exposures"):
+            exp_rows = [
+                {"Sector": k, "Exposure": v}
+                for k, v in sorted(exposures.items(), key=lambda x: x[1], reverse=True)
+            ]
+            st.dataframe(pd.DataFrame(exp_rows), use_container_width=True, hide_index=True)
+
+
+def _render_carry_trade():
+    """Carry trade signals."""
+    report = _fx.get_signal_report()
+    if not report:
+        return
+
+    carry = report.get("carry_trade", report.get("carry", {}))
+    if not carry:
+        return
+
+    st.markdown("#### Carry Trade")
+
+    best = carry.get("best_carry", carry.get("signal", {}))
+    if isinstance(best, dict):
+        st.metric("Best Carry", best.get("pair", "N/A"),
+                  delta=f"{best.get('differential', 0):.1f}% spread" if best.get("differential") else None)
+
+    signals = carry.get("signals", carry.get("pairs", []))
+    if signals and isinstance(signals, list):
+        rows = []
+        for s in signals:
+            if isinstance(s, dict):
+                rows.append({
+                    "Pair": s.get("pair", ""),
+                    "PKR Rate": s.get("pkr_rate", s.get("local_rate", "")),
+                    "Foreign Rate": s.get("foreign_rate", ""),
+                    "Differential": s.get("differential", s.get("spread", "")),
+                    "Signal": s.get("signal", ""),
+                })
+        if rows:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+def _render_premium_spread():
+    """Premium spread (interbank vs open market gap)."""
+    report = _fx.get_signal_report()
+    if not report:
+        return
+
+    prem = report.get("premium_spread", report.get("premium", {}))
+    if not prem:
+        return
+
+    st.markdown("#### Premium Spread")
+
+    stress = prem.get("stress_level", prem.get("signal", ""))
+    if stress:
+        stress_colors = {"low": "green", "moderate": "orange", "high": "red", "elevated": "orange"}
+        sc = stress_colors.get(stress.lower(), "gray")
+        st.markdown(f"**Stress Level:** :{sc}[{stress.title()}]")
+
+    pairs = prem.get("pairs", prem.get("spreads", []))
+    if pairs and isinstance(pairs, list):
+        rows = []
+        for p in pairs:
+            if isinstance(p, dict):
+                rows.append({
+                    "Pair": p.get("pair", ""),
+                    "Interbank": p.get("interbank", p.get("official", "")),
+                    "Open Market": p.get("open_market", p.get("kerb", "")),
+                    "Gap (%)": p.get("gap_pct", p.get("premium_pct", "")),
+                })
+        if rows:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+def _render_intervention():
+    """SBP intervention detection."""
+    data = _fx.get_intervention()
+    if not data:
+        return
+
+    st.markdown("#### SBP Intervention Detection")
+
+    signal = data.get("signal", data)
+    if isinstance(signal, dict):
+        cols = st.columns(3)
+        likely = signal.get("likely", signal.get("intervention_likely", False))
+        conf = signal.get("confidence", 0)
+        direction = signal.get("direction", signal.get("stance", "N/A"))
+
+        cols[0].metric("Likely", "Yes" if likely else "No")
+        if isinstance(conf, (int, float)):
+            cols[1].metric("Confidence", f"{conf:.0%}" if conf <= 1 else f"{conf}%")
+        else:
+            cols[1].metric("Confidence", str(conf))
+        cols[2].metric("Direction", str(direction).replace("_", " ").title())
+
+    # FXIM data
+    fxim = data.get("fxim", {})
+    history = fxim.get("history", [])
+    if history and isinstance(history, list):
+        with st.expander("FXIM History"):
+            st.dataframe(pd.DataFrame(history), use_container_width=True, hide_index=True)
