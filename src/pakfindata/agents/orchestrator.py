@@ -1,4 +1,4 @@
-"""Agent orchestrator for PSX OHLCV agentic AI.
+"""Agent orchestrator for PakFinData agentic AI.
 
 Routes user queries to appropriate specialist agents based on intent.
 Manages conversation context across agent switches.

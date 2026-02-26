@@ -1,5 +1,5 @@
 """
-API Client for PSX OHLCV Backend.
+API Client for PakFinData Backend.
 
 Provides a Python client for the FastAPI backend.
 Used by Streamlit frontend to communicate with the API.
@@ -54,7 +54,7 @@ class LoadResult:
 
 
 class APIClient:
-    """Client for PSX OHLCV API."""
+    """Client for PakFinData API."""
 
     def __init__(self, base_url: str = DEFAULT_API_URL, timeout: int = 30):
         """
@@ -280,14 +280,14 @@ def get_client(base_url: str = DEFAULT_API_URL) -> APIClient:
 
 
 def is_api_available(base_url: str = DEFAULT_API_URL, timeout: int = 2) -> bool:
-    """Check if PSX OHLCV API server is available.
+    """Check if PakFinData API server is available.
 
     Args:
         base_url: API server URL.
         timeout: Quick timeout for availability check (default 2 seconds).
 
     Returns:
-        True if our PSX OHLCV API is responding, False otherwise.
+        True if our PakFinData API is responding, False otherwise.
     """
     try:
         # Create a temporary client with short timeout for quick check
@@ -297,6 +297,6 @@ def is_api_available(base_url: str = DEFAULT_API_URL, timeout: int = 2) -> bool:
             return False
         # Also verify the root endpoint returns our API name
         result = temp_client._request("GET", "/")
-        return result.get("name") == "PSX OHLCV API"
+        return result.get("name") == "PakFinData API"
     except Exception:
         return False

@@ -1,4 +1,4 @@
-"""Chart helpers for PSX OHLCV Streamlit UI.
+"""Chart helpers for PakFinData Streamlit UI.
 
 Provides reusable Plotly chart components for consistent visualization.
 Supports theming via the themes module for Bloomberg Terminal-style charts.

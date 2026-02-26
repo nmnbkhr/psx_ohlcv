@@ -1,1 +1,1 @@
-"""Data sources for PSX OHLCV."""
+"""Data sources for PakFinData."""

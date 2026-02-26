@@ -1,4 +1,4 @@
-"""Session Interaction Tracker for PSX OHLCV UI.
+"""Session Interaction Tracker for PakFinData UI.
 
 Tracks user interactions both in Streamlit session state and persists to database.
 """

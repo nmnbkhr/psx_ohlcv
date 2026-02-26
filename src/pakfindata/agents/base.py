@@ -1,4 +1,4 @@
-"""Base agent class for PSX OHLCV agentic AI.
+"""Base agent class for PakFinData agentic AI.
 
 Provides the foundation for all specialist agents with common
 functionality for LLM interaction, tool execution, and conversation management.
@@ -303,7 +303,7 @@ class SyncAgent(BaseAgent):
 
     @property
     def system_prompt(self) -> str:
-        return """You are a data operations specialist for the PSX OHLCV system.
+        return """You are a data operations specialist for the PakFinData system.
 
 Your responsibilities:
 - Monitor data freshness and staleness

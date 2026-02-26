@@ -1,4 +1,4 @@
-"""Sync FX microservice data into local PSX OHLCV database tables.
+"""Sync FX microservice data into local PakFinData database tables.
 
 Pulls rates from the FX Trading Module (localhost:8100) and upserts into:
   - sbp_fx_interbank  (date, currency, buying, selling, mid)
@@ -104,7 +104,7 @@ def backfill_fx_history(
     sbp_fx_interbank (only fills gaps, never overwrites).
 
     Args:
-        con: SQLite connection to PSX OHLCV database
+        con: SQLite connection to PakFinData database
         from_date: Start date (YYYY-MM-DD)
         to_date: End date (YYYY-MM-DD), defaults to today
     """

@@ -1,4 +1,4 @@
-"""Query helpers for PSX OHLCV data."""
+"""Query helpers for PakFinData data."""
 
 import sqlite3
 

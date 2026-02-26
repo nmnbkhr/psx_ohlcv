@@ -116,7 +116,7 @@ def backup_database(con: sqlite3.Connection, backup_path: str | Path | None = No
 
 def main():
     """CLI entry point for database maintenance."""
-    parser = argparse.ArgumentParser(description="PSX OHLCV Database Maintenance")
+    parser = argparse.ArgumentParser(description="PakFinData Database Maintenance")
     parser.add_argument("--vacuum", action="store_true", help="Run VACUUM to reclaim space")
     parser.add_argument("--analyze", action="store_true", help="Run ANALYZE for query planner")
     parser.add_argument("--stats", action="store_true", help="Show database statistics")

@@ -1,7 +1,7 @@
 """Tool registry for agentic AI.
 
 Provides a central registry for tools that can be called by AI agents.
-Tools wrap existing PSX OHLCV functions with metadata for LLM tool use.
+Tools wrap existing PakFinData functions with metadata for LLM tool use.
 """
 
 import json

@@ -1,4 +1,4 @@
-"""Date range utilities for PSX OHLCV data fetching.
+"""Date range utilities for PakFinData data fetching.
 
 Provides utilities for iterating over date ranges with optional weekend skipping,
 useful for downloading historical market data files.

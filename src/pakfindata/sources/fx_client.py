@@ -1,11 +1,11 @@
 """
-FX Module Client — Drop into PSX OHLCV App
+FX Module Client — Drop into PakFinData App
 ============================================
-Thin async client that connects your PSX OHLCV app to the FX microservice.
+Thin async client that connects your PakFinData app to the FX microservice.
 
 DROP this file into: pakfindata/sources/fx_client.py (or wherever your sources live)
 
-Usage in your PSX OHLCV app:
+Usage in your PakFinData app:
     from sources.fx_client import FXClient
 
     fx = FXClient()  # Defaults to http://localhost:8100
@@ -42,7 +42,7 @@ class FXClient:
     """
     Resilient client for the FX Trading Module microservice.
     Designed for graceful degradation — if FX service is down,
-    your PSX OHLCV app keeps running normally.
+    your PakFinData app keeps running normally.
     """
 
     def __init__(
@@ -246,7 +246,7 @@ class FXClient:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# EXAMPLE INTEGRATION PATTERNS FOR PSX OHLCV APP
+# EXAMPLE INTEGRATION PATTERNS FOR PakFinData APP
 # ═══════════════════════════════════════════════════════════════════════
 
 """

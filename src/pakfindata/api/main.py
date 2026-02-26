@@ -1,5 +1,5 @@
 """
-FastAPI backend for PSX OHLCV application.
+FastAPI backend for PakFinData application.
 
 Provides REST API endpoints for:
 - EOD data statistics and loading
@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .routers import eod, tasks, symbols, market, company, instruments, fi, ws, treasury, funds, rates, fx, live, global_rates, npc_rates, bonds
 
 app = FastAPI(
-    title="PSX OHLCV API",
+    title="PakFinData API",
     description="Backend API for PSX market data — EOD, company, instruments, fixed income, treasury, funds, FX rates",
     version="3.0.0",
 )
@@ -52,7 +52,7 @@ app.include_router(bonds.router, prefix="/api/bonds", tags=["Bond Market"])
 def root():
     """API root endpoint."""
     return {
-        "name": "PSX OHLCV API",
+        "name": "PakFinData API",
         "version": "3.0.0",
         "docs": "/docs",
     }

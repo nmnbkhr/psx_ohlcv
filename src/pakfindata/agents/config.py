@@ -273,7 +273,7 @@ def print_config(config: AgenticConfig | None = None) -> str:
 
     fallback_str = config.fallback_model.model_id if config.fallback_model else "None"
     lines = [
-        "PSX OHLCV Agentic AI Configuration",
+        "PakFinData Agentic AI Configuration",
         "=" * 40,
         f"Primary Provider: {config.primary_provider.value}",
         f"Agent Model: {config.agent_model.model_id}",

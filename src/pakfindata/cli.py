@@ -1,4 +1,4 @@
-"""CLI for PSX OHLCV sync tool."""
+"""CLI for Pakistan Financial Data Platform."""
 
 import argparse
 import sys
@@ -150,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
         prog="pfsync",
-        description="PSX OHLCV data sync tool",
+        description="Pakistan Financial Data Platform — sync tool",
     )
     parser.add_argument(
         "--db",

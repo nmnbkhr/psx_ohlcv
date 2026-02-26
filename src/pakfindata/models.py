@@ -1,4 +1,4 @@
-"""Data models for PSX OHLCV."""
+"""Data models for PakFinData."""
 
 from dataclasses import dataclass
 from datetime import datetime

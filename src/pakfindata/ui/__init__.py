@@ -1,1 +1,1 @@
-"""Streamlit UI for PSX OHLCV."""
+"""Streamlit UI for PakFinData."""

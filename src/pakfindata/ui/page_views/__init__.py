@@ -1,1 +1,1 @@
-"""Page modules for PSX OHLCV Streamlit dashboard."""
+"""Page modules for PakFinData Streamlit dashboard."""

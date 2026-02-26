@@ -1,5 +1,5 @@
 """
-Theme System for PSX OHLCV Explorer.
+Theme System for PakFinData Explorer.
 
 Centralized theme tokens supporting multiple themes:
 - default: Original trading terminal look
@@ -396,7 +396,7 @@ def get_theme_css(theme_name: ThemeName = "bloomberg") -> str:
 
     return f"""<style>
 /* ============================================================================
-   PSX OHLCV EXPLORER - {theme.display_name.upper()} THEME
+   PakFinData EXPLORER - {theme.display_name.upper()} THEME
    Generated theme: {theme.name}
    ============================================================================ */
 

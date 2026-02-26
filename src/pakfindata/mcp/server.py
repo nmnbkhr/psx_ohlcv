@@ -1,4 +1,4 @@
-"""PSX OHLCV MCP Server.
+"""PakFinData MCP Server.
 
 Exposes Pakistan Stock Exchange data as AI-callable tools via the
 Model Context Protocol (MCP). Uses stdio transport for Claude Code integration.
@@ -1457,7 +1457,7 @@ async def read_resource(uri: str) -> str:
 
 
 _DATA_DICTIONARY = """\
-# PSX OHLCV Data Dictionary
+# PakFinData Data Dictionary
 
 ## eod_ohlcv — End of Day OHLCV
 - symbol: PSX stock ticker (e.g., OGDC, HBL)

@@ -343,7 +343,7 @@ async def sync_intraday_task(
 
 def main():
     """CLI entry point for async worker tasks."""
-    parser = argparse.ArgumentParser(description="PSX OHLCV Async Worker")
+    parser = argparse.ArgumentParser(description="PakFinData Async Worker")
     parser.add_argument("--task", required=True, choices=["sync_eod", "deep_scrape", "sync_intraday"],
                         help="Task to run")
     parser.add_argument("--symbols", type=str, default=None,

@@ -1,4 +1,4 @@
-"""Agentic AI layer for PSX OHLCV.
+"""Agentic AI layer for PakFinData.
 
 This module provides AI-powered agents that can autonomously analyze
 market data, execute operations, and generate insights through natural

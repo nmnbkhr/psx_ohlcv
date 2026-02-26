@@ -1,5 +1,5 @@
 """
-Agentic AI Chat Interface for PSX OHLCV Explorer.
+Agentic AI Chat Interface for PakFinData Explorer.
 
 This module provides a Streamlit chat interface for conversational
 interaction with the AI agents (Market, Sync, FixedIncome).

@@ -1,5 +1,5 @@
 """
-PSX OHLCV Explorer - Streamlit Dashboard.
+PakFinData Explorer - Streamlit Dashboard.
 
 Run with: streamlit run src/pakfindata/ui/app.py
 """
@@ -155,7 +155,7 @@ from pakfindata.sync_fx import sync_fx_pairs, seed_fx_pairs
 
 # Page config - must be first Streamlit command
 st.set_page_config(
-    page_title="PSX OHLCV Explorer",
+    page_title="PakFinData Explorer",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -1108,7 +1108,7 @@ def main():
     # =================================================================
     # CUSTOM BLOOMBERG-STYLE SIDEBAR
     # =================================================================
-    st.sidebar.title("PSX OHLCV Explorer")
+    st.sidebar.title("PakFinData Explorer")
 
     # Theme toggle
     theme_options = {
