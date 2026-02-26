@@ -2,9 +2,9 @@
 
 ## Context
 
-I'm working on `psx_ohlcv` — a Pakistan financial data platform with Streamlit UI.
+I'm working on `pakfindata` — a Pakistan financial data platform with Streamlit UI.
 - DB: `/mnt/e/psxdata/psx.sqlite`
-- Project: `~/psx_ohlcv/` (dev branch)
+- Project: `~/pakfindata/` (dev branch)
 - The app already has PKRV, PKISRV, PKFRV rate tables stored in SQLite
 - There is a Streamlit FI Overview page that currently has fake/placeholder bond data
 - The app uses `st.navigation()` for page routing (recently fixed)
@@ -33,37 +33,37 @@ done
 
 ```bash
 # Find all FI/bond related UI files
-find ~/psx_ohlcv/src/psx_ohlcv/ui/ -name "*fi*" -o -name "*fixed*" -o -name "*bond*" -o -name "*debt*" -o -name "*income*" | sort
+find ~/pakfindata/src/pakfindata/ui/ -name "*fi*" -o -name "*fixed*" -o -name "*bond*" -o -name "*debt*" -o -name "*income*" | sort
 
 # Show the main FI page content
-cat $(find ~/psx_ohlcv/src/psx_ohlcv/ui/pages/ -name "*fi*" -o -name "*fixed*" -o -name "*bond*" -o -name "*debt*" | head -1)
+cat $(find ~/pakfindata/src/pakfindata/ui/pages/ -name "*fi*" -o -name "*fixed*" -o -name "*bond*" -o -name "*debt*" | head -1)
 
 # Check app.py for how FI pages are registered
-grep -n "fi_\|fixed\|bond\|debt\|income\|FI\|Fixed Income" ~/psx_ohlcv/src/psx_ohlcv/ui/app.py
+grep -n "fi_\|fixed\|bond\|debt\|income\|FI\|Fixed Income" ~/pakfindata/src/pakfindata/ui/app.py
 ```
 
 ### Step 3 — Check existing DB query functions for rates
 
 ```bash
 # Find existing rate/yield/bond query functions
-grep -rn "def.*pkrv\|def.*isrv\|def.*frv\|def.*konia\|def.*yield\|def.*bond\|def.*debt\|def.*sukuk" ~/psx_ohlcv/src/psx_ohlcv/db/ ~/psx_ohlcv/src/psx_ohlcv/sources/ 2>/dev/null
+grep -rn "def.*pkrv\|def.*isrv\|def.*frv\|def.*konia\|def.*yield\|def.*bond\|def.*debt\|def.*sukuk" ~/pakfindata/src/pakfindata/db/ ~/pakfindata/src/pakfindata/sources/ 2>/dev/null
 
 # Check if there are existing rate scrapers
-find ~/psx_ohlcv/src/psx_ohlcv/sources/ -name "*rate*" -o -name "*sbp*" -o -name "*mufap*" -o -name "*pkrv*" | sort
-cat $(find ~/psx_ohlcv/src/psx_ohlcv/sources/ -name "*rate*" -o -name "*sbp*" | head -1) 2>/dev/null | head -80
+find ~/pakfindata/src/pakfindata/sources/ -name "*rate*" -o -name "*sbp*" -o -name "*mufap*" -o -name "*pkrv*" | sort
+cat $(find ~/pakfindata/src/pakfindata/sources/ -name "*rate*" -o -name "*sbp*" | head -1) 2>/dev/null | head -80
 
 # Check if there's a bond scraper from PSX debt market
-grep -rn "debt-market\|dps.psx.com.pk/debt\|debt_market" ~/psx_ohlcv/src/ 2>/dev/null
+grep -rn "debt-market\|dps.psx.com.pk/debt\|debt_market" ~/pakfindata/src/ 2>/dev/null
 ```
 
 ### Step 4 — Check what data the current FI page uses (real vs fake)
 
 ```bash
 # Look for hardcoded/fake data in FI pages
-grep -n "sample\|fake\|dummy\|placeholder\|mock\|hardcode\|example.*data\|demo" $(find ~/psx_ohlcv/src/psx_ohlcv/ui/pages/ -name "*fi*" -o -name "*bond*" -o -name "*debt*") 2>/dev/null
+grep -n "sample\|fake\|dummy\|placeholder\|mock\|hardcode\|example.*data\|demo" $(find ~/pakfindata/src/pakfindata/ui/pages/ -name "*fi*" -o -name "*bond*" -o -name "*debt*") 2>/dev/null
 
 # Look for DataFrame creation with fake data
-grep -n "pd.DataFrame\|DataFrame(" $(find ~/psx_ohlcv/src/psx_ohlcv/ui/pages/ -name "*fi*" -o -name "*bond*" -o -name "*debt*") 2>/dev/null
+grep -n "pd.DataFrame\|DataFrame(" $(find ~/pakfindata/src/pakfindata/ui/pages/ -name "*fi*" -o -name "*bond*" -o -name "*debt*") 2>/dev/null
 ```
 
 **STOP HERE. Show me all output from Steps 1-4 before proceeding.**
@@ -85,7 +85,7 @@ Individual bond pages are at: `dps.psx.com.pk/debt/{SECURITY_CODE}` (e.g., `/deb
 
 ### Step 5 — Create bond listings scraper
 
-Create `src/psx_ohlcv/sources/psx_debt.py`:
+Create `src/pakfindata/sources/psx_debt.py`:
 
 ```python
 """
@@ -162,7 +162,7 @@ class PSXDebtScraper:
 
 ### Step 6 — Create bond listings DB schema + functions
 
-Create or update `src/psx_ohlcv/db/bonds.py`:
+Create or update `src/pakfindata/db/bonds.py`:
 
 ```sql
 CREATE TABLE IF NOT EXISTS psx_debt_securities (
@@ -197,14 +197,14 @@ Functions needed:
 
 Add to CLI:
 ```
-psxsync bonds sync       # scrape all 4 categories from PSX debt market
-psxsync bonds list       # show bond count by category
-psxsync bonds detail P01GIS040226  # show individual bond
+pfsync bonds sync       # scrape all 4 categories from PSX debt market
+pfsync bonds list       # show bond count by category
+pfsync bonds detail P01GIS040226  # show individual bond
 ```
 
 Test the scraper:
 ```bash
-python -m psx_ohlcv bonds sync
+python -m pakfindata bonds sync
 sqlite3 /mnt/e/psxdata/psx.sqlite "SELECT category, COUNT(*) FROM psx_debt_securities GROUP BY category;"
 ```
 
@@ -279,13 +279,13 @@ col1, col2, col3 = st.columns([6, 1, 1])
 with col2:
     if st.button("🔄 Sync Rates"):
         # Call the PKRV/KONIA scraper
-        # from psx_ohlcv.sources.sbp_rates import SBPRatesScraper
+        # from pakfindata.sources.sbp_rates import SBPRatesScraper
         # ... sync and show success/fail
         pass
 with col3:
     if st.button("🔄 Sync Bonds"):
         # Call the PSX debt scraper
-        # from psx_ohlcv.sources.psx_debt import PSXDebtScraper
+        # from pakfindata.sources.psx_debt import PSXDebtScraper
         # ... sync and show success/fail
         pass
 ```
@@ -312,7 +312,7 @@ NOT fake data.
 
 ```bash
 # Step 11 — Run the bond scraper
-python -m psx_ohlcv bonds sync 2>&1
+python -m pakfindata bonds sync 2>&1
 
 # Check data populated
 sqlite3 -header /mnt/e/psxdata/psx.sqlite "
@@ -331,7 +331,7 @@ sqlite3 -header /mnt/e/psxdata/psx.sqlite "
 " 2>/dev/null || echo "PKRV table name may differ — check Step 1 output"
 
 # Step 12 — Start Streamlit and verify
-streamlit run src/psx_ohlcv/ui/app.py --server.headless true 2>&1 | head -5
+streamlit run src/pakfindata/ui/app.py --server.headless true 2>&1 | head -5
 
 # Step 13 — Run tests
 pytest tests/ -x -q --tb=short 2>&1 | tail -10

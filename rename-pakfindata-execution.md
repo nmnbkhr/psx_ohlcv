@@ -14,7 +14,7 @@
 **NOTHING starts until every last change is saved.**
 
 ```bash
-cd ~/psx_ohlcv
+cd ~/pakfindata
 
 echo "╔══════════════════════════════════════════════════════╗"
 echo "║  STEP 0: SAVE EVERYTHING BEFORE RENAME               ║"
@@ -41,7 +41,7 @@ git commit -m "chore: save all pending work before pakfindata rename
 All uncommitted changes preserved:
 $(git diff --cached --stat 2>/dev/null | tail -1)
 
-Next step: rename psx_ohlcv → pakfindata on a dedicated branch"
+Next step: rename pakfindata → pakfindata on a dedicated branch"
 
 # 0F — Push to remote
 git push origin $(git branch --show-current)
@@ -62,7 +62,7 @@ echo "If 'git status' shows anything, fix it now."
 ## STEP 1 — Create Rename Branch
 
 ```bash
-cd ~/psx_ohlcv
+cd ~/pakfindata
 
 # 1A — Create dedicated branch from current HEAD
 git checkout -b refactor/rename-pakfindata
@@ -91,11 +91,11 @@ echo "╚═══════════════════════�
 echo ""
 echo "━━━ PATHS THAT CHANGE ━━━"
 echo ""
-echo "  ~/psx_ohlcv/                    → ~/pakfindata/"
-echo "  ~/psx_ohlcv/src/psx_ohlcv/      → ~/pakfindata/src/pakfindata/"
-echo "  Every 'from psx_ohlcv.' import  → 'from pakfindata.'"
-echo "  Every 'import psx_ohlcv'        → 'import pakfindata'"
-echo "  CLI: psxsync                    → pfsync"
+echo "  ~/pakfindata/                    → ~/pakfindata/"
+echo "  ~/pakfindata/src/pakfindata/      → ~/pakfindata/src/pakfindata/"
+echo "  Every 'from pakfindata.' import  → 'from pakfindata.'"
+echo "  Every 'import pakfindata'        → 'import pakfindata'"
+echo "  CLI: pfsync                    → pfsync"
 echo "  pyproject.toml package name     → pakfindata"
 echo "  .egg-info directory name        → pakfindata.egg-info"
 echo ""
@@ -123,48 +123,48 @@ echo ""
 echo "--- Database path references ---"
 grep -rn "/mnt/e/psxdata\|psx\.sqlite\|PSX_DB_PATH\|DB_PATH\|db_path" \
   --include="*.py" --include="*.toml" --include="*.yaml" --include="*.sh" --include="*.env*" \
-  ~/psx_ohlcv/ | grep -v __pycache__ | grep -v .git
+  ~/pakfindata/ | grep -v __pycache__ | grep -v .git
 
 echo ""
 echo "--- Home directory path references ---"
-grep -rn "~/psx_ohlcv\|/home/.*/psx_ohlcv\|\$HOME/psx_ohlcv" \
+grep -rn "~/pakfindata\|/home/.*/pakfindata\|\$HOME/pakfindata" \
   --include="*.py" --include="*.toml" --include="*.yaml" --include="*.sh" --include="*.env*" --include="*.json" \
-  ~/psx_ohlcv/ | grep -v __pycache__ | grep -v .git
+  ~/pakfindata/ | grep -v __pycache__ | grep -v .git
 
 echo ""
 echo "--- Data directory references ---"
 grep -rn "data/smtv\|data/cache\|data/raw\|data/pdf" \
   --include="*.py" --include="*.sh" \
-  ~/psx_ohlcv/ | grep -v __pycache__ | grep -v .git
+  ~/pakfindata/ | grep -v __pycache__ | grep -v .git
 
 echo ""
 echo "--- Config file path references ---"
 grep -rn "config.*path\|CONFIG_DIR\|CACHE_DIR\|LOG_DIR\|DATA_DIR" \
   --include="*.py" --include="*.toml" \
-  ~/psx_ohlcv/src/ | grep -v __pycache__
+  ~/pakfindata/src/ | grep -v __pycache__
 
 echo ""
 echo "--- Streamlit command references ---"
 grep -rn "streamlit run\|app\.py" \
   --include="*.sh" --include="*.md" --include="*.yaml" \
-  ~/psx_ohlcv/ | grep -v __pycache__ | grep -v .git
+  ~/pakfindata/ | grep -v __pycache__ | grep -v .git
 
 echo ""
 echo "--- MCP / API server path references ---"
 grep -rn "mcp\|server.*path\|endpoint.*path" \
   --include="*.py" --include="*.json" --include="*.yaml" \
-  ~/psx_ohlcv/ | grep -v __pycache__ | grep -v .git | grep -i "psx_ohlcv\|path" | head -20
+  ~/pakfindata/ | grep -v __pycache__ | grep -v .git | grep -i "pakfindata\|path" | head -20
 
 echo ""
 echo "━━━ DECISION: Which paths need updating? ━━━"
 echo ""
 echo "From the output above, identify:"
-echo "1. Paths containing 'psx_ohlcv' as PROJECT directory → MUST change"
+echo "1. Paths containing 'pakfindata' as PROJECT directory → MUST change"
 echo "2. Paths containing 'psxdata' as DATA directory → DO NOT change"
 echo "3. Paths containing 'psx' as exchange abbreviation → DO NOT change"
 ```
 
-**Review this output carefully. Any path with `psx_ohlcv` as the project directory changes.
+**Review this output carefully. Any path with `pakfindata` as the project directory changes.
 Any path with `psxdata` as the data directory stays.**
 
 ---
@@ -172,17 +172,17 @@ Any path with `psxdata` as the data directory stays.**
 ## STEP 3 — Remove Old Package Installation
 
 ```bash
-cd ~/psx_ohlcv
+cd ~/pakfindata
 
 echo "━━━ STEP 3: Clean old installation ━━━"
 
 # 3A — Uninstall the old package from pip
-pip uninstall psx_ohlcv -y 2>/dev/null || echo "psx_ohlcv not installed via pip"
+pip uninstall pakfindata -y 2>/dev/null || echo "pakfindata not installed via pip"
 pip uninstall psx-ohlcv -y 2>/dev/null || echo "psx-ohlcv not installed via pip"
 
 # 3B — Remove egg-info (stale metadata)
-rm -rf src/psx_ohlcv.egg-info/ 2>/dev/null
-rm -rf src/psx_ohlcv/*.egg-info/ 2>/dev/null
+rm -rf src/pakfindata.egg-info/ 2>/dev/null
+rm -rf src/pakfindata/*.egg-info/ 2>/dev/null
 find . -name "*.egg-info" -type d -exec rm -rf {} + 2>/dev/null
 find . -name "*.egg" -type f -delete 2>/dev/null
 
@@ -191,18 +191,18 @@ find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null
 find . -name "*.pyc" -delete 2>/dev/null
 
 # 3D — Verify old package is gone
-python -c "import psx_ohlcv" 2>&1 && echo "⚠️ psx_ohlcv still importable!" || echo "✅ psx_ohlcv uninstalled"
+python -c "import pakfindata" 2>&1 && echo "⚠️ pakfindata still importable!" || echo "✅ pakfindata uninstalled"
 
-# 3E — Verify psxsync CLI removed
-which psxsync 2>/dev/null && echo "⚠️ psxsync still in PATH: $(which psxsync)" || echo "✅ psxsync removed from PATH"
+# 3E — Verify pfsync CLI removed
+which pfsync 2>/dev/null && echo "⚠️ pfsync still in PATH: $(which pfsync)" || echo "✅ pfsync removed from PATH"
 ```
 
 **Commit:**
 ```bash
 git add -A
-git commit -m "chore: remove old psx_ohlcv package installation and stale metadata
+git commit -m "chore: remove old pakfindata package installation and stale metadata
 
-- pip uninstall psx_ohlcv
+- pip uninstall pakfindata
 - Removed .egg-info directories
 - Cleared __pycache__ to prevent stale imports"
 ```
@@ -217,11 +217,11 @@ echo "━━━ STEP 4: Rename project root ━━━"
 cd ~
 
 # 4A — Rename the project directory
-mv psx_ohlcv pakfindata
+mv pakfindata pakfindata
 
 # 4B — Verify
 ls -la ~/pakfindata/
-ls -la ~/pakfindata/src/psx_ohlcv/  # still old name inside
+ls -la ~/pakfindata/src/pakfindata/  # still old name inside
 
 # 4C — cd into new location
 cd ~/pakfindata
@@ -240,8 +240,8 @@ cd ~/pakfindata
 
 echo "━━━ STEP 5: Rename Python package directory ━━━"
 
-# 5A — Rename src/psx_ohlcv → src/pakfindata
-mv src/psx_ohlcv src/pakfindata
+# 5A — Rename src/pakfindata → src/pakfindata
+mv src/pakfindata src/pakfindata
 
 # 5B — Verify directory structure
 ls -la src/pakfindata/
@@ -254,10 +254,10 @@ echo "Package directory renamed. Git will track this as rename."
 **Commit:**
 ```bash
 git add -A
-git commit -m "refactor: rename directories psx_ohlcv → pakfindata
+git commit -m "refactor: rename directories pakfindata → pakfindata
 
-- Project root: ~/psx_ohlcv → ~/pakfindata
-- Python package: src/psx_ohlcv → src/pakfindata
+- Project root: ~/pakfindata → ~/pakfindata
+- Python package: src/pakfindata → src/pakfindata
 - No code changes yet — just directory moves"
 ```
 
@@ -274,22 +274,22 @@ echo "━━━ STEP 6: Fix Python imports ━━━"
 
 # 6A — Count what needs fixing
 echo "Files to fix:"
-grep -rln "psx_ohlcv" --include="*.py" src/ tests/ | grep -v __pycache__ | sort
+grep -rln "pakfindata" --include="*.py" src/ tests/ | grep -v __pycache__ | sort
 echo ""
-echo "Total files: $(grep -rln "psx_ohlcv" --include="*.py" src/ tests/ | grep -v __pycache__ | wc -l)"
-echo "Total lines: $(grep -rn "psx_ohlcv" --include="*.py" src/ tests/ | grep -v __pycache__ | wc -l)"
+echo "Total files: $(grep -rln "pakfindata" --include="*.py" src/ tests/ | grep -v __pycache__ | wc -l)"
+echo "Total lines: $(grep -rn "pakfindata" --include="*.py" src/ tests/ | grep -v __pycache__ | wc -l)"
 
 # 6B — Do the replacement
-# SAFE because 'psx_ohlcv' is a unique string — no false positives possible
+# SAFE because 'pakfindata' is a unique string — no false positives possible
 find src/ tests/ -name "*.py" -not -path "*/__pycache__/*" \
-  -exec sed -i 's/psx_ohlcv/pakfindata/g' {} +
+  -exec sed -i 's/pakfindata/pakfindata/g' {} +
 
 # 6C — Verify: zero remaining references
 echo ""
 echo "━━━ Verification ━━━"
-remaining=$(grep -rn "psx_ohlcv" --include="*.py" src/ tests/ | grep -v __pycache__)
+remaining=$(grep -rn "pakfindata" --include="*.py" src/ tests/ | grep -v __pycache__)
 if [ -z "$remaining" ]; then
-  echo "✅ All Python imports updated — zero psx_ohlcv references remain"
+  echo "✅ All Python imports updated — zero pakfindata references remain"
 else
   echo "❌ REMAINING REFERENCES (fix manually):"
   echo "$remaining"
@@ -319,11 +319,11 @@ fi
 **Commit:**
 ```bash
 git add -A
-git commit -m "refactor: update all Python imports psx_ohlcv → pakfindata
+git commit -m "refactor: update all Python imports pakfindata → pakfindata
 
 - Updated $(grep -rn 'pakfindata' --include='*.py' src/ tests/ | grep -v __pycache__ | wc -l) import lines
-- All 'from psx_ohlcv.' → 'from pakfindata.'
-- All 'import psx_ohlcv' → 'import pakfindata'
+- All 'from pakfindata.' → 'from pakfindata.'
+- All 'import pakfindata' → 'import pakfindata'
 - All internal references updated"
 ```
 
@@ -341,11 +341,11 @@ echo "--- Before ---"
 cat pyproject.toml
 
 # 7B — Replace package name
-sed -i 's/psx_ohlcv/pakfindata/g' pyproject.toml
+sed -i 's/pakfindata/pakfindata/g' pyproject.toml
 sed -i 's/psx-ohlcv/pakfindata/g' pyproject.toml
 
-# 7C — Replace CLI entry point: psxsync → pfsync
-sed -i 's/psxsync/pfsync/g' pyproject.toml
+# 7C — Replace CLI entry point: pfsync → pfsync
+sed -i 's/pfsync/pfsync/g' pyproject.toml
 
 # 7D — Show result
 echo ""
@@ -358,7 +358,7 @@ echo "━━━ Verification ━━━"
 echo "Package name:"
 grep -E "^name\s*=" pyproject.toml
 echo "CLI entry point:"
-grep -E "pfsync|psxsync" pyproject.toml
+grep -E "pfsync|pfsync" pyproject.toml
 echo "Package dir:"
 grep -E "packages|find" pyproject.toml
 
@@ -366,9 +366,9 @@ grep -E "packages|find" pyproject.toml
 if [ -f setup.cfg ]; then
   echo ""
   echo "--- setup.cfg found, updating ---"
-  sed -i 's/psx_ohlcv/pakfindata/g' setup.cfg
+  sed -i 's/pakfindata/pakfindata/g' setup.cfg
   sed -i 's/psx-ohlcv/pakfindata/g' setup.cfg
-  sed -i 's/psxsync/pfsync/g' setup.cfg
+  sed -i 's/pfsync/pfsync/g' setup.cfg
   cat setup.cfg
 fi
 
@@ -376,16 +376,16 @@ fi
 if [ -f setup.py ]; then
   echo ""
   echo "--- setup.py found, updating ---"
-  sed -i 's/psx_ohlcv/pakfindata/g' setup.py
+  sed -i 's/pakfindata/pakfindata/g' setup.py
   sed -i 's/psx-ohlcv/pakfindata/g' setup.py
-  sed -i 's/psxsync/pfsync/g' setup.py
+  sed -i 's/pfsync/pfsync/g' setup.py
 fi
 
 # 7H — Check for MANIFEST.in
 if [ -f MANIFEST.in ]; then
   echo ""
   echo "--- MANIFEST.in found, updating ---"
-  sed -i 's/psx_ohlcv/pakfindata/g' MANIFEST.in
+  sed -i 's/pakfindata/pakfindata/g' MANIFEST.in
   cat MANIFEST.in
 fi
 ```
@@ -395,8 +395,8 @@ fi
 git add -A
 git commit -m "refactor: update pyproject.toml — package name + CLI entry point
 
-- Package: psx_ohlcv → pakfindata
-- CLI: psxsync → pfsync
+- Package: pakfindata → pakfindata
+- CLI: pfsync → pfsync
 - Updated setup.cfg/setup.py/MANIFEST.in if present"
 ```
 
@@ -412,44 +412,44 @@ echo "━━━ STEP 8: Fix shell scripts ━━━"
 # 8A — Find all shell scripts with references
 echo "Shell scripts to update:"
 find . -name "*.sh" -o -name "*.bash" | while read f; do
-  cnt=$(grep -c "psx_ohlcv\|psxsync\|~/psx_ohlcv" "$f" 2>/dev/null)
+  cnt=$(grep -c "pakfindata\|pfsync\|~/pakfindata" "$f" 2>/dev/null)
   [ "$cnt" -gt 0 ] && echo "  $f ($cnt references)"
 done
 
 # 8B — Fix package name in scripts
 find . -name "*.sh" -o -name "*.bash" | while read f; do
-  if grep -q "psx_ohlcv" "$f" 2>/dev/null; then
+  if grep -q "pakfindata" "$f" 2>/dev/null; then
     echo "Fixing: $f"
-    sed -i 's/psx_ohlcv/pakfindata/g' "$f"
+    sed -i 's/pakfindata/pakfindata/g' "$f"
   fi
 done
 
 # 8C — Fix CLI command in scripts
 find . -name "*.sh" -o -name "*.bash" | while read f; do
-  if grep -q "psxsync" "$f" 2>/dev/null; then
+  if grep -q "pfsync" "$f" 2>/dev/null; then
     echo "Fixing CLI in: $f"
-    sed -i 's/psxsync/pfsync/g' "$f"
+    sed -i 's/pfsync/pfsync/g' "$f"
   fi
 done
 
 # 8D — Fix project directory path in scripts
 find . -name "*.sh" -o -name "*.bash" | while read f; do
-  if grep -q "~/psx_ohlcv\|/psx_ohlcv/" "$f" 2>/dev/null; then
+  if grep -q "~/pakfindata\|/pakfindata/" "$f" 2>/dev/null; then
     echo "Fixing path in: $f"
-    sed -i 's|~/psx_ohlcv|~/pakfindata|g' "$f"
-    sed -i 's|/psx_ohlcv/|/pakfindata/|g' "$f"
+    sed -i 's|~/pakfindata|~/pakfindata|g' "$f"
+    sed -i 's|/pakfindata/|/pakfindata/|g' "$f"
   fi
 done
 
 # 8E — Fix cron-related files inside project
 find . -name "*cron*" -o -name "*schedule*" | while read f; do
-  [ -f "$f" ] && sed -i 's/psx_ohlcv/pakfindata/g; s/psxsync/pfsync/g; s|~/psx_ohlcv|~/pakfindata|g' "$f" && echo "Fixed: $f"
+  [ -f "$f" ] && sed -i 's/pakfindata/pakfindata/g; s/pfsync/pfsync/g; s|~/pakfindata|~/pakfindata|g' "$f" && echo "Fixed: $f"
 done
 
 # 8F — Verify
 echo ""
 echo "━━━ Verification ━━━"
-remaining=$(find . -name "*.sh" -o -name "*.bash" | xargs grep -l "psx_ohlcv\|psxsync\|~/psx_ohlcv" 2>/dev/null)
+remaining=$(find . -name "*.sh" -o -name "*.bash" | xargs grep -l "pakfindata\|pfsync\|~/pakfindata" 2>/dev/null)
 if [ -z "$remaining" ]; then
   echo "✅ All shell scripts updated"
 else
@@ -460,10 +460,10 @@ fi
 # 8G — Show crontab (can't auto-fix — user must do manually)
 echo ""
 echo "━━━ CRONTAB (manual fix needed) ━━━"
-crontab -l 2>/dev/null | grep -n "psx_ohlcv\|psxsync" && \
+crontab -l 2>/dev/null | grep -n "pakfindata\|pfsync" && \
   echo "⚠️ Run 'crontab -e' and replace:" && \
-  echo "   ~/psx_ohlcv → ~/pakfindata" && \
-  echo "   psxsync → pfsync" || \
+  echo "   ~/pakfindata → ~/pakfindata" && \
+  echo "   pfsync → pfsync" || \
   echo "✅ No crontab references to fix"
 ```
 
@@ -472,9 +472,9 @@ crontab -l 2>/dev/null | grep -n "psx_ohlcv\|psxsync" && \
 git add -A
 git commit -m "refactor: update shell scripts — paths, CLI references
 
-- Script paths: ~/psx_ohlcv → ~/pakfindata
-- CLI calls: psxsync → pfsync
-- Package refs: psx_ohlcv → pakfindata
+- Script paths: ~/pakfindata → ~/pakfindata
+- CLI calls: pfsync → pfsync
+- Package refs: pakfindata → pakfindata
 - NOTE: crontab requires manual update (crontab -e)"
 ```
 
@@ -489,63 +489,63 @@ echo "━━━ STEP 9: Fix config files ━━━"
 
 # 9A — YAML files
 find . \( -name "*.yml" -o -name "*.yaml" \) -not -path "./.git/*" | while read f; do
-  if grep -q "psx_ohlcv\|psxsync\|~/psx_ohlcv" "$f" 2>/dev/null; then
+  if grep -q "pakfindata\|pfsync\|~/pakfindata" "$f" 2>/dev/null; then
     echo "Fixing YAML: $f"
-    sed -i 's/psx_ohlcv/pakfindata/g; s/psxsync/pfsync/g; s|~/psx_ohlcv|~/pakfindata|g' "$f"
+    sed -i 's/pakfindata/pakfindata/g; s/pfsync/pfsync/g; s|~/pakfindata|~/pakfindata|g' "$f"
   fi
 done
 
 # 9B — JSON configs (not node_modules, not .git)
 find . -name "*.json" -not -path "./.git/*" -not -path "*/node_modules/*" | while read f; do
-  if grep -q "psx_ohlcv\|psxsync\|~/psx_ohlcv" "$f" 2>/dev/null; then
+  if grep -q "pakfindata\|pfsync\|~/pakfindata" "$f" 2>/dev/null; then
     echo "Fixing JSON: $f"
-    sed -i 's/psx_ohlcv/pakfindata/g; s/psxsync/pfsync/g; s|~/psx_ohlcv|~/pakfindata|g' "$f"
+    sed -i 's/pakfindata/pakfindata/g; s/pfsync/pfsync/g; s|~/pakfindata|~/pakfindata|g' "$f"
   fi
 done
 
 # 9C — INI / CFG files
 find . \( -name "*.ini" -o -name "*.cfg" \) -not -path "./.git/*" | while read f; do
-  if grep -q "psx_ohlcv\|psxsync" "$f" 2>/dev/null; then
+  if grep -q "pakfindata\|pfsync" "$f" 2>/dev/null; then
     echo "Fixing INI/CFG: $f"
-    sed -i 's/psx_ohlcv/pakfindata/g; s/psxsync/pfsync/g; s|~/psx_ohlcv|~/pakfindata|g' "$f"
+    sed -i 's/pakfindata/pakfindata/g; s/pfsync/pfsync/g; s|~/pakfindata|~/pakfindata|g' "$f"
   fi
 done
 
 # 9D — ENV files
 find . -name ".env*" -not -path "./.git/*" | while read f; do
-  if grep -q "psx_ohlcv\|psxsync\|~/psx_ohlcv" "$f" 2>/dev/null; then
+  if grep -q "pakfindata\|pfsync\|~/pakfindata" "$f" 2>/dev/null; then
     echo "Fixing ENV: $f"
-    sed -i 's/psx_ohlcv/pakfindata/g; s/psxsync/pfsync/g; s|~/psx_ohlcv|~/pakfindata|g' "$f"
+    sed -i 's/pakfindata/pakfindata/g; s/pfsync/pfsync/g; s|~/pakfindata|~/pakfindata|g' "$f"
   fi
 done
 
 # 9E — VS Code settings
 find .vscode/ -name "*.json" 2>/dev/null | while read f; do
-  if grep -q "psx_ohlcv\|psxsync\|~/psx_ohlcv" "$f" 2>/dev/null; then
+  if grep -q "pakfindata\|pfsync\|~/pakfindata" "$f" 2>/dev/null; then
     echo "Fixing VS Code: $f"
-    sed -i 's/psx_ohlcv/pakfindata/g; s/psxsync/pfsync/g; s|~/psx_ohlcv|~/pakfindata|g; s|/psx_ohlcv/|/pakfindata/|g' "$f"
+    sed -i 's/pakfindata/pakfindata/g; s/pfsync/pfsync/g; s|~/pakfindata|~/pakfindata|g; s|/pakfindata/|/pakfindata/|g' "$f"
   fi
 done
 
 # 9F — Docker files
 for f in Dockerfile Dockerfile.* docker-compose.yml docker-compose*.yml .dockerignore; do
-  if [ -f "$f" ] && grep -q "psx_ohlcv\|psxsync\|~/psx_ohlcv" "$f" 2>/dev/null; then
+  if [ -f "$f" ] && grep -q "pakfindata\|pfsync\|~/pakfindata" "$f" 2>/dev/null; then
     echo "Fixing Docker: $f"
-    sed -i 's/psx_ohlcv/pakfindata/g; s/psxsync/pfsync/g; s|~/psx_ohlcv|~/pakfindata|g; s|/psx_ohlcv|/pakfindata|g' "$f"
+    sed -i 's/pakfindata/pakfindata/g; s/pfsync/pfsync/g; s|~/pakfindata|~/pakfindata|g; s|/pakfindata|/pakfindata|g' "$f"
   fi
 done
 
 # 9G — Verify
 echo ""
 echo "━━━ Verification ━━━"
-remaining=$(find . \( -name "*.yml" -o -name "*.yaml" -o -name "*.json" -o -name "*.ini" -o -name "*.cfg" -o -name ".env*" \) -not -path "./.git/*" -not -path "*/node_modules/*" | xargs grep -l "psx_ohlcv\|psxsync" 2>/dev/null)
+remaining=$(find . \( -name "*.yml" -o -name "*.yaml" -o -name "*.json" -o -name "*.ini" -o -name "*.cfg" -o -name ".env*" \) -not -path "./.git/*" -not -path "*/node_modules/*" | xargs grep -l "pakfindata\|pfsync" 2>/dev/null)
 if [ -z "$remaining" ]; then
   echo "✅ All config files updated"
 else
   echo "❌ Remaining:"
   for f in $remaining; do
     echo "  $f:"
-    grep -n "psx_ohlcv\|psxsync" "$f"
+    grep -n "pakfindata\|pfsync" "$f"
   done
 fi
 ```
@@ -555,7 +555,7 @@ fi
 git add -A
 git commit -m "refactor: update config files — YAML, JSON, VS Code, Docker, ENV
 
-- All config references: psx_ohlcv → pakfindata
+- All config references: pakfindata → pakfindata
 - VS Code workspace settings updated
 - Docker configs updated if present
 - Environment files updated"
@@ -572,31 +572,31 @@ echo "━━━ STEP 10: Fix documentation ━━━"
 
 # 10A — Markdown files
 find . -name "*.md" -not -path "./.git/*" | while read f; do
-  if grep -q "psx_ohlcv\|psxsync\|~/psx_ohlcv" "$f" 2>/dev/null; then
+  if grep -q "pakfindata\|pfsync\|~/pakfindata" "$f" 2>/dev/null; then
     echo "Fixing: $f"
-    sed -i 's/psx_ohlcv/pakfindata/g; s/psxsync/pfsync/g; s|~/psx_ohlcv|~/pakfindata|g' "$f"
+    sed -i 's/pakfindata/pakfindata/g; s/pfsync/pfsync/g; s|~/pakfindata|~/pakfindata|g' "$f"
   fi
 done
 
 # 10B — RST files
 find . -name "*.rst" -not -path "./.git/*" | while read f; do
-  if grep -q "psx_ohlcv\|psxsync" "$f" 2>/dev/null; then
+  if grep -q "pakfindata\|pfsync" "$f" 2>/dev/null; then
     echo "Fixing: $f"
-    sed -i 's/psx_ohlcv/pakfindata/g; s/psxsync/pfsync/g; s|~/psx_ohlcv|~/pakfindata|g' "$f"
+    sed -i 's/pakfindata/pakfindata/g; s/pfsync/pfsync/g; s|~/pakfindata|~/pakfindata|g' "$f"
   fi
 done
 
 # 10C — TXT files (README, CHANGELOG, etc.)
 find . -name "*.txt" -not -path "./.git/*" -not -path "*/node_modules/*" | while read f; do
-  if grep -q "psx_ohlcv\|psxsync" "$f" 2>/dev/null; then
+  if grep -q "pakfindata\|pfsync" "$f" 2>/dev/null; then
     echo "Fixing: $f"
-    sed -i 's/psx_ohlcv/pakfindata/g; s/psxsync/pfsync/g; s|~/psx_ohlcv|~/pakfindata|g' "$f"
+    sed -i 's/pakfindata/pakfindata/g; s/pfsync/pfsync/g; s|~/pakfindata|~/pakfindata|g' "$f"
   fi
 done
 
 # 10D — Verify
 echo ""
-remaining=$(find . \( -name "*.md" -o -name "*.rst" -o -name "*.txt" \) -not -path "./.git/*" | xargs grep -l "psx_ohlcv\|psxsync" 2>/dev/null)
+remaining=$(find . \( -name "*.md" -o -name "*.rst" -o -name "*.txt" \) -not -path "./.git/*" | xargs grep -l "pakfindata\|pfsync" 2>/dev/null)
 if [ -z "$remaining" ]; then
   echo "✅ All documentation updated"
 else
@@ -609,7 +609,7 @@ fi
 git add -A
 git commit -m "refactor: update documentation — README, CHANGELOG, docs
 
-- All doc references: psx_ohlcv → pakfindata, psxsync → pfsync
+- All doc references: pakfindata → pakfindata, pfsync → pfsync
 - Path references updated"
 ```
 
@@ -628,8 +628,8 @@ cat src/pakfindata/__init__.py
 
 # 11B — Fix any hardcoded name/version strings
 # (These should already be fixed by Step 6's sed, but verify)
-grep -n "psx_ohlcv" src/pakfindata/__init__.py && \
-  sed -i 's/psx_ohlcv/pakfindata/g' src/pakfindata/__init__.py || \
+grep -n "pakfindata" src/pakfindata/__init__.py && \
+  sed -i 's/pakfindata/pakfindata/g' src/pakfindata/__init__.py || \
   echo "✅ __init__.py already clean"
 
 # 11C — Check __main__.py
@@ -637,8 +637,8 @@ if [ -f src/pakfindata/__main__.py ]; then
   echo ""
   echo "--- __main__.py content ---"
   cat src/pakfindata/__main__.py
-  grep -n "psx_ohlcv\|psxsync" src/pakfindata/__main__.py && \
-    sed -i 's/psx_ohlcv/pakfindata/g; s/psxsync/pfsync/g' src/pakfindata/__main__.py || \
+  grep -n "pakfindata\|pfsync" src/pakfindata/__main__.py && \
+    sed -i 's/pakfindata/pakfindata/g; s/pfsync/pfsync/g' src/pakfindata/__main__.py || \
     echo "✅ __main__.py already clean"
 fi
 
@@ -647,10 +647,10 @@ echo ""
 echo "--- Hardcoded logger names ---"
 grep -rn "getLogger.*['\"]psx" --include="*.py" src/pakfindata/ | grep -v __pycache__
 # Fix any found
-grep -rln "getLogger.*['\"]psx_ohlcv" --include="*.py" src/pakfindata/ | grep -v __pycache__ | while read f; do
+grep -rln "getLogger.*['\"]pakfindata" --include="*.py" src/pakfindata/ | grep -v __pycache__ | while read f; do
   echo "Fixing logger in: $f"
-  sed -i "s/getLogger('psx_ohlcv/getLogger('pakfindata/g" "$f"
-  sed -i 's/getLogger("psx_ohlcv/getLogger("pakfindata/g' "$f"
+  sed -i "s/getLogger('pakfindata/getLogger('pakfindata/g" "$f"
+  sed -i 's/getLogger("pakfindata/getLogger("pakfindata/g' "$f"
 done
 echo "Note: files using getLogger(__name__) auto-fix — no action needed"
 
@@ -665,7 +665,7 @@ git commit -m "refactor: fix package metadata, __init__.py, logger names
 
 - __init__.py package name updated
 - __main__.py entry point updated
-- Hardcoded logger names: psx_ohlcv → pakfindata
+- Hardcoded logger names: pakfindata → pakfindata
 - Note: getLogger(__name__) loggers auto-updated via package rename"
 ```
 
@@ -685,7 +685,7 @@ pip install -e . 2>&1 | tail -10
 pip show pakfindata 2>&1 | head -8
 
 # 12C — Verify old package is NOT installed
-pip show psx_ohlcv 2>/dev/null && echo "❌ OLD PACKAGE STILL INSTALLED" || echo "✅ Old package gone"
+pip show pakfindata 2>/dev/null && echo "❌ OLD PACKAGE STILL INSTALLED" || echo "✅ Old package gone"
 pip show psx-ohlcv 2>/dev/null && echo "❌ OLD PACKAGE STILL INSTALLED (hyphen)" || echo "✅ Old package gone (hyphen)"
 
 # 12D — Test core import
@@ -700,7 +700,7 @@ which pfsync && echo "✅ pfsync found at: $(which pfsync)" || echo "❌ pfsync 
 pfsync --help 2>&1 | head -5
 
 # 12F — Test old CLI is GONE
-which psxsync 2>/dev/null && echo "⚠️ psxsync still exists — run: pip uninstall psx_ohlcv" || echo "✅ psxsync removed"
+which pfsync 2>/dev/null && echo "⚠️ pfsync still exists — run: pip uninstall pakfindata" || echo "✅ pfsync removed"
 
 # 12G — If install failed, diagnose
 if ! python -c "import pakfindata" 2>/dev/null; then
@@ -759,7 +759,7 @@ if errors:
     print()
     print('FIX EACH FAILURE before continuing.')
     print('Common causes:')
-    print('  - Missed psx_ohlcv reference in that file')
+    print('  - Missed pakfindata reference in that file')
     print('  - Circular import exposed by rename')
     print('  - Missing dependency')
 else:
@@ -774,9 +774,9 @@ else:
 for mod in <BROKEN_MODULE_LIST>; do
   filepath=$(python -c "import importlib; m='$mod'; parts=m.split('.'); print('/'.join(['src'] + parts) + '.py')")
   echo "=== $filepath ==="
-  grep -n "psx_ohlcv" "$filepath" 2>/dev/null
+  grep -n "pakfindata" "$filepath" 2>/dev/null
   # Fix if found
-  [ -f "$filepath" ] && sed -i 's/psx_ohlcv/pakfindata/g' "$filepath"
+  [ -f "$filepath" ] && sed -i 's/pakfindata/pakfindata/g' "$filepath"
 done
 ```
 
@@ -785,7 +785,7 @@ done
 git add -A
 git commit -m "fix: resolve import failures found during deep module test
 
-- Fixed remaining psx_ohlcv references in: <list files>"
+- Fixed remaining pakfindata references in: <list files>"
 ```
 
 ---
@@ -856,12 +856,12 @@ cd ~/pakfindata
 echo "━━━ STEP 16: Full pytest suite ━━━"
 
 # 16A — Check for remaining old references in tests
-remaining=$(grep -rn "psx_ohlcv\|psxsync" tests/ --include="*.py" | grep -v __pycache__)
+remaining=$(grep -rn "pakfindata\|pfsync" tests/ --include="*.py" | grep -v __pycache__)
 if [ -n "$remaining" ]; then
   echo "❌ Old references in tests — fixing..."
-  find tests/ -name "*.py" -exec sed -i 's/psx_ohlcv/pakfindata/g; s/psxsync/pfsync/g' {} +
+  find tests/ -name "*.py" -exec sed -i 's/pakfindata/pakfindata/g; s/pfsync/pfsync/g' {} +
   echo "Fixed. Re-checking..."
-  grep -rn "psx_ohlcv" tests/ --include="*.py" | grep -v __pycache__
+  grep -rn "pakfindata" tests/ --include="*.py" | grep -v __pycache__
 fi
 
 # 16B — Run tests
@@ -886,7 +886,7 @@ fi
 git add -A
 git commit -m "fix: update test suite for pakfindata rename
 
-- Fixed remaining psx_ohlcv references in tests/
+- Fixed remaining pakfindata references in tests/
 - All tests passing"
 ```
 
@@ -921,13 +921,13 @@ else:
     print('✅ All Streamlit pages import successfully')
 "
 
-# 17C — Check for any psx_ohlcv in UI files
-remaining=$(grep -rn "psx_ohlcv\|psxsync" src/pakfindata/ui/ --include="*.py" | grep -v __pycache__)
+# 17C — Check for any pakfindata in UI files
+remaining=$(grep -rn "pakfindata\|pfsync" src/pakfindata/ui/ --include="*.py" | grep -v __pycache__)
 if [ -n "$remaining" ]; then
   echo "❌ Old references in UI:"
   echo "$remaining"
   echo "Fixing..."
-  find src/pakfindata/ui/ -name "*.py" -exec sed -i 's/psx_ohlcv/pakfindata/g; s/psxsync/pfsync/g' {} +
+  find src/pakfindata/ui/ -name "*.py" -exec sed -i 's/pakfindata/pakfindata/g; s/pfsync/pfsync/g' {} +
 fi
 
 # 17D — Dry-run Streamlit (check it can start)
@@ -965,10 +965,10 @@ if [ -n "$QP_DIR" ]; then
   
   # Show what needs changing
   echo "--- References found ---"
-  grep -rn "psx_ohlcv\|psxsync\|~/psx_ohlcv" --include="*.py" --include="*.toml" --include="*.yaml" --include="*.sh" --include="*.json" "$QP_DIR" | grep -v __pycache__ | grep -v node_modules | grep -v .git
+  grep -rn "pakfindata\|pfsync\|~/pakfindata" --include="*.py" --include="*.toml" --include="*.yaml" --include="*.sh" --include="*.json" "$QP_DIR" | grep -v __pycache__ | grep -v node_modules | grep -v .git
   
   # Count
-  cnt=$(grep -rn "psx_ohlcv\|psxsync" --include="*.py" --include="*.toml" "$QP_DIR" | grep -v __pycache__ | grep -v .git | wc -l)
+  cnt=$(grep -rn "pakfindata\|pfsync" --include="*.py" --include="*.toml" "$QP_DIR" | grep -v __pycache__ | grep -v .git | wc -l)
   echo ""
   echo "Total references: $cnt"
   
@@ -981,35 +981,35 @@ if [ -n "$QP_DIR" ]; then
     
     # Fix Python files
     find . -name "*.py" -not -path "*/__pycache__/*" -not -path "./.git/*" | while read f; do
-      if grep -q "psx_ohlcv" "$f" 2>/dev/null; then
+      if grep -q "pakfindata" "$f" 2>/dev/null; then
         echo "  Fixing: $f"
-        sed -i 's/psx_ohlcv/pakfindata/g' "$f"
+        sed -i 's/pakfindata/pakfindata/g' "$f"
       fi
-      if grep -q "psxsync" "$f" 2>/dev/null; then
-        sed -i 's/psxsync/pfsync/g' "$f"
+      if grep -q "pfsync" "$f" 2>/dev/null; then
+        sed -i 's/pfsync/pfsync/g' "$f"
       fi
     done
     
     # Fix configs
     find . \( -name "*.toml" -o -name "*.yaml" -o -name "*.yml" -o -name "*.json" -o -name "*.cfg" \) -not -path "./.git/*" | while read f; do
-      if grep -q "psx_ohlcv\|psxsync\|~/psx_ohlcv" "$f" 2>/dev/null; then
+      if grep -q "pakfindata\|pfsync\|~/pakfindata" "$f" 2>/dev/null; then
         echo "  Fixing config: $f"
-        sed -i 's/psx_ohlcv/pakfindata/g; s/psxsync/pfsync/g; s|~/psx_ohlcv|~/pakfindata|g' "$f"
+        sed -i 's/pakfindata/pakfindata/g; s/pfsync/pfsync/g; s|~/pakfindata|~/pakfindata|g' "$f"
       fi
     done
     
     # Fix shell scripts
     find . -name "*.sh" -not -path "./.git/*" | while read f; do
-      if grep -q "psx_ohlcv\|psxsync\|~/psx_ohlcv" "$f" 2>/dev/null; then
+      if grep -q "pakfindata\|pfsync\|~/pakfindata" "$f" 2>/dev/null; then
         echo "  Fixing script: $f"
-        sed -i 's/psx_ohlcv/pakfindata/g; s/psxsync/pfsync/g; s|~/psx_ohlcv|~/pakfindata|g' "$f"
+        sed -i 's/pakfindata/pakfindata/g; s/pfsync/pfsync/g; s|~/pakfindata|~/pakfindata|g' "$f"
       fi
     done
     
     # Verify
     echo ""
     echo "--- After fix ---"
-    remaining=$(grep -rn "psx_ohlcv\|psxsync" --include="*.py" --include="*.toml" . | grep -v __pycache__ | grep -v .git)
+    remaining=$(grep -rn "pakfindata\|pfsync" --include="*.py" --include="*.toml" . | grep -v __pycache__ | grep -v .git)
     if [ -z "$remaining" ]; then
       echo "✅ qp-mono fully updated"
     else
@@ -1040,17 +1040,17 @@ except Exception as e:
     # Commit qp-mono changes
     git add -A
     git diff --cached --stat
-    git commit -m "refactor: update psx_ohlcv → pakfindata references
+    git commit -m "refactor: update pakfindata → pakfindata references
 
 Companion change for pakfindata rename.
-- Import paths: psx_ohlcv → pakfindata
-- CLI references: psxsync → pfsync
-- Project paths: ~/psx_ohlcv → ~/pakfindata"
+- Import paths: pakfindata → pakfindata
+- CLI references: pfsync → pfsync
+- Project paths: ~/pakfindata → ~/pakfindata"
     git push origin $(git branch --show-current) 2>/dev/null
     
     cd ~/pakfindata
   else
-    echo "✅ qp-mono has no psx_ohlcv references"
+    echo "✅ qp-mono has no pakfindata references"
   fi
 else
   echo "⚠️ qp-mono not found — check manually at these locations:"
@@ -1071,8 +1071,8 @@ for dir in ~/projects/*/  ~/repos/*/  ~/*/; do
   [[ "$dir" == *".cache"* ]] && continue
   [[ "$dir" == *".local"* ]] && continue
   
-  cnt=$(grep -rn "psx_ohlcv\|psxsync" --include="*.py" --include="*.toml" --include="*.yaml" --include="*.sh" "$dir" 2>/dev/null | grep -v __pycache__ | grep -v .git | grep -v node_modules | wc -l)
-  [ "$cnt" -gt 0 ] && echo "⚠️ $dir: $cnt references" && grep -rn "psx_ohlcv\|psxsync" --include="*.py" --include="*.toml" "$dir" 2>/dev/null | grep -v __pycache__ | grep -v .git | head -5
+  cnt=$(grep -rn "pakfindata\|pfsync" --include="*.py" --include="*.toml" --include="*.yaml" --include="*.sh" "$dir" 2>/dev/null | grep -v __pycache__ | grep -v .git | grep -v node_modules | wc -l)
+  [ "$cnt" -gt 0 ] && echo "⚠️ $dir: $cnt references" && grep -rn "pakfindata\|pfsync" --include="*.py" --include="*.toml" "$dir" 2>/dev/null | grep -v __pycache__ | grep -v .git | head -5
 done
 
 echo ""
@@ -1088,11 +1088,11 @@ echo "━━━ STEP 19: Environment cleanup ━━━"
 
 # 19A — Shell configs
 for f in ~/.bashrc ~/.bash_profile ~/.zshrc ~/.profile ~/.bash_aliases ~/.zprofile; do
-  if [ -f "$f" ] && grep -q "psx_ohlcv\|psxsync\|~/psx_ohlcv" "$f" 2>/dev/null; then
+  if [ -f "$f" ] && grep -q "pakfindata\|pfsync\|~/pakfindata" "$f" 2>/dev/null; then
     echo "Fixing: $f"
     echo "  Before:"
-    grep -n "psx_ohlcv\|psxsync\|~/psx_ohlcv" "$f"
-    sed -i 's|~/psx_ohlcv|~/pakfindata|g; s/psx_ohlcv/pakfindata/g; s/psxsync/pfsync/g' "$f"
+    grep -n "pakfindata\|pfsync\|~/pakfindata" "$f"
+    sed -i 's|~/pakfindata|~/pakfindata|g; s/pakfindata/pakfindata/g; s/pfsync/pfsync/g' "$f"
     echo "  After:"
     grep -n "pakfindata\|pfsync" "$f"
   fi
@@ -1103,11 +1103,11 @@ echo ""
 echo "--- MCP configs ---"
 for search_dir in ~/.config/claude ~/.claude /mnt/c/Users/*/AppData/Roaming/Claude; do
   find "$search_dir" -name "*.json" -maxdepth 3 2>/dev/null | while read f; do
-    if grep -q "psx_ohlcv\|psxsync\|~/psx_ohlcv" "$f" 2>/dev/null; then
+    if grep -q "pakfindata\|pfsync\|~/pakfindata" "$f" 2>/dev/null; then
       echo "Fixing MCP config: $f"
       echo "  Before:"
-      grep -n "psx_ohlcv\|psxsync" "$f"
-      sed -i 's/psx_ohlcv/pakfindata/g; s/psxsync/pfsync/g; s|~/psx_ohlcv|~/pakfindata|g; s|\\\\psx_ohlcv|\\\\pakfindata|g' "$f"
+      grep -n "pakfindata\|pfsync" "$f"
+      sed -i 's/pakfindata/pakfindata/g; s/pfsync/pfsync/g; s|~/pakfindata|~/pakfindata|g; s|\\\\pakfindata|\\\\pakfindata|g' "$f"
       echo "  After:"
       grep -n "pakfindata\|pfsync" "$f"
     fi
@@ -1122,22 +1122,22 @@ echo "╠═══════════════════════�
 echo "║                                                          ║"
 echo "║  1. CRONTAB:                                             ║"
 echo "║     Run: crontab -e                                      ║"
-echo "║     Replace: ~/psx_ohlcv → ~/pakfindata                 ║"
-echo "║     Replace: psxsync → pfsync                           ║"
+echo "║     Replace: ~/pakfindata → ~/pakfindata                 ║"
+echo "║     Replace: pfsync → pfsync                           ║"
 echo "║                                                          ║"
 echo "║  2. VS CODE:                                             ║"
 echo "║     Reopen workspace: ~/pakfindata/                      ║"
 echo "║     Update any launch.json / tasks.json paths            ║"
 echo "║                                                          ║"
 echo "║  3. WINDOWS TASK SCHEDULER (if applicable):              ║"
-echo "║     Check for any scheduled tasks referencing psx_ohlcv  ║"
+echo "║     Check for any scheduled tasks referencing pakfindata  ║"
 echo "║                                                          ║"
 echo "║  4. BROWSER BOOKMARKS:                                   ║"
 echo "║     Update any Streamlit URLs if port/path changed       ║"
 echo "║                                                          ║"
 echo "║  5. CLAUDE CODE / AI PROMPTS:                            ║"
 echo "║     Future prompts should reference pakfindata not       ║"
-echo "║     psx_ohlcv — update any saved prompt templates        ║"
+echo "║     pakfindata — update any saved prompt templates        ║"
 echo "║                                                          ║"
 echo "║  6. GIT REMOTE (optional):                               ║"
 echo "║     If you want to rename the GitHub/GitLab repo too:    ║"
@@ -1160,9 +1160,9 @@ echo "╚═══════════════════════�
 
 echo ""
 echo "━━━ 20A: Zero remaining references in pakfindata ━━━"
-found=$(grep -rn "psx_ohlcv" . --include="*.py" --include="*.toml" --include="*.cfg" --include="*.yaml" --include="*.yml" --include="*.json" --include="*.sh" --include="*.md" --include="*.rst" --include="*.txt" --include="*.ini" --include=".env*" | grep -v __pycache__ | grep -v .egg | grep -v ".git/" | grep -v "CHANGELOG\|HISTORY\|migration")
+found=$(grep -rn "pakfindata" . --include="*.py" --include="*.toml" --include="*.cfg" --include="*.yaml" --include="*.yml" --include="*.json" --include="*.sh" --include="*.md" --include="*.rst" --include="*.txt" --include="*.ini" --include=".env*" | grep -v __pycache__ | grep -v .egg | grep -v ".git/" | grep -v "CHANGELOG\|HISTORY\|migration")
 if [ -z "$found" ]; then
-  echo "✅ ZERO psx_ohlcv references — completely clean"
+  echo "✅ ZERO pakfindata references — completely clean"
 else
   echo "❌ FOUND $(echo "$found" | wc -l) remaining references:"
   echo "$found"
@@ -1171,12 +1171,12 @@ else
 fi
 
 echo ""
-echo "━━━ 20B: Zero remaining psxsync references ━━━"
-found_cli=$(grep -rn "psxsync" . --include="*.py" --include="*.toml" --include="*.sh" --include="*.yaml" --include="*.md" | grep -v __pycache__ | grep -v .git | grep -v "CHANGELOG\|HISTORY")
+echo "━━━ 20B: Zero remaining pfsync references ━━━"
+found_cli=$(grep -rn "pfsync" . --include="*.py" --include="*.toml" --include="*.sh" --include="*.yaml" --include="*.md" | grep -v __pycache__ | grep -v .git | grep -v "CHANGELOG\|HISTORY")
 if [ -z "$found_cli" ]; then
-  echo "✅ ZERO psxsync references — completely clean"
+  echo "✅ ZERO pfsync references — completely clean"
 else
-  echo "❌ FOUND remaining psxsync:"
+  echo "❌ FOUND remaining pfsync:"
   echo "$found_cli"
 fi
 
@@ -1207,12 +1207,12 @@ python -c "from pakfindata.ui import app; print('✅ Streamlit app module OK')" 
 echo ""
 echo "━━━ 20G: External projects ━━━"
 for dir in ~/qp-mono ~/projects/qp-mono; do
-  [ -d "$dir" ] && echo "qp-mono: $(grep -rn 'psx_ohlcv' --include='*.py' "$dir" 2>/dev/null | grep -v __pycache__ | wc -l) remaining psx_ohlcv refs (should be 0)"
+  [ -d "$dir" ] && echo "qp-mono: $(grep -rn 'pakfindata' --include='*.py' "$dir" 2>/dev/null | grep -v __pycache__ | wc -l) remaining pakfindata refs (should be 0)"
 done
 
 echo ""
 echo "━━━ 20H: Pip registry ━━━"
-pip show psx_ohlcv 2>/dev/null && echo "❌ OLD PACKAGE still registered" || echo "✅ Old package fully removed"
+pip show pakfindata 2>/dev/null && echo "❌ OLD PACKAGE still registered" || echo "✅ Old package fully removed"
 pip show psx-ohlcv 2>/dev/null && echo "❌ OLD PACKAGE still registered (hyphen)" || echo "✅ Old package fully removed (hyphen)"
 
 echo ""
@@ -1241,7 +1241,7 @@ git diff --cached --quiet || git commit -m "fix: final cleanup from pakfindata r
 - Resolved any issues found during comprehensive testing"
 
 # Tag for reference
-git tag -a v3.1.0-pakfindata -m "Renamed psx_ohlcv → pakfindata
+git tag -a v3.1.0-pakfindata -m "Renamed pakfindata → pakfindata
 
 Package now reflects its scope as a comprehensive Pakistan financial data platform:
 - Mutual funds (MUFAP): 1,190 funds, 1.9M NAV rows
@@ -1254,7 +1254,7 @@ Package now reflects its scope as a comprehensive Pakistan financial data platfo
 - ETFs, REITs, company fundamentals
 - 10+ Streamlit dashboard pages
 
-CLI renamed: psxsync → pfsync
+CLI renamed: pfsync → pfsync
 Database path unchanged: /mnt/e/psxdata/psx.sqlite"
 
 # Push everything
@@ -1283,7 +1283,7 @@ echo "╚═══════════════════════�
 3. **Commit after EACH step** — if anything goes wrong, you can revert to any step.
 4. **Fix-as-you-go** — if ANY step finds remaining references or broken imports, FIX THEM in that step before moving to the next. Don't accumulate debt.
 5. **Test after EACH step** — run `python -c "import pakfindata"` after every change to catch breaks immediately.
-6. **`psx_ohlcv` is unique** — no false positives from sed. But `psx` alone IS ambiguous (exchange name), so NEVER do `sed 's/psx/pakfin/g'` — that would destroy PSXClient, dps.psx.com.pk, psx.sqlite, etc.
+6. **`pakfindata` is unique** — no false positives from sed. But `psx` alone IS ambiguous (exchange name), so NEVER do `sed 's/psx/pakfin/g'` — that would destroy PSXClient, dps.psx.com.pk, psx.sqlite, etc.
 7. **Database path stays** — `/mnt/e/psxdata/psx.sqlite` does NOT change. The `psxdata` directory name is fine.
 8. **External projects get their own commits** — qp-mono changes are committed in qp-mono's repo, not pakfindata's.
 9. **Manual fixes documented** — crontab, VS Code workspace, Windows configs can't be auto-fixed. The prompt lists them explicitly.

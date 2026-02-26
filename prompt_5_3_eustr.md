@@ -1,7 +1,7 @@
 # Prompt 5.3 -- EUSTR Scraper (European Central Bank)
 
 ## Context
-You are working on the PSX OHLCV project at `~/psx_ohlcv/`.
+You are working on the PSX OHLCV project at `~/pakfindata/`.
 
 CODEBASE CONVENTIONS (MUST FOLLOW):
 - Database connection: `connect()` from `db.connection`, NEVER `get_db()`
@@ -177,7 +177,7 @@ Add EUSTR after the SONIA block:
 
 The CLI, API routes, and Streamlit page all work generically from the
 `global_reference_rates` table. EUSTR will automatically appear in:
-- `psxsync globalrates latest`
+- `pfsync globalrates latest`
 - `GET /api/global-rates/latest`
 - Streamlit Rate Dashboard tab
 
@@ -186,7 +186,7 @@ The CLI, API routes, and Streamlit page all work generically from the
 ```bash
 # 1. Scraper works (requires internet)
 python -c "
-from psx_ohlcv.sources.global_rates_scraper import GlobalRatesScraper
+from pakfindata.sources.global_rates_scraper import GlobalRatesScraper
 s = GlobalRatesScraper()
 data = s.scrape_eustr(days=10)
 assert len(data) > 0, 'No EUSTR data returned'
@@ -196,21 +196,21 @@ for d in data[:3]:
 "
 
 # 2. Full sync includes EUSTR
-psxsync globalrates sync --count 30
+pfsync globalrates sync --count 30
 # Should show EUSTR: N in stats
 
 # 3. Latest rates show all 4 sources
-psxsync globalrates latest
+pfsync globalrates latest
 # Should show: SOFR, EFFR, SONIA, EUSTR rows
 
 # 4. API returns EUSTR
-uvicorn psx_ohlcv.api.main:app --port 8000 &
+uvicorn pakfindata.api.main:app --port 8000 &
 sleep 2
 curl -s http://localhost:8000/api/global-rates/latest | python -m json.tool | grep -A2 EUSTR
 kill %1
 
 # 5. History works
-psxsync globalrates history EUSTR --days 10
+pfsync globalrates history EUSTR --days 10
 ```
 
 ## COMMIT

@@ -1,7 +1,7 @@
 # Prompt 5.5 -- Naya Pakistan Certificate (NPC) Rates + Cross-Currency Analytics
 
 ## Context
-You are working on the PSX OHLCV project at `~/psx_ohlcv/`.
+You are working on the PSX OHLCV project at `~/pakfindata/`.
 
 CODEBASE CONVENTIONS (MUST FOLLOW):
 - Database connection: `connect()` from `db.connection`, NEVER `get_db()`
@@ -38,7 +38,7 @@ Branch: feat/npc-rates
 
 ## GIT
 ```bash
-cd ~/psx_ohlcv
+cd ~/pakfindata
 git checkout dev
 git pull
 git checkout -b feat/npc-rates
@@ -46,7 +46,7 @@ git checkout -b feat/npc-rates
 
 ---
 
-## Step 1 -- Database: `src/psx_ohlcv/db/repositories/npc_rates.py`
+## Step 1 -- Database: `src/pakfindata/db/repositories/npc_rates.py`
 
 Create a new repository module following the same pattern as `db/repositories/global_rates.py`.
 
@@ -214,7 +214,7 @@ ORDER BY n.date DESC, n.currency, n.tenor;
 ### Repository functions
 
 ```python
-# In src/psx_ohlcv/db/repositories/npc_rates.py
+# In src/pakfindata/db/repositories/npc_rates.py
 
 def ensure_tables(con): ...  # CREATE TABLE + all views above
 
@@ -247,7 +247,7 @@ Register in `db/__init__.py` or `db/repositories/__init__.py` following the exis
 
 ---
 
-## Step 2 -- Scraper: `src/psx_ohlcv/sources/npc_rates_scraper.py`
+## Step 2 -- Scraper: `src/pakfindata/sources/npc_rates_scraper.py`
 
 ### NPC Rate Source Analysis
 
@@ -289,7 +289,7 @@ This page also publishes the same SBP-mandated rates and notes the SRO reference
 ### Scraper Implementation
 
 ```python
-# src/psx_ohlcv/sources/npc_rates_scraper.py
+# src/pakfindata/sources/npc_rates_scraper.py
 
 import logging
 from datetime import date, datetime
@@ -525,12 +525,12 @@ def add_npc_parser(subparsers):
     npc = subparsers.add_parser('npc', help='Naya Pakistan Certificate rates')
     npc_sub = npc.add_subparsers(dest='npc_cmd')
     
-    # psxsync npc sync [--force]
+    # pfsync npc sync [--force]
     sync_p = npc_sub.add_parser('sync', help='Scrape and store current NPC rates')
     sync_p.add_argument('--force', action='store_true',
                         help='Store even if rates unchanged')
     
-    # psxsync npc latest [--currency USD] [--type conventional]
+    # pfsync npc latest [--currency USD] [--type conventional]
     latest_p = npc_sub.add_parser('latest', help='Show latest NPC rates')
     latest_p.add_argument('--currency', choices=['USD', 'GBP', 'EUR', 'PKR'],
                           help='Filter by currency')
@@ -538,22 +538,22 @@ def add_npc_parser(subparsers):
                           choices=['conventional', 'islamic'],
                           help='Certificate type (default: conventional)')
     
-    # psxsync npc curve [--currency USD] [--date 2026-02-26]
+    # pfsync npc curve [--currency USD] [--date 2026-02-26]
     curve_p = npc_sub.add_parser('curve', help='Show NPC yield curve')
     curve_p.add_argument('--currency', default='USD',
                          choices=['USD', 'GBP', 'EUR', 'PKR'])
     curve_p.add_argument('--date', help='Date (YYYY-MM-DD), default: latest')
     
-    # psxsync npc spread [--currency USD]
+    # pfsync npc spread [--currency USD]
     spread_p = npc_sub.add_parser('spread', help='NPC vs global RFR spread')
     spread_p.add_argument('--currency', choices=['USD', 'GBP', 'EUR'])
     
-    # psxsync npc carry [--currency USD]
+    # pfsync npc carry [--currency USD]
     carry_p = npc_sub.add_parser('carry', help='NPC vs KIBOR carry trade analysis')
     carry_p.add_argument('--currency', default='USD',
                          choices=['USD', 'GBP', 'EUR'])
     
-    # psxsync npc dashboard [--date 2026-02-26]
+    # pfsync npc dashboard [--date 2026-02-26]
     dash_p = npc_sub.add_parser('dashboard', help='Multi-currency dashboard')
     dash_p.add_argument('--date', help='Date (YYYY-MM-DD)')
     
@@ -571,7 +571,7 @@ def handle_npc(args, con):
         rates = get_latest_npc_rates(con, currency=args.currency,
                                       certificate_type=args.cert_type)
         if not rates:
-            print("No NPC rates found. Run 'psxsync npc sync' first.")
+            print("No NPC rates found. Run 'pfsync npc sync' first.")
             return
         # Print formatted table
         print(f"\n{'Currency':<10} {'Tenor':<8} {'Rate %':<10} {'Type':<15} {'Date':<12}")
@@ -634,7 +634,7 @@ def handle_npc(args, con):
 
 ---
 
-## Step 5 -- FastAPI Routes: `src/psx_ohlcv/api/routers/npc_rates.py`
+## Step 5 -- FastAPI Routes: `src/pakfindata/api/routers/npc_rates.py`
 
 ```python
 from fastapi import APIRouter, Query
@@ -689,7 +689,7 @@ app.include_router(npc_router)
 
 ---
 
-## Step 6 -- Streamlit Page: `src/psx_ohlcv/ui/page_views/npc_rates.py`
+## Step 6 -- Streamlit Page: `src/pakfindata/ui/page_views/npc_rates.py`
 
 Create a Streamlit page with the following sections:
 
@@ -788,7 +788,7 @@ Add to existing cron/scheduler config (follow the pattern used for global rates)
 
 ```
 # NPC rates -- weekly check (rates change infrequently via SRO)
-0 10 * * 1  cd ~/psx_ohlcv && python -m psx_ohlcv npc sync
+0 10 * * 1  cd ~/pakfindata && python -m pakfindata npc sync
 ```
 
 Or if using the project's internal scheduler, add NPC to the schedule alongside global rates.
@@ -802,8 +802,8 @@ After implementing, run these checks:
 ```bash
 # 1. Ensure tables created
 python -c "
-from psx_ohlcv.db.connection import connect
-from psx_ohlcv.db.repositories.npc_rates import ensure_tables
+from pakfindata.db.connection import connect
+from pakfindata.db.repositories.npc_rates import ensure_tables
 con = connect()
 ensure_tables(con)
 # Check tables exist
@@ -822,35 +822,35 @@ print('✓ All tables and views created')
 "
 
 # 2. Scrape NPC rates
-python -m psx_ohlcv npc sync
+python -m pakfindata npc sync
 # Should show "NPC rates: 20 records stored" (4 currencies × 5 tenors)
 
 # 3. Verify data
-python -m psx_ohlcv npc latest
+python -m pakfindata npc latest
 # Should show rate table for all currencies and tenors
 
 # 4. Verify yield curve
-python -m psx_ohlcv npc curve --currency USD
+python -m pakfindata npc curve --currency USD
 # Should show: 3M: 7.00%, 6M: 7.00%, 12M: 7.00%, 3Y: 7.50%, 5Y: 7.50%
 
 # 5. Verify cross-currency spread (requires SOFR/SONIA/EUSTR data from 5.1-5.4)
-python -m psx_ohlcv npc spread
+python -m pakfindata npc spread
 # Should show NPC premium over RFR for each currency
 
 # 6. Verify carry trade analysis (requires KIBOR data)
-python -m psx_ohlcv npc carry --currency USD
+python -m pakfindata npc carry --currency USD
 # Should show KIBOR vs NPC USD spread with FX rate
 
 # 7. Verify dashboard
-python -m psx_ohlcv npc dashboard
+python -m pakfindata npc dashboard
 # Should show comprehensive multi-currency view
 
 # 8. Verify idempotency -- run sync again
-python -m psx_ohlcv npc sync
+python -m pakfindata npc sync
 # Should show "NPC rates unchanged -- skipping insert" or "0 records stored"
 
 # 9. Force sync
-python -m psx_ohlcv npc sync --force
+python -m pakfindata npc sync --force
 # Should store records even if unchanged
 
 # 10. API endpoints (if server running)
@@ -878,7 +878,7 @@ git commit -m "feat(5.5): NPC rates scraper + cross-currency analytics
 - New: v_npc_carry_trade view (KIBOR vs NPC with FX breakeven)
 - New: v_npc_yield_curve view (all tenors pivot by currency)
 - New: v_multicurrency_dashboard view (comprehensive NPC+RFR+KIBOR+FX)
-- New: CLI commands (psxsync npc sync/latest/curve/spread/carry/dashboard)
+- New: CLI commands (pfsync npc sync/latest/curve/spread/carry/dashboard)
 - New: FastAPI routes /api/npc/*
 - New: Streamlit NPC page with 5-tab layout (rates, curves, spreads, carry, dashboard)
 - Smart deduplication: rates only stored when actually changed (SRO-driven)

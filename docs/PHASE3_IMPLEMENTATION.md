@@ -109,34 +109,34 @@ CREATE TABLE sbp_primary_market_docs (
 ### Sukuk Command Group
 ```bash
 # Seed instrument master data
-psxsync sukuk seed [--category GOP_SUKUK|PIB|TBILL|...] [--shariah-only]
+pfsync sukuk seed [--category GOP_SUKUK|PIB|TBILL|...] [--shariah-only]
 
 # Sync quotes and yield curves
-psxsync sukuk sync [--instruments] [--source SAMPLE|CSV] [--days 90] [--include-curves]
+pfsync sukuk sync [--instruments] [--source SAMPLE|CSV] [--days 90] [--include-curves]
 
 # Load from CSV files
-psxsync sukuk load --master <path> --quotes <path> --curve <path>
+pfsync sukuk load --master <path> --quotes <path> --curve <path>
 
 # Compute analytics
-psxsync sukuk compute [--instruments] [--as-of DATE]
+pfsync sukuk compute [--instruments] [--as-of DATE]
 
 # List instruments
-psxsync sukuk list [--category] [--issuer] [--shariah-only]
+pfsync sukuk list [--category] [--issuer] [--shariah-only]
 
 # Show instrument details
-psxsync sukuk show --instrument <id>
+pfsync sukuk show --instrument <id>
 
 # Show yield curve
-psxsync sukuk curve [--name GOP_SUKUK|PIB|TBILL] [--date]
+pfsync sukuk curve [--name GOP_SUKUK|PIB|TBILL] [--date]
 
 # Index SBP documents
-psxsync sukuk sbp [--docs-dir] [--create-samples]
+pfsync sukuk sbp [--docs-dir] [--create-samples]
 
 # Compare instruments
-psxsync sukuk compare --instruments <id1>,<id2>,...
+pfsync sukuk compare --instruments <id1>,<id2>,...
 
 # Show data status
-psxsync sukuk status
+pfsync sukuk status
 ```
 
 ## Analytics Functions
@@ -177,7 +177,7 @@ Linear interpolation between curve points for custom tenors.
 ## File Structure
 
 ```
-src/psx_ohlcv/
+src/pakfindata/
     sources/
         sukuk_manual.py          # CSV loaders and sample data
         sbp_primary_market.py    # SBP document handling
@@ -213,37 +213,37 @@ tests/
 ### Quick Start
 ```bash
 # Initialize with sample data
-psxsync sukuk seed
-psxsync sukuk sync --include-curves
+pfsync sukuk seed
+pfsync sukuk sync --include-curves
 
 # Check status
-psxsync sukuk status
+pfsync sukuk status
 
 # View instrument analytics
-psxsync sukuk show --instrument GOP-IJARA-3Y-2027-06
+pfsync sukuk show --instrument GOP-IJARA-3Y-2027-06
 
 # View yield curve
-psxsync sukuk curve --name GOP_SUKUK
+pfsync sukuk curve --name GOP_SUKUK
 ```
 
 ### Load Custom Data
 ```bash
 # Load from CSV files
-psxsync sukuk load --master data/sukuk/custom_master.csv
-psxsync sukuk load --quotes data/sukuk/custom_quotes.csv
-psxsync sukuk load --curve data/sukuk/custom_curve.csv
+pfsync sukuk load --master data/sukuk/custom_master.csv
+pfsync sukuk load --quotes data/sukuk/custom_quotes.csv
+pfsync sukuk load --curve data/sukuk/custom_curve.csv
 
 # Compute analytics
-psxsync sukuk compute
+pfsync sukuk compute
 ```
 
 ### SBP Document Archive
 ```bash
 # Create sample documents
-psxsync sukuk sbp --create-samples
+pfsync sukuk sbp --create-samples
 
 # Index documents from directory
-psxsync sukuk sbp --docs-dir /path/to/sbp/pdfs
+pfsync sukuk sbp --docs-dir /path/to/sbp/pdfs
 ```
 
 ## Verification Checklist

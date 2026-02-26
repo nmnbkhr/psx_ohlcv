@@ -91,7 +91,7 @@ Monolithic `db.py` (8605 lines, 187 public functions) split into a `db/` package
 ### Architecture
 
 ```
-src/psx_ohlcv/
+src/pakfindata/
   db/                          # Package (was db.py monolith)
     __init__.py                # Re-exports: connection + schema + repositories/*
     schema.py                  # SCHEMA_SQL constant
@@ -114,7 +114,7 @@ src/psx_ohlcv/
 
 ### Backward Compatibility
 
-All 46 import sites (`from psx_ohlcv.db import ...`) continue working unchanged. The `db/__init__.py` re-exports everything through the repository modules.
+All 46 import sites (`from pakfindata.db import ...`) continue working unchanged. The `db/__init__.py` re-exports everything through the repository modules.
 
 ### Verification Results
 
@@ -150,11 +150,11 @@ All 46 import sites (`from psx_ohlcv.db import ...`) continue working unchanged.
 - app.py: 11,264 lines with 32 page functions + 27 shared helpers
 - 9 navigation groups: MARKET, EQUITY, INDICES, FIXED INCOME, FX, FUNDS, DATA, AI, ADMIN
 - `main()` router at line 11037
-- `chat_page` already extracted (imported from `psx_ohlcv.ui.chat`)
+- `chat_page` already extracted (imported from `pakfindata.ui.chat`)
 
 ### Prompt 2.2 — Create Page Module Structure
-- Created `src/psx_ohlcv/ui/page_views/` with 22 page stub files
-- Created `src/psx_ohlcv/ui/components/` with 3 component stub files
+- Created `src/pakfindata/ui/page_views/` with 22 page stub files
+- Created `src/pakfindata/ui/components/` with 3 component stub files
 - Related pages grouped: fixed_income.py (9 pages), fx.py (2), funds.py (2)
 
 ### Prompt 2.3 — Extract Shared Helpers

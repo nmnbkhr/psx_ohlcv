@@ -115,9 +115,9 @@
 
 | Source | Command | Expected Rows |
 |--------|---------|---------------|
-| **SIR PDF** — T-Bills, PIBs, KIBOR, GIS (~2-4 years) | `psxsync backfill-rates --source sir` | ~500+ |
-| **PIB Archive PDF** — All PIB auctions since Dec 2000 | `psxsync backfill-rates --source pib` | ~800+ |
-| **KIBOR Daily PDFs** — Daily KIBOR from 2008 | `psxsync backfill-rates --source kibor` | ~10,000+ |
-| **All three** | `psxsync backfill-rates --source all` | — |
+| **SIR PDF** — T-Bills, PIBs, KIBOR, GIS (~2-4 years) | `pfsync backfill-rates --source sir` | ~500+ |
+| **PIB Archive PDF** — All PIB auctions since Dec 2000 | `pfsync backfill-rates --source pib` | ~800+ |
+| **KIBOR Daily PDFs** — Daily KIBOR from 2008 | `pfsync backfill-rates --source kibor` | ~10,000+ |
+| **All three** | `pfsync backfill-rates --source all` | — |
 
 UI buttons also available in **Treasury Dashboard > Sync Treasury Data > Historical Backfill**.

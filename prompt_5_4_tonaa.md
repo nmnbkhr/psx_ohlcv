@@ -1,7 +1,7 @@
 # Prompt 5.4 -- TONA Scraper (Bank of Japan)
 
 ## Context
-You are working on the PSX OHLCV project at `~/psx_ohlcv/`.
+You are working on the PSX OHLCV project at `~/pakfindata/`.
 
 CODEBASE CONVENTIONS (MUST FOLLOW):
 - Database connection: `connect()` from `db.connection`, NEVER `get_db()`
@@ -216,7 +216,7 @@ Note: Use `logger.warning` not `logger.error` for TONA failures -- it is non-cri
 ```bash
 # 1. Scraper works (requires internet -- BoJ may be slow)
 python -c "
-from psx_ohlcv.sources.global_rates_scraper import GlobalRatesScraper
+from pakfindata.sources.global_rates_scraper import GlobalRatesScraper
 s = GlobalRatesScraper()
 data = s.scrape_tona(days=30)
 if len(data) > 0:
@@ -229,17 +229,17 @@ else:
 "
 
 # 2. Full sync includes all rates
-psxsync globalrates sync --count 30
+pfsync globalrates sync --count 30
 # Should show SOFR, EFFR, SONIA, EUSTR, TONA in stats
 
 # 3. Latest rates show all sources
-psxsync globalrates latest
+pfsync globalrates latest
 # Should show rates from 4+ central banks
 
 # 4. Rate comparison
 python -c "
-from psx_ohlcv.db.connection import connect
-from psx_ohlcv.db.repositories.global_rates import get_rate_comparison
+from pakfindata.db.connection import connect
+from pakfindata.db.repositories.global_rates import get_rate_comparison
 con = connect()
 comp = get_rate_comparison(con)
 con.close()

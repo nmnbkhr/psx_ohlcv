@@ -1,7 +1,7 @@
 # Claude Code Prompt: Add Live Tick OHLCV Builder to PSX OHLCV App
 
 ## Context
-This is the `psx_ohlcv` project — a Pakistan Stock Exchange data platform built with Streamlit + SQLite. The app already has pages for candlestick explorer, intraday trend, regular market, etc. under `src/psx_ohlcv/ui/`. The main DB layer is in `src/psx_ohlcv/db.py` (monolith ~8600 lines). The Streamlit entry is `src/psx_ohlcv/ui/app.py` (~11000 lines monolith).
+This is the `pakfindata` project — a Pakistan Stock Exchange data platform built with Streamlit + SQLite. The app already has pages for candlestick explorer, intraday trend, regular market, etc. under `src/pakfindata/ui/`. The main DB layer is in `src/pakfindata/db.py` (monolith ~8600 lines). The Streamlit entry is `src/pakfindata/ui/app.py` (~11000 lines monolith).
 
 ## What to Build
 Add a **Live Tick OHLCV Builder** feature — a new Streamlit page + backend collector that:
@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS tick_ohlcv (
 Add DB functions: `insert_ticks_batch()`, `upsert_tick_ohlcv()`, `get_ticks_for_symbol_today()`, `get_tick_ohlcv_today()`, `get_tick_ohlcv_symbol()`, `promote_tick_ohlcv_to_eod()` (copies tick-built OHLCV into eod_data with source='tick_aggregation' — this solves the fake H/L problem), `cleanup_old_ticks(days=7)`.
 
 ### Collector Service
-Create `src/psx_ohlcv/collectors/tick_collector.py`:
+Create `src/pakfindata/collectors/tick_collector.py`:
 - `TickCollector` class with `start()` / `stop()` (runs in background daemon thread)
 - In-memory state: `_last_snapshot` dict for dedup, `running_ohlcv` dict for live OHLCV, `tick_history` dict for per-symbol tick lists
 - `_poll_once()` → fetch market-watch JSON, dedup, update running OHLCV, optionally persist to DB
@@ -68,7 +68,7 @@ Create `src/psx_ohlcv/collectors/tick_collector.py`:
 - Use `st.session_state` integration OR standalone thread that Streamlit page reads from
 
 ### Streamlit Page
-Create a new page (either in `app.py` or as `src/psx_ohlcv/ui/pages/live_ohlcv.py` — follow existing pattern):
+Create a new page (either in `app.py` or as `src/pakfindata/ui/pages/live_ohlcv.py` — follow existing pattern):
 
 **Controls Row:**
 - Toggle: Auto-Poll (5s) — starts/stops continuous polling
@@ -107,7 +107,7 @@ Create a new page (either in `app.py` or as `src/psx_ohlcv/ui/pages/live_ohlcv.p
 ### CLI Command
 Add to existing CLI (`cli.py`):
 ```
-psxsync collect-ticks --interval 5
+pfsync collect-ticks --interval 5
 ```
 Starts the tick collector in foreground, Ctrl+C to stop. On stop, auto-saves OHLCV to DB.
 
@@ -129,14 +129,14 @@ When auto-poll is enabled:
 ### Verify
 ```bash
 # Schema created
-python -c "from psx_ohlcv.db import get_db; db=get_db(); print('tick tables ok')"
+python -c "from pakfindata.db import get_db; db=get_db(); print('tick tables ok')"
 
 # Collector imports
-python -c "from psx_ohlcv.collectors.tick_collector import TickCollector; print('collector ok')"
+python -c "from pakfindata.collectors.tick_collector import TickCollector; print('collector ok')"
 
 # Streamlit starts without errors
-streamlit run src/psx_ohlcv/ui/app.py --server.headless true 2>&1 | head -5
+streamlit run src/pakfindata/ui/app.py --server.headless true 2>&1 | head -5
 
 # CLI command registered
-psxsync collect-ticks --help
+pfsync collect-ticks --help
 ```

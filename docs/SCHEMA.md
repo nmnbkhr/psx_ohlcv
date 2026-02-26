@@ -466,7 +466,7 @@ The PSX OHLCV database stores Pakistan Stock Exchange market data with **23+ tab
 
 ## SQL Creation Scripts
 
-The complete schema creation SQL is stored in `src/psx_ohlcv/db.py` in the `SCHEMA_SQL` variable.
+The complete schema creation SQL is stored in `src/pakfindata/db.py` in the `SCHEMA_SQL` variable.
 
 ### Quick Reference
 
@@ -506,6 +506,6 @@ WHERE snapshot_date = date('now');
 
 ## Full Creation Script
 
-See: [db.py](../src/psx_ohlcv/db.py) - `SCHEMA_SQL` variable (lines 13-638)
+See: [db.py](../src/pakfindata/db.py) - `SCHEMA_SQL` variable (lines 13-638)
 
 The schema is automatically applied when connecting to the database via `db.connect()`.

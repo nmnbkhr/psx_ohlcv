@@ -26,14 +26,14 @@ Successfully implemented a professional Streamlit UI with Plotly-based visualiza
 
 | File | Purpose | Lines |
 |------|---------|-------|
-| `src/psx_ohlcv/ui/charts.py` | Chart helper functions | ~620 |
+| `src/pakfindata/ui/charts.py` | Chart helper functions | ~620 |
 | `tests/test_ui_charts.py` | Chart helper tests | ~280 |
 
 ### Modified Files
 
 | File | Changes |
 |------|---------|
-| `src/psx_ohlcv/ui/app.py` | Complete refactor with new pages and Plotly charts |
+| `src/pakfindata/ui/app.py` | Complete refactor with new pages and Plotly charts |
 
 ---
 
@@ -256,17 +256,17 @@ Uses Streamlit caching for performance.
 
 ```bash
 # With installed package
-streamlit run src/psx_ohlcv/ui/app.py
+streamlit run src/pakfindata/ui/app.py
 
 # Or via pip install
 pip install -e ".[ui]"
-streamlit run src/psx_ohlcv/ui/app.py
+streamlit run src/pakfindata/ui/app.py
 ```
 
 ### Using Chart Helpers
 
 ```python
-from psx_ohlcv.ui.charts import make_candlestick, make_market_breadth_chart
+from pakfindata.ui.charts import make_candlestick, make_market_breadth_chart
 
 # Create candlestick chart
 fig = make_candlestick(df, title="HBL - OHLC", show_sma=True)

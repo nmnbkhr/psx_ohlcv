@@ -27,7 +27,7 @@ Successfully implemented a REGULAR MARKET watcher feature that fetches live mark
 
 | File | Purpose | Lines |
 |------|---------|-------|
-| `src/psx_ohlcv/sources/regular_market.py` | Core module for fetching and parsing | ~570 |
+| `src/pakfindata/sources/regular_market.py` | Core module for fetching and parsing | ~570 |
 | `tests/test_regular_market_parse.py` | HTML parsing tests | ~430 |
 | `tests/test_regular_market_db.py` | Database operation tests | ~200 |
 | `tests/test_regular_market_hash_skip.py` | Change detection tests | ~325 |
@@ -36,8 +36,8 @@ Successfully implemented a REGULAR MARKET watcher feature that fetches live mark
 
 | File | Changes |
 |------|---------|
-| `src/psx_ohlcv/cli.py` | Added `regular-market` command group with 3 subcommands |
-| `src/psx_ohlcv/db.py` | Minor formatting fixes (line length) |
+| `src/pakfindata/cli.py` | Added `regular-market` command group with 3 subcommands |
+| `src/pakfindata/db.py` | Minor formatting fixes (line length) |
 
 ---
 
@@ -118,19 +118,19 @@ PSX Market Watch (HTML)
 
 ## CLI Commands
 
-### `psxsync regular-market snapshot`
+### `pfsync regular-market snapshot`
 
 One-shot fetch and store of current market data.
 
 ```bash
 # Basic usage
-psxsync regular-market snapshot
+pfsync regular-market snapshot
 
 # Custom CSV path
-psxsync regular-market snapshot --csv /path/to/output.csv
+pfsync regular-market snapshot --csv /path/to/output.csv
 
 # Save all rows (even unchanged)
-psxsync regular-market snapshot --save-unchanged
+pfsync regular-market snapshot --save-unchanged
 ```
 
 **Output:**
@@ -146,19 +146,19 @@ Regular Market Snapshot
   CSV saved to:      data/regular_market/current.csv
 ```
 
-### `psxsync regular-market listen`
+### `pfsync regular-market listen`
 
 Continuous polling with configurable interval.
 
 ```bash
 # Default 60-second interval
-psxsync regular-market listen
+pfsync regular-market listen
 
 # Custom interval (30 seconds)
-psxsync regular-market listen --interval 30
+pfsync regular-market listen --interval 30
 
 # Custom output directory
-psxsync regular-market listen --csv-dir /path/to/snapshots
+pfsync regular-market listen --csv-dir /path/to/snapshots
 ```
 
 **Output:**
@@ -172,16 +172,16 @@ Press Ctrl+C to stop.
 [3] 2026-01-21T14:32:00 | symbols=532 upserted=532 changes=31
 ```
 
-### `psxsync regular-market show`
+### `pfsync regular-market show`
 
 Display current market data from database.
 
 ```bash
 # Table format
-psxsync regular-market show
+pfsync regular-market show
 
 # CSV format
-psxsync regular-market show --out csv
+pfsync regular-market show --out csv
 ```
 
 ---

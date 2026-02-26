@@ -33,8 +33,8 @@ This phase upgrades the application from an equity-only tool to a broader **inve
   - Ranking tables by instrument type (ETF / REIT / INDEX)
 
 - **CLI**
-  - `psxsync universe` command group for seeding and managing instrument universe
-  - `psxsync instruments` command group for EOD syncing and ranking computation
+  - `pfsync universe` command group for seeding and managing instrument universe
+  - `pfsync instruments` command group for EOD syncing and ranking computation
 
 - **UI**
   - Two new additive pages only:
@@ -52,9 +52,9 @@ This phase upgrades the application from an equity-only tool to a broader **inve
 
 ### Success Metrics
 
-1. ✅ `psxsync universe seed-phase1` successfully populates ETF/REIT/INDEX instruments
-2. ✅ `psxsync instruments sync-eod --types ETF,REIT,INDEX` completes without errors
-3. ✅ `psxsync instruments rankings --as-of <date>` computes and stores ranking data
+1. ✅ `pfsync universe seed-phase1` successfully populates ETF/REIT/INDEX instruments
+2. ✅ `pfsync instruments sync-eod --types ETF,REIT,INDEX` completes without errors
+3. ✅ `pfsync instruments rankings --as-of <date>` computes and stores ranking data
 4. ✅ Streamlit UI displays the two new pages without affecting existing pages
 5. ✅ Instruments lacking DPS OHLCV are clearly labeled and excluded from rankings
 6. ✅ All existing tests pass; Phase 1–specific tests pass (14/14)
@@ -110,11 +110,11 @@ Add foreign exchange rates (USD/PKR, etc.) from a reliable source to enable macr
   - FX impact summary for equities
 
 - **CLI**
-  - `psxsync fx seed` - Seed default FX pairs
-  - `psxsync fx sync` - Sync FX OHLCV data
-  - `psxsync fx show --pair USD/PKR` - Display FX analytics
-  - `psxsync fx compute-adjusted` - Compute FX-adjusted equity metrics
-  - `psxsync fx status` - Show FX sync status and data summary
+  - `pfsync fx seed` - Seed default FX pairs
+  - `pfsync fx sync` - Sync FX OHLCV data
+  - `pfsync fx show --pair USD/PKR` - Display FX analytics
+  - `pfsync fx compute-adjusted` - Compute FX-adjusted equity metrics
+  - `pfsync fx status` - Show FX sync status and data summary
 
 - **UI**
   - 🌍 FX Overview page - FX rates, trends, and charts
@@ -127,10 +127,10 @@ Add foreign exchange rates (USD/PKR, etc.) from a reliable source to enable macr
 - Intraday FX data
 
 ### Success Metrics
-1. ✅ `psxsync fx seed` successfully populates default FX pairs
-2. ✅ `psxsync fx sync` fetches and stores FX OHLCV data
-3. ✅ `psxsync fx show --pair USD/PKR` displays FX analytics
-4. ✅ `psxsync fx compute-adjusted` computes and stores metrics
+1. ✅ `pfsync fx seed` successfully populates default FX pairs
+2. ✅ `pfsync fx sync` fetches and stores FX OHLCV data
+3. ✅ `pfsync fx show --pair USD/PKR` displays FX analytics
+4. ✅ `pfsync fx compute-adjusted` computes and stores metrics
 5. ✅ Streamlit UI displays FX Overview and FX Impact pages
 6. ✅ All existing tests pass; Phase 2–specific tests pass
 7. ✅ `ruff check .` passes with no fatal errors
@@ -181,12 +181,12 @@ Add mutual fund data integration from MUFAP (Mutual Funds Association of Pakista
   - Category performance rankings
 
 - **CLI**
-  - `psxsync mufap seed` - Seed fund master data
-  - `psxsync mufap sync` - Sync NAV data (incremental by default)
-  - `psxsync mufap show --fund <symbol>` - Display fund analytics
-  - `psxsync mufap list` - List funds with filters
-  - `psxsync mufap rankings --category <cat>` - Category rankings
-  - `psxsync mufap status` - Show data summary
+  - `pfsync mufap seed` - Seed fund master data
+  - `pfsync mufap sync` - Sync NAV data (incremental by default)
+  - `pfsync mufap show --fund <symbol>` - Display fund analytics
+  - `pfsync mufap list` - List funds with filters
+  - `pfsync mufap rankings --category <cat>` - Category rankings
+  - `pfsync mufap status` - Show data summary
 
 - **UI**
   - Mutual Funds page - Fund browser with filters and NAV charts
@@ -201,10 +201,10 @@ Add mutual fund data integration from MUFAP (Mutual Funds Association of Pakista
 
 ### Success Metrics
 
-1. `psxsync mufap seed` populates fund master data (20 funds)
-2. `psxsync mufap sync` fetches and stores NAV data
-3. `psxsync mufap show --fund ABL-ISF` displays fund analytics
-4. `psxsync mufap status` shows data summary
+1. `pfsync mufap seed` populates fund master data (20 funds)
+2. `pfsync mufap sync` fetches and stores NAV data
+3. `pfsync mufap show --fund ABL-ISF` displays fund analytics
+4. `pfsync mufap status` shows data summary
 5. Streamlit UI displays Mutual Funds and Fund Analytics pages
 6. All existing tests pass; `ruff check .` passes
 
@@ -256,13 +256,13 @@ Add support for fixed income instruments (PIBs, T-Bills, Corporate Sukuk) with y
   - Yield curve construction and interpolation
 
 - **CLI**
-  - `psxsync bonds init` - Initialize tables and seed default bonds
-  - `psxsync bonds load` - Load data from CSV files
-  - `psxsync bonds compute` - Compute analytics and yield curves
-  - `psxsync bonds list` - List bonds with filters
-  - `psxsync bonds quote --bond <id>` - Show bond analytics
-  - `psxsync bonds curve` - Display yield curve
-  - `psxsync bonds status` - Show data summary
+  - `pfsync bonds init` - Initialize tables and seed default bonds
+  - `pfsync bonds load` - Load data from CSV files
+  - `pfsync bonds compute` - Compute analytics and yield curves
+  - `pfsync bonds list` - List bonds with filters
+  - `pfsync bonds quote --bond <id>` - Show bond analytics
+  - `pfsync bonds curve` - Display yield curve
+  - `pfsync bonds status` - Show data summary
 
 - **UI**
   - Bonds Screener page - Bond browser with filters and analytics
@@ -275,10 +275,10 @@ Add support for fixed income instruments (PIBs, T-Bills, Corporate Sukuk) with y
 - Automated data sourcing from SBP/SECP
 
 ### Success Metrics
-1. `psxsync bonds init` successfully populates default bonds
-2. `psxsync bonds load --sample` generates sample quote data
-3. `psxsync bonds compute --curve` builds yield curve
-4. `psxsync bonds quote --bond <id>` displays analytics
+1. `pfsync bonds init` successfully populates default bonds
+2. `pfsync bonds load --sample` generates sample quote data
+3. `pfsync bonds compute --curve` builds yield curve
+4. `pfsync bonds quote --bond <id>` displays analytics
 5. Streamlit UI displays Bonds Screener and Yield Curve pages
 6. All existing tests pass; `ruff check .` passes
 
@@ -341,7 +341,7 @@ All phases follow an additive-only approach:
 
 ### Code Organization
 ```
-src/psx_ohlcv/
+src/pakfindata/
 ├── instruments.py           # Phase 1: Instrument management
 ├── sync_instruments.py      # Phase 1: Instrument EOD sync
 ├── analytics_phase1.py      # Phase 1: Performance analytics

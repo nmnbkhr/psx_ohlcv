@@ -433,7 +433,7 @@ curl http://localhost:8000/fx/snapshot
 curl -X POST "http://localhost:8000/fx/backfill?from_date=2024-01-01"
 
 # 5. Verify data landed in local DB
-sqlite3 psx_ohlcv.db "SELECT COUNT(*), MIN(date), MAX(date) FROM sbp_fx_interbank"
+sqlite3 pakfindata.db "SELECT COUNT(*), MIN(date), MAX(date) FROM sbp_fx_interbank"
 
 # 6. Run existing tests — nothing should break
 pytest tests/ --tb=short

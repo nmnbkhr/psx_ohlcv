@@ -2,9 +2,9 @@
 
 ## Context
 
-I'm working on `psx_ohlcv` — a Pakistan financial data platform.
+I'm working on `pakfindata` — a Pakistan financial data platform.
 - DB: `/mnt/e/psxdata/psx.sqlite`
-- Project: `~/psx_ohlcv/` (dev branch)
+- Project: `~/pakfindata/` (dev branch)
 - v3.0.0 is complete — already has populated tables from prior work
 - The FI page enhancement prompt is running separately — this prompt adds the BOND TRADING data layer
 
@@ -68,10 +68,10 @@ sqlite3 -header /mnt/e/psxdata/psx.sqlite "SELECT * FROM pkrv_daily ORDER BY dat
 sqlite3 -header /mnt/e/psxdata/psx.sqlite "SELECT * FROM konia_daily ORDER BY date DESC LIMIT 5;"
 
 # Check existing scraper source files
-find ~/psx_ohlcv/src/ -name "*.py" | xargs grep -l "sbp\|pkrv\|konia\|treasury\|smtv\|outright\|secondary.*market\|benchmark" 2>/dev/null
+find ~/pakfindata/src/ -name "*.py" | xargs grep -l "sbp\|pkrv\|konia\|treasury\|smtv\|outright\|secondary.*market\|benchmark" 2>/dev/null
 
 # Show existing CLI structure
-grep -rn "add_command\|@click\|group\|subparser\|def .*sync\|def .*backfill" ~/psx_ohlcv/src/psx_ohlcv/cli/ 2>/dev/null | head -30
+grep -rn "add_command\|@click\|group\|subparser\|def .*sync\|def .*backfill" ~/pakfindata/src/pakfindata/cli/ 2>/dev/null | head -30
 ```
 
 ### Step 2 — Probe SBP archive endpoints for backfill
@@ -163,7 +163,7 @@ Query functions needed:
 
 ### Step 5 — SBP Outright SMTV PDF scraper
 
-Create `src/psx_ohlcv/sources/sbp_bond_market.py`:
+Create `src/pakfindata/sources/sbp_bond_market.py`:
 
 ```python
 """
@@ -348,7 +348,7 @@ have from our existing scraper, add it as a supplementary source.
    Check if there's PKRV data in the existing codebase or tables:
    ```bash
    sqlite3 /mnt/e/psxdata/psx.sqlite "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%mufap%';"
-   grep -rn "pkrv\|PKRV\|revaluation" ~/psx_ohlcv/src/psx_ohlcv/sources/mufap* 2>/dev/null
+   grep -rn "pkrv\|PKRV\|revaluation" ~/pakfindata/src/pakfindata/sources/mufap* 2>/dev/null
    ```
 
 4. **SBP EasyData (easydata.sbp.org.pk)** — SBP's statistical portal.
@@ -357,9 +357,9 @@ have from our existing scraper, add it as a supplementary source.
    curl -s "https://easydata.sbp.org.pk/apex/f?p=10:211" 2>/dev/null | head -200
    ```
 
-5. **Existing scraper in psx_ohlcv** — Check what's already scraping PKRV:
+5. **Existing scraper in pakfindata** — Check what's already scraping PKRV:
    ```bash
-   grep -rn "pkrv\|PKRV" ~/psx_ohlcv/src/ 2>/dev/null
+   grep -rn "pkrv\|PKRV" ~/pakfindata/src/ 2>/dev/null
    # Find the scraper that populated the 21 rows — extend it for backfill
    ```
 
@@ -378,10 +378,10 @@ have from our existing scraper, add it as a supplementary source.
 ### Step 7 — CLI commands
 
 ```
-psxsync bonds smtv-sync         # Download & parse today's SMTV PDF
-psxsync bonds smtv-backfill     # Backfill from archives
-psxsync bonds benchmark-sync    # Scrape SBP benchmark snapshot
-psxsync bonds status            # Show bond data coverage
+pfsync bonds smtv-sync         # Download & parse today's SMTV PDF
+pfsync bonds smtv-backfill     # Backfill from archives
+pfsync bonds benchmark-sync    # Scrape SBP benchmark snapshot
+pfsync bonds status            # Show bond data coverage
 
 # Example output of status:
 # Bond Trading Data:
@@ -397,8 +397,8 @@ psxsync bonds status            # Show bond data coverage
 Add to the existing cron/sync system:
 ```
 # Daily bond data (after market, ~6pm PKT = 1pm UTC)
-0 13 * * 1-5  python -m psx_ohlcv bonds smtv-sync
-0 13 * * 1-5  python -m psx_ohlcv bonds benchmark-sync
+0 13 * * 1-5  python -m pakfindata bonds smtv-sync
+0 13 * * 1-5  python -m pakfindata bonds benchmark-sync
 ```
 
 ---
@@ -454,7 +454,7 @@ If the project has a FastAPI or MCP server, add endpoints:
 
 ```bash
 # Step 11 — Test SMTV scraper
-python -m psx_ohlcv bonds smtv-sync 2>&1
+python -m pakfindata bonds smtv-sync 2>&1
 
 sqlite3 -header /mnt/e/psxdata/psx.sqlite "
 SELECT security_type, segment, 
@@ -466,7 +466,7 @@ GROUP BY security_type, segment;
 "
 
 # Step 12 — Test benchmark scraper
-python -m psx_ohlcv bonds benchmark-sync 2>&1
+python -m pakfindata bonds benchmark-sync 2>&1
 
 sqlite3 -header /mnt/e/psxdata/psx.sqlite "
 SELECT * FROM sbp_benchmark_snapshot 
@@ -475,7 +475,7 @@ ORDER BY metric;
 "
 
 # Step 13 — Test backfill (try archives)
-python -m psx_ohlcv bonds smtv-backfill 2>&1
+python -m pakfindata bonds smtv-backfill 2>&1
 
 sqlite3 -header /mnt/e/psxdata/psx.sqlite "
 SELECT date, SUM(face_amount) as total_face 
@@ -484,7 +484,7 @@ GROUP BY date ORDER BY date DESC LIMIT 10;
 "
 
 # Step 14 — Verify FI page loads bond data
-streamlit run src/psx_ohlcv/ui/app.py --server.headless true 2>&1 | head -5
+streamlit run src/pakfindata/ui/app.py --server.headless true 2>&1 | head -5
 
 # Step 15 — Tests
 pytest tests/ -x -q --tb=short 2>&1 | tail -10
@@ -521,7 +521,7 @@ git commit -m "feat: SBP bond market data — SMTV scraper, benchmark snapshot, 
   - sbp_bond_trading_summary: daily aggregate totals
   - sbp_benchmark_snapshot: daily benchmark rate snapshots
   
-  CLI: psxsync bonds smtv-sync / benchmark-sync / smtv-backfill / status"
+  CLI: pfsync bonds smtv-sync / benchmark-sync / smtv-backfill / status"
 
 git push origin dev
 ```

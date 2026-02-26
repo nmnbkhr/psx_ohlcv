@@ -18,7 +18,7 @@ Phase 2 adds foreign exchange (FX) rate tracking and analytics to provide macro 
 ### Module Structure
 
 ```
-src/psx_ohlcv/
+src/pakfindata/
 ├── db.py                    # Extended with FX tables and helpers
 ├── analytics_fx.py          # FX analytics functions
 ├── sync_fx.py               # FX sync operations
@@ -179,7 +179,7 @@ Where:
 Seeds default FX pairs into the database.
 
 ```bash
-psxsync fx seed [--db PATH]
+pfsync fx seed [--db PATH]
 ```
 
 ### fx sync
@@ -187,7 +187,7 @@ psxsync fx seed [--db PATH]
 Syncs FX OHLCV data for all active pairs.
 
 ```bash
-psxsync fx sync [--pairs USD/PKR,EUR/PKR] [--full] [--db PATH]
+pfsync fx sync [--pairs USD/PKR,EUR/PKR] [--full] [--db PATH]
 ```
 
 Options:
@@ -199,7 +199,7 @@ Options:
 Displays FX analytics for a pair.
 
 ```bash
-psxsync fx show --pair USD/PKR [--db PATH]
+pfsync fx show --pair USD/PKR [--db PATH]
 ```
 
 ### fx compute-adjusted
@@ -207,7 +207,7 @@ psxsync fx show --pair USD/PKR [--db PATH]
 Computes FX-adjusted metrics for equities.
 
 ```bash
-psxsync fx compute-adjusted [--symbols SYMBOL1,SYMBOL2] [--fx-pair USD/PKR] [--db PATH]
+pfsync fx compute-adjusted [--symbols SYMBOL1,SYMBOL2] [--fx-pair USD/PKR] [--db PATH]
 ```
 
 ### fx status
@@ -215,7 +215,7 @@ psxsync fx compute-adjusted [--symbols SYMBOL1,SYMBOL2] [--fx-pair USD/PKR] [--d
 Shows FX sync status and data summary.
 
 ```bash
-psxsync fx status [--db PATH]
+pfsync fx status [--db PATH]
 ```
 
 ## UI Pages
@@ -278,36 +278,36 @@ Located at `data/fx_config.json`:
 
 ```bash
 # Initialize FX pairs
-psxsync fx seed
+pfsync fx seed
 
 # Sync FX data
-psxsync fx sync
+pfsync fx sync
 
 # Check status
-psxsync fx status
+pfsync fx status
 ```
 
 ### View FX Analytics
 
 ```bash
 # Show USD/PKR analytics
-psxsync fx show --pair USD/PKR
+pfsync fx show --pair USD/PKR
 ```
 
 ### Compute FX-Adjusted Metrics
 
 ```bash
 # Compute for all symbols with recent data
-psxsync fx compute-adjusted
+pfsync fx compute-adjusted
 
 # Compute for specific symbols
-psxsync fx compute-adjusted --symbols OGDC,PPL,PSO
+pfsync fx compute-adjusted --symbols OGDC,PPL,PSO
 ```
 
 ### Launch UI
 
 ```bash
-psxsync ui
+pfsync ui
 # Navigate to "🌍 FX Overview" or "📊 FX Impact" pages
 ```
 

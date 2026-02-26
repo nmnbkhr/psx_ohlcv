@@ -32,7 +32,7 @@ Transform PSX OHLCV from a stock-only tool into Pakistan's most comprehensive fi
 
 | # | Criterion | Measurable |
 |---|-----------|------------|
-| 1 | All 34 data domains have tables + scrapers + data | `python -m psx_ohlcv status` shows all green |
+| 1 | All 34 data domains have tables + scrapers + data | `python -m pakfindata status` shows all green |
 | 2 | Historical backfill: T-Bills since 2020, FX since 2020 | `SELECT MIN(date) FROM tbill_auctions` → 2020 |
 | 3 | Bulk sync completes <10 min for all domains | Timed via cron logs |
 | 4 | Single-symbol query returns <1s | `get_eod("OGDC")` response time |
@@ -246,7 +246,7 @@ CROSS:    "Compare KIBOR vs T-Bill" → JOIN kibor_rates ON date = tbill_auction
 ## 3.2 Module Organization (Extending v2.0.0)
 
 ```
-src/psx_ohlcv/
+src/pakfindata/
 ├── db/                        # Existing 12 modules
 │   ├── eod.py                 # ✅ EXISTS
 │   ├── intraday.py            # ✅ EXISTS
@@ -335,14 +335,14 @@ src/psx_ohlcv/
 
 ### Prompt 1.1 — ETF Scraper + Tables
 ```
-I'm extending psx_ohlcv (v2.0.0, just tagged) to cover all Pakistan financial data.
+I'm extending pakfindata (v2.0.0, just tagged) to cover all Pakistan financial data.
 
 TASK: Build ETF data collection.
 
 PSX has 5 listed ETFs: MZNPETF, NBPGETF, NITGETF, UBLPETF, MIIETF
 ETF detail page: https://dps.psx.com.pk/etf/{SYMBOL}
 
-Step 1 — Create src/psx_ohlcv/db/etf.py with:
+Step 1 — Create src/pakfindata/db/etf.py with:
 
   CREATE TABLE IF NOT EXISTS etf_master (
       symbol TEXT PRIMARY KEY,
@@ -376,7 +376,7 @@ Step 1 — Create src/psx_ohlcv/db/etf.py with:
   - get_etf_nav_history(con, symbol, start_date=None, end_date=None) -> pd.DataFrame
   - get_etf_detail(con, symbol) -> dict  # master + latest NAV
 
-Step 2 — Create src/psx_ohlcv/sources/etf_scraper.py:
+Step 2 — Create src/pakfindata/sources/etf_scraper.py:
 
   Scrape https://dps.psx.com.pk/etf/{SYMBOL} for each ETF.
   Extract: name, AMC, benchmark, NAV, market price, AUM, expense ratio.
@@ -393,15 +393,15 @@ Step 2 — Create src/psx_ohlcv/sources/etf_scraper.py:
           """Scrape all ETFs, upsert to DB. Returns {ok: N, failed: N}"""
 
 Step 3 — Add CLI command:
-  In cli.py, add: psxsync etf sync
-  And: psxsync etf list
-  And: psxsync etf show MZNPETF
+  In cli.py, add: pfsync etf sync
+  And: pfsync etf list
+  And: pfsync etf show MZNPETF
 
 Step 4 — Add init_etf_schema(con) call to the main init_schema function.
 
 Step 5 — Test:
-  python -m psx_ohlcv etf sync --db /mnt/e/psxdata/psx.sqlite
-  python -m psx_ohlcv etf list --db /mnt/e/psxdata/psx.sqlite
+  python -m pakfindata etf sync --db /mnt/e/psxdata/psx.sqlite
+  python -m pakfindata etf list --db /mnt/e/psxdata/psx.sqlite
   sqlite3 /mnt/e/psxdata/psx.sqlite "SELECT * FROM etf_master;"
   sqlite3 /mnt/e/psxdata/psx.sqlite "SELECT * FROM etf_nav ORDER BY date DESC LIMIT 10;"
 
@@ -419,7 +419,7 @@ Commit:
 
   - db/etf.py: etf_master + etf_nav tables with CRUD
   - sources/etf_scraper.py: scrapes dps.psx.com.pk/etf/{SYM}
-  - CLI: psxsync etf sync|list|show
+  - CLI: pfsync etf sync|list|show
   - 5 ETFs: MZNPETF, NBPGETF, NITGETF, UBLPETF, MIIETF
   - Tests: test_etf.py"
 ```
@@ -436,7 +436,7 @@ Your codebase already has:
   SBP_AUCTION_URL = "https://www.sbp.org.pk/ecodata/auction-results.asp"
   SBP_TBILL_URL = "https://www.sbp.org.pk/ecodata/t-bills.asp"
 
-Step 1 — Create src/psx_ohlcv/db/treasury.py:
+Step 1 — Create src/pakfindata/db/treasury.py:
 
   CREATE TABLE IF NOT EXISTS tbill_auctions (
       auction_date TEXT NOT NULL,
@@ -482,7 +482,7 @@ Step 1 — Create src/psx_ohlcv/db/treasury.py:
   - get_latest_tbill_yields(con) -> dict  # latest cutoff yields for all tenors
   - get_yield_trend(con, tenor: str, n_auctions: int = 20) -> pd.DataFrame
 
-Step 2 — Create src/psx_ohlcv/sources/sbp_treasury.py:
+Step 2 — Create src/pakfindata/sources/sbp_treasury.py:
 
   class SBPTreasuryScraper:
       TBILL_URL = "https://www.sbp.org.pk/ecodata/t-bills.asp"
@@ -502,12 +502,12 @@ Step 2 — Create src/psx_ohlcv/sources/sbp_treasury.py:
   - Date format: varies (DD-Mon-YYYY or other SBP formats)
 
 Step 3 — CLI:
-  psxsync treasury tbill-sync  # scrape and store T-Bill auctions
-  psxsync treasury tbill-list  # show recent auctions
-  psxsync treasury tbill-latest  # show latest yields for all tenors
+  pfsync treasury tbill-sync  # scrape and store T-Bill auctions
+  pfsync treasury tbill-list  # show recent auctions
+  pfsync treasury tbill-latest  # show latest yields for all tenors
 
 Step 4 — Test with real data:
-  python -m psx_ohlcv treasury tbill-sync --db /mnt/e/psxdata/psx.sqlite
+  python -m pakfindata treasury tbill-sync --db /mnt/e/psxdata/psx.sqlite
   sqlite3 /mnt/e/psxdata/psx.sqlite "SELECT auction_date, tenor, cutoff_yield FROM tbill_auctions ORDER BY auction_date DESC LIMIT 20;"
 
 Step 5 — Tests:
@@ -532,7 +532,7 @@ This portal has auction results for:
   - PIB Floating Fortnightly Reset
   - Govt Ijara Sukuk (Fixed + Variable rental)
 
-Step 1 — Extend src/psx_ohlcv/db/treasury.py (already created in 1.2):
+Step 1 — Extend src/pakfindata/db/treasury.py (already created in 1.2):
   Add: upsert_pib_auction, get_pib_auctions, get_latest_pib_yields
   The pib_auctions table was already created in 1.2.
 
@@ -549,7 +549,7 @@ Step 1 — Extend src/psx_ohlcv/db/treasury.py (already created in 1.2):
       PRIMARY KEY (auction_date, gis_type)
   );
 
-Step 2 — Create src/psx_ohlcv/sources/sbp_gsp.py:
+Step 2 — Create src/pakfindata/sources/sbp_gsp.py:
 
   class GSPScraper:
       BASE_URL = "https://gsp.sbp.org.pk"
@@ -569,8 +569,8 @@ Step 2 — Create src/psx_ohlcv/sources/sbp_gsp.py:
   sbp.org.pk/ecodata/ pages instead which have summary data.
 
 Step 3 — CLI:
-  psxsync treasury pib-sync
-  psxsync treasury gis-sync
+  pfsync treasury pib-sync
+  pfsync treasury gis-sync
 
 Step 4 — Test with real data.
 Commit: "feat: PIB + Govt Ijara Sukuk auction data from SBP GSP"
@@ -585,7 +585,7 @@ bond valuation. Published by Financial Markets Association (FMA) via SBP.
 
 KONIA (Karachi Overnight New Index Average) — the overnight interbank rate.
 
-Step 1 — Create src/psx_ohlcv/db/yield_curves.py:
+Step 1 — Create src/pakfindata/db/yield_curves.py:
 
   CREATE TABLE IF NOT EXISTS pkrv_daily (
       date TEXT NOT NULL,
@@ -609,7 +609,7 @@ Step 1 — Create src/psx_ohlcv/db/yield_curves.py:
   - get_konia_history(con, start_date=None, end_date=None) -> pd.DataFrame
   - compare_curves(con, date1, date2) -> pd.DataFrame  # side-by-side comparison
 
-Step 2 — Create src/psx_ohlcv/sources/sbp_rates.py:
+Step 2 — Create src/pakfindata/sources/sbp_rates.py:
 
   class SBPRatesScraper:
       PKRV_URL = "https://gsp.sbp.org.pk/"  # or specific PKRV page
@@ -626,9 +626,9 @@ Step 2 — Create src/psx_ohlcv/sources/sbp_rates.py:
   - Or compute yield curve from T-Bill + PIB auction cutoff yields (interpolated)
 
 Step 3 — CLI:
-  psxsync rates pkrv-sync
-  psxsync rates konia-sync
-  psxsync rates curve --date 2026-02-07
+  pfsync rates pkrv-sync
+  pfsync rates konia-sync
+  pfsync rates curve --date 2026-02-07
 
 Commit: "feat: PKRV yield curve + KONIA overnight rate"
 ```
@@ -643,7 +643,7 @@ Sources:
 
 These pages show daily exchange rates for major currencies vs PKR.
 
-Step 1 — Create src/psx_ohlcv/db/fx_extended.py:
+Step 1 — Create src/pakfindata/db/fx_extended.py:
 
   CREATE TABLE IF NOT EXISTS sbp_fx_interbank (
       date TEXT NOT NULL,
@@ -684,7 +684,7 @@ Step 1 — Create src/psx_ohlcv/db/fx_extended.py:
   - get_all_fx_latest(con, source='interbank') -> pd.DataFrame
   - get_fx_spread(con, currency, date=None) -> dict  # interbank vs open market vs kerb
 
-Step 2 — Create src/psx_ohlcv/sources/sbp_fx.py:
+Step 2 — Create src/pakfindata/sources/sbp_fx.py:
 
   class SBPFXScraper:
       WAR_URL = "https://www.sbp.org.pk/ecodata/rates/WAR/WAR-Current.asp"
@@ -694,7 +694,7 @@ Step 2 — Create src/psx_ohlcv/sources/sbp_fx.py:
       def scrape_open_market(self) -> list[dict]:
       def sync_all(self, con) -> dict:
 
-Step 3 — Create src/psx_ohlcv/sources/forex_scraper.py:
+Step 3 — Create src/pakfindata/sources/forex_scraper.py:
 
   class ForexPKScraper:
       URL = "https://www.forex.pk/open_market_rates.asp"
@@ -703,10 +703,10 @@ Step 3 — Create src/psx_ohlcv/sources/forex_scraper.py:
           """Scrape forex.pk for kerb/dealer rates."""
 
 Step 4 — CLI:
-  psxsync fx sbp-sync    # interbank + open market from SBP
-  psxsync fx kerb-sync   # kerb rates from forex.pk
-  psxsync fx latest      # show all latest rates from all sources
-  psxsync fx spread USD  # show interbank vs open market vs kerb spread
+  pfsync fx sbp-sync    # interbank + open market from SBP
+  pfsync fx kerb-sync   # kerb rates from forex.pk
+  pfsync fx latest      # show all latest rates from all sources
+  pfsync fx spread USD  # show interbank vs open market vs kerb spread
 
 Commit: "feat: comprehensive FX rates — SBP interbank, open market, kerb"
 ```
@@ -737,9 +737,9 @@ and extend company scraper to extract payout section.
 Step 2 — Add query functions to db/dividends.py (or extend db/company.py).
 
 Step 3 — CLI:
-  psxsync dividends show OGDC
-  psxsync dividends top --n 20
-  psxsync dividends yield OGDC --years 5
+  pfsync dividends show OGDC
+  pfsync dividends top --n 20
+  pfsync dividends yield OGDC --years 5
 
 Commit: "feat: dividend history queries + CLI"
 ```
@@ -750,7 +750,7 @@ TASK: Build IPO/listing pipeline tracker.
 
 Source: https://dps.psx.com.pk/listings — listing status page
 
-Step 1 — Create src/psx_ohlcv/db/ipo.py:
+Step 1 — Create src/pakfindata/db/ipo.py:
 
   CREATE TABLE IF NOT EXISTS ipo_listings (
       symbol TEXT NOT NULL,
@@ -768,13 +768,13 @@ Step 1 — Create src/psx_ohlcv/db/ipo.py:
       PRIMARY KEY (symbol, COALESCE(subscription_open, listing_date, updated_at))
   );
 
-Step 2 — Create src/psx_ohlcv/sources/ipo_scraper.py:
+Step 2 — Create src/pakfindata/sources/ipo_scraper.py:
   Scrape https://dps.psx.com.pk/listings
   Extract: symbol, company name, board, listing status, dates
 
 Step 3 — CLI:
-  psxsync ipo sync
-  psxsync ipo list --status upcoming
+  pfsync ipo sync
+  pfsync ipo list --status upcoming
 
 Commit: "feat: IPO calendar + listing status tracker"
 ```
@@ -817,7 +817,7 @@ Step 1 — In db/__init__.py or wherever init_schema lives:
 
 Step 2 — Verify all tables exist:
   python -c "
-  from psx_ohlcv.db import connect, init_schema
+  from pakfindata.db import connect, init_schema
   con = connect('/mnt/e/psxdata/psx.sqlite')
   init_schema(con)
   tables = con.execute(\"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name\").fetchall()
@@ -828,14 +828,14 @@ Step 2 — Verify all tables exist:
   "
 
 Step 3 — Run ALL new scrapers:
-  python -m psx_ohlcv etf sync
-  python -m psx_ohlcv treasury tbill-sync
-  python -m psx_ohlcv treasury pib-sync
-  python -m psx_ohlcv rates pkrv-sync
-  python -m psx_ohlcv rates konia-sync
-  python -m psx_ohlcv fx sbp-sync
-  python -m psx_ohlcv fx kerb-sync
-  python -m psx_ohlcv ipo sync
+  python -m pakfindata etf sync
+  python -m pakfindata treasury tbill-sync
+  python -m pakfindata treasury pib-sync
+  python -m pakfindata rates pkrv-sync
+  python -m pakfindata rates konia-sync
+  python -m pakfindata fx sbp-sync
+  python -m pakfindata fx kerb-sync
+  python -m pakfindata ipo sync
 
 Step 4 — Run ALL tests:
   pytest tests/ -x -q --tb=short
@@ -848,7 +848,7 @@ Commit: "feat: master schema integration — all new tables initialized"
 TASK: Create a unified sync command and data status report.
 
 Step 1 — Add unified sync:
-  psxsync sync-all
+  pfsync sync-all
   
   This runs ALL data scrapers in order:
   1. Symbols refresh (if needed)
@@ -870,7 +870,7 @@ Step 1 — Add unified sync:
   Print summary at end: X of 14 sync steps succeeded.
 
 Step 2 — Add status command:
-  psxsync status
+  pfsync status
   
   Output:
   ┌──────────────────────────┬──────────┬───────────────┬────────────┐
@@ -915,9 +915,9 @@ It uses the official MCP Python SDK.
 Step 1 — Install MCP SDK:
   pip install mcp --break-system-packages
 
-Step 2 — Create src/psx_ohlcv/mcp/__init__.py (empty)
+Step 2 — Create src/pakfindata/mcp/__init__.py (empty)
 
-Step 3 — Create src/psx_ohlcv/mcp/server.py:
+Step 3 — Create src/pakfindata/mcp/server.py:
 
   from mcp.server import Server
   from mcp.server.stdio import stdio_server
@@ -1044,7 +1044,7 @@ Step 3 — Create src/psx_ohlcv/mcp/server.py:
       import asyncio
       asyncio.run(main())
 
-Step 4 — Create src/psx_ohlcv/mcp/__main__.py:
+Step 4 — Create src/pakfindata/mcp/__main__.py:
   from .server import main
   import asyncio
   asyncio.run(main())
@@ -1052,14 +1052,14 @@ Step 4 — Create src/psx_ohlcv/mcp/__main__.py:
 Step 5 — Test locally:
   # Test that server starts
   echo '{"jsonrpc": "2.0", "method": "tools/list", "id": 1}' | \
-    PSX_DB_PATH=/mnt/e/psxdata/psx.sqlite python -m psx_ohlcv.mcp
+    PSX_DB_PATH=/mnt/e/psxdata/psx.sqlite python -m pakfindata.mcp
 
 Step 6 — Create Claude Code config:
-  Create ~/psx_ohlcv/.claude/config.toml:
+  Create ~/pakfindata/.claude/config.toml:
   
   [mcp_servers.psx-ohlcv]
   command = "python"
-  args = ["-m", "psx_ohlcv.mcp"]
+  args = ["-m", "pakfindata.mcp"]
   
   [mcp_servers.psx-ohlcv.env]
   PSX_DB_PATH = "/mnt/e/psxdata/psx.sqlite"
@@ -1088,7 +1088,7 @@ Each tool:
 
 Test each tool works:
   echo '{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"get_yield_curve","arguments":{"curve_type":"pkrv"}}}' | \
-    PSX_DB_PATH=/mnt/e/psxdata/psx.sqlite python -m psx_ohlcv.mcp
+    PSX_DB_PATH=/mnt/e/psxdata/psx.sqlite python -m pakfindata.mcp
 
 Commit: "feat: MCP fixed income tools — bonds, sukuk, yield curves, auctions"
 ```
@@ -1128,7 +1128,7 @@ Analytics tools:
 5. get_correlation(symbol1, symbol2, period) — Price correlation
 
 System tools:
-6. get_data_freshness() — Status of all data domains (same as psxsync status)
+6. get_data_freshness() — Status of all data domains (same as pfsync status)
 7. get_coverage_summary() — How many symbols, funds, etc.
 8. trigger_sync(data_type) — On-demand sync (equities|fx|funds|treasury|all)
 9. run_sql(query) — Execute read-only SQL query against the database
@@ -1217,36 +1217,36 @@ Commit: "feat: MCP resources (schema, symbols) + prompt templates (5 analysis ch
 TASK: Full integration test of MCP server with Claude Code.
 
 Step 1 — Verify MCP server starts:
-  PSX_DB_PATH=/mnt/e/psxdata/psx.sqlite python -m psx_ohlcv.mcp &
+  PSX_DB_PATH=/mnt/e/psxdata/psx.sqlite python -m pakfindata.mcp &
   # Should not crash
 
 Step 2 — List all tools:
   echo '{"jsonrpc":"2.0","method":"tools/list","id":1}' | \
-    PSX_DB_PATH=/mnt/e/psxdata/psx.sqlite python -m psx_ohlcv.mcp
+    PSX_DB_PATH=/mnt/e/psxdata/psx.sqlite python -m pakfindata.mcp
   
   # Should show 25+ tools
 
 Step 3 — Test each tool category:
   # Equity
-  echo '{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"get_eod","arguments":{"symbol":"OGDC","limit":5}}}' | python -m psx_ohlcv.mcp
+  echo '{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"get_eod","arguments":{"symbol":"OGDC","limit":5}}}' | python -m pakfindata.mcp
   
   # Fixed Income
-  echo '{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"get_latest_yields","arguments":{}}}' | python -m psx_ohlcv.mcp
+  echo '{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"get_latest_yields","arguments":{}}}' | python -m pakfindata.mcp
   
   # Funds
-  echo '{"jsonrpc":"2.0","method":"tools/call","id":3,"params":{"name":"get_mutual_funds","arguments":{"category":"Equity"}}}' | python -m psx_ohlcv.mcp
+  echo '{"jsonrpc":"2.0","method":"tools/call","id":3,"params":{"name":"get_mutual_funds","arguments":{"category":"Equity"}}}' | python -m pakfindata.mcp
   
   # FX
-  echo '{"jsonrpc":"2.0","method":"tools/call","id":4,"params":{"name":"get_fx_rates","arguments":{"currency":"USD"}}}' | python -m psx_ohlcv.mcp
+  echo '{"jsonrpc":"2.0","method":"tools/call","id":4,"params":{"name":"get_fx_rates","arguments":{"currency":"USD"}}}' | python -m pakfindata.mcp
   
   # Analytics
-  echo '{"jsonrpc":"2.0","method":"tools/call","id":5,"params":{"name":"screen_stocks","arguments":{"min_dividend_yield":5}}}' | python -m psx_ohlcv.mcp
+  echo '{"jsonrpc":"2.0","method":"tools/call","id":5,"params":{"name":"screen_stocks","arguments":{"min_dividend_yield":5}}}' | python -m pakfindata.mcp
   
   # System
-  echo '{"jsonrpc":"2.0","method":"tools/call","id":6,"params":{"name":"get_data_freshness","arguments":{}}}' | python -m psx_ohlcv.mcp
+  echo '{"jsonrpc":"2.0","method":"tools/call","id":6,"params":{"name":"get_data_freshness","arguments":{}}}' | python -m pakfindata.mcp
 
 Step 4 — Claude Code integration:
-  Ensure ~/psx_ohlcv/.claude/config.toml has the MCP server configured.
+  Ensure ~/pakfindata/.claude/config.toml has the MCP server configured.
   Start Claude Code in the project directory.
   Ask: "What tools do you have for PSX data?"
   Ask: "Show me OGDC's last 10 trading days"
@@ -1275,7 +1275,7 @@ Commit: "test: MCP server integration tests — all tools verified"
 ```
 TASK: Create a Treasury Market dashboard page.
 
-Create src/psx_ohlcv/ui/page_views/treasury_dashboard.py
+Create src/pakfindata/ui/page_views/treasury_dashboard.py
 
 Sections:
 1. YIELD CURVE CHART (plotly)
@@ -1306,7 +1306,7 @@ Commit: "feat: Treasury Market dashboard page"
 ```
 TASK: Create FX rates comparison dashboard.
 
-Create src/psx_ohlcv/ui/page_views/fx_dashboard.py
+Create src/pakfindata/ui/page_views/fx_dashboard.py
 
 Sections:
 1. RATE CARDS — For USD, EUR, GBP, SAR, AED:
@@ -1332,7 +1332,7 @@ Commit: "feat: FX rates comparison dashboard"
 ```
 TASK: Create mutual fund + ETF explorer page.
 
-Create src/psx_ohlcv/ui/page_views/fund_explorer.py
+Create src/pakfindata/ui/page_views/fund_explorer.py
 
 Sections:
 1. FUND FILTER SIDEBAR
@@ -1367,9 +1367,9 @@ Commit: "feat: mutual fund + ETF explorer page"
 ```
 TASK: Create data quality monitoring page.
 
-Create src/psx_ohlcv/ui/page_views/data_quality.py
+Create src/pakfindata/ui/page_views/data_quality.py
 
-This reuses the same logic as psxsync status but in a visual dashboard.
+This reuses the same logic as pfsync status but in a visual dashboard.
 
 Sections:
 1. FRESHNESS TABLE — all 18 data domains with:
@@ -1385,7 +1385,7 @@ Sections:
    - Top 10 largest tables by row count
 
 4. QUICK ACTIONS
-   - Button: Sync All (calls psxsync sync-all)
+   - Button: Sync All (calls pfsync sync-all)
    - Button: Vacuum DB
    - Button: Backup DB
    - Button: Run Analyze
@@ -1397,7 +1397,7 @@ Commit: "feat: data quality dashboard page"
 ```
 TASK: Create a SQL research terminal page.
 
-Create src/psx_ohlcv/ui/page_views/research_terminal.py
+Create src/pakfindata/ui/page_views/research_terminal.py
 
 This is for power users who want to run custom SQL queries.
 
@@ -1437,7 +1437,7 @@ Commit: "feat: SQL research terminal page"
 ```
 TASK: Set up comprehensive cron scheduling.
 
-Create all sync scripts in ~/psx_ohlcv/scripts/:
+Create all sync scripts in ~/pakfindata/scripts/:
 
 scripts/sync_all.sh — Master sync (calls everything)
 scripts/sync_eod.sh — EOD + indices only
@@ -1456,17 +1456,17 @@ Each script:
 
 Crontab (all times in UTC, PKT = UTC+5):
   # Daily Mon-Fri
-  30 12 * * 1-5 ~/psx_ohlcv/scripts/sync_rates.sh    # 17:30 PKT
-  0 13 * * 1-5  ~/psx_ohlcv/scripts/sync_fx.sh        # 18:00 PKT
-  30 13 * * 1-5 ~/psx_ohlcv/scripts/sync_eod.sh       # 18:30 PKT
-  0 14 * * 1-5  ~/psx_ohlcv/scripts/sync_etf.sh       # 19:00 PKT
-  0 15 * * 1-5  ~/psx_ohlcv/scripts/sync_mufap.sh     # 20:00 PKT
+  30 12 * * 1-5 ~/pakfindata/scripts/sync_rates.sh    # 17:30 PKT
+  0 13 * * 1-5  ~/pakfindata/scripts/sync_fx.sh        # 18:00 PKT
+  30 13 * * 1-5 ~/pakfindata/scripts/sync_eod.sh       # 18:30 PKT
+  0 14 * * 1-5  ~/pakfindata/scripts/sync_etf.sh       # 19:00 PKT
+  0 15 * * 1-5  ~/pakfindata/scripts/sync_mufap.sh     # 20:00 PKT
   
   # Weekly (Friday)
-  0 16 * * 5    ~/psx_ohlcv/scripts/sync_treasury.sh  # 21:00 PKT Fri
+  0 16 * * 5    ~/pakfindata/scripts/sync_treasury.sh  # 21:00 PKT Fri
   
   # Monthly (1st)
-  0 22 1 * *    ~/psx_ohlcv/scripts/maintenance.sh     # 03:00 PKT
+  0 22 1 * *    ~/pakfindata/scripts/maintenance.sh     # 03:00 PKT
 
 Install crontab:
   crontab -e
@@ -1512,26 +1512,26 @@ Commit: "test: comprehensive test suite for all new modules"
 ```
 TASK: Add FastAPI routes for new data domains.
 
-Create src/psx_ohlcv/api/routers/treasury.py:
+Create src/pakfindata/api/routers/treasury.py:
   GET /api/treasury/tbills — T-Bill auctions with filters
   GET /api/treasury/pibs — PIB auctions
   GET /api/treasury/yields — Latest yields across all instruments
   GET /api/treasury/curve/{type} — Yield curve (pkrv, tbill, pib)
 
-Create src/psx_ohlcv/api/routers/funds.py:
+Create src/pakfindata/api/routers/funds.py:
   GET /api/funds/mutual — Mutual funds list with filters
   GET /api/funds/mutual/{fund_id}/nav — NAV history
   GET /api/funds/etf — ETF list
   GET /api/funds/etf/{symbol} — ETF detail
 
-Create src/psx_ohlcv/api/routers/rates.py:
+Create src/pakfindata/api/routers/rates.py:
   GET /api/rates/fx — FX rates (params: currency, source)
   GET /api/rates/fx/history — FX history
   GET /api/rates/kibor — KIBOR
   GET /api/rates/konia — KONIA
   GET /api/rates/policy — Policy rate
 
-Create src/psx_ohlcv/api/routers/market.py:
+Create src/pakfindata/api/routers/market.py:
   GET /api/market/snapshot — Full market snapshot
   GET /api/market/indices — All indices
   GET /api/market/movers — Top gainers/losers
@@ -1544,7 +1544,7 @@ Register all in api/main.py:
   app.include_router(market.router, prefix="/api/market", tags=["Market"])
 
 Verify:
-  uvicorn psx_ohlcv.api.main:app --port 8000 &
+  uvicorn pakfindata.api.main:app --port 8000 &
   curl http://localhost:8000/api/treasury/yields | python -m json.tool
   curl http://localhost:8000/api/rates/fx?currency=USD | python -m json.tool
   curl http://localhost:8000/docs  # Swagger should show all new routes
@@ -1562,20 +1562,20 @@ Step 1 — Run ALL tests:
   # Must be ALL passed
 
 Step 2 — Run status check:
-  python -m psx_ohlcv status --db /mnt/e/psxdata/psx.sqlite
+  python -m pakfindata status --db /mnt/e/psxdata/psx.sqlite
   # All data domains should show data
 
 Step 3 — Start Streamlit, verify all pages load:
-  streamlit run src/psx_ohlcv/ui/app.py --server.headless true 2>&1 | head -10
+  streamlit run src/pakfindata/ui/app.py --server.headless true 2>&1 | head -10
 
 Step 4 — Start FastAPI, verify docs:
-  uvicorn psx_ohlcv.api.main:app --port 8000 &
+  uvicorn pakfindata.api.main:app --port 8000 &
   curl -s http://localhost:8000/docs | head -5
   kill %1
 
 Step 5 — MCP server, verify tools:
   echo '{"jsonrpc":"2.0","method":"tools/list","id":1}' | \
-    PSX_DB_PATH=/mnt/e/psxdata/psx.sqlite python -m psx_ohlcv.mcp 2>/dev/null | \
+    PSX_DB_PATH=/mnt/e/psxdata/psx.sqlite python -m pakfindata.mcp 2>/dev/null | \
     python -c "import sys,json; d=json.load(sys.stdin); print(f'Tools: {len(d[\"result\"][\"tools\"])}')"
 
 Step 6 — DB stats:

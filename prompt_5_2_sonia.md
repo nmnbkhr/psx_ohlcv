@@ -1,7 +1,7 @@
 # Prompt 5.2 -- SONIA Scraper (Bank of England)
 
 ## Context
-You are working on the PSX OHLCV project at `~/psx_ohlcv/`.
+You are working on the PSX OHLCV project at `~/pakfindata/`.
 
 CODEBASE CONVENTIONS (MUST FOLLOW):
 - Database connection: `connect()` from `db.connection`, NEVER `get_db()`
@@ -166,7 +166,7 @@ Add SONIA to the `sync_all()` method, after the EFFR block:
 
 ### Step 3 -- Add SONIA to CLI 'sync' output
 
-No CLI changes needed -- `psxsync globalrates sync` already calls `sync_all()` which
+No CLI changes needed -- `pfsync globalrates sync` already calls `sync_all()` which
 will now include SONIA. Just verify it shows in the output.
 
 ### Step 4 -- Update Streamlit page
@@ -182,7 +182,7 @@ If the dashboard has hardcoded rate names, add 'SONIA' to the list.
 ```bash
 # 1. Scraper works (requires internet)
 python -c "
-from psx_ohlcv.sources.global_rates_scraper import GlobalRatesScraper
+from pakfindata.sources.global_rates_scraper import GlobalRatesScraper
 s = GlobalRatesScraper()
 data = s.scrape_sonia(days=10)
 assert len(data) > 0, 'No SONIA data returned'
@@ -192,21 +192,21 @@ for d in data[:3]:
 "
 
 # 2. Full sync includes SONIA
-psxsync globalrates sync --count 30
+pfsync globalrates sync --count 30
 # Should show SONIA: N in the stats output
 
 # 3. Latest rates show SONIA
-psxsync globalrates latest
+pfsync globalrates latest
 # Should include a SONIA row
 
 # 4. API returns SONIA
-uvicorn psx_ohlcv.api.main:app --port 8000 &
+uvicorn pakfindata.api.main:app --port 8000 &
 sleep 2
 curl -s http://localhost:8000/api/global-rates/latest | python -m json.tool | grep -A2 SONIA
 kill %1
 
 # 5. History works
-psxsync globalrates history SONIA --days 10
+pfsync globalrates history SONIA --days 10
 ```
 
 ## COMMIT

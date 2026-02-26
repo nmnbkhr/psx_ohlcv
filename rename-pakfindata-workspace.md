@@ -5,13 +5,13 @@
 Insert this between Step 9 and Step 10 of `rename-pakfindata-execution.md`.
 
 The development environment uses a VS Code multi-root workspace:
-- **Workspace file:** `psx_ohlcv.code-workspace` (needs renaming)
-- **Folder 1:** psx_ohlcv → pakfindata (THE rename target)
+- **Workspace file:** `pakfindata.code-workspace` (needs renaming)
+- **Folder 1:** pakfindata → pakfindata (THE rename target)
 - **Folder 2:** psx-live (React trading terminal — PSX only, does NOT rename)
 - **Conda env:** `psx` (shared by both, does NOT change)
 
 ### Key distinction:
-- `psx_ohlcv` = our Python package → becomes `pakfindata`
+- `pakfindata` = our Python package → becomes `pakfindata`
 - `psx-live` = React frontend for PSX exchange specifically → stays `psx-live`
 - psx-live may call pakfindata's API/MCP endpoints — those references need updating
 
@@ -28,15 +28,15 @@ echo "╚═══════════════════════�
 echo "━━━ Workspace file location ━━━"
 find ~ -maxdepth 3 -name "*.code-workspace" 2>/dev/null | grep -i psx
 # Also check common locations
-ls -la ~/psx_ohlcv.code-workspace 2>/dev/null
-ls -la ~/psx_ohlcv/*.code-workspace 2>/dev/null
+ls -la ~/pakfindata.code-workspace 2>/dev/null
+ls -la ~/pakfindata/*.code-workspace 2>/dev/null
 ls -la ~/projects/*.code-workspace 2>/dev/null
 ls -la ~/*.code-workspace 2>/dev/null
 
 # 9.1B — Show current workspace content
 echo ""
 echo "━━━ Current workspace file ━━━"
-WS_FILE=$(find ~ -maxdepth 3 -name "psx_ohlcv.code-workspace" 2>/dev/null | head -1)
+WS_FILE=$(find ~ -maxdepth 3 -name "pakfindata.code-workspace" 2>/dev/null | head -1)
 if [ -z "$WS_FILE" ]; then
   WS_FILE=$(find ~ -maxdepth 3 -name "*psx*.code-workspace" 2>/dev/null | head -1)
 fi
@@ -49,11 +49,11 @@ else
   echo "⚠️ Workspace file not found — search manually"
 fi
 
-# 9.1C — Check what paths/settings reference psx_ohlcv
+# 9.1C — Check what paths/settings reference pakfindata
 echo ""
 echo "━━━ References in workspace file ━━━"
 if [ -n "$WS_FILE" ]; then
-  grep -n "psx_ohlcv\|psxsync" "$WS_FILE"
+  grep -n "pakfindata\|pfsync" "$WS_FILE"
   echo ""
   echo "Lines referencing psx-live (should NOT change):"
   grep -n "psx-live\|psx_live" "$WS_FILE"
@@ -95,20 +95,20 @@ if [ -n "$PSX_LIVE" ]; then
   
   echo ""
   echo "━━━ 9.2A: Python package imports (unlikely but check) ━━━"
-  grep -rn "psx_ohlcv\|pakfindata\|from psx_ohlcv\|import psx_ohlcv" \
+  grep -rn "pakfindata\|pakfindata\|from pakfindata\|import pakfindata" \
     --include="*.py" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" \
     "$PSX_LIVE" 2>/dev/null | grep -v node_modules | grep -v __pycache__ | grep -v .git
   
   echo ""
-  echo "━━━ 9.2B: API endpoint URLs referencing psx_ohlcv ━━━"
-  grep -rn "psx_ohlcv\|psxsync\|pakfindata\|pfsync" \
+  echo "━━━ 9.2B: API endpoint URLs referencing pakfindata ━━━"
+  grep -rn "pakfindata\|pfsync\|pakfindata\|pfsync" \
     --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.json" --include="*.env*" \
     "$PSX_LIVE" 2>/dev/null | grep -v node_modules | grep -v .git
   
   echo ""
-  echo "━━━ 9.2C: Package.json scripts referencing psx_ohlcv ━━━"
+  echo "━━━ 9.2C: Package.json scripts referencing pakfindata ━━━"
   if [ -f "$PSX_LIVE/package.json" ]; then
-    grep -n "psx_ohlcv\|psxsync" "$PSX_LIVE/package.json"
+    grep -n "pakfindata\|pfsync" "$PSX_LIVE/package.json"
   fi
   
   echo ""
@@ -116,7 +116,7 @@ if [ -n "$PSX_LIVE" ]; then
   for f in "$PSX_LIVE/.env" "$PSX_LIVE/.env.local" "$PSX_LIVE/.env.development" "$PSX_LIVE/.env.production"; do
     if [ -f "$f" ]; then
       echo "--- $(basename $f) ---"
-      grep -n "psx_ohlcv\|psxsync\|pakfindata\|pfsync" "$f" 2>/dev/null
+      grep -n "pakfindata\|pfsync\|pakfindata\|pfsync" "$f" 2>/dev/null
       # Also check API base URLs that might point to our backend
       grep -n "API_URL\|BACKEND\|BASE_URL\|WS_URL\|SOCKET_URL" "$f" 2>/dev/null
     fi
@@ -125,9 +125,9 @@ if [ -n "$PSX_LIVE" ]; then
   echo ""
   echo "━━━ 9.2E: Docker/compose references ━━━"
   find "$PSX_LIVE" -maxdepth 2 \( -name "Dockerfile*" -o -name "docker-compose*" -o -name "nginx*" \) | while read f; do
-    if grep -q "psx_ohlcv\|psxsync\|~/psx_ohlcv" "$f" 2>/dev/null; then
+    if grep -q "pakfindata\|pfsync\|~/pakfindata" "$f" 2>/dev/null; then
       echo "$f:"
-      grep -n "psx_ohlcv\|psxsync\|~/psx_ohlcv" "$f"
+      grep -n "pakfindata\|pfsync\|~/pakfindata" "$f"
     fi
   done
   
@@ -135,23 +135,23 @@ if [ -n "$PSX_LIVE" ]; then
   echo "━━━ 9.2F: Proxy/API config (vite, webpack, next.config, etc.) ━━━"
   find "$PSX_LIVE" -maxdepth 2 \( -name "vite.config*" -o -name "webpack.config*" -o -name "next.config*" -o -name "proxy.conf*" \) | while read f; do
     echo "--- $f ---"
-    grep -n "psx_ohlcv\|psxsync\|localhost\|127.0.0.1\|api.*psx" "$f" 2>/dev/null
+    grep -n "pakfindata\|pfsync\|localhost\|127.0.0.1\|api.*psx" "$f" 2>/dev/null
   done
   
   echo ""
   echo "━━━ 9.2G: MCP/WebSocket connection configs ━━━"
   grep -rn "mcp\|websocket\|ws://\|wss://\|socket" \
     --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.json" --include="*.env*" \
-    "$PSX_LIVE" 2>/dev/null | grep -v node_modules | grep -v .git | grep -i "psx_ohlcv\|pakfindata\|psxsync\|pfsync" | head -20
+    "$PSX_LIVE" 2>/dev/null | grep -v node_modules | grep -v .git | grep -i "pakfindata\|pakfindata\|pfsync\|pfsync" | head -20
   
   echo ""
   echo "━━━ DECISION MATRIX ━━━"
   echo ""
-  total=$(grep -rn "psx_ohlcv\|psxsync" "$PSX_LIVE" --include="*.py" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.json" --include="*.env*" --include="*.yml" --include="*.yaml" 2>/dev/null | grep -v node_modules | grep -v .git | wc -l)
-  echo "Total psx_ohlcv/psxsync references in psx-live: $total"
+  total=$(grep -rn "pakfindata\|pfsync" "$PSX_LIVE" --include="*.py" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.json" --include="*.env*" --include="*.yml" --include="*.yaml" 2>/dev/null | grep -v node_modules | grep -v .git | wc -l)
+  echo "Total pakfindata/pfsync references in psx-live: $total"
   echo ""
   if [ "$total" -eq 0 ]; then
-    echo "✅ psx-live has NO cross-references to psx_ohlcv — no changes needed"
+    echo "✅ psx-live has NO cross-references to pakfindata — no changes needed"
     echo "   (psx-live likely connects to PSX directly via DPS/WebSocket, not through our package)"
   else
     echo "⚠️ psx-live has $total references that need updating"
@@ -176,7 +176,7 @@ echo "║  STEP 9.3: UPDATE WORKSPACE FILE                     ║"
 echo "╚══════════════════════════════════════════════════════╝"
 
 # Re-find workspace file (we're now in ~/pakfindata after Step 4)
-WS_FILE=$(find ~ -maxdepth 3 -name "psx_ohlcv.code-workspace" 2>/dev/null | head -1)
+WS_FILE=$(find ~ -maxdepth 3 -name "pakfindata.code-workspace" 2>/dev/null | head -1)
 if [ -z "$WS_FILE" ]; then
   WS_FILE=$(find ~ -maxdepth 3 -name "*psx*.code-workspace" 2>/dev/null | head -1)
 fi
@@ -189,7 +189,7 @@ if [ -n "$WS_FILE" ]; then
   echo ""
   
   # 9.3A — Update folder paths inside the workspace file
-  # Change psx_ohlcv folder reference → pakfindata
+  # Change pakfindata folder reference → pakfindata
   # Keep psx-live folder reference UNCHANGED
   python3 -c "
 import json, sys, os
@@ -203,44 +203,44 @@ changes = []
 # Update folder paths
 for i, folder in enumerate(ws.get('folders', [])):
     old_path = folder.get('path', '')
-    # Only change the psx_ohlcv project folder, NOT psx-live
-    if 'psx_ohlcv' in old_path and 'psx-live' not in old_path and 'psx_live' not in old_path:
-        new_path = old_path.replace('psx_ohlcv', 'pakfindata')
+    # Only change the pakfindata project folder, NOT psx-live
+    if 'pakfindata' in old_path and 'psx-live' not in old_path and 'psx_live' not in old_path:
+        new_path = old_path.replace('pakfindata', 'pakfindata')
         folder['path'] = new_path
         changes.append(f'  Folder {i}: {old_path} → {new_path}')
     
     # Update folder name/label if present
     old_name = folder.get('name', '')
-    if 'psx_ohlcv' in old_name:
-        new_name = old_name.replace('psx_ohlcv', 'pakfindata')
+    if 'pakfindata' in old_name:
+        new_name = old_name.replace('pakfindata', 'pakfindata')
         folder['name'] = new_name
         changes.append(f'  Name {i}: {old_name} → {new_name}')
 
-# Update settings that reference psx_ohlcv
+# Update settings that reference pakfindata
 def update_dict(d, depth=0):
     if depth > 10:
         return
     if isinstance(d, dict):
         for k, v in d.items():
             if isinstance(v, str):
-                if 'psx_ohlcv' in v and 'psx-live' not in v:
-                    new_v = v.replace('psx_ohlcv', 'pakfindata')
+                if 'pakfindata' in v and 'psx-live' not in v:
+                    new_v = v.replace('pakfindata', 'pakfindata')
                     d[k] = new_v
-                    changes.append(f'  Setting {k}: ...psx_ohlcv... → ...pakfindata...')
-                if 'psxsync' in v:
-                    new_v = v.replace('psxsync', 'pfsync')
+                    changes.append(f'  Setting {k}: ...pakfindata... → ...pakfindata...')
+                if 'pfsync' in v:
+                    new_v = v.replace('pfsync', 'pfsync')
                     d[k] = new_v
-                    changes.append(f'  Setting {k}: psxsync → pfsync')
+                    changes.append(f'  Setting {k}: pfsync → pfsync')
             elif isinstance(v, (dict, list)):
                 update_dict(v, depth + 1)
     elif isinstance(d, list):
         for i, item in enumerate(d):
             if isinstance(item, str):
-                if 'psx_ohlcv' in item and 'psx-live' not in item:
-                    d[i] = item.replace('psx_ohlcv', 'pakfindata')
+                if 'pakfindata' in item and 'psx-live' not in item:
+                    d[i] = item.replace('pakfindata', 'pakfindata')
                     changes.append(f'  List item: {item} → {d[i]}')
-                if 'psxsync' in item:
-                    d[i] = item.replace('psxsync', 'pfsync')
+                if 'pfsync' in item:
+                    d[i] = item.replace('pfsync', 'pfsync')
             elif isinstance(item, (dict, list)):
                 update_dict(item, depth + 1)
 
@@ -254,7 +254,7 @@ if changes:
     for c in changes:
         print(c)
 else:
-    print('No psx_ohlcv references found in workspace settings')
+    print('No pakfindata references found in workspace settings')
 
 # Write updated file
 with open(ws_path, 'w') as f:
@@ -328,10 +328,10 @@ done
 
 if [ -n "$PSX_LIVE" ]; then
   # Count references
-  total=$(grep -rn "psx_ohlcv\|psxsync" "$PSX_LIVE" --include="*.py" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.json" --include="*.env*" --include="*.yml" --include="*.yaml" --include="*.sh" 2>/dev/null | grep -v node_modules | grep -v .git | wc -l)
+  total=$(grep -rn "pakfindata\|pfsync" "$PSX_LIVE" --include="*.py" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.json" --include="*.env*" --include="*.yml" --include="*.yaml" --include="*.sh" 2>/dev/null | grep -v node_modules | grep -v .git | wc -l)
   
   if [ "$total" -eq 0 ]; then
-    echo "✅ psx-live has zero psx_ohlcv references — nothing to do"
+    echo "✅ psx-live has zero pakfindata references — nothing to do"
     echo "   psx-live connects directly to PSX (dps.psx.com.pk), not through pakfindata"
   else
     echo "Found $total references in psx-live — fixing..."
@@ -341,7 +341,7 @@ if [ -n "$PSX_LIVE" ]; then
     
     # Show all references before fixing
     echo "━━━ References to fix ━━━"
-    grep -rn "psx_ohlcv\|psxsync" \
+    grep -rn "pakfindata\|pfsync" \
       --include="*.py" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" \
       --include="*.json" --include="*.env*" --include="*.yml" --include="*.yaml" --include="*.sh" \
       . 2>/dev/null | grep -v node_modules | grep -v .git
@@ -352,54 +352,54 @@ if [ -n "$PSX_LIVE" ]; then
     # Fix JS/TS files (NOT in node_modules)
     find . \( -name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.jsx" \) \
       -not -path "*/node_modules/*" -not -path "./.git/*" | while read f; do
-      if grep -q "psx_ohlcv" "$f" 2>/dev/null; then
+      if grep -q "pakfindata" "$f" 2>/dev/null; then
         echo "  Fixing JS/TS: $f"
-        sed -i 's/psx_ohlcv/pakfindata/g' "$f"
+        sed -i 's/pakfindata/pakfindata/g' "$f"
       fi
-      if grep -q "psxsync" "$f" 2>/dev/null; then
-        sed -i 's/psxsync/pfsync/g' "$f"
+      if grep -q "pfsync" "$f" 2>/dev/null; then
+        sed -i 's/pfsync/pfsync/g' "$f"
       fi
     done
     
     # Fix env files
     find . -name ".env*" -maxdepth 2 | while read f; do
-      if grep -q "psx_ohlcv\|psxsync\|~/psx_ohlcv" "$f" 2>/dev/null; then
+      if grep -q "pakfindata\|pfsync\|~/pakfindata" "$f" 2>/dev/null; then
         echo "  Fixing env: $f"
-        sed -i 's/psx_ohlcv/pakfindata/g; s/psxsync/pfsync/g; s|~/psx_ohlcv|~/pakfindata|g' "$f"
+        sed -i 's/pakfindata/pakfindata/g; s/pfsync/pfsync/g; s|~/pakfindata|~/pakfindata|g' "$f"
       fi
     done
     
     # Fix configs (not node_modules)
     find . \( -name "*.json" -o -name "*.yml" -o -name "*.yaml" \) \
       -not -path "*/node_modules/*" -not -path "./.git/*" | while read f; do
-      if grep -q "psx_ohlcv\|psxsync" "$f" 2>/dev/null; then
+      if grep -q "pakfindata\|pfsync" "$f" 2>/dev/null; then
         echo "  Fixing config: $f"
-        sed -i 's/psx_ohlcv/pakfindata/g; s/psxsync/pfsync/g; s|~/psx_ohlcv|~/pakfindata|g' "$f"
+        sed -i 's/pakfindata/pakfindata/g; s/pfsync/pfsync/g; s|~/pakfindata|~/pakfindata|g' "$f"
       fi
     done
     
     # Fix Python files if any
     find . -name "*.py" -not -path "*/node_modules/*" -not -path "./.git/*" | while read f; do
-      if grep -q "psx_ohlcv" "$f" 2>/dev/null; then
+      if grep -q "pakfindata" "$f" 2>/dev/null; then
         echo "  Fixing Python: $f"
-        sed -i 's/psx_ohlcv/pakfindata/g' "$f"
+        sed -i 's/pakfindata/pakfindata/g' "$f"
       fi
     done
     
     # Fix shell scripts
     find . -name "*.sh" | while read f; do
-      if grep -q "psx_ohlcv\|psxsync\|~/psx_ohlcv" "$f" 2>/dev/null; then
+      if grep -q "pakfindata\|pfsync\|~/pakfindata" "$f" 2>/dev/null; then
         echo "  Fixing script: $f"
-        sed -i 's/psx_ohlcv/pakfindata/g; s/psxsync/pfsync/g; s|~/psx_ohlcv|~/pakfindata|g' "$f"
+        sed -i 's/pakfindata/pakfindata/g; s/pfsync/pfsync/g; s|~/pakfindata|~/pakfindata|g' "$f"
       fi
     done
     
     # Verify
     echo ""
     echo "━━━ Verification ━━━"
-    remaining=$(grep -rn "psx_ohlcv\|psxsync" --include="*.py" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.json" --include="*.env*" --include="*.yml" --include="*.yaml" --include="*.sh" . 2>/dev/null | grep -v node_modules | grep -v .git)
+    remaining=$(grep -rn "pakfindata\|pfsync" --include="*.py" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.json" --include="*.env*" --include="*.yml" --include="*.yaml" --include="*.sh" . 2>/dev/null | grep -v node_modules | grep -v .git)
     if [ -z "$remaining" ]; then
-      echo "✅ psx-live fully cleaned of psx_ohlcv references"
+      echo "✅ psx-live fully cleaned of pakfindata references"
     else
       echo "❌ Remaining:"
       echo "$remaining"
@@ -410,11 +410,11 @@ if [ -n "$PSX_LIVE" ]; then
       git add -A
       git diff --cached --stat
       if ! git diff --cached --quiet; then
-        git commit -m "refactor: update psx_ohlcv → pakfindata backend references
+        git commit -m "refactor: update pakfindata → pakfindata backend references
 
-Companion change: backend package renamed from psx_ohlcv to pakfindata.
+Companion change: backend package renamed from pakfindata to pakfindata.
 - API/config references updated
-- CLI references: psxsync → pfsync
+- CLI references: pfsync → pfsync
 - psx-live itself is NOT renamed (it's specifically for PSX exchange)"
         git push origin $(git branch --show-current) 2>/dev/null
         echo "✅ psx-live changes committed and pushed"
@@ -471,13 +471,13 @@ for folder in ws.get('folders', []):
     status = '✅' if exists else '❌ NOT FOUND'
     print(f'  {status} {name}: {path} → {full_path}')
 
-# Check for any remaining psx_ohlcv in settings
+# Check for any remaining pakfindata in settings
 import re
 ws_str = json.dumps(ws)
-psx_refs = re.findall(r'psx_ohlcv', ws_str)
-psxsync_refs = re.findall(r'psxsync', ws_str)
-if psx_refs or psxsync_refs:
-    print(f'  ⚠️ Still has {len(psx_refs)} psx_ohlcv + {len(psxsync_refs)} psxsync references')
+psx_refs = re.findall(r'pakfindata', ws_str)
+pfsync_refs = re.findall(r'pfsync', ws_str)
+if psx_refs or pfsync_refs:
+    print(f'  ⚠️ Still has {len(psx_refs)} pakfindata + {len(pfsync_refs)} pfsync references')
 else:
     print('  ✅ No old references in workspace settings')
 "
@@ -499,7 +499,7 @@ fi
 ```bash
 cd ~/pakfindata
 git add -A
-git commit -m "refactor: update VS Code workspace — psx_ohlcv.code-workspace → pakfindata.code-workspace
+git commit -m "refactor: update VS Code workspace — pakfindata.code-workspace → pakfindata.code-workspace
 
 - Workspace file renamed
 - pakfindata folder path updated
@@ -518,12 +518,12 @@ git commit -m "refactor: update VS Code workspace — psx_ohlcv.code-workspace �
 ╠════════════════════════════════════════════════════════════════╣
 ║                                                                ║
 ║  CHANGES:                                                      ║
-║  ├── psx_ohlcv.code-workspace → pakfindata.code-workspace     ║
-║  ├── Folder 1 path: .../psx_ohlcv → .../pakfindata            ║
+║  ├── pakfindata.code-workspace → pakfindata.code-workspace     ║
+║  ├── Folder 1 path: .../pakfindata → .../pakfindata            ║
 ║  ├── Python interpreter path in settings (if hardcoded)        ║
-║  ├── Launch configs referencing psx_ohlcv paths                ║
-║  ├── Task configs referencing psxsync                          ║
-║  └── psx-live cross-refs to psx_ohlcv backend (if any)        ║
+║  ├── Launch configs referencing pakfindata paths                ║
+║  ├── Task configs referencing pfsync                          ║
+║  └── psx-live cross-refs to pakfindata backend (if any)        ║
 ║                                                                ║
 ║  DOES NOT CHANGE:                                              ║
 ║  ├── Folder 2: psx-live path/name stays as-is                 ║
@@ -539,8 +539,8 @@ git commit -m "refactor: update VS Code workspace — psx_ohlcv.code-workspace �
 ## CRITICAL RULES FOR WORKSPACE STEP
 
 1. **psx-live does NOT rename** — it's a PSX exchange frontend, "psx" means the exchange there.
-2. **Workspace file itself renames** — `psx_ohlcv.code-workspace` → `pakfindata.code-workspace`.
-3. **Only update psx-live if it imports psx_ohlcv Python package** — if it just calls PSX APIs directly (dps.psx.com.pk), no changes needed.
+2. **Workspace file itself renames** — `pakfindata.code-workspace` → `pakfindata.code-workspace`.
+3. **Only update psx-live if it imports pakfindata Python package** — if it just calls PSX APIs directly (dps.psx.com.pk), no changes needed.
 4. **Conda env stays `psx`** — both projects share it, the env name is independent.
 5. **psx-live gets its own git commit** in its own repo — don't mix pakfindata and psx-live commits.
 6. **JSON must stay valid** — use Python's json module to update workspace file, not sed (sed can break JSON).

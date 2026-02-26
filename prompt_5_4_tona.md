@@ -1,7 +1,7 @@
 # Prompt 5.4 -- TONA Scraper (Bank of Japan)
 
 ## Context
-You are working on the PSX OHLCV project at `~/psx_ohlcv/`.
+You are working on the PSX OHLCV project at `~/pakfindata/`.
 
 CODEBASE CONVENTIONS (MUST FOLLOW):
 - Database connection: `connect()` from `db.connection`, NEVER `get_db()`
@@ -216,7 +216,7 @@ In the crontab entry (or wherever the schedule is documented), update the commen
 
 ```bash
 # Syncs: SOFR+EFFR (NY Fed), SONIA (BoE), EUSTR (ECB), TONA (BoJ)
-0 19 * * 1-5  cd ~/psx_ohlcv && python -m psx_ohlcv.cli globalrates sync >> /tmp/global_rates_sync.log 2>&1
+0 19 * * 1-5  cd ~/pakfindata && python -m pakfindata.cli globalrates sync >> /tmp/global_rates_sync.log 2>&1
 ```
 
 ## VERIFY
@@ -224,7 +224,7 @@ In the crontab entry (or wherever the schedule is documented), update the commen
 ```bash
 # 1. Scraper works (requires internet -- BoJ may be slow)
 python -c "
-from psx_ohlcv.sources.global_rates_scraper import GlobalRatesScraper
+from pakfindata.sources.global_rates_scraper import GlobalRatesScraper
 s = GlobalRatesScraper()
 data = s.scrape_tona(days=30)
 if len(data) > 0:
@@ -237,17 +237,17 @@ else:
 "
 
 # 2. Full sync includes all rates
-psxsync globalrates sync --count 30
+pfsync globalrates sync --count 30
 # Should show SOFR, EFFR, SONIA, EUSTR, TONA in stats
 
 # 3. Latest rates show all sources
-psxsync globalrates latest
+pfsync globalrates latest
 # Should show rates from 4+ central banks
 
 # 4. Rate comparison
 python -c "
-from psx_ohlcv.db.connection import connect
-from psx_ohlcv.db.repositories.global_rates import get_rate_comparison
+from pakfindata.db.connection import connect
+from pakfindata.db.repositories.global_rates import get_rate_comparison
 con = connect()
 comp = get_rate_comparison(con)
 con.close()
@@ -295,9 +295,9 @@ git push origin dev --tags
 
 Final verification:
 ```bash
-psxsync globalrates sync --count 100
-psxsync globalrates latest
-psxsync globalrates spread --days 30
+pfsync globalrates sync --count 100
+pfsync globalrates latest
+pfsync globalrates spread --days 30
 ```
 
 This should show a complete rate dashboard:

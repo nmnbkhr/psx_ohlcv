@@ -2,9 +2,9 @@
 
 ## Context
 
-Working on `psx_ohlcv` — Pakistan financial data platform (Streamlit app).
+Working on `pakfindata` — Pakistan financial data platform (Streamlit app).
 - DB: `/mnt/e/psxdata/psx.sqlite`  
-- Project: `~/psx_ohlcv/` (dev branch)
+- Project: `~/pakfindata/` (dev branch)
 - Python 3.11.14 at `/opt/miniconda/envs/psx/bin`
 
 ## Audit Summary (Phase 1 COMPLETE — do NOT re-investigate)
@@ -42,7 +42,7 @@ The data pipeline exists — it just needs a destination table and the category 
 Find `map_mufap_category()` in the scraper and fix it:
 
 ```bash
-grep -n "map_mufap_category\|category_map\|CATEGORY_MAP" ~/psx_ohlcv/src/psx_ohlcv/sources/mufap.py
+grep -n "map_mufap_category\|category_map\|CATEGORY_MAP" ~/pakfindata/src/pakfindata/sources/mufap.py
 ```
 
 **Current behavior (BROKEN):** Collapses categories like "Aggressive Fixed Income" → "Income", "Shariah Compliant Dedicated Equity" → "Equity", etc.
@@ -155,7 +155,7 @@ ALTER TABLE mutual_funds ADD COLUMN sector TEXT;            -- 'Open-End', 'VPS'
 The function already exists and returns the data. Find it:
 
 ```bash
-grep -n "fetch_daily_performance\|daily_performance" ~/psx_ohlcv/src/psx_ohlcv/sources/mufap.py
+grep -n "fetch_daily_performance\|daily_performance" ~/pakfindata/src/pakfindata/sources/mufap.py
 ```
 
 Then wire it into the sync flow:
@@ -274,11 +274,11 @@ Color-code returns: green for positive, red for negative (use Streamlit column_c
 Add to existing fund CLI subcommands:
 
 ```
-psxsync funds performance     # Sync MUFAP Performance Summary (tab=1) → fund_performance table
-psxsync funds expense         # Sync expense ratios (tab=5) → mutual_funds.expense_ratio
+pfsync funds performance     # Sync MUFAP Performance Summary (tab=1) → fund_performance table
+pfsync funds expense         # Sync expense ratios (tab=5) → mutual_funds.expense_ratio
 ```
 
-Modify existing `psxsync funds sync` to also call `sync_performance()` and `sync_expense_ratios()`.
+Modify existing `pfsync funds sync` to also call `sync_performance()` and `sync_expense_ratios()`.
 
 ---
 
@@ -301,7 +301,7 @@ This ensures the 1,190 existing funds get proper categories, not just new syncs.
 
 ```bash
 # 8A — Run performance sync
-python -m psx_ohlcv funds performance 2>&1
+python -m pakfindata funds performance 2>&1
 
 # 8B — Check fund_performance table
 sqlite3 -header /mnt/e/psxdata/psx.sqlite "
@@ -349,7 +349,7 @@ SELECT COUNT(*) as with_expense FROM mutual_funds WHERE expense_ratio IS NOT NUL
 "
 
 # 8H — Start UI and verify
-streamlit run src/psx_ohlcv/ui/app.py --server.headless true 2>&1 | head -5
+streamlit run src/pakfindata/ui/app.py --server.headless true 2>&1 | head -5
 
 # 8I — Tests
 pytest tests/ -x -q --tb=short -k "fund or mufap" 2>&1 | tail -10
@@ -387,7 +387,7 @@ git commit -m "feat: MUFAP fund explorer — full 36-category coverage + perform
   - Category summary cards + full category filter
   - mutual_funds extended: aum, expense_ratio, rating, benchmark, risk_profile, fund_id
   
-  CLI: psxsync funds performance / expense"
+  CLI: pfsync funds performance / expense"
 
 git push origin dev
 ```

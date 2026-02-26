@@ -1,9 +1,9 @@
 # Prompt 5.1 — FCY Instrument Support + Global Reference Rates (SOFR/SONIA/€STR/TONA)
 
 ## Context
-You are working on the PSX OHLCV project at `~/psx_ohlcv/`.
-Project structure: `src/psx_ohlcv/` with sub-packages `db/`, `sources/`, `collectors/`, `api/routers/`, `ui/pages/`.
-Database: SQLite on `/mnt/e/psxdata/psx_ohlcv.db` (or wherever `get_db()` points).
+You are working on the PSX OHLCV project at `~/pakfindata/`.
+Project structure: `src/pakfindata/` with sub-packages `db/`, `sources/`, `collectors/`, `api/routers/`, `ui/pages/`.
+Database: SQLite on `/mnt/e/psxdata/pakfindata.db` (or wherever `get_db()` points).
 We already have: KIBOR rates, SBP policy rates, FX rates (interbank + open market + kerb), bonds, sukuk, fi_instruments tables.
 
 Pakistan's LIBOR transition is complete (June 30, 2023). All FCY-denominated instruments (USD bonds, Eurobonds, FCY sukuk, export refinance) now reference SOFR, SONIA, €STR, or TONA instead of LIBOR. We need to:
@@ -23,7 +23,7 @@ Branch: feat/fcy-global-rates
 
 ## GIT
 ```bash
-cd ~/psx_ohlcv
+cd ~/pakfindata
 git checkout dev  # or main, whichever is your integration branch
 git pull
 git checkout -b feat/fcy-global-rates
@@ -31,7 +31,7 @@ git checkout -b feat/fcy-global-rates
 
 ---
 
-## Step 1 — Database: `src/psx_ohlcv/db/global_rates.py`
+## Step 1 — Database: `src/pakfindata/db/global_rates.py`
 
 Create a new repository module. Follow the exact same pattern as `rates.py` (KIBOR/policy rate module).
 
@@ -92,7 +92,7 @@ ORDER BY k.date DESC, k.tenor;
 ### Repository functions
 
 ```python
-# In src/psx_ohlcv/db/global_rates.py
+# In src/pakfindata/db/global_rates.py
 
 def ensure_tables(con): ...  # CREATE TABLE IF NOT EXISTS for both tables + view
 
@@ -135,7 +135,7 @@ from .global_rates import (
 Run ALTER TABLE on existing tables to add FCY metadata. Do this in a migration function.
 
 ```python
-# In src/psx_ohlcv/db/global_rates.py — add to ensure_tables()
+# In src/pakfindata/db/global_rates.py — add to ensure_tables()
 
 def _migrate_fi_fcy_columns(con):
     """Add FCY columns to existing FI tables if not present."""
@@ -180,7 +180,7 @@ def _migrate_fi_fcy_columns(con):
 
 ---
 
-## Step 3 — Scraper: `src/psx_ohlcv/sources/global_rates_scraper.py`
+## Step 3 — Scraper: `src/pakfindata/sources/global_rates_scraper.py`
 
 ### NY Fed SOFR API (Primary — this MUST work)
 
@@ -362,7 +362,7 @@ class GlobalRatesScraper:
     
     def sync_all(self, con) -> dict:
         """Sync all available rates into database."""
-        from psx_ohlcv.db.global_rates import ensure_tables, upsert_global_rate
+        from pakfindata.db.global_rates import ensure_tables, upsert_global_rate
         
         ensure_tables(con)
         stats = {}
@@ -410,7 +410,7 @@ class GlobalRatesScraper:
 
 ## Step 4 — CLI Commands
 
-Add to existing CLI (`cli.py` or wherever `psxsync` commands are registered):
+Add to existing CLI (`cli.py` or wherever `pfsync` commands are registered):
 
 ```python
 # Under the rates/fx group or create new group
@@ -424,9 +424,9 @@ def globalrates():
 @click.option('--count', default=100, help='Number of days to fetch')
 def sync_global_rates(count):
     """Sync SOFR + EFFR from NY Fed."""
-    from psx_ohlcv.sources.global_rates_scraper import GlobalRatesScraper
-    from psx_ohlcv.db import get_db
-    from psx_ohlcv.db.global_rates import ensure_tables
+    from pakfindata.sources.global_rates_scraper import GlobalRatesScraper
+    from pakfindata.db import get_db
+    from pakfindata.db.global_rates import ensure_tables
     
     con = get_db()
     ensure_tables(con)
@@ -438,14 +438,14 @@ def sync_global_rates(count):
 @globalrates.command('latest')
 def latest_global_rates():
     """Show latest global reference rates."""
-    from psx_ohlcv.db import get_db
-    from psx_ohlcv.db.global_rates import get_all_latest_rates
+    from pakfindata.db import get_db
+    from pakfindata.db.global_rates import get_all_latest_rates
     
     con = get_db()
     df = get_all_latest_rates(con)
     con.close()
     if df.empty:
-        click.echo("No rates found. Run: psxsync globalrates sync")
+        click.echo("No rates found. Run: pfsync globalrates sync")
     else:
         click.echo(df.to_string(index=False))
 
@@ -453,8 +453,8 @@ def latest_global_rates():
 @click.option('--days', default=30, help='Number of days of history')
 def sofr_kibor_spread(days):
     """Show SOFR-KIBOR spread history."""
-    from psx_ohlcv.db import get_db
-    from psx_ohlcv.db.global_rates import get_sofr_kibor_spread
+    from pakfindata.db import get_db
+    from pakfindata.db.global_rates import get_sofr_kibor_spread
     from datetime import datetime, timedelta
     
     con = get_db()
@@ -471,8 +471,8 @@ def sofr_kibor_spread(days):
 @click.option('--days', default=30)
 def rate_history(rate_name, days):
     """Show rate history for a specific rate."""
-    from psx_ohlcv.db import get_db
-    from psx_ohlcv.db.global_rates import get_rate_history
+    from pakfindata.db import get_db
+    from pakfindata.db.global_rates import get_rate_history
     from datetime import datetime, timedelta
     
     con = get_db()
@@ -487,7 +487,7 @@ def rate_history(rate_name, days):
 
 ---
 
-## Step 5 — FastAPI Routes: `src/psx_ohlcv/api/routers/global_rates.py`
+## Step 5 — FastAPI Routes: `src/pakfindata/api/routers/global_rates.py`
 
 Follow the same pattern as `rates.py` router.
 
@@ -526,7 +526,7 @@ app.include_router(global_rates.router, prefix="/api/global-rates", tags=["Globa
 
 ---
 
-## Step 6 — Streamlit Page: `src/psx_ohlcv/ui/pages/global_rates.py`
+## Step 6 — Streamlit Page: `src/pakfindata/ui/pages/global_rates.py`
 
 Add a new page (or tab inside existing rates page) with:
 
@@ -559,7 +559,7 @@ Add to your existing crontab or scheduler config:
 ```bash
 # NY Fed publishes SOFR at ~8:00 AM ET (next business day)
 # That's 6:00 PM PKT — run at 7:00 PM PKT to be safe
-0 19 * * 1-5  cd ~/psx_ohlcv && python -m psx_ohlcv.cli globalrates sync >> /tmp/global_rates_sync.log 2>&1
+0 19 * * 1-5  cd ~/pakfindata && python -m pakfindata.cli globalrates sync >> /tmp/global_rates_sync.log 2>&1
 ```
 
 If you use a Python scheduler instead, add to the existing schedule config.
@@ -573,8 +573,8 @@ Run these after implementation:
 ```bash
 # 1. Tables created
 python -c "
-from psx_ohlcv.db import get_db
-from psx_ohlcv.db.global_rates import ensure_tables
+from pakfindata.db import get_db
+from pakfindata.db.global_rates import ensure_tables
 con = get_db()
 ensure_tables(con)
 cur = con.execute(\"SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%global%' OR name LIKE '%term_%'\")
@@ -587,7 +587,7 @@ print('DB OK')
 
 # 2. FI table migration (FCY columns added)
 python -c "
-from psx_ohlcv.db import get_db
+from pakfindata.db import get_db
 con = get_db()
 cur = con.execute('PRAGMA table_info(fi_instruments)')
 cols = [r[1] for r in cur.fetchall()]
@@ -600,7 +600,7 @@ print('FI migration OK')
 
 # 3. Scraper works (requires internet)
 python -c "
-from psx_ohlcv.sources.global_rates_scraper import GlobalRatesScraper
+from pakfindata.sources.global_rates_scraper import GlobalRatesScraper
 s = GlobalRatesScraper()
 data = s.scrape_sofr(count=5)
 assert len(data) > 0, 'No SOFR data returned'
@@ -608,15 +608,15 @@ print(f'SOFR scraper OK: {len(data)} rates, latest: {data[0][\"date\"]} = {data[
 "
 
 # 4. Full sync
-psxsync globalrates sync --count 30
+pfsync globalrates sync --count 30
 
 # 5. CLI works
-psxsync globalrates latest
-psxsync globalrates spread --days 7
-psxsync globalrates history SOFR --days 7
+pfsync globalrates latest
+pfsync globalrates spread --days 7
+pfsync globalrates history SOFR --days 7
 
 # 6. API routes
-uvicorn psx_ohlcv.api.main:app --port 8000 &
+uvicorn pakfindata.api.main:app --port 8000 &
 sleep 2
 curl -s http://localhost:8000/api/global-rates/latest | python -m json.tool
 curl -s http://localhost:8000/api/global-rates/sofr?days=5 | python -m json.tool
@@ -625,7 +625,7 @@ curl -s http://localhost:8000/docs | grep -c "global-rates"
 kill %1
 
 # 7. Streamlit page loads
-streamlit run src/psx_ohlcv/ui/app.py --server.headless true 2>&1 | head -5
+streamlit run src/pakfindata/ui/app.py --server.headless true 2>&1 | head -5
 ```
 
 All 7 checks must pass. If any fail, fix before proceeding.
@@ -642,7 +642,7 @@ git commit -m "feat: global reference rates (SOFR/EFFR) + FCY instrument support
 - New: v_sofr_kibor_spread view for FX swap pricing
 - New: NY Fed SOFR/EFFR scraper (with SONIA/EUSTR/TONA stubs)
 - New: FCY denomination columns on fi_instruments, bonds_master, sukuk_master
-- New: CLI commands (psxsync globalrates sync/latest/spread/history)
+- New: CLI commands (pfsync globalrates sync/latest/spread/history)
 - New: FastAPI routes /api/global-rates/*
 - New: Streamlit global rates page with spread analytics
 - Ref: SBP BPRD LIBOR transition circulars, post-June 2023"

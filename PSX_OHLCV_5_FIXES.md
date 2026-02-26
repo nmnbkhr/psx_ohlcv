@@ -1,10 +1,10 @@
 # Claude Code Prompt: PSX OHLCV — 5 Fixes in One
 
-## File: services/tick_service.py (or src/psx_ohlcv/services/tick_service.py)
+## File: services/tick_service.py (or src/pakfindata/services/tick_service.py)
 
 Find the correct path first:
 ```bash
-find ~/psx_ohlcv -name "tick_service.py" -type f
+find ~/pakfindata -name "tick_service.py" -type f
 ```
 
 Apply ALL 5 fixes below to that file.
@@ -220,21 +220,21 @@ Only add emoji where they don't already exist. Some lines may already have them.
 ```bash
 # Check all fixes applied:
 echo "=== FIX 1: No .tmp or rename ==="
-grep -n "\.tmp\|os\.rename\|rename(" /home/adnoman/psx_ohlcv/src/psx_ohlcv/services/tick_service.py || echo "CLEAN ✅"
+grep -n "\.tmp\|os\.rename\|rename(" /home/adnoman/pakfindata/src/pakfindata/services/tick_service.py || echo "CLEAN ✅"
 
 echo "=== FIX 2: Checkpoint exists ==="
-grep -n "checkpoint_flush\|_last_checkpoint\|1800" /home/adnoman/psx_ohlcv/src/psx_ohlcv/services/tick_service.py
+grep -n "checkpoint_flush\|_last_checkpoint\|1800" /home/adnoman/pakfindata/src/pakfindata/services/tick_service.py
 
 echo "=== FIX 3: No CSF ==="
-grep -n "CSF" /home/adnoman/psx_ohlcv/src/psx_ohlcv/services/tick_service.py || echo "CLEAN ✅"
+grep -n "CSF" /home/adnoman/pakfindata/src/pakfindata/services/tick_service.py || echo "CLEAN ✅"
 
 echo "=== FIX 4: Sleep until 9:15 ==="
-grep -n "sleep_until\|9.*15\|weekday" /home/adnoman/psx_ohlcv/src/psx_ohlcv/services/tick_service.py
+grep -n "sleep_until\|9.*15\|weekday" /home/adnoman/pakfindata/src/pakfindata/services/tick_service.py
 
 echo "=== FIX 5: Emoji ==="
-grep -n "🚀\|📡\|🔗\|⚡\|💾\|🔔\|📊\|💤\|🛑" /home/adnoman/psx_ohlcv/src/psx_ohlcv/services/tick_service.py
+grep -n "🚀\|📡\|🔗\|⚡\|💾\|🔔\|📊\|💤\|🛑" /home/adnoman/pakfindata/src/pakfindata/services/tick_service.py
 
 echo "=== Import check ==="
-python -c "from psx_ohlcv.services.tick_service import TickCollectorService; print('OK')" 2>&1 || \
-python -c "import importlib.util; spec = importlib.util.spec_from_file_location('ts', '$(find ~/psx_ohlcv -name tick_service.py -type f)'); print('File found OK')"
+python -c "from pakfindata.services.tick_service import TickCollectorService; print('OK')" 2>&1 || \
+python -c "import importlib.util; spec = importlib.util.spec_from_file_location('ts', '$(find ~/pakfindata -name tick_service.py -type f)'); print('File found OK')"
 ```

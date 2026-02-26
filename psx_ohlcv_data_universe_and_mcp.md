@@ -182,8 +182,8 @@ There's already a basic PSX MCP server on GitHub that hits 3 DPS endpoints:
                │ MCP Protocol (stdio or HTTP)
                ▼
 ┌────────────────────────────────────────────┐
-│        psx_ohlcv MCP Server                │
-│        (src/psx_ohlcv/mcp_server.py)       │
+│        pakfindata MCP Server                │
+│        (src/pakfindata/mcp_server.py)       │
 │                                            │
 │  TOOLS (callable by AI):                   │
 │  ├── Equities                              │
@@ -248,7 +248,7 @@ There's already a basic PSX MCP server on GitHub that hits 3 DPS endpoints:
 ### MCP Server Implementation
 
 ```python
-# src/psx_ohlcv/mcp_server.py
+# src/pakfindata/mcp_server.py
 from mcp.server import Server
 from mcp.types import Tool, Resource, TextContent
 import json
@@ -260,7 +260,7 @@ server = Server("psx-ohlcv")
 @server.tool()
 async def get_eod(symbol: str, start_date: str = None, end_date: str = None) -> str:
     """Get EOD OHLCV data for a PSX symbol. Returns JSON array of {date, open, high, low, close, volume}."""
-    from psx_ohlcv.db import connect, get_eod_ohlcv
+    from pakfindata.db import connect, get_eod_ohlcv
     con = connect()
     df = get_eod_ohlcv(con, symbol, start_date, end_date)
     return df.to_json(orient="records", date_format="iso")
@@ -330,7 +330,7 @@ async def daily_market_report() -> str:
   "mcpServers": {
     "psx-ohlcv": {
       "command": "python",
-      "args": ["-m", "psx_ohlcv.mcp_server"],
+      "args": ["-m", "pakfindata.mcp_server"],
       "env": {
         "PSX_DB_PATH": "/mnt/e/psxdata/psx.sqlite"
       }
@@ -343,7 +343,7 @@ async def daily_market_report() -> str:
 # .claude/config.toml (for Claude Code)
 [mcp_servers.psx-ohlcv]
 command = "python"
-args = ["-m", "psx_ohlcv.mcp_server"]
+args = ["-m", "pakfindata.mcp_server"]
 
 [mcp_servers.psx-ohlcv.env]
 PSX_DB_PATH = "/mnt/e/psxdata/psx.sqlite"
@@ -625,41 +625,41 @@ CREATE INDEX IF NOT EXISTS idx_dividend_symbol ON dividend_history(symbol);
 ```bash
 # ═══ MARKET HOURS (Mon-Fri) ═══
 # Intraday + market watch during trading hours (9:30-15:30 PKT = 4:30-10:30 UTC)
-*/5 4-10 * * 1-5  ~/psx_ohlcv/scripts/sync_intraday.sh
+*/5 4-10 * * 1-5  ~/pakfindata/scripts/sync_intraday.sh
 
 # ═══ POST-MARKET (Mon-Fri) ═══
 # FX rates (SBP publishes ~16:00 PKT)
-0 12 * * 1-5  ~/psx_ohlcv/scripts/sync_fx.sh
+0 12 * * 1-5  ~/pakfindata/scripts/sync_fx.sh
 
 # EOD + indices + bonds (after market close)
-30 13 * * 1-5  ~/psx_ohlcv/scripts/daily_sync.sh
+30 13 * * 1-5  ~/pakfindata/scripts/daily_sync.sh
 
 # ETF NAV + dividends + IPO
-0 14 * * 1-5  ~/psx_ohlcv/scripts/sync_etf_div.sh
+0 14 * * 1-5  ~/pakfindata/scripts/sync_etf_div.sh
 
 # PKRV + KONIA
-0 13 * * 1-5  ~/psx_ohlcv/scripts/sync_rates.sh
+0 13 * * 1-5  ~/pakfindata/scripts/sync_rates.sh
 
 # Mutual fund NAV (MUFAP publishes late)
-0 15 * * 1-5  ~/psx_ohlcv/scripts/sync_mufap.sh
+0 15 * * 1-5  ~/pakfindata/scripts/sync_mufap.sh
 
 # ═══ WEEKLY ═══
 # Company profiles deep scrape (Friday after close)
-0 16 * * 5  ~/psx_ohlcv/scripts/deep_scrape.sh
+0 16 * * 5  ~/pakfindata/scripts/deep_scrape.sh
 
 # IPO calendar update
-0 15 * * 5  ~/psx_ohlcv/scripts/sync_ipo.sh
+0 15 * * 5  ~/pakfindata/scripts/sync_ipo.sh
 
 # ═══ BI-WEEKLY ═══
 # T-Bill auctions (Wednesday after auction)
-0 14 * * 3  ~/psx_ohlcv/scripts/sync_tbill_auction.sh
+0 14 * * 3  ~/pakfindata/scripts/sync_tbill_auction.sh
 
 # ═══ MONTHLY ═══
 # PIB auctions
-0 14 15 * *  ~/psx_ohlcv/scripts/sync_pib_auction.sh
+0 14 15 * *  ~/pakfindata/scripts/sync_pib_auction.sh
 
 # DB maintenance (vacuum + analyze)
-0 3 1 * *  ~/psx_ohlcv/scripts/maintenance.sh
+0 3 1 * *  ~/pakfindata/scripts/maintenance.sh
 ```
 
 ---

@@ -14,7 +14,7 @@ rework and confusion, we maintain a persistent state file on disk that tracks
 exactly where we are, what's done, and what's next.
 
 ### How It Works
-1. The state file lives at `~/psx_ohlcv/.claude_session_state.md`
+1. The state file lives at `~/pakfindata/.claude_session_state.md`
 2. It is updated after EVERY completed prompt
 3. When starting a NEW Claude Code session, the FIRST thing you do is paste the
    **Session Recovery Prompt** below — Claude reads the file and resumes exactly
@@ -23,7 +23,7 @@ exactly where we are, what's done, and what's next.
 
 ### Prompt S.0 — Create Session State File (RUN ONCE, FIRST TIME ONLY)
 ```
-Create the file ~/psx_ohlcv/.claude_session_state.md with this content:
+Create the file ~/pakfindata/.claude_session_state.md with this content:
 
 # PSX OHLCV — Claude Code Session State
 # This file tracks progress across Claude Code sessions.
@@ -107,23 +107,23 @@ Create the file ~/psx_ohlcv/.claude_session_state.md with this content:
 | Phase | Files Created | Files Modified | Files Deleted | Lines Before | Lines After |
 |-------|--------------|----------------|---------------|-------------|-------------|
 
-Also add this line to ~/psx_ohlcv/.gitignore:
+Also add this line to ~/pakfindata/.gitignore:
   .claude_session_state.md
 ```
 
 ### Session Recovery Prompt — USE THIS WHEN STARTING A NEW CLAUDE CODE SESSION
 ```
-I'm resuming work on the psx_ohlcv project. We track progress in a session state file.
+I'm resuming work on the pakfindata project. We track progress in a session state file.
 
 Please do the following:
-1. Read ~/psx_ohlcv/.claude_session_state.md
+1. Read ~/pakfindata/.claude_session_state.md
 2. Tell me:
    - What phase we're in
    - What was the last completed prompt
    - What is the next prompt to execute
    - Which git branch we should be on
    - Whether tests were passing at last checkpoint
-3. Run: cd ~/psx_ohlcv && git branch --show-current
+3. Run: cd ~/pakfindata && git branch --show-current
 4. Run: git status --short
 5. Run: pytest tests/ -x --tb=short -q 2>&1 | tail -10
 
@@ -134,7 +134,7 @@ Do NOT start any work until I confirm.
 ### State Update Template — PASTE THIS AFTER EACH COMPLETED PROMPT
 After each prompt completes and VERIFY passes, tell Claude Code:
 ```
-Update ~/psx_ohlcv/.claude_session_state.md:
+Update ~/pakfindata/.claude_session_state.md:
 - Mark prompt [X.Y] as completed (change [ ] to [x])
 - Update "Last Completed Prompt" to [X.Y]
 - Update "Next Prompt" to [X.Z]
@@ -149,9 +149,9 @@ Update ~/psx_ohlcv/.claude_session_state.md:
 
 ### Prompt 0.1 — Environment Verification
 ```
-I'm working on the psx_ohlcv project. Before we do anything, verify my environment:
+I'm working on the pakfindata project. Before we do anything, verify my environment:
 
-1. Run: `cd ~/psx_ohlcv && git branch --show-current` — confirm we're on `dev`
+1. Run: `cd ~/pakfindata && git branch --show-current` — confirm we're on `dev`
 
 2. Python version check:
    Run: `python --version`
@@ -165,11 +165,11 @@ I'm working on the psx_ohlcv project. Before we do anything, verify my environme
    specific version, use THAT as the requirement, not my analysis.
 
 3. Run: `pip install -e ".[dev]" 2>&1 | tail -5` — install deps
-4. Run: `wc -l src/psx_ohlcv/db.py` — record actual count (expected ~8607)
-5. Run: `wc -l src/psx_ohlcv/ui/app.py` — record actual count (expected ~11265)
+4. Run: `wc -l src/pakfindata/db.py` — record actual count (expected ~8607)
+5. Run: `wc -l src/pakfindata/ui/app.py` — record actual count (expected ~11265)
 6. Run: `find src/ -name "*.py" | wc -l` — record actual count (expected ~85)
 7. Run: `find tests/ -name "*.py" | wc -l` — record actual count (expected ~34)
-8. Run: `grep -c "^def " src/psx_ohlcv/db.py` — record function count (expected ~191)
+8. Run: `grep -c "^def " src/pakfindata/db.py` — record function count (expected ~191)
 9. Run: `pytest tests/ -x --tb=short -q 2>&1 | tail -20` — ALL tests must PASS
 
 IMPORTANT: Steps 4-8 are BASELINE MEASUREMENTS. The actual numbers may differ 
@@ -197,7 +197,7 @@ This branch is our rollback point if anything breaks.
 ## PHASE 1: SPLIT db.py (monolith → 10 repository modules)
 
 ### Design Principle
-- Create `src/psx_ohlcv/db/` package
+- Create `src/pakfindata/db/` package
 - Move schema SQL to `schema.py`
 - Move connection logic to `connection.py`
 - Group ALL public functions into domain repositories
@@ -207,30 +207,30 @@ This branch is our rollback point if anything breaks.
 
 ### Prompt 1.1 — Create Package Structure
 ```
-We are splitting src/psx_ohlcv/db.py (8607 lines, 191 functions) into a package.
+We are splitting src/pakfindata/db.py (8607 lines, 191 functions) into a package.
 
 Step 1: Create the directory structure. Do NOT move any code yet. Just create empty files:
 
-mkdir -p src/psx_ohlcv/db/repositories
+mkdir -p src/pakfindata/db/repositories
 
 Create these empty files (just a docstring in each):
-- src/psx_ohlcv/db/__init__.py
-- src/psx_ohlcv/db/connection.py
-- src/psx_ohlcv/db/schema.py
-- src/psx_ohlcv/db/migrations.py
-- src/psx_ohlcv/db/repositories/__init__.py
-- src/psx_ohlcv/db/repositories/symbols.py
-- src/psx_ohlcv/db/repositories/eod.py
-- src/psx_ohlcv/db/repositories/intraday.py
-- src/psx_ohlcv/db/repositories/company.py
-- src/psx_ohlcv/db/repositories/market.py
-- src/psx_ohlcv/db/repositories/instruments.py
-- src/psx_ohlcv/db/repositories/fixed_income.py
-- src/psx_ohlcv/db/repositories/jobs.py
-- src/psx_ohlcv/db/repositories/user.py
-- src/psx_ohlcv/db/repositories/analytics_db.py
+- src/pakfindata/db/__init__.py
+- src/pakfindata/db/connection.py
+- src/pakfindata/db/schema.py
+- src/pakfindata/db/migrations.py
+- src/pakfindata/db/repositories/__init__.py
+- src/pakfindata/db/repositories/symbols.py
+- src/pakfindata/db/repositories/eod.py
+- src/pakfindata/db/repositories/intraday.py
+- src/pakfindata/db/repositories/company.py
+- src/pakfindata/db/repositories/market.py
+- src/pakfindata/db/repositories/instruments.py
+- src/pakfindata/db/repositories/fixed_income.py
+- src/pakfindata/db/repositories/jobs.py
+- src/pakfindata/db/repositories/user.py
+- src/pakfindata/db/repositories/analytics_db.py
 
-After creating, run: find src/psx_ohlcv/db/ -name "*.py" | sort
+After creating, run: find src/pakfindata/db/ -name "*.py" | sort
 Confirm 15 files exist.
 ```
 
@@ -238,11 +238,11 @@ Confirm 15 files exist.
 ```
 Now extract ONLY the SQL schema from db.py into db/schema.py.
 
-Read src/psx_ohlcv/db.py and find the SCHEMA_SQL variable 
+Read src/pakfindata/db.py and find the SCHEMA_SQL variable 
 (it's a triple-quoted string starting with CREATE TABLE IF NOT EXISTS symbols).
 
 Copy the ENTIRE SCHEMA_SQL string (all CREATE TABLE and CREATE INDEX statements) 
-into src/psx_ohlcv/db/schema.py as:
+into src/pakfindata/db/schema.py as:
 
 SCHEMA_SQL = """
 ... (all the CREATE statements)
@@ -269,7 +269,7 @@ IMPORTANT:
 - Include ALL CREATE INDEX statements
 
 VERIFY: After extraction, count CREATE TABLE statements in schema.py:
-  grep -c "CREATE TABLE" src/psx_ohlcv/db/schema.py
+  grep -c "CREATE TABLE" src/pakfindata/db/schema.py
 Expected: ~50+ tables
 
 Do NOT modify db.py yet. We are only copying at this stage.
@@ -287,12 +287,12 @@ From db.py, move these functions to db/connection.py:
 db/connection.py should:
 - Import sqlite3, Path
 - Import SCHEMA_SQL from .schema
-- Import get_db_path, ensure_dirs from psx_ohlcv.config
-- Import now_iso from psx_ohlcv.models
+- Import get_db_path, ensure_dirs from pakfindata.config
+- Import now_iso from pakfindata.models
 - Define connect(), init_schema(), and migration functions
 
 VERIFY: 
-  python -c "from psx_ohlcv.db.connection import connect, init_schema; print('OK')"
+  python -c "from pakfindata.db.connection import connect, init_schema; print('OK')"
 
 Do NOT modify the original db.py yet.
 ```
@@ -318,7 +318,7 @@ Each function should keep its EXACT same signature (same parameters, same return
 At the top of symbols.py, add: import sqlite3 and any other needed imports.
 
 VERIFY:
-  python -c "from psx_ohlcv.db.repositories.symbols import upsert_symbols, get_symbols_list; print('OK')"
+  python -c "from pakfindata.db.repositories.symbols import upsert_symbols, get_symbols_list; print('OK')"
 ```
 
 ### Prompt 1.5 — Extract EOD Repository
@@ -351,7 +351,7 @@ Also move sync run tracking:
 Keep exact signatures. Add needed imports at top.
 
 VERIFY:
-  python -c "from psx_ohlcv.db.repositories.eod import upsert_eod, get_eod_ohlcv, record_sync_run_start; print('OK')"
+  python -c "from pakfindata.db.repositories.eod import upsert_eod, get_eod_ohlcv, record_sync_run_start; print('OK')"
 ```
 
 ### Prompt 1.6 — Extract Intraday Repository
@@ -367,7 +367,7 @@ Extract intraday functions into db/repositories/intraday.py:
 - _parse_ts_to_epoch
 
 VERIFY:
-  python -c "from psx_ohlcv.db.repositories.intraday import upsert_intraday, get_intraday_sync_state; print('OK')"
+  python -c "from pakfindata.db.repositories.intraday import upsert_intraday, get_intraday_sync_state; print('OK')"
 ```
 
 ### Prompt 1.7 — Extract Company Repository
@@ -389,7 +389,7 @@ Extract company-related functions into db/repositories/company.py:
 - get_company_unified
 
 VERIFY:
-  python -c "from psx_ohlcv.db.repositories.company import upsert_company_profile, get_company_unified; print('OK')"
+  python -c "from pakfindata.db.repositories.company import upsert_company_profile, get_company_unified; print('OK')"
 ```
 
 ### Prompt 1.8 — Extract Market Repository
@@ -401,7 +401,7 @@ Extract market/index functions into db/repositories/market.py:
 - upsert_yield_curve_point / get_yield_curve / get_latest_yield_curve
 
 VERIFY:
-  python -c "from psx_ohlcv.db.repositories.market import get_latest_kse100, get_latest_market_stats; print('OK')"
+  python -c "from pakfindata.db.repositories.market import get_latest_kse100, get_latest_market_stats; print('OK')"
 ```
 
 ### Prompt 1.9 — Extract Instruments Repository
@@ -415,7 +415,7 @@ Extract instrument functions into db/repositories/instruments.py:
 - create_instruments_sync_run / update_instruments_sync_run
 
 VERIFY:
-  python -c "from psx_ohlcv.db.repositories.instruments import upsert_instrument, get_instruments; print('OK')"
+  python -c "from pakfindata.db.repositories.instruments import upsert_instrument, get_instruments; print('OK')"
 ```
 
 ### Prompt 1.10 — Extract Fixed Income Repository
@@ -461,7 +461,7 @@ POLICY RATES:
 - upsert_kibor_rate / get_kibor_rates / get_latest_kibor_rates
 
 VERIFY:
-  python -c "from psx_ohlcv.db.repositories.fixed_income import upsert_bond, get_sukuk_list, upsert_fx_pair; print('OK')"
+  python -c "from pakfindata.db.repositories.fixed_income import upsert_bond, get_sukuk_list, upsert_fx_pair; print('OK')"
 ```
 
 ### Prompt 1.11 — Extract Jobs Repository
@@ -475,7 +475,7 @@ Extract job/scrape functions into db/repositories/jobs.py:
 - add_job_notification / get_unread_notifications / mark_notification_read / mark_all_notifications_read
 
 VERIFY:
-  python -c "from psx_ohlcv.db.repositories.jobs import create_scrape_job, update_job_progress; print('OK')"
+  python -c "from pakfindata.db.repositories.jobs import create_scrape_job, update_job_progress; print('OK')"
 ```
 
 ### Prompt 1.12 — Extract User Repository
@@ -488,20 +488,20 @@ Extract user interaction functions into db/repositories/user.py:
 - get_interaction_stats
 
 VERIFY:
-  python -c "from psx_ohlcv.db.repositories.user import log_interaction; print('OK')"
+  python -c "from pakfindata.db.repositories.user import log_interaction; print('OK')"
 ```
 
 ### Prompt 1.13 — Create the __init__.py Re-Export Layer (CRITICAL)
 ```
 THIS IS THE MOST IMPORTANT STEP. The db/__init__.py must re-export EVERY 
-function that was previously importable from psx_ohlcv.db.
+function that was previously importable from pakfindata.db.
 
 The reason: the entire codebase has imports like:
-  from psx_ohlcv.db import connect, upsert_eod, get_symbols_list
+  from pakfindata.db import connect, upsert_eod, get_symbols_list
 
 These must ALL continue to work without any changes to the callers.
 
-Create src/psx_ohlcv/db/__init__.py that does:
+Create src/pakfindata/db/__init__.py that does:
 
 from .connection import connect, init_schema
 from .schema import SCHEMA_SQL
@@ -520,12 +520,12 @@ EVERY function from the original db.py must appear in __init__.py.
 VERIFY (critical) — compare against the ORIGINAL db.py, not a hardcoded number:
 
   # Step 1: Count what the original has
-  grep -c "^def " src/psx_ohlcv/db.py
+  grep -c "^def " src/pakfindata/db.py
   # Record this number as EXPECTED_COUNT
   
   # Step 2: Count what the new package exports
   python -c "
-  import psx_ohlcv.db as db
+  import pakfindata.db as db
   funcs = [name for name in dir(db) if not name.startswith('_') and callable(getattr(db, name))]
   print(f'Exported functions: {len(funcs)}')
   for f in sorted(funcs):
@@ -536,10 +536,10 @@ VERIFY (critical) — compare against the ORIGINAL db.py, not a hardcoded number
   # Step 3: Find any missing functions
   python -c "
   import ast, inspect
-  import psx_ohlcv.db as db_pkg
+  import pakfindata.db as db_pkg
   
   # Parse the original file to get all function names
-  with open('src/psx_ohlcv/db.py') as f:
+  with open('src/pakfindata/db.py') as f:
       tree = ast.parse(f.read())
   original_funcs = {node.name for node in ast.walk(tree) 
                     if isinstance(node, ast.FunctionDef) and not node.name.startswith('_')}
@@ -566,7 +566,7 @@ ALL tests must still pass. If any fail, fix the import issue before proceeding.
 ```
 NOW and only now, replace the original monolith:
 
-1. mv src/psx_ohlcv/db.py src/psx_ohlcv/db_old_backup.py
+1. mv src/pakfindata/db.py src/pakfindata/db_old_backup.py
    (the db/ package directory already exists and Python will use it)
 
 2. Run the full test suite again:
@@ -579,7 +579,7 @@ NOW and only now, replace the original monolith:
    git add -A
    git commit -m "refactor: split db.py monolith into domain repositories
 
-   Moved into src/psx_ohlcv/db/ package:
+   Moved into src/pakfindata/db/ package:
    - schema.py: All CREATE TABLE/INDEX SQL
    - connection.py: connect(), init_schema(), migrations
    - repositories/symbols.py: Symbol and sector functions
@@ -639,7 +639,7 @@ Update session state:
 
 ### Prompt 2.1 — Analyze app.py Structure
 ```
-Read src/psx_ohlcv/ui/app.py and identify all page sections.
+Read src/pakfindata/ui/app.py and identify all page sections.
 
 I need you to:
 1. Find every st.sidebar section or page tab that defines a distinct page
@@ -653,7 +653,7 @@ Output a mapping like:
   (etc)
 
 Also list all functions defined inside app.py:
-  grep -n "^def \|^    def " src/psx_ohlcv/ui/app.py | head -100
+  grep -n "^def \|^    def " src/pakfindata/ui/app.py | head -100
 
 Do NOT modify any code. Analysis only.
 ```
@@ -662,24 +662,24 @@ Do NOT modify any code. Analysis only.
 ```
 Based on the analysis from 2.1, create the page module directory:
 
-mkdir -p src/psx_ohlcv/ui/page_views
-mkdir -p src/psx_ohlcv/ui/components
+mkdir -p src/pakfindata/ui/page_views
+mkdir -p src/pakfindata/ui/components
 
 Create empty files with docstrings:
-- src/psx_ohlcv/ui/page_views/__init__.py
-- src/psx_ohlcv/ui/page_views/dashboard.py
-- src/psx_ohlcv/ui/page_views/candlestick.py
-- src/psx_ohlcv/ui/page_views/intraday.py
-- src/psx_ohlcv/ui/page_views/regular_market.py
-- src/psx_ohlcv/ui/page_views/history.py
-- src/psx_ohlcv/ui/page_views/symbols.py
-- src/psx_ohlcv/ui/page_views/sync_monitor.py
-- src/psx_ohlcv/ui/page_views/ai_insights.py
-- src/psx_ohlcv/ui/page_views/company_deep.py
-- src/psx_ohlcv/ui/page_views/settings.py
-- src/psx_ohlcv/ui/components/__init__.py
-- src/psx_ohlcv/ui/components/sidebar.py
-- src/psx_ohlcv/ui/components/helpers.py
+- src/pakfindata/ui/page_views/__init__.py
+- src/pakfindata/ui/page_views/dashboard.py
+- src/pakfindata/ui/page_views/candlestick.py
+- src/pakfindata/ui/page_views/intraday.py
+- src/pakfindata/ui/page_views/regular_market.py
+- src/pakfindata/ui/page_views/history.py
+- src/pakfindata/ui/page_views/symbols.py
+- src/pakfindata/ui/page_views/sync_monitor.py
+- src/pakfindata/ui/page_views/ai_insights.py
+- src/pakfindata/ui/page_views/company_deep.py
+- src/pakfindata/ui/page_views/settings.py
+- src/pakfindata/ui/components/__init__.py
+- src/pakfindata/ui/components/sidebar.py
+- src/pakfindata/ui/components/helpers.py
 
 Do not move code yet.
 ```
@@ -697,7 +697,7 @@ From app.py, identify functions like:
 
 Move these to components/helpers.py with exact same signatures.
 
-VERIFY: python -c "from psx_ohlcv.ui.components.helpers import get_sector_names; print('OK')"
+VERIFY: python -c "from pakfindata.ui.components.helpers import get_sector_names; print('OK')"
 (adjust function names based on what actually exists)
 ```
 
@@ -709,16 +709,16 @@ Rules:
 1. Create a render_[page_name]() function that contains all the page logic
 2. Move all page-specific helper functions into the same file
 3. Import shared helpers from components/helpers
-4. Import DB functions from psx_ohlcv.db (these still work due to Phase 1)
+4. Import DB functions from pakfindata.db (these still work due to Phase 1)
 5. Keep ALL streamlit session_state usage exactly as-is
 6. The page should work when called as: render_[page_name]()
 
 In app.py, replace the page section with:
-  from psx_ohlcv.ui.page_views.[page_name] import render_[page_name]
+  from pakfindata.ui.page_views.[page_name] import render_[page_name]
   render_[page_name]()
 
 After EACH page extraction, verify the Streamlit app still starts:
-  timeout 10 streamlit run src/psx_ohlcv/ui/app.py --server.headless true 2>&1 | head -5
+  timeout 10 streamlit run src/pakfindata/ui/app.py --server.headless true 2>&1 | head -5
 
 If it crashes, revert that page and debug before continuing.
 ```
@@ -726,17 +726,17 @@ If it crashes, revert that page and debug before continuing.
 ### Prompt 2.14 — Final Commit
 ```
 Verify everything works:
-1. streamlit run src/psx_ohlcv/ui/app.py --server.headless true (must start without errors)
+1. streamlit run src/pakfindata/ui/app.py --server.headless true (must start without errors)
 2. pytest tests/test_ui_charts.py -x -q
-3. wc -l src/psx_ohlcv/ui/app.py 
+3. wc -l src/pakfindata/ui/app.py 
    (should be ~200-500 lines now — compare to BASELINE from Prompt 0.1)
 
 If all pass:
   git add -A
   git commit -m "refactor: split app.py monolith into page modules
   
-  Created src/psx_ohlcv/ui/page_views/ with individual page modules.
-  Created src/psx_ohlcv/ui/components/ for shared helpers.
+  Created src/pakfindata/ui/page_views/ with individual page modules.
+  Created src/pakfindata/ui/components/ for shared helpers.
   app.py reduced to ~300 lines (routing + shared state only).
   All UI functionality preserved."
 ```
@@ -780,7 +780,7 @@ Check where we are and branch:
   git checkout -b feat/phase3-sqlite-optimize
 
 Confirm prerequisites from Phase 1+2:
-  ls src/psx_ohlcv/db/__init__.py  # Phase 1 present
+  ls src/pakfindata/db/__init__.py  # Phase 1 present
   ls -lh /mnt/e/psxdata/psx.sqlite  # DB exists on E: drive
   pytest tests/ -x --tb=short -q 2>&1 | tail -5
 
@@ -797,7 +797,7 @@ Update session state: Active Branch: feat/phase3-sqlite-optimize
 SQLite performance can be dramatically improved with configuration alone.
 No schema changes needed.
 
-Edit src/psx_ohlcv/db/connection.py to add these optimizations to connect():
+Edit src/pakfindata/db/connection.py to add these optimizations to connect():
 
 After creating the connection, execute these PRAGMA statements:
   con.execute("PRAGMA journal_mode=WAL")        -- Write-Ahead Logging: allows concurrent reads during writes
@@ -815,7 +815,7 @@ Also add a connection reuse pattern:
 
 VERIFY:
   python -c "
-  from psx_ohlcv.db.connection import connect
+  from pakfindata.db.connection import connect
   con = connect()
   result = con.execute('PRAGMA journal_mode').fetchone()
   print(f'Journal mode: {result[0]}')  # Must say 'wal'
@@ -865,7 +865,7 @@ VERIFY:
 
 ### Prompt 3.3 — Add Database Maintenance Utilities
 ```
-Create src/psx_ohlcv/db/maintenance.py with utility functions:
+Create src/pakfindata/db/maintenance.py with utility functions:
 
 1. vacuum_database(con) — Run VACUUM to reclaim space and defragment
 2. analyze_database(con) — Run ANALYZE to update query planner statistics
@@ -880,12 +880,12 @@ Create src/psx_ohlcv/db/maintenance.py with utility functions:
    Default backup to: /mnt/e/psxdata/backups/psx_YYYYMMDD.sqlite
 
 Add a CLI command to run maintenance:
-  python -m psx_ohlcv.db.maintenance --vacuum --analyze --stats
+  python -m pakfindata.db.maintenance --vacuum --analyze --stats
 
 VERIFY:
   python -c "
-  from psx_ohlcv.db.maintenance import get_db_stats
-  from psx_ohlcv.db.connection import connect
+  from pakfindata.db.maintenance import get_db_stats
+  from pakfindata.db.connection import connect
   con = connect()
   stats = get_db_stats(con)
   print(f'DB size: {stats[\"file_size_mb\"]:.1f} MB')
@@ -897,7 +897,7 @@ VERIFY:
 
 ### Prompt 3.4 — Environment Configuration
 ```
-Create src/psx_ohlcv/settings.py using plain dataclass (no extra dependencies):
+Create src/pakfindata/settings.py using plain dataclass (no extra dependencies):
 
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -945,7 +945,7 @@ Update config.py to use Settings instead of hardcoded paths.
 
 VERIFY:
   python -c "
-  from psx_ohlcv.settings import Settings
+  from pakfindata.settings import Settings
   s = Settings()
   print(f'DB: {s.db_path}')
   print(f'Data root: {s.data_root}')
@@ -998,12 +998,12 @@ Update session state: Active Branch: feat/phase4-async
 
 ### Prompt 4.1 — Async HTTP Fetcher
 ```
-Create src/psx_ohlcv/sources/async_fetcher.py.
+Create src/pakfindata/sources/async_fetcher.py.
 
 Read the current sync fetcher pattern in:
-- src/psx_ohlcv/http.py (create_session, polite_delay, fetch_url)
-- src/psx_ohlcv/sources/eod.py (fetch_eod_json)
-- src/psx_ohlcv/sync.py (the for-loop over symbols)
+- src/pakfindata/http.py (create_session, polite_delay, fetch_url)
+- src/pakfindata/sources/eod.py (fetch_eod_json)
+- src/pakfindata/sync.py (the for-loop over symbols)
 
 Create an async equivalent using aiohttp with:
 - Semaphore-based concurrency limit (max 25 concurrent)
@@ -1024,7 +1024,7 @@ Install aiohttp: pip install aiohttp
 VERIFY with a timing test:
   python -c "
   import asyncio, time
-  from psx_ohlcv.sources.async_fetcher import AsyncPSXFetcher
+  from pakfindata.sources.async_fetcher import AsyncPSXFetcher
   
   async def test():
       symbols = ['OGDC', 'HBL', 'MCB', 'LUCK', 'PSO', 'ENGRO', 'PPL', 'HUBC', 'UBL', 'FFC']
@@ -1042,7 +1042,7 @@ Should complete 10 symbols in <3 seconds (vs 10+ seconds synchronously).
 
 ### Prompt 4.2 — Asyncio Background Worker (No Redis)
 ```
-Create src/psx_ohlcv/worker_async.py — a pure asyncio background worker.
+Create src/pakfindata/worker_async.py — a pure asyncio background worker.
 No Redis. No Docker. No external dependencies beyond aiohttp.
 
 Design:
@@ -1084,12 +1084,12 @@ For scheduled tasks (daily sync):
   - Use asyncio.create_task with sleep loop, OR
   - Document WSL2 cron setup:
     crontab -e
-    0 18 * * 1-5 cd ~/psx_ohlcv && python -m psx_ohlcv.worker_async --task sync_eod
+    0 18 * * 1-5 cd ~/pakfindata && python -m pakfindata.worker_async --task sync_eod
 
 VERIFY:
   python -c "
   import asyncio
-  from psx_ohlcv.worker_async import AsyncTaskWorker, sync_eod_task
+  from pakfindata.worker_async import AsyncTaskWorker, sync_eod_task
   
   async def test():
       worker = AsyncTaskWorker()
@@ -1114,7 +1114,7 @@ git commit -m "feat: async HTTP fetcher + asyncio background worker
 - AsyncPSXFetcher: aiohttp-based, 25 concurrent, rate-limited
 - AsyncTaskWorker: pure asyncio task queue (no Redis/Docker needed)
 - Job tracking via existing scrape_jobs SQLite table
-- Cron-compatible CLI: python -m psx_ohlcv.worker_async --task sync_eod
+- Cron-compatible CLI: python -m pakfindata.worker_async --task sync_eod
 - 20x speed improvement for bulk symbol fetch
 - Zero external infrastructure required"
 ```
@@ -1135,10 +1135,10 @@ Check where we are and branch:
   git checkout -b feat/phase5-api-ai
 
 Confirm prerequisites:
-  ls src/psx_ohlcv/db/__init__.py                          # Phase 1
-  ls src/psx_ohlcv/ui/page_views/ 2>/dev/null                   # Phase 2
-  python -c "from psx_ohlcv.settings import Settings; print('Phase 3 OK')"  # Phase 3
-  ls src/psx_ohlcv/sources/async_fetcher.py 2>/dev/null     # Phase 4
+  ls src/pakfindata/db/__init__.py                          # Phase 1
+  ls src/pakfindata/ui/page_views/ 2>/dev/null                   # Phase 2
+  python -c "from pakfindata.settings import Settings; print('Phase 3 OK')"  # Phase 3
+  ls src/pakfindata/sources/async_fetcher.py 2>/dev/null     # Phase 4
   pytest tests/ -x --tb=short -q 2>&1 | tail -5
 
 Update session state: Active Branch: feat/phase5-api-ai
@@ -1147,9 +1147,9 @@ Update session state: Active Branch: feat/phase5-api-ai
 ### Prompt 5.1 — Add API Routers
 ```
 Read the existing API structure:
-- src/psx_ohlcv/api/main.py
-- src/psx_ohlcv/api/routers/eod.py (existing)
-- src/psx_ohlcv/api/routers/tasks.py (existing)
+- src/pakfindata/api/main.py
+- src/pakfindata/api/routers/eod.py (existing)
+- src/pakfindata/api/routers/tasks.py (existing)
 
 Add new routers:
 1. routers/symbols.py
@@ -1180,7 +1180,7 @@ Add new routers:
 Register all new routers in main.py.
 
 VERIFY:
-  uvicorn psx_ohlcv.api.main:app --port 8000 &
+  uvicorn pakfindata.api.main:app --port 8000 &
   sleep 2
   curl -s http://localhost:8000/docs | head -5  # Should return Swagger HTML
   curl -s http://localhost:8000/api/symbols | python -m json.tool | head -10
@@ -1192,7 +1192,7 @@ VERIFY:
 Add WebSocket support to FastAPI for real-time updates.
 No Redis needed — use in-memory broadcast hub.
 
-1. Create src/psx_ohlcv/api/broadcast.py:
+1. Create src/pakfindata/api/broadcast.py:
    class BroadcastHub:
        """In-memory pub/sub for WebSocket clients. No Redis needed."""
        def __init__(self):
@@ -1218,7 +1218,7 @@ VERIFY:
   pip install websockets  # client library for testing
   
   # Start API
-  uvicorn psx_ohlcv.api.main:app --port 8000 &
+  uvicorn pakfindata.api.main:app --port 8000 &
   sleep 2
   
   python -c "
@@ -1235,8 +1235,8 @@ VERIFY:
 ### Prompt 5.3 — Consolidate LLM → Agents
 ```
 The codebase has two parallel AI systems:
-1. src/psx_ohlcv/llm/ (legacy: cache.py, client.py, data_loader.py, prompts.py)
-2. src/psx_ohlcv/agents/ (new: base.py, orchestrator.py, llm_client.py, config.py)
+1. src/pakfindata/llm/ (legacy: cache.py, client.py, data_loader.py, prompts.py)
+2. src/pakfindata/agents/ (new: base.py, orchestrator.py, llm_client.py, config.py)
 
 Consolidate by:
 1. Move llm/cache.py → agents/cache.py (keep TTL caching logic)
@@ -1250,11 +1250,11 @@ After consolidation:
 - The UI chat should still work
 
 VERIFY:
-  python -c "from psx_ohlcv.agents import AgentOrchestrator, chat; print('OK')"
+  python -c "from pakfindata.agents import AgentOrchestrator, chat; print('OK')"
   # Verify old imports are handled:
   python -c "
   try:
-      from psx_ohlcv.llm import LLMClient
+      from pakfindata.llm import LLMClient
       print('WARN: old llm module still importable — add deprecation warning')
   except ImportError:
       print('OK: old llm module properly removed')
@@ -1263,11 +1263,11 @@ VERIFY:
 
 ### Prompt 5.4 — Verify Settings Integration
 ```
-Phase 3 already created src/psx_ohlcv/settings.py. 
+Phase 3 already created src/pakfindata/settings.py. 
 Verify it's properly integrated across the codebase.
 
 Check that config.py uses Settings:
-  grep -n "hardcoded\|/mnt/e\|psxdata" src/psx_ohlcv/config.py
+  grep -n "hardcoded\|/mnt/e\|psxdata" src/pakfindata/config.py
   
   Any remaining hardcoded paths should be replaced with Settings references.
 
@@ -1282,7 +1282,7 @@ Verify .env.example exists and documents all variables:
 VERIFY:
   # Override via env var to confirm settings work
   PSX_DB_PATH=/tmp/test.sqlite python -c "
-  from psx_ohlcv.settings import Settings
+  from pakfindata.settings import Settings
   s = Settings()
   assert s.db_path == '/tmp/test.sqlite', f'Expected /tmp/test.sqlite, got {s.db_path}'
   print('Settings override works')
@@ -1383,19 +1383,19 @@ Final verification on dev:
   python scripts/verify_features.py
   ruff check src/ 2>/dev/null || echo "ruff not installed, skip lint"
   
-  wc -l src/psx_ohlcv/db.py 2>/dev/null || echo "db.py replaced by db/ package ✓"
-  wc -l src/psx_ohlcv/ui/app.py
-  find src/psx_ohlcv/db/repositories/ -name "*.py" | wc -l
-  find src/psx_ohlcv/ui/page_views/ -name "*.py" 2>/dev/null | wc -l
-  python -c "from psx_ohlcv.settings import Settings; print('Settings OK')"
-  python -c "from psx_ohlcv.sources.async_fetcher import AsyncPSXFetcher; print('Async OK')"
+  wc -l src/pakfindata/db.py 2>/dev/null || echo "db.py replaced by db/ package ✓"
+  wc -l src/pakfindata/ui/app.py
+  find src/pakfindata/db/repositories/ -name "*.py" | wc -l
+  find src/pakfindata/ui/page_views/ -name "*.py" 2>/dev/null | wc -l
+  python -c "from pakfindata.settings import Settings; print('Settings OK')"
+  python -c "from pakfindata.sources.async_fetcher import AsyncPSXFetcher; print('Async OK')"
 
 If all clean, tag the release:
   git tag -a v2.0.0 -m "Major refactor: modular DB, split UI, SQLite optimized, async fetcher, expanded API"
   git push origin dev --tags
 
 Now safe to delete the backup:
-  rm src/psx_ohlcv/db_legacy_backup.py 2>/dev/null
+  rm src/pakfindata/db_legacy_backup.py 2>/dev/null
   git add -A && git commit -m "chore: remove db.py legacy backup"
 
 Update session state: ALL PHASES COMPLETE 🎉
@@ -1423,13 +1423,13 @@ ruff check src/ --select E,F --quiet
 LINT=$?
 
 echo "4. Import check..."
-python -c "from psx_ohlcv.db import connect, upsert_eod, get_symbols_list; print('DB imports OK')"
-python -c "from psx_ohlcv.agents import AgentOrchestrator; print('Agents OK')"
-python -c "from psx_ohlcv.sync import sync_all; print('Sync OK')"
+python -c "from pakfindata.db import connect, upsert_eod, get_symbols_list; print('DB imports OK')"
+python -c "from pakfindata.agents import AgentOrchestrator; print('Agents OK')"
+python -c "from pakfindata.sync import sync_all; print('Sync OK')"
 IMPORTS=$?
 
 echo "5. API starts..."
-timeout 5 uvicorn psx_ohlcv.api.main:app --port 19999 2>/dev/null &
+timeout 5 uvicorn pakfindata.api.main:app --port 19999 2>/dev/null &
 sleep 2
 curl -sf http://localhost:19999/health > /dev/null && echo "API OK" || echo "API FAIL"
 kill %1 2>/dev/null
@@ -1479,7 +1479,7 @@ echo "=== RESULTS ==="
 ### The Problem
 After any prompt, the VERIFY step might fail. Claude Code might say:
 - "3 tests failed"
-- "ImportError: cannot import name 'upsert_eod' from 'psx_ohlcv.db'"
+- "ImportError: cannot import name 'upsert_eod' from 'pakfindata.db'"
 - "pip install failed"
 - "SQLite locked" or "database is locked"
 - Something unexpected
@@ -1634,19 +1634,19 @@ Diagnose:
 **Issue: ImportError after extracting a repository module**
 ```
 After extracting functions to db/repositories/[module].py, I get:
-ImportError: cannot import name '[function]' from 'psx_ohlcv.db'
+ImportError: cannot import name '[function]' from 'pakfindata.db'
 
 Diagnose:
-1. Run: python -c "from psx_ohlcv.db.repositories.[module] import [function]; print('Direct OK')"
+1. Run: python -c "from pakfindata.db.repositories.[module] import [function]; print('Direct OK')"
    → If this FAILS: the function wasn't properly moved. Check the file.
    → If this PASSES: the __init__.py re-export is missing.
 
 2. Check __init__.py:
-   grep "[function]" src/psx_ohlcv/db/__init__.py
+   grep "[function]" src/pakfindata/db/__init__.py
    → If not found: add it to the imports in __init__.py
 
 3. Check for circular imports:
-   python -c "import psx_ohlcv.db" 2>&1
+   python -c "import pakfindata.db" 2>&1
    → If circular import error: one repository is importing from another
    → Fix: use late/local imports inside functions, not at module top
 
@@ -1690,10 +1690,10 @@ The re-export count is less than the original db.py function count.
 Diagnose — find exactly which functions are missing:
   python -c "
   import ast
-  import psx_ohlcv.db as db_pkg
+  import pakfindata.db as db_pkg
   
   # Parse original
-  with open('src/psx_ohlcv/db.py') as f:
+  with open('src/pakfindata/db.py') as f:
       tree = ast.parse(f.read())
   original = {node.name for node in ast.walk(tree) 
               if isinstance(node, ast.FunctionDef) and not node.name.startswith('_')}
@@ -1723,7 +1723,7 @@ For each missing function:
 After extracting a page into pages/[page].py, the app crashes.
 
 Diagnose:
-1. Run: streamlit run src/psx_ohlcv/ui/app.py --server.headless true 2>&1 | head -30
+1. Run: streamlit run src/pakfindata/ui/app.py --server.headless true 2>&1 | head -30
 2. Look for the specific error:
    a) ImportError → missing import in the page module
    b) NameError → function defined in app.py but not moved/imported
@@ -1736,7 +1736,7 @@ Diagnose:
        # page logic here
    
    In app.py:
-   from psx_ohlcv.ui.page_views.dashboard import render_dashboard
+   from pakfindata.ui.page_views.dashboard import render_dashboard
    render_dashboard(con, config)
 ```
 
@@ -1849,18 +1849,18 @@ Check:
 1. Each router file has: from fastapi import APIRouter
 2. router = APIRouter() at top
 3. main.py includes: app.include_router(module.router, prefix="...", tags=["..."])
-4. Run: python -c "from psx_ohlcv.api.main import app; print(app.routes)"
+4. Run: python -c "from pakfindata.api.main import app; print(app.routes)"
 ```
 
 **Issue: Old llm/ imports break after consolidation**
 ```
-UI code still imports from psx_ohlcv.llm which was removed.
+UI code still imports from pakfindata.llm which was removed.
 
 Diagnose:
-  grep -rn "from psx_ohlcv.llm" src/
-  grep -rn "import psx_ohlcv.llm" src/
+  grep -rn "from pakfindata.llm" src/
+  grep -rn "import pakfindata.llm" src/
 
-Update each occurrence to import from psx_ohlcv.agents instead.
+Update each occurrence to import from pakfindata.agents instead.
 ```
 
 ---
@@ -1910,7 +1910,7 @@ VERIFY fails
 
 ### After Every Issue Resolution
 ```
-Update ~/psx_ohlcv/.claude_session_state.md Issues Log:
+Update ~/pakfindata/.claude_session_state.md Issues Log:
 Add row:
 | Prompt X.Y | [brief issue description] | [brief resolution] |
 
@@ -1936,7 +1936,7 @@ Without the state file, you'd need to:
 - Risk repeating or skipping steps
 
 ### The State File Solves All This
-**Location**: `~/psx_ohlcv/.claude_session_state.md`
+**Location**: `~/pakfindata/.claude_session_state.md`
 **Updated**: After every completed prompt
 **Contains**: Exact phase, exact prompt, branch, test status, issues log
 
@@ -1946,17 +1946,17 @@ Without the state file, you'd need to:
 
 **Step 2**: Paste the Session Recovery Prompt:
 ```
-I'm resuming work on the psx_ohlcv project. We track progress in a session state file.
+I'm resuming work on the pakfindata project. We track progress in a session state file.
 
 Please do the following:
-1. Read ~/psx_ohlcv/.claude_session_state.md
+1. Read ~/pakfindata/.claude_session_state.md
 2. Tell me:
    - What phase we're in
    - What was the last completed prompt
    - What is the next prompt to execute
    - Which git branch we should be on
    - Whether tests were passing at last checkpoint
-3. Run: cd ~/psx_ohlcv && git branch --show-current
+3. Run: cd ~/pakfindata && git branch --show-current
 4. Run: git status --short
 5. Run: pytest tests/ -x --tb=short -q 2>&1 | tail -10
 
@@ -1970,7 +1970,7 @@ Do NOT start any work until I confirm.
 
 **Step 5**: After it completes and VERIFY passes, update state:
 ```
-Update ~/psx_ohlcv/.claude_session_state.md:
+Update ~/pakfindata/.claude_session_state.md:
 - Mark prompt [X.Y] as completed (change [ ] to [x])
 - Update "Last Completed Prompt" to [X.Y]
 - Update "Next Prompt" to [X.Z]
@@ -1982,21 +1982,21 @@ Update ~/psx_ohlcv/.claude_session_state.md:
 
 ### Emergency Recovery (If State File Somehow Gets Lost)
 ```
-I'm working on the psx_ohlcv project refactoring. The session state file may be missing.
+I'm working on the pakfindata project refactoring. The session state file may be missing.
 Please help me reconstruct where we are:
 
-1. Run: cd ~/psx_ohlcv && git branch --show-current
+1. Run: cd ~/pakfindata && git branch --show-current
 2. Run: git log --oneline -10
-3. Check if db/ package exists: ls -la src/psx_ohlcv/db/ 2>/dev/null || echo "db.py is still monolith"
-4. Check if pages exist: ls -la src/psx_ohlcv/ui/page_views/ 2>/dev/null || echo "app.py is still monolith"
-5. Check for settings: ls src/psx_ohlcv/settings.py 2>/dev/null || echo "No settings yet"
-6. Check for async: ls src/psx_ohlcv/sources/async_fetcher.py 2>/dev/null || echo "No async yet"
-7. Run: wc -l src/psx_ohlcv/db.py 2>/dev/null || echo "db.py replaced by package"
-8. Run: wc -l src/psx_ohlcv/ui/app.py
+3. Check if db/ package exists: ls -la src/pakfindata/db/ 2>/dev/null || echo "db.py is still monolith"
+4. Check if pages exist: ls -la src/pakfindata/ui/page_views/ 2>/dev/null || echo "app.py is still monolith"
+5. Check for settings: ls src/pakfindata/settings.py 2>/dev/null || echo "No settings yet"
+6. Check for async: ls src/pakfindata/sources/async_fetcher.py 2>/dev/null || echo "No async yet"
+7. Run: wc -l src/pakfindata/db.py 2>/dev/null || echo "db.py replaced by package"
+8. Run: wc -l src/pakfindata/ui/app.py
 9. Run: pytest tests/ -x --tb=short -q 2>&1 | tail -10
 
 Based on this, tell me which phase and prompt we're likely at.
-Then recreate the session state file at ~/psx_ohlcv/.claude_session_state.md
+Then recreate the session state file at ~/pakfindata/.claude_session_state.md
 ```
 
 ### Important Notes

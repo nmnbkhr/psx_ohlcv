@@ -2,9 +2,9 @@
 
 ## Context
 
-I'm working on `psx_ohlcv` — a Pakistan financial data platform (Streamlit app).
+I'm working on `pakfindata` — a Pakistan financial data platform (Streamlit app).
 - DB: `/mnt/e/psxdata/psx.sqlite`
-- Project: `~/psx_ohlcv/` (dev branch)
+- Project: `~/pakfindata/` (dev branch)
 - The app has a "Fund Explorer" page in the Streamlit UI that shows mutual fund data
 - Data source: MUFAP (mufap.com.pk) — the official industry body for mutual funds in Pakistan
 - The fund explorer currently has LIMITED information — some categories may be missing
@@ -137,46 +137,46 @@ echo "Key categories likely missing: Commodity, VPS-*, Dedicated Equity, Employe
 
 ```bash
 # Find the scraper file(s)
-find ~/psx_ohlcv/src/ -name "*.py" | xargs grep -l "mufap\|MUFAP\|mutual.*fund\|IndustryStatDaily\|FundDirectory" 2>/dev/null
+find ~/pakfindata/src/ -name "*.py" | xargs grep -l "mufap\|MUFAP\|mutual.*fund\|IndustryStatDaily\|FundDirectory" 2>/dev/null
 
 # Show the full scraper source
 echo "=== MUFAP Scraper Source ==="
-for f in $(find ~/psx_ohlcv/src/ -name "*.py" | xargs grep -l "mufap\|MUFAP" 2>/dev/null); do
+for f in $(find ~/pakfindata/src/ -name "*.py" | xargs grep -l "mufap\|MUFAP" 2>/dev/null); do
   echo "--- FILE: $f ---"
   cat "$f"
   echo ""
 done
 
 # Check what MUFAP URLs are being scraped
-grep -rn "mufap.com\|MUFAP.*URL\|IndustryStatDaily\|FundDirectory\|FundDetail\|FundProfile" ~/psx_ohlcv/src/ 2>/dev/null
+grep -rn "mufap.com\|MUFAP.*URL\|IndustryStatDaily\|FundDirectory\|FundDetail\|FundProfile" ~/pakfindata/src/ 2>/dev/null
 ```
 
 ### Step 5 — Audit the Fund Explorer UI page
 
 ```bash
 # Find the fund explorer Streamlit page
-find ~/psx_ohlcv/src/ -name "*.py" | xargs grep -l "fund.*explorer\|Fund.*Explorer\|mutual.*fund.*page\|fund_explorer" 2>/dev/null
+find ~/pakfindata/src/ -name "*.py" | xargs grep -l "fund.*explorer\|Fund.*Explorer\|mutual.*fund.*page\|fund_explorer" 2>/dev/null
 
 # Show the full page source
 echo "=== Fund Explorer Page Source ==="
-for f in $(find ~/psx_ohlcv/src/psx_ohlcv/ui/pages/ -name "*fund*" -o -name "*mutual*"); do
+for f in $(find ~/pakfindata/src/pakfindata/ui/pages/ -name "*fund*" -o -name "*mutual*"); do
   echo "--- FILE: $f ---"
   cat "$f"
   echo ""
 done
 
 # Check what DB queries the fund page makes
-grep -rn "mutual_fund\|fund_nav\|fund_performance\|fund_category\|SELECT.*FROM.*fund" ~/psx_ohlcv/src/psx_ohlcv/ui/pages/ 2>/dev/null
+grep -rn "mutual_fund\|fund_nav\|fund_performance\|fund_category\|SELECT.*FROM.*fund" ~/pakfindata/src/pakfindata/ui/pages/ 2>/dev/null
 ```
 
 ### Step 6 — Check fund-related DB query functions
 
 ```bash
 # Find all fund query functions in db/ layer
-grep -rn "def.*fund\|def.*nav\|def.*mufap\|def.*mutual" ~/psx_ohlcv/src/psx_ohlcv/db/ 2>/dev/null
+grep -rn "def.*fund\|def.*nav\|def.*mufap\|def.*mutual" ~/pakfindata/src/pakfindata/db/ 2>/dev/null
 
 # Show the fund DB module
-for f in $(find ~/psx_ohlcv/src/psx_ohlcv/db/ -name "*fund*" -o -name "*mutual*" -o -name "*mufap*" -o -name "*nav*"); do
+for f in $(find ~/pakfindata/src/pakfindata/db/ -name "*fund*" -o -name "*mutual*" -o -name "*mufap*" -o -name "*nav*"); do
   echo "--- FILE: $f ---"
   cat "$f"
   echo ""
@@ -187,12 +187,12 @@ done
 
 ```bash
 # Check if fund sync CLI command exists
-grep -rn "fund.*sync\|mufap.*sync\|nav.*sync\|fund_sync" ~/psx_ohlcv/src/psx_ohlcv/cli/ 2>/dev/null
+grep -rn "fund.*sync\|mufap.*sync\|nav.*sync\|fund_sync" ~/pakfindata/src/pakfindata/cli/ 2>/dev/null
 
 # Try running it
-python -m psx_ohlcv fund sync 2>&1 | head -20 || \
-python -m psx_ohlcv mufap sync 2>&1 | head -20 || \
-python -m psx_ohlcv --help 2>&1 | grep -i fund
+python -m pakfindata fund sync 2>&1 | head -20 || \
+python -m pakfindata mufap sync 2>&1 | head -20 || \
+python -m pakfindata --help 2>&1 | grep -i fund
 ```
 
 **STOP HERE — Show me ALL output from Steps 1-7 before proceeding.**
@@ -362,12 +362,12 @@ Cards for: Equity | Income | Money Market | Balanced | Islamic | Commodity | VPS
 ### Step 11 — CLI commands
 
 ```
-psxsync funds sync              # Sync all MUFAP data (performance + NAVs + directory)
-psxsync funds performance       # Sync performance tab only
-psxsync funds directory         # Sync fund directory/metadata
-psxsync funds status            # Show: X funds, Y categories, latest date, coverage
-psxsync funds list --category "Commodity"    # List funds by category
-psxsync funds top --period ytd --n 10        # Top performers
+pfsync funds sync              # Sync all MUFAP data (performance + NAVs + directory)
+pfsync funds performance       # Sync performance tab only
+pfsync funds directory         # Sync fund directory/metadata
+pfsync funds status            # Show: X funds, Y categories, latest date, coverage
+pfsync funds list --category "Commodity"    # List funds by category
+pfsync funds top --period ytd --n 10        # Top performers
 ```
 
 ---
@@ -376,7 +376,7 @@ psxsync funds top --period ytd --n 10        # Top performers
 
 ```bash
 # Step 12 — Run the enhanced sync
-python -m psx_ohlcv funds sync 2>&1
+python -m pakfindata funds sync 2>&1
 
 # Step 13 — Verify data completeness
 sqlite3 -header /mnt/e/psxdata/psx.sqlite "
@@ -422,7 +422,7 @@ ORDER BY category, return_ytd DESC;
 "
 
 # Step 17 — Start Streamlit and verify UI
-streamlit run src/psx_ohlcv/ui/app.py --server.headless true 2>&1 | head -5
+streamlit run src/pakfindata/ui/app.py --server.headless true 2>&1 | head -5
 
 # Step 18 — Run tests
 pytest tests/ -x -q --tb=short -k "fund or mufap or nav" 2>&1 | tail -10
@@ -465,7 +465,7 @@ git commit -m "feat: enhanced MUFAP fund explorer — full category coverage + p
   - Top performers rankings, fund comparison, return visualizations
   - Full category sidebar including Commodity, Islamic, VPS sub-funds
   
-  CLI: psxsync funds sync / performance / directory / status / top"
+  CLI: pfsync funds sync / performance / directory / status / top"
 
 git push origin dev
 ```
