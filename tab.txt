@@ -1,0 +1,1291 @@
+CREATE TABLE sqlite_sequence(name,seq)
+CREATE TABLE symbols (
+    symbol       TEXT PRIMARY KEY,
+    name         TEXT NULL,
+    sector       TEXT NULL,
+    is_active    INTEGER DEFAULT 1,
+    discovered_at TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+, sector_name TEXT NULL, outstanding_shares REAL NULL, source TEXT NOT NULL DEFAULT 'MARKET_WATCH')
+CREATE TABLE sync_runs (
+    run_id         TEXT PRIMARY KEY,
+    started_at     TEXT NOT NULL,
+    ended_at       TEXT NULL,
+    mode           TEXT NOT NULL,
+    symbols_total  INTEGER DEFAULT 0,
+    symbols_ok     INTEGER DEFAULT 0,
+    symbols_failed INTEGER DEFAULT 0,
+    rows_upserted  INTEGER DEFAULT 0
+)
+CREATE TABLE sync_failures (
+    run_id        TEXT NOT NULL,
+    symbol        TEXT NOT NULL,
+    error_type    TEXT NOT NULL,
+    error_message TEXT,
+    created_at    TEXT NOT NULL,
+    FOREIGN KEY (run_id) REFERENCES sync_runs(run_id)
+)
+CREATE TABLE intraday_bars (
+    symbol      TEXT NOT NULL,
+    ts          TEXT NOT NULL,
+    ts_epoch    INTEGER NOT NULL,
+    open        REAL NULL,
+    high        REAL NULL,
+    low         REAL NULL,
+    close       REAL NULL,
+    volume      REAL NULL,
+    interval    TEXT NOT NULL DEFAULT 'int',
+    ingested_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (symbol, ts)
+)
+CREATE TABLE intraday_sync_state (
+    symbol        TEXT PRIMARY KEY,
+    last_ts       TEXT NULL,
+    last_ts_epoch INTEGER NULL,
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+)
+CREATE TABLE regular_market_current (
+            symbol TEXT PRIMARY KEY,
+            ts TEXT NOT NULL,
+            status TEXT,
+            sector_code TEXT,
+            listed_in TEXT,
+            ldcp REAL,
+            open REAL,
+            high REAL,
+            low REAL,
+            current REAL,
+            change REAL,
+            change_pct REAL,
+            volume REAL,
+            row_hash TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+CREATE TABLE regular_market_snapshots (
+            ts TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            status TEXT,
+            sector_code TEXT,
+            listed_in TEXT,
+            ldcp REAL,
+            open REAL,
+            high REAL,
+            low REAL,
+            current REAL,
+            change REAL,
+            change_pct REAL,
+            volume REAL,
+            row_hash TEXT NOT NULL,
+            ingested_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (ts, symbol)
+        )
+CREATE TABLE sectors (
+    sector_code TEXT PRIMARY KEY,
+    sector_name TEXT NOT NULL,
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    source      TEXT NOT NULL DEFAULT 'DPS_SECTOR_SUMMARY'
+)
+CREATE TABLE company_profile (
+    symbol              TEXT PRIMARY KEY,
+    company_name        TEXT NULL,
+    sector_name         TEXT NULL,
+    business_description TEXT NULL,
+    address             TEXT NULL,
+    website             TEXT NULL,
+    registrar           TEXT NULL,
+    auditor             TEXT NULL,
+    fiscal_year_end     TEXT NULL,
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    source_url          TEXT NOT NULL
+)
+CREATE TABLE company_key_people (
+    symbol     TEXT NOT NULL,
+    role       TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (symbol, role, name)
+)
+CREATE TABLE company_quote_snapshots (
+    symbol          TEXT NOT NULL,
+    ts              TEXT NOT NULL,
+    as_of           TEXT NULL,
+    price           REAL NULL,
+    change          REAL NULL,
+    change_pct      REAL NULL,
+    open            REAL NULL,
+    high            REAL NULL,
+    low             REAL NULL,
+    volume          REAL NULL,
+    day_range_low   REAL NULL,
+    day_range_high  REAL NULL,
+    wk52_low        REAL NULL,
+    wk52_high       REAL NULL,
+    circuit_low     REAL NULL,
+    circuit_high    REAL NULL,
+    market_mode     TEXT NULL,
+    raw_hash        TEXT NOT NULL,
+    ingested_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (symbol, ts)
+)
+CREATE TABLE analytics_market_snapshot (
+    ts TEXT PRIMARY KEY,
+    gainers_count INTEGER NOT NULL DEFAULT 0,
+    losers_count INTEGER NOT NULL DEFAULT 0,
+    unchanged_count INTEGER NOT NULL DEFAULT 0,
+    total_symbols INTEGER NOT NULL DEFAULT 0,
+    total_volume REAL DEFAULT 0,
+    top_gainer_symbol TEXT,
+    top_loser_symbol TEXT,
+    computed_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
+CREATE TABLE analytics_symbol_snapshot (
+    ts TEXT NOT NULL,
+    rank_type TEXT NOT NULL,  -- 'gainers', 'losers', 'volume'
+    rank INTEGER NOT NULL,
+    symbol TEXT NOT NULL,
+    company_name TEXT,
+    sector_name TEXT,
+    current REAL,
+    change_pct REAL,
+    volume REAL,
+    PRIMARY KEY (ts, rank_type, rank)
+)
+CREATE TABLE analytics_sector_snapshot (
+    ts TEXT NOT NULL,
+    sector_code TEXT NOT NULL,
+    sector_name TEXT NOT NULL,
+    symbols_count INTEGER NOT NULL DEFAULT 0,
+    avg_change_pct REAL,
+    sum_volume REAL,
+    top_symbol TEXT,
+    PRIMARY KEY (ts, sector_code)
+)
+CREATE TABLE company_signal_snapshots (
+    symbol       TEXT NOT NULL,
+    ts           TEXT NOT NULL,
+    signal_key   TEXT NOT NULL,
+    signal_value TEXT NOT NULL,
+    PRIMARY KEY (symbol, ts, signal_key)
+)
+CREATE TABLE downloaded_market_summary_dates (
+    date TEXT PRIMARY KEY,
+    status TEXT NOT NULL,  -- 'ok', 'missing', 'failed', 'skipped'
+    csv_path TEXT,
+    raw_path TEXT,
+    extracted_path TEXT,
+    row_count INTEGER DEFAULT 0,
+    message TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
+CREATE TABLE company_fundamentals (
+    symbol              TEXT PRIMARY KEY,
+
+    -- Company Identity
+    company_name        TEXT,
+    sector_name         TEXT,
+
+    -- Price Data
+    price               REAL,
+    change              REAL,
+    change_pct          REAL,
+    open                REAL,
+    high                REAL,
+    low                 REAL,
+    volume              INTEGER,
+    ldcp                REAL,           -- Last Day Close Price
+
+    -- Bid/Ask (Order Book Top)
+    bid_price           REAL,
+    bid_size            INTEGER,
+    ask_price           REAL,
+    ask_size            INTEGER,
+
+    -- Ranges
+    day_range_low       REAL,
+    day_range_high      REAL,
+    wk52_low            REAL,
+    wk52_high           REAL,
+    circuit_low         REAL,
+    circuit_high        REAL,
+
+    -- Performance Metrics
+    ytd_change_pct      REAL,
+    one_year_change_pct REAL,
+
+    -- Valuation
+    pe_ratio            REAL,
+    market_cap          REAL,           -- in thousands
+
+    -- Equity Structure
+    total_shares        INTEGER,
+    free_float_shares   INTEGER,
+    free_float_pct      REAL,
+
+    -- Risk Parameters
+    haircut             REAL,
+    variance            REAL,
+
+    -- Profile Info
+    business_description TEXT,
+    address             TEXT,
+    website             TEXT,
+    registrar           TEXT,
+    auditor             TEXT,
+    fiscal_year_end     TEXT,
+    incorporation_date  TEXT,
+    listed_in           TEXT,           -- KSE, LSE, ISE
+
+    -- Metadata
+    as_of               TEXT,           -- Quote timestamp from PSX
+    market_mode         TEXT,           -- REG, ODD, FUT, SPOT
+    source_url          TEXT,
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+)
+CREATE TABLE company_fundamentals_history (
+    symbol              TEXT NOT NULL,
+    date                TEXT NOT NULL,  -- YYYY-MM-DD
+
+    -- Company Identity
+    company_name        TEXT,
+    sector_name         TEXT,
+
+    -- Price Data
+    price               REAL,
+    change              REAL,
+    change_pct          REAL,
+    open                REAL,
+    high                REAL,
+    low                 REAL,
+    volume              INTEGER,
+    ldcp                REAL,
+
+    -- Bid/Ask
+    bid_price           REAL,
+    bid_size            INTEGER,
+    ask_price           REAL,
+    ask_size            INTEGER,
+
+    -- Ranges
+    day_range_low       REAL,
+    day_range_high      REAL,
+    wk52_low            REAL,
+    wk52_high           REAL,
+    circuit_low         REAL,
+    circuit_high        REAL,
+
+    -- Performance Metrics
+    ytd_change_pct      REAL,
+    one_year_change_pct REAL,
+
+    -- Valuation
+    pe_ratio            REAL,
+    market_cap          REAL,
+
+    -- Equity Structure
+    total_shares        INTEGER,
+    free_float_shares   INTEGER,
+    free_float_pct      REAL,
+
+    -- Risk Parameters
+    haircut             REAL,
+    variance            REAL,
+
+    -- Metadata
+    as_of               TEXT,
+    market_mode         TEXT,
+    snapshot_ts         TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY (symbol, date)
+)
+CREATE TABLE company_financials (
+    symbol              TEXT NOT NULL,
+    period_end          TEXT NOT NULL,      -- YYYY-MM-DD or YYYY
+    period_type         TEXT NOT NULL,      -- 'annual' or 'quarterly'
+
+    -- Income Statement
+    sales               REAL,               -- Total Revenue/Sales
+    gross_profit        REAL,
+    operating_profit    REAL,
+    profit_before_tax   REAL,
+    profit_after_tax    REAL,               -- Net Income
+    eps                 REAL,               -- Earnings Per Share
+
+    -- Balance Sheet (optional)
+    total_assets        REAL,
+    total_liabilities   REAL,
+    total_equity        REAL,
+
+    -- Metadata
+    currency            TEXT DEFAULT 'PKR',
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY (symbol, period_end, period_type)
+)
+CREATE TABLE company_ratios (
+    symbol              TEXT NOT NULL,
+    period_end          TEXT NOT NULL,      -- YYYY-MM-DD or YYYY
+    period_type         TEXT NOT NULL,      -- 'annual' or 'quarterly'
+
+    -- Profitability Ratios
+    gross_profit_margin REAL,               -- Gross Profit / Sales %
+    net_profit_margin   REAL,               -- Net Income / Sales %
+    operating_margin    REAL,
+    return_on_equity    REAL,               -- ROE %
+    return_on_assets    REAL,               -- ROA %
+
+    -- Growth Metrics
+    sales_growth        REAL,               -- YoY Sales Growth %
+    eps_growth          REAL,               -- YoY EPS Growth %
+    profit_growth       REAL,               -- YoY Profit Growth %
+
+    -- Valuation Ratios
+    pe_ratio            REAL,               -- Price to Earnings
+    pb_ratio            REAL,               -- Price to Book
+    peg_ratio           REAL,               -- P/E to Growth
+
+    -- Metadata
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY (symbol, period_end, period_type)
+)
+CREATE TABLE company_payouts (
+    symbol              TEXT NOT NULL,
+    ex_date             TEXT NOT NULL,      -- Ex-dividend date YYYY-MM-DD
+    payout_type         TEXT NOT NULL,      -- 'cash', 'bonus', 'right'
+
+    -- Payout Details
+    announcement_date   TEXT,               -- Date announced
+    book_closure_from   TEXT,
+    book_closure_to     TEXT,
+    amount              REAL,               -- Cash dividend per share or bonus %
+    fiscal_year         TEXT,               -- e.g., '2024', '2023'
+
+    -- Metadata
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY (symbol, ex_date, payout_type)
+)
+CREATE TABLE user_interactions (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id          TEXT NOT NULL,          -- Unique session identifier
+    timestamp           TEXT NOT NULL,          -- When action occurred
+    action_type         TEXT NOT NULL,          -- 'page_visit', 'search', 'button_click', 'refresh', 'download'
+    page_name           TEXT,                   -- Which page the action was on
+    symbol              TEXT,                   -- Stock symbol if applicable
+    action_detail       TEXT,                   -- Additional details (button name, search query, etc.)
+    metadata            TEXT,                   -- JSON string for extra data
+    ip_address          TEXT,                   -- Optional: user IP
+    user_agent          TEXT                    -- Optional: browser/client info
+)
+CREATE TABLE company_snapshots (
+    symbol              TEXT NOT NULL,
+    snapshot_date       TEXT NOT NULL,          -- YYYY-MM-DD
+    snapshot_time       TEXT,                   -- HH:MM:SS when captured
+
+    -- Core identifiers
+    company_name        TEXT,
+    sector_code         TEXT,
+    sector_name         TEXT,
+
+    -- Full JSON document with all data
+    quote_data          TEXT,                   -- JSON: price, change, volume, ranges
+    equity_data         TEXT,                   -- JSON: market cap, shares, float
+    profile_data        TEXT,                   -- JSON: description, address, key people
+    financials_data     TEXT,                   -- JSON: annual/quarterly financials
+    ratios_data         TEXT,                   -- JSON: all financial ratios
+    trading_data        TEXT,                   -- JSON: bid/ask, circuit breakers, VAR
+    futures_data        TEXT,                   -- JSON: all futures contracts
+    announcements_data  TEXT,                   -- JSON: recent announcements
+
+    -- Raw HTML for reprocessing
+    raw_html            TEXT,                   -- Full page HTML (compressed/encoded)
+
+    -- Metadata
+    source_url          TEXT,
+    scraped_at          TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY (symbol, snapshot_date)
+)
+CREATE TABLE trading_sessions (
+    symbol              TEXT NOT NULL,
+    session_date        TEXT NOT NULL,          -- YYYY-MM-DD
+    market_type         TEXT NOT NULL,          -- 'REG', 'FUT', 'CSF', 'ODL'
+    contract_month      TEXT,                   -- For futures: 'JAN', 'FEB', etc.
+
+    -- OHLCV
+    open                REAL,
+    high                REAL,
+    low                 REAL,
+    close               REAL,
+    volume              INTEGER,
+
+    -- Price references
+    ldcp                REAL,                   -- Last Day Close Price
+    prev_close          REAL,
+    change_value        REAL,
+    change_percent      REAL,
+
+    -- Order book snapshot (end of day)
+    bid_price           REAL,
+    bid_volume          INTEGER,
+    ask_price           REAL,
+    ask_volume          INTEGER,
+    spread              REAL,                   -- ask - bid
+
+    -- Ranges
+    day_range_low       REAL,
+    day_range_high      REAL,
+    circuit_low         REAL,                   -- Lower circuit breaker
+    circuit_high        REAL,                   -- Upper circuit breaker
+    week_52_low         REAL,
+    week_52_high        REAL,
+
+    -- Trading statistics
+    total_trades        INTEGER,
+    turnover            REAL,                   -- value traded
+    vwap                REAL,                   -- Volume Weighted Average Price
+
+    -- Risk metrics
+    var_percent         REAL,                   -- Value at Risk %
+    haircut_percent     REAL,                   -- Margin haircut %
+
+    -- Valuation (from quote)
+    pe_ratio_ttm        REAL,                   -- P/E Trailing Twelve Months
+
+    -- Performance
+    ytd_change          REAL,
+    year_1_change       REAL,
+
+    -- Metadata
+    last_update         TEXT,
+    scraped_at          TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY (symbol, session_date, market_type, contract_month)
+)
+CREATE TABLE corporate_announcements (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol              TEXT NOT NULL,
+    announcement_date   TEXT NOT NULL,          -- YYYY-MM-DD
+    announcement_type   TEXT NOT NULL,          -- 'financial_result', 'board_meeting', 'material_info', 'agm', 'dividend', 'other'
+    category            TEXT,                   -- 'quarterly', 'annual', 'interim', etc.
+
+    title               TEXT NOT NULL,
+    title_hash          TEXT NOT NULL,          -- MD5/SHA hash for dedup
+
+    -- Document info
+    document_url        TEXT,
+    document_type       TEXT,                   -- 'pdf', 'html', 'xls'
+
+    -- Extracted content (if available)
+    summary             TEXT,
+    key_figures         TEXT,                   -- JSON: extracted numbers/metrics
+
+    -- Metadata
+    scraped_at          TEXT NOT NULL DEFAULT (datetime('now')),
+
+    UNIQUE(symbol, announcement_date, title_hash)
+)
+CREATE TABLE equity_structure (
+    symbol              TEXT NOT NULL,
+    as_of_date          TEXT NOT NULL,          -- YYYY-MM-DD
+
+    -- Share capital
+    authorized_shares   INTEGER,
+    issued_shares       INTEGER,
+    outstanding_shares  INTEGER,
+    treasury_shares     INTEGER,
+
+    -- Float analysis
+    free_float_shares   INTEGER,
+    free_float_percent  REAL,
+
+    -- Market cap
+    market_cap          REAL,                   -- In local currency (PKR)
+    market_cap_usd      REAL,                   -- In USD (if exchange rate available)
+
+    -- Ownership breakdown (JSON for flexibility)
+    ownership_data      TEXT,                   -- JSON: {institutions: x%, retail: y%, ...}
+
+    -- Face value
+    face_value          REAL,
+
+    -- Metadata
+    scraped_at          TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY (symbol, as_of_date)
+)
+CREATE TABLE scrape_jobs (
+    job_id              TEXT PRIMARY KEY,
+    job_type            TEXT NOT NULL,          -- 'company_snapshot', 'market_summary', 'announcements'
+    started_at          TEXT NOT NULL,
+    ended_at            TEXT,
+    status              TEXT NOT NULL DEFAULT 'running',  -- 'running', 'completed', 'failed'
+
+    -- Scope
+    symbols_requested   INTEGER DEFAULT 0,
+    symbols_completed   INTEGER DEFAULT 0,
+    symbols_failed      INTEGER DEFAULT 0,
+
+    -- Results
+    records_inserted    INTEGER DEFAULT 0,
+    records_updated     INTEGER DEFAULT 0,
+
+    -- Error tracking
+    errors              TEXT,                   -- JSON array of errors
+
+    -- Metadata
+    config              TEXT                    -- JSON: job configuration
+, stop_requested INTEGER DEFAULT 0, current_symbol TEXT, current_batch INTEGER DEFAULT 0, total_batches INTEGER DEFAULT 0, batch_size INTEGER DEFAULT 50, batch_pause_sec INTEGER DEFAULT 30, pid INTEGER, last_heartbeat TEXT, notification_sent INTEGER DEFAULT 0)
+CREATE TABLE job_notifications (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id              TEXT NOT NULL,
+            notification_type   TEXT NOT NULL,
+            title               TEXT NOT NULL,
+            message             TEXT,
+            created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+            read_at             TEXT,
+            FOREIGN KEY (job_id) REFERENCES scrape_jobs(job_id)
+        )
+CREATE TABLE psx_indices (
+    index_code          TEXT NOT NULL,              -- 'KSE100', 'KSE30', 'KMI30', etc.
+    index_date          TEXT NOT NULL,              -- YYYY-MM-DD
+    index_time          TEXT,                       -- HH:MM:SS when captured
+
+    -- Core values
+    value               REAL NOT NULL,              -- Current index value
+    change              REAL,                       -- Point change
+    change_pct          REAL,                       -- Percentage change
+
+    -- OHLV for the day
+    open                REAL,
+    high                REAL,
+    low                 REAL,
+    volume              INTEGER,                    -- Total market volume
+
+    -- References
+    previous_close      REAL,
+
+    -- Extended stats
+    ytd_change_pct      REAL,                       -- Year-to-date change
+    one_year_change_pct REAL,                       -- 1-year change
+    week_52_low         REAL,
+    week_52_high        REAL,
+
+    -- Metadata
+    trades              INTEGER,                    -- Number of trades
+    market_cap          REAL,                       -- Total market cap (if available)
+    turnover            REAL,                       -- Total turnover in PKR
+
+    scraped_at          TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY (index_code, index_date)
+)
+CREATE TABLE psx_market_stats (
+    stat_date           TEXT NOT NULL,              -- YYYY-MM-DD
+    stat_time           TEXT,                       -- HH:MM:SS when captured
+    board_type          TEXT NOT NULL DEFAULT 'MAIN',  -- 'MAIN', 'GEM', 'DEBT'
+
+    -- Trading segments summary
+    reg_trades          INTEGER,
+    reg_volume          INTEGER,
+    reg_value           REAL,
+    reg_state           TEXT,
+
+    fut_trades          INTEGER,
+    fut_volume          INTEGER,
+    fut_value           REAL,
+    fut_state           TEXT,
+
+    csf_trades          INTEGER,
+    csf_volume          INTEGER,
+    csf_value           REAL,
+    csf_state           TEXT,
+
+    odl_trades          INTEGER,
+    odl_volume          INTEGER,
+    odl_value           REAL,
+    odl_state           TEXT,
+
+    squareup_trades     INTEGER,
+    squareup_volume     INTEGER,
+    squareup_value      REAL,
+    squareup_state      TEXT,
+
+    scraped_at          TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY (stat_date, board_type)
+)
+CREATE TABLE llm_cache (
+    prompt_hash     TEXT PRIMARY KEY,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at      TEXT NOT NULL,
+    response_text   TEXT NOT NULL,
+    meta_json       TEXT,
+
+    -- Additional fields for debugging and analytics
+    symbol          TEXT,
+    mode            TEXT,
+    prompt_tokens   INTEGER,
+    completion_tokens INTEGER,
+    model           TEXT,
+
+    -- Index for cleanup queries
+    CONSTRAINT valid_expiry CHECK (expires_at > created_at)
+)
+CREATE TABLE financial_announcements (
+    symbol              TEXT NOT NULL,
+    announcement_date   TEXT NOT NULL,      -- YYYY-MM-DD
+    fiscal_period       TEXT NOT NULL,      -- e.g., '31/12/2025(YR)', '30/06/2025(HYR)'
+
+    -- Financial Results
+    profit_before_tax   REAL,               -- In millions Rs.
+    profit_after_tax    REAL,               -- In millions Rs.
+    eps                 REAL,               -- Earnings per share
+
+    -- Dividend/Bonus/Right
+    dividend_payout     TEXT,               -- Raw string e.g., "83%(i) (D)"
+    dividend_amount     REAL,               -- Parsed percentage
+    payout_type         TEXT,               -- 'cash', 'bonus', 'right', or NULL
+
+    -- Corporate Events
+    agm_date            TEXT,               -- AGM/EOGM date YYYY-MM-DD
+    book_closure_from   TEXT,               -- Book closure start
+    book_closure_to     TEXT,               -- Book closure end
+
+    -- Metadata
+    company_name        TEXT,               -- Company name from announcement
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY (symbol, announcement_date, fiscal_period)
+)
+CREATE TABLE company_announcements (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol              TEXT NOT NULL,
+    company_name        TEXT,
+    announcement_date   TEXT NOT NULL,              -- YYYY-MM-DD
+    announcement_time   TEXT,                       -- HH:MM
+
+    title               TEXT NOT NULL,
+    category            TEXT,                       -- 'results', 'dividend', 'agm', 'board_meeting', 'book_closure', 'corporate_action', 'general'
+
+    -- Document references (PSX IDs)
+    image_id            TEXT,                       -- PSX image ID for images
+    pdf_id              TEXT,                       -- PSX PDF document ID
+
+    -- Metadata
+    scraped_at          TEXT NOT NULL DEFAULT (datetime('now')),
+
+    UNIQUE(symbol, announcement_date, announcement_time, title)
+)
+CREATE TABLE corporate_events (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id            INTEGER UNIQUE,             -- PSX event ID from API
+    symbol              TEXT NOT NULL,
+    company_name        TEXT,
+
+    -- Event details
+    event_type          TEXT NOT NULL,              -- 'AGM', 'EOGM', 'BOARD_MEETING', etc.
+    event_date          TEXT NOT NULL,              -- YYYY-MM-DD
+    event_time          TEXT,                       -- HH:MM:SS
+    city                TEXT,                       -- Event location city
+    venue               TEXT,                       -- Full venue details
+
+    -- Financial period
+    period_end          TEXT,                       -- Fiscal period end date (YYYY-MM-DD)
+
+    -- Status tracking
+    status              TEXT DEFAULT 'scheduled',   -- 'scheduled', 'completed', 'cancelled'
+
+    -- Metadata
+    scraped_at          TEXT NOT NULL DEFAULT (datetime('now')),
+
+    UNIQUE(symbol, event_date, event_type)
+)
+CREATE TABLE dividend_payouts (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol              TEXT NOT NULL,
+
+    -- Announcement info
+    announcement_date   TEXT NOT NULL,              -- YYYY-MM-DD
+    announcement_time   TEXT,                       -- HH:MM:SS
+
+    -- Dividend details
+    fiscal_period       TEXT,                       -- e.g., 'Q1 2024', 'FY 2023'
+    dividend_percent    REAL,                       -- Dividend percentage (e.g., 50 for 50%)
+    dividend_type       TEXT,                       -- 'cash', 'stock', 'interim', 'final'
+    dividend_number     TEXT,                       -- e.g., '1st Interim', '2nd Interim', 'Final'
+
+    -- Book closure dates
+    book_closure_from   TEXT,                       -- YYYY-MM-DD
+    book_closure_to     TEXT,                       -- YYYY-MM-DD
+
+    -- Payment info (if available)
+    record_date         TEXT,                       -- YYYY-MM-DD
+    payment_date        TEXT,                       -- YYYY-MM-DD
+    dividend_per_share  REAL,                       -- Actual amount per share
+
+    -- Metadata
+    scraped_at          TEXT NOT NULL DEFAULT (datetime('now')),
+
+    UNIQUE(symbol, announcement_date, dividend_number)
+)
+CREATE TABLE announcements_sync_status (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    sync_type           TEXT NOT NULL,              -- 'announcements', 'events', 'dividends'
+    symbol              TEXT,                       -- NULL for all-symbols sync
+    last_sync_date      TEXT,                       -- Last successful sync date
+    last_page           INTEGER DEFAULT 0,          -- Last page processed (for pagination)
+    total_records       INTEGER DEFAULT 0,          -- Total records synced
+    status              TEXT DEFAULT 'pending',     -- 'pending', 'running', 'completed', 'failed'
+    error_message       TEXT,
+    started_at          TEXT,
+    completed_at        TEXT,
+    scraped_at          TEXT NOT NULL DEFAULT (datetime('now')),
+
+    UNIQUE(sync_type, symbol)
+)
+CREATE TABLE instruments (
+    instrument_id       TEXT PRIMARY KEY,           -- Stable ID like "PSX:OGDC" or "IDX:KSE100"
+    symbol              TEXT NOT NULL,              -- Display symbol used in DPS or internal code
+    name                TEXT,                       -- Full instrument name
+    instrument_type     TEXT NOT NULL,              -- 'EQUITY'|'ETF'|'REIT'|'INDEX'
+    exchange            TEXT NOT NULL DEFAULT 'PSX',
+    currency            TEXT NOT NULL DEFAULT 'PKR',
+    is_active           INTEGER NOT NULL DEFAULT 1,
+    source              TEXT NOT NULL,              -- 'DPS'|'MANUAL'
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+
+    UNIQUE(exchange, symbol)
+)
+CREATE TABLE instrument_membership (
+    parent_instrument_id TEXT NOT NULL,             -- Index or ETF ID
+    child_instrument_id  TEXT NOT NULL,             -- Constituent instrument ID
+    weight               REAL,                      -- Weight in parent (0-1 or percentage)
+    effective_date       TEXT NOT NULL DEFAULT '',  -- Date this weight became effective
+    source               TEXT NOT NULL DEFAULT 'MANUAL',
+
+    PRIMARY KEY(parent_instrument_id, child_instrument_id, effective_date),
+    FOREIGN KEY(parent_instrument_id) REFERENCES instruments(instrument_id),
+    FOREIGN KEY(child_instrument_id) REFERENCES instruments(instrument_id)
+)
+CREATE TABLE ohlcv_instruments (
+    instrument_id       TEXT NOT NULL,
+    date                TEXT NOT NULL,
+    open                REAL,
+    high                REAL,
+    low                 REAL,
+    close               REAL,
+    volume              INTEGER,
+    ingested_at         TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY(instrument_id, date),
+    FOREIGN KEY(instrument_id) REFERENCES instruments(instrument_id)
+)
+CREATE TABLE instrument_rankings (
+    as_of_date          TEXT NOT NULL,
+    instrument_id       TEXT NOT NULL,
+    instrument_type     TEXT NOT NULL,              -- 'ETF'|'REIT'|'INDEX'
+    return_1m           REAL,                       -- 1-month return (decimal, e.g., 0.05 = 5%)
+    return_3m           REAL,                       -- 3-month return
+    return_6m           REAL,                       -- 6-month return
+    return_1y           REAL,                       -- 1-year return
+    volatility_30d      REAL,                       -- 30-day annualized volatility
+    relative_strength   REAL,                       -- Relative strength vs KSE-100
+    computed_at         TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY(as_of_date, instrument_id),
+    FOREIGN KEY(instrument_id) REFERENCES instruments(instrument_id)
+)
+CREATE TABLE instruments_sync_runs (
+    run_id              TEXT PRIMARY KEY,
+    started_at          TEXT NOT NULL,
+    ended_at            TEXT,
+    instrument_types    TEXT NOT NULL,              -- Comma-separated types synced
+    instruments_total   INTEGER DEFAULT 0,
+    instruments_ok      INTEGER DEFAULT 0,
+    instruments_failed  INTEGER DEFAULT 0,
+    instruments_no_data INTEGER DEFAULT 0,          -- Instruments with no DPS data
+    rows_upserted       INTEGER DEFAULT 0
+)
+CREATE TABLE fx_pairs (
+    pair                TEXT PRIMARY KEY,           -- e.g. "USD/PKR"
+    base_currency       TEXT NOT NULL,              -- e.g. "USD"
+    quote_currency      TEXT NOT NULL,              -- e.g. "PKR"
+    source              TEXT NOT NULL,              -- e.g. "SBP" | "OPEN_API" | "MANUAL"
+    description         TEXT,                       -- Optional description
+    is_active           INTEGER NOT NULL DEFAULT 1,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+)
+CREATE TABLE fx_ohlcv (
+    pair                TEXT NOT NULL,
+    date                TEXT NOT NULL,
+    open                REAL,
+    high                REAL,
+    low                 REAL,
+    close               REAL NOT NULL,              -- Close is required
+    volume              REAL,                       -- FX volume (may be null)
+    ingested_at         TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY(pair, date),
+    FOREIGN KEY(pair) REFERENCES fx_pairs(pair)
+)
+CREATE TABLE fx_adjusted_metrics (
+    as_of_date          TEXT NOT NULL,
+    symbol              TEXT NOT NULL,              -- Equity/index symbol
+    fx_pair             TEXT NOT NULL,              -- e.g. "USD/PKR"
+    equity_return       REAL,                       -- Equity return (decimal)
+    fx_return           REAL,                       -- FX return (decimal)
+    fx_adjusted_return  REAL,                       -- equity_return - fx_return
+    period              TEXT NOT NULL DEFAULT '1M', -- '1W', '1M', '3M', etc.
+    computed_at         TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY(as_of_date, symbol, fx_pair, period),
+    FOREIGN KEY(fx_pair) REFERENCES fx_pairs(pair)
+)
+CREATE TABLE fx_sync_runs (
+    run_id              TEXT PRIMARY KEY,
+    started_at          TEXT NOT NULL,
+    ended_at            TEXT,
+    pairs_synced        TEXT NOT NULL,              -- Comma-separated pairs
+    status              TEXT DEFAULT 'running',     -- 'running', 'completed', 'failed'
+    rows_upserted       INTEGER DEFAULT 0,
+    error_message       TEXT
+)
+CREATE TABLE mutual_funds (
+    fund_id             TEXT PRIMARY KEY,           -- e.g., "MUFAP:ABL-ISF"
+    symbol              TEXT NOT NULL UNIQUE,       -- Short code e.g., "ABL-ISF"
+    fund_name           TEXT NOT NULL,
+    amc_code            TEXT NOT NULL,              -- Asset Management Company code
+    amc_name            TEXT,                       -- AMC full name
+    fund_type           TEXT NOT NULL,              -- 'OPEN_END' | 'VPS' | 'ETF'
+    category            TEXT NOT NULL,              -- 'Equity', 'Money Market', etc.
+    is_shariah          INTEGER NOT NULL DEFAULT 0, -- 1 = Shariah-compliant
+    launch_date         TEXT,                       -- Fund inception date
+    expense_ratio       REAL,                       -- Annual expense ratio (%)
+    management_fee      REAL,                       -- Management fee (%)
+    is_active           INTEGER NOT NULL DEFAULT 1,
+    source              TEXT NOT NULL DEFAULT 'MUFAP',
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+, mufap_fund_id TEXT, mufap_int_id TEXT, mufap_amc_id TEXT, front_load REAL, back_load REAL, risk_profile TEXT, benchmark TEXT, rating TEXT, trustee TEXT, fund_manager TEXT)
+CREATE TABLE mutual_fund_nav (
+    fund_id             TEXT NOT NULL,
+    date                TEXT NOT NULL,              -- YYYY-MM-DD
+    nav                 REAL NOT NULL,              -- Net Asset Value per unit
+    offer_price         REAL,                       -- Offer/Sale price
+    redemption_price    REAL,                       -- Redemption/Bid price
+    aum                 REAL,                       -- Assets Under Management (millions PKR)
+    nav_change_pct      REAL,                       -- Daily NAV change %
+    source              TEXT NOT NULL DEFAULT 'MUFAP',
+    ingested_at         TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY(fund_id, date),
+    FOREIGN KEY(fund_id) REFERENCES mutual_funds(fund_id)
+)
+CREATE TABLE mutual_fund_sync_runs (
+    run_id              TEXT PRIMARY KEY,
+    started_at          TEXT NOT NULL,
+    ended_at            TEXT,
+    sync_type           TEXT NOT NULL,              -- 'SEED' | 'NAV_SYNC'
+    status              TEXT NOT NULL DEFAULT 'running', -- 'running' | 'completed' | 'failed' | 'partial'
+    funds_total         INTEGER DEFAULT 0,
+    funds_ok            INTEGER DEFAULT 0,
+    rows_upserted       INTEGER DEFAULT 0,
+    error_message       TEXT
+)
+CREATE TABLE bonds_master (
+    bond_id             TEXT PRIMARY KEY,           -- e.g., "PIB:3Y:2026-01-15"
+    isin                TEXT UNIQUE,                -- ISIN code (nullable)
+    symbol              TEXT NOT NULL,              -- Short display name
+    issuer              TEXT NOT NULL,              -- 'GOP' | 'SBP' | corporate issuer
+    bond_type           TEXT NOT NULL,              -- 'PIB', 'T-Bill', 'Sukuk', 'TFC', 'Corporate'
+    is_islamic          INTEGER NOT NULL DEFAULT 0, -- 1 = Sukuk
+    face_value          REAL NOT NULL DEFAULT 100,  -- Usually 100
+    coupon_rate         REAL,                       -- Annual coupon rate (NULL for zero-coupon)
+    coupon_frequency    INTEGER DEFAULT 2,          -- Payments per year (2=semi-annual)
+    issue_date          TEXT,                       -- YYYY-MM-DD
+    maturity_date       TEXT NOT NULL,              -- YYYY-MM-DD
+    day_count           TEXT DEFAULT 'ACT/ACT',     -- Day count convention
+    currency            TEXT NOT NULL DEFAULT 'PKR',
+    is_active           INTEGER NOT NULL DEFAULT 1,
+    source              TEXT NOT NULL DEFAULT 'MANUAL',
+    notes               TEXT,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+)
+CREATE TABLE bond_quotes (
+    bond_id             TEXT NOT NULL,
+    date                TEXT NOT NULL,              -- YYYY-MM-DD
+    price               REAL,                       -- Clean price (% of face)
+    dirty_price         REAL,                       -- Price + accrued interest
+    ytm                 REAL,                       -- Yield to maturity (decimal)
+    bid_yield           REAL,
+    ask_yield           REAL,
+    bid_price           REAL,
+    ask_price           REAL,
+    volume              REAL,                       -- Trading volume if available
+    source              TEXT NOT NULL DEFAULT 'MANUAL',
+    ingested_at         TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY(bond_id, date),
+    FOREIGN KEY(bond_id) REFERENCES bonds_master(bond_id)
+)
+CREATE TABLE yield_curve_points (
+    curve_date          TEXT NOT NULL,              -- YYYY-MM-DD
+    tenor_months        INTEGER NOT NULL,           -- Tenor in months (3, 6, 12, 24, 36, 60, 120)
+    yield_rate          REAL NOT NULL,              -- Yield as decimal
+    bond_type           TEXT NOT NULL DEFAULT 'PIB', -- 'PIB', 'T-Bill', 'Sukuk', 'ALL'
+    interpolation       TEXT DEFAULT 'LINEAR',      -- 'LINEAR' | 'CUBIC' | 'NS'
+    computed_at         TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY(curve_date, tenor_months, bond_type)
+)
+CREATE TABLE bond_analytics_snapshots (
+    bond_id             TEXT NOT NULL,
+    as_of_date          TEXT NOT NULL,
+    price               REAL,
+    ytm                 REAL,                       -- Yield to maturity
+    duration            REAL,                       -- Macaulay duration (years)
+    modified_duration   REAL,                       -- Modified duration
+    convexity           REAL,                       -- Convexity
+    accrued_interest    REAL,                       -- Accrued interest per face value
+    spread_to_benchmark REAL,                       -- Spread vs benchmark curve
+    days_to_maturity    INTEGER,
+    computed_at         TEXT NOT NULL DEFAULT (datetime('now')),
+
+    PRIMARY KEY(bond_id, as_of_date),
+    FOREIGN KEY(bond_id) REFERENCES bonds_master(bond_id)
+)
+CREATE TABLE bond_sync_runs (
+    run_id              TEXT PRIMARY KEY,
+    started_at          TEXT NOT NULL,
+    ended_at            TEXT,
+    sync_type           TEXT NOT NULL,              -- 'INIT' | 'LOAD_MASTER' | 'LOAD_QUOTES' | 'COMPUTE'
+    status              TEXT NOT NULL DEFAULT 'running',
+    items_total         INTEGER DEFAULT 0,
+    items_ok            INTEGER DEFAULT 0,
+    rows_upserted       INTEGER DEFAULT 0,
+    error_message       TEXT
+)
+CREATE TABLE sukuk_master (
+    instrument_id       TEXT PRIMARY KEY,           -- e.g., "SUKUK:GOP-IJARA-2027"
+    issuer              TEXT NOT NULL,              -- GOVT_OF_PAKISTAN or corporate
+    name                TEXT NOT NULL,
+    category            TEXT NOT NULL,              -- GOP_SUKUK | CORP_SUKUK | PIB | T-BILL
+    currency            TEXT NOT NULL DEFAULT 'PKR',
+    issue_date          TEXT,                       -- YYYY-MM-DD
+    maturity_date       TEXT NOT NULL,              -- YYYY-MM-DD
+    coupon_rate         REAL,                       -- Annual rate (decimal)
+    coupon_frequency    INTEGER,                    -- Payments per year
+    face_value          REAL DEFAULT 100.0,
+    issue_size          REAL,                       -- Total issue size
+    shariah_compliant   INTEGER DEFAULT 1,          -- 1 = Sukuk, 0 = conventional
+    is_active           INTEGER DEFAULT 1,
+    source              TEXT NOT NULL DEFAULT 'MANUAL',
+    notes               TEXT,
+    created_at          TEXT DEFAULT (datetime('now'))
+)
+CREATE TABLE sukuk_quotes (
+    instrument_id       TEXT NOT NULL,
+    quote_date          TEXT NOT NULL,              -- YYYY-MM-DD
+    clean_price         REAL,                       -- Price as % of face
+    dirty_price         REAL,                       -- Clean + accrued
+    yield_to_maturity   REAL,                       -- YTM as decimal
+    bid_yield           REAL,
+    ask_yield           REAL,
+    volume              REAL,
+    source              TEXT NOT NULL DEFAULT 'MANUAL',
+    ingested_at         TEXT DEFAULT (datetime('now')),
+
+    PRIMARY KEY(instrument_id, quote_date),
+    FOREIGN KEY(instrument_id) REFERENCES sukuk_master(instrument_id)
+)
+CREATE TABLE sukuk_yield_curve (
+    curve_name          TEXT NOT NULL,              -- PKR_GOP_SUKUK | PKR_PIB | PKR_TBILL
+    curve_date          TEXT NOT NULL,              -- YYYY-MM-DD
+    tenor_days          INTEGER NOT NULL,           -- Days to maturity
+    yield_rate          REAL NOT NULL,              -- Yield as decimal
+    source              TEXT NOT NULL DEFAULT 'SBP',
+    computed_at         TEXT DEFAULT (datetime('now')),
+
+    PRIMARY KEY(curve_name, curve_date, tenor_days)
+)
+CREATE TABLE sukuk_analytics_snapshots (
+    instrument_id       TEXT NOT NULL,
+    as_of_date          TEXT NOT NULL,              -- YYYY-MM-DD
+    price               REAL,
+    ytm                 REAL,                       -- Yield to maturity
+    macaulay_duration   REAL,                       -- Duration in years
+    modified_duration   REAL,
+    convexity           REAL,
+    accrued_interest    REAL,
+    days_to_maturity    INTEGER,
+    computed_at         TEXT DEFAULT (datetime('now')),
+
+    PRIMARY KEY(instrument_id, as_of_date),
+    FOREIGN KEY(instrument_id) REFERENCES sukuk_master(instrument_id)
+)
+CREATE TABLE sbp_primary_market_docs (
+    doc_id              TEXT PRIMARY KEY,           -- hash(url + title)
+    category            TEXT NOT NULL,              -- T-BILL | PIB | GOP_SUKUK
+    title               TEXT NOT NULL,
+    doc_date            TEXT,                       -- YYYY-MM-DD if available
+    url                 TEXT NOT NULL,
+    local_path          TEXT,                       -- Local file path if downloaded
+    file_size           INTEGER,
+    fetched_at          TEXT DEFAULT (datetime('now'))
+)
+CREATE TABLE sukuk_sync_runs (
+    run_id              TEXT PRIMARY KEY,
+    started_at          TEXT NOT NULL,
+    ended_at            TEXT,
+    sync_type           TEXT NOT NULL,              -- INIT | LOAD_MASTER | LOAD_QUOTES | COMPUTE | SBP_REFRESH
+    status              TEXT NOT NULL DEFAULT 'running',
+    items_total         INTEGER DEFAULT 0,
+    items_ok            INTEGER DEFAULT 0,
+    rows_upserted       INTEGER DEFAULT 0,
+    error_message       TEXT
+)
+CREATE TABLE fi_instruments (
+    instrument_id       TEXT PRIMARY KEY,
+    isin                TEXT,
+    issuer              TEXT NOT NULL DEFAULT 'GOVT_OF_PAKISTAN',
+    name                TEXT NOT NULL,
+    category            TEXT NOT NULL,              -- MTB | PIB | GOP_SUKUK | CORP_BOND | CORP_SUKUK
+    currency            TEXT NOT NULL DEFAULT 'PKR',
+    issue_date          TEXT,
+    maturity_date       TEXT NOT NULL,
+    coupon_rate         REAL,                       -- annual decimal (0.185 = 18.5%)
+    coupon_frequency    INTEGER,                    -- payments per year (2 typical)
+    day_count           TEXT NOT NULL DEFAULT 'ACT/365',
+    face_value          REAL NOT NULL DEFAULT 100.0,
+    shariah_compliant   INTEGER NOT NULL DEFAULT 0,
+    is_active           INTEGER NOT NULL DEFAULT 1,
+    source              TEXT NOT NULL DEFAULT 'MANUAL',
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+)
+CREATE TABLE fi_quotes (
+    instrument_id       TEXT NOT NULL,
+    quote_date          TEXT NOT NULL,              -- YYYY-MM-DD
+    clean_price         REAL,                       -- per 100 face value
+    ytm                 REAL,                       -- yield to maturity (decimal)
+    bid                 REAL,
+    ask                 REAL,
+    volume              REAL,
+    source              TEXT NOT NULL DEFAULT 'MANUAL',
+    ingested_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY(instrument_id, quote_date)
+)
+CREATE TABLE fi_curves (
+    curve_name          TEXT NOT NULL,              -- PKR_MTB | PKR_PIB | PKR_GOP_SUKUK
+    curve_date          TEXT NOT NULL,
+    tenor_days          INTEGER NOT NULL,
+    rate                REAL NOT NULL,              -- decimal yield
+    source              TEXT NOT NULL DEFAULT 'MANUAL',
+    PRIMARY KEY(curve_name, curve_date, tenor_days)
+)
+CREATE TABLE fi_analytics (
+    instrument_id       TEXT NOT NULL,
+    as_of_date          TEXT NOT NULL,
+    price               REAL,
+    ytm                 REAL,
+    macaulay_duration   REAL,
+    modified_duration   REAL,
+    convexity           REAL,
+    pvbp                REAL,                       -- price value of 1bp
+    PRIMARY KEY(instrument_id, as_of_date)
+)
+CREATE TABLE sbp_pma_docs (
+    doc_id              TEXT PRIMARY KEY,           -- sha256(url + title)
+    category            TEXT NOT NULL,              -- MTB | PIB | GOP_SUKUK
+    title               TEXT NOT NULL,
+    doc_date            TEXT,
+    url                 TEXT NOT NULL,
+    local_path          TEXT,
+    fetched_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    source              TEXT NOT NULL DEFAULT 'SBP_PMA'
+)
+CREATE TABLE fi_events (
+    event_id            TEXT PRIMARY KEY,           -- sha256(category+date+title)
+    category            TEXT NOT NULL,              -- MTB | PIB | GOP_SUKUK
+    event_date          TEXT NOT NULL,
+    label               TEXT NOT NULL,              -- "Auction Result", "Tender Notice", etc.
+    notes               TEXT,
+    source_doc_id       TEXT,                       -- link to sbp_pma_docs
+    created_at          TEXT DEFAULT (datetime('now'))
+)
+CREATE TABLE fi_sync_runs (
+    run_id              TEXT PRIMARY KEY,
+    started_at          TEXT NOT NULL,
+    ended_at            TEXT,
+    sync_type           TEXT NOT NULL,              -- INIT | LOAD | COMPUTE | SBP_REFRESH
+    status              TEXT NOT NULL DEFAULT 'running',
+    items_total         INTEGER DEFAULT 0,
+    items_ok            INTEGER DEFAULT 0,
+    rows_upserted       INTEGER DEFAULT 0,
+    error_message       TEXT
+)
+CREATE TABLE sbp_policy_rates (
+    rate_date           TEXT PRIMARY KEY,           -- YYYY-MM-DD
+    policy_rate         REAL,                       -- SBP Policy Rate (decimal)
+    ceiling_rate        REAL,                       -- Overnight Reverse Repo ceiling
+    floor_rate          REAL,                       -- Overnight Repo floor
+    overnight_repo_rate REAL,                       -- Weighted avg overnight repo
+    source              TEXT NOT NULL DEFAULT 'SBP_MSM',
+    ingested_at         TEXT NOT NULL DEFAULT (datetime('now'))
+)
+CREATE TABLE kibor_rates (
+    rate_date           TEXT NOT NULL,              -- YYYY-MM-DD
+    tenor_months        INTEGER NOT NULL,           -- 3, 6, or 12
+    bid                 REAL NOT NULL,
+    offer               REAL NOT NULL,
+    source              TEXT NOT NULL DEFAULT 'SBP_MSM',
+    ingested_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY(rate_date, tenor_months)
+)
+CREATE TABLE eod_ohlcv (
+    symbol       TEXT NOT NULL,
+    date         TEXT NOT NULL,
+    open         REAL,
+    high         REAL,
+    low          REAL,
+    close        REAL,
+    volume       INTEGER,
+    prev_close   REAL,                  -- Previous day close price
+    sector_code  TEXT,                  -- Sector code from market summary
+    company_name TEXT,                  -- Company name from market summary
+    ingested_at  TEXT NOT NULL,
+    source       TEXT,                  -- Data source: market_summary, closing_rates_pdf, per_symbol_api
+    processname  TEXT,                  -- Process type: eodfile (csv/pdf), per_symbol_api
+    PRIMARY KEY (symbol, date)
+)
+CREATE TABLE etf_master (
+    symbol TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    amc TEXT,
+    benchmark_index TEXT,
+    inception_date TEXT,
+    expense_ratio REAL,
+    management_fee TEXT,
+    shariah_compliant INTEGER DEFAULT 0,
+    trustee TEXT,
+    fiscal_year_end TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+)
+CREATE TABLE etf_nav (
+    symbol TEXT NOT NULL,
+    date TEXT NOT NULL,
+    nav REAL,
+    market_price REAL,
+    premium_discount REAL,
+    aum_millions REAL,
+    outstanding_units INTEGER,
+    PRIMARY KEY (symbol, date)
+)
+CREATE TABLE tbill_auctions (
+    auction_date TEXT NOT NULL,
+    tenor TEXT NOT NULL,
+    target_amount_billions REAL,
+    bids_received_billions REAL,
+    amount_accepted_billions REAL,
+    cutoff_yield REAL,
+    cutoff_price REAL,
+    weighted_avg_yield REAL,
+    maturity_date TEXT,
+    settlement_date TEXT,
+    scraped_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (auction_date, tenor)
+)
+CREATE TABLE pib_auctions (
+    auction_date TEXT NOT NULL,
+    tenor TEXT NOT NULL,
+    pib_type TEXT NOT NULL DEFAULT 'Fixed',
+    target_amount_billions REAL,
+    bids_received_billions REAL,
+    amount_accepted_billions REAL,
+    cutoff_yield REAL,
+    cutoff_price REAL,
+    coupon_rate REAL,
+    maturity_date TEXT,
+    scraped_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (auction_date, tenor, pib_type)
+)
+CREATE TABLE gis_auctions (
+    auction_date TEXT NOT NULL,
+    gis_type TEXT NOT NULL,
+    tenor TEXT,
+    target_amount_billions REAL,
+    amount_accepted_billions REAL,
+    cutoff_rental_rate REAL,
+    maturity_date TEXT,
+    scraped_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (auction_date, gis_type)
+)
+CREATE TABLE pkrv_daily (
+    date TEXT NOT NULL,
+    tenor_months INTEGER NOT NULL,
+    yield_pct REAL NOT NULL,
+    source TEXT DEFAULT 'SBP',
+    scraped_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (date, tenor_months)
+)
+CREATE TABLE konia_daily (
+    date TEXT PRIMARY KEY,
+    rate_pct REAL NOT NULL,
+    volume_billions REAL,
+    high REAL,
+    low REAL,
+    scraped_at TEXT DEFAULT (datetime('now'))
+)
+CREATE TABLE kibor_daily (
+    date TEXT NOT NULL,
+    tenor TEXT NOT NULL,
+    bid REAL,
+    offer REAL,
+    scraped_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (date, tenor)
+)
+CREATE TABLE sbp_fx_interbank (
+    date TEXT NOT NULL,
+    currency TEXT NOT NULL,
+    buying REAL,
+    selling REAL,
+    mid REAL,
+    scraped_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (date, currency)
+)
+CREATE TABLE sbp_fx_open_market (
+    date TEXT NOT NULL,
+    currency TEXT NOT NULL,
+    buying REAL,
+    selling REAL,
+    scraped_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (date, currency)
+)
+CREATE TABLE forex_kerb (
+    date TEXT NOT NULL,
+    currency TEXT NOT NULL,
+    buying REAL,
+    selling REAL,
+    source TEXT DEFAULT 'forex.pk',
+    scraped_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (date, currency, source)
+)
+CREATE TABLE ipo_listings (
+    symbol TEXT NOT NULL,
+    company_name TEXT,
+    board TEXT,
+    status TEXT,
+    offer_price REAL,
+    shares_offered INTEGER,
+    subscription_open TEXT,
+    subscription_close TEXT,
+    listing_date TEXT NOT NULL DEFAULT '',
+    ipo_type TEXT,
+    prospectus_url TEXT,
+    updated_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (symbol, listing_date)
+)

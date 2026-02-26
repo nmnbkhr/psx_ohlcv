@@ -843,6 +843,283 @@ def get_mf_data_summary(con: sqlite3.Connection) -> dict:
 
 
 # =============================================================================
+# Fund Performance Functions (MUFAP tab=1 daily return snapshots)
+# =============================================================================
+
+
+def _ensure_mutual_funds_columns(con: sqlite3.Connection) -> None:
+    """Add missing columns to mutual_funds table (safe migration)."""
+    existing = {row[1] for row in con.execute("PRAGMA table_info(mutual_funds)").fetchall()}
+    migrations = [
+        ("aum", "REAL"),
+        ("sector", "TEXT"),
+    ]
+    for col, dtype in migrations:
+        if col not in existing:
+            try:
+                con.execute(f"ALTER TABLE mutual_funds ADD COLUMN {col} {dtype}")
+            except Exception:
+                pass
+    con.commit()
+
+
+def init_fund_performance_schema(con: sqlite3.Connection) -> None:
+    """Create fund_performance table and indexes if they don't exist."""
+    _ensure_mutual_funds_columns(con)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS fund_performance (
+            fund_name TEXT NOT NULL,
+            fund_id TEXT,
+            sector TEXT,
+            category TEXT,
+            rating TEXT,
+            benchmark TEXT,
+            validity_date TEXT NOT NULL,
+            nav REAL,
+            return_ytd REAL,
+            return_mtd REAL,
+            return_1d REAL,
+            return_15d REAL,
+            return_30d REAL,
+            return_90d REAL,
+            return_180d REAL,
+            return_270d REAL,
+            return_365d REAL,
+            return_2y REAL,
+            return_3y REAL,
+            scraped_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (fund_name, validity_date)
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_fund_perf_date ON fund_performance(validity_date)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_fund_perf_category ON fund_performance(category)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_fund_perf_sector ON fund_performance(sector)")
+    con.commit()
+
+
+def upsert_fund_performance(con: sqlite3.Connection, records: list[dict]) -> int:
+    """Bulk upsert fund performance records. Returns count of rows upserted."""
+    if not records:
+        return 0
+    init_fund_performance_schema(con)
+    count = 0
+    for rec in records:
+        try:
+            con.execute("""
+                INSERT INTO fund_performance (
+                    fund_name, fund_id, sector, category, rating, benchmark,
+                    validity_date, nav,
+                    return_ytd, return_mtd, return_1d, return_15d,
+                    return_30d, return_90d, return_180d, return_270d,
+                    return_365d, return_2y, return_3y
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(fund_name, validity_date) DO UPDATE SET
+                    fund_id = excluded.fund_id,
+                    sector = excluded.sector,
+                    category = excluded.category,
+                    rating = excluded.rating,
+                    benchmark = excluded.benchmark,
+                    nav = excluded.nav,
+                    return_ytd = excluded.return_ytd,
+                    return_mtd = excluded.return_mtd,
+                    return_1d = excluded.return_1d,
+                    return_15d = excluded.return_15d,
+                    return_30d = excluded.return_30d,
+                    return_90d = excluded.return_90d,
+                    return_180d = excluded.return_180d,
+                    return_270d = excluded.return_270d,
+                    return_365d = excluded.return_365d,
+                    return_2y = excluded.return_2y,
+                    return_3y = excluded.return_3y,
+                    scraped_at = datetime('now')
+            """, (
+                rec.get("fund_name"),
+                rec.get("fund_id"),
+                rec.get("sector"),
+                rec.get("category"),
+                rec.get("rating"),
+                rec.get("benchmark"),
+                rec.get("validity_date"),
+                rec.get("nav"),
+                rec.get("return_ytd"),
+                rec.get("return_mtd"),
+                rec.get("return_1d"),
+                rec.get("return_15d"),
+                rec.get("return_30d"),
+                rec.get("return_90d"),
+                rec.get("return_180d"),
+                rec.get("return_270d"),
+                rec.get("return_365d"),
+                rec.get("return_2y"),
+                rec.get("return_3y"),
+            ))
+            count += 1
+        except Exception:
+            continue
+    con.commit()
+    return count
+
+
+def get_fund_performance(
+    con: sqlite3.Connection,
+    date: str | None = None,
+    category: str | None = None,
+    sector: str | None = None,
+) -> pd.DataFrame:
+    """Get fund performance data with optional filters."""
+    init_fund_performance_schema(con)
+    query = "SELECT * FROM fund_performance WHERE 1=1"
+    params: list = []
+    if date:
+        query += " AND validity_date = ?"
+        params.append(date)
+    else:
+        query += """ AND validity_date = (
+            SELECT MAX(fp2.validity_date) FROM fund_performance fp2
+            WHERE fp2.fund_name = fund_performance.fund_name
+        )"""
+    if category:
+        query += " AND category = ?"
+        params.append(category)
+    if sector:
+        query += " AND sector = ?"
+        params.append(sector)
+    query += " ORDER BY fund_name"
+    return pd.read_sql_query(query, con, params=params)
+
+
+def get_top_performers(
+    con: sqlite3.Connection,
+    period: str = "return_ytd",
+    n: int = 20,
+    category: str | None = None,
+    sector: str | None = None,
+) -> pd.DataFrame:
+    """Get top N performing funds by a specific return period."""
+    init_fund_performance_schema(con)
+    valid_periods = {
+        "return_ytd", "return_mtd", "return_1d", "return_15d",
+        "return_30d", "return_90d", "return_180d", "return_270d",
+        "return_365d", "return_2y", "return_3y",
+    }
+    if period not in valid_periods:
+        period = "return_ytd"
+
+    query = f"""
+        SELECT fund_name, category, sector, nav, rating, {period}
+        FROM fund_performance fp
+        WHERE validity_date = (
+            SELECT MAX(fp2.validity_date) FROM fund_performance fp2
+            WHERE fp2.fund_name = fp.fund_name
+        )
+          AND {period} IS NOT NULL
+    """
+    params: list = []
+    if category:
+        query += " AND category = ?"
+        params.append(category)
+    if sector:
+        query += " AND sector = ?"
+        params.append(sector)
+    query += f" ORDER BY {period} DESC LIMIT ?"
+    params.append(n)
+    return pd.read_sql_query(query, con, params=params)
+
+
+def get_fund_returns(
+    con: sqlite3.Connection,
+    fund_name: str,
+    start_date: str | None = None,
+) -> pd.DataFrame:
+    """Get time-series of a fund's returns across snapshot dates."""
+    init_fund_performance_schema(con)
+    query = "SELECT * FROM fund_performance WHERE fund_name = ?"
+    params: list = [fund_name]
+    if start_date:
+        query += " AND validity_date >= ?"
+        params.append(start_date)
+    query += " ORDER BY validity_date"
+    return pd.read_sql_query(query, con, params=params)
+
+
+def get_category_summary(
+    con: sqlite3.Connection,
+    date: str | None = None,
+) -> pd.DataFrame:
+    """Get average returns per category (defaults to latest snapshot per fund)."""
+    init_fund_performance_schema(con)
+    if date:
+        date_filter = "WHERE fp.validity_date = ?"
+        params: list = [date]
+    else:
+        date_filter = """WHERE fp.validity_date = (
+            SELECT MAX(fp2.validity_date) FROM fund_performance fp2
+            WHERE fp2.fund_name = fp.fund_name
+        )"""
+        params = []
+    query = f"""
+        SELECT category, sector,
+               COUNT(*) as fund_count,
+               ROUND(AVG(return_ytd), 2) as avg_ytd,
+               ROUND(AVG(return_30d), 2) as avg_30d,
+               ROUND(AVG(return_90d), 2) as avg_90d,
+               ROUND(AVG(return_365d), 2) as avg_1y,
+               ROUND(MIN(return_ytd), 2) as worst_ytd,
+               ROUND(MAX(return_ytd), 2) as best_ytd
+        FROM fund_performance fp
+        {date_filter}
+        GROUP BY category, sector
+        ORDER BY avg_ytd DESC
+    """
+    return pd.read_sql_query(query, con, params=params)
+
+
+def get_vps_funds(
+    con: sqlite3.Connection,
+    date: str | None = None,
+) -> pd.DataFrame:
+    """Get VPS pension fund performance data."""
+    init_fund_performance_schema(con)
+    if date:
+        date_filter = "AND fp.validity_date = ?"
+        params: list = [date]
+    else:
+        date_filter = """AND fp.validity_date = (
+            SELECT MAX(fp2.validity_date) FROM fund_performance fp2
+            WHERE fp2.fund_name = fp.fund_name
+        )"""
+        params = []
+    query = f"""
+        SELECT fund_name, category, nav, rating,
+               return_ytd, return_30d, return_90d,
+               return_365d, return_2y, return_3y
+        FROM fund_performance fp
+        WHERE (sector LIKE '%VPS%' OR category LIKE 'VPS%')
+          {date_filter}
+        ORDER BY category, return_ytd DESC
+    """
+    return pd.read_sql_query(query, con, params=params)
+
+
+def get_fund_performance_status(con: sqlite3.Connection) -> dict:
+    """Get summary stats for the fund_performance table."""
+    init_fund_performance_schema(con)
+    try:
+        total = con.execute("SELECT COUNT(*) FROM fund_performance").fetchone()[0]
+        dates = con.execute("SELECT MIN(validity_date), MAX(validity_date), COUNT(DISTINCT validity_date) FROM fund_performance").fetchone()
+        cats = con.execute("SELECT COUNT(DISTINCT category) FROM fund_performance").fetchone()[0]
+        return {
+            "total_rows": total,
+            "earliest_date": dates[0],
+            "latest_date": dates[1],
+            "snapshot_days": dates[2],
+            "categories": cats,
+        }
+    except Exception:
+        return {"total_rows": 0}
+
+
+# =============================================================================
 # Bonds Functions
 # =============================================================================
 

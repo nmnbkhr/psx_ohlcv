@@ -378,31 +378,25 @@ def _parse_mufap_date(s: str) -> str | None:
 
 
 def map_mufap_category(raw_category: str) -> tuple[str, bool]:
-    """Map MUFAP raw category to standardized category and Shariah flag."""
-    raw_lower = raw_category.lower()
+    """Clean MUFAP category name — preserve granularity, remove display suffixes.
+
+    Raw examples from tab=1:
+      "Money Market (Annualized Return )" → "Money Market"
+      "Shariah Compliant Commodity (Absolute Return )" → "Shariah Compliant Commodity"
+      "VPS-Shariah Compliant Equity (Absolute Return )" → "VPS-Shariah Compliant Equity"
+      "Aggressive Fixed Income (Annualized Return )" → "Aggressive Fixed Income"
+
+    Returns (cleaned_category, is_shariah).
+    """
+    # Strip the "(Annualized Return )" or "(Absolute Return )" suffix from tab=1 HTML
+    cleaned = re.sub(r'\s*\((?:Annualized|Absolute)\s+Return\s*\)\s*$', '', raw_category).strip()
+    if not cleaned:
+        cleaned = raw_category.strip()
+
+    raw_lower = cleaned.lower()
     is_shariah = any(w in raw_lower for w in ("islamic", "shariah", "sharia"))
 
-    if "equity" in raw_lower or "stock" in raw_lower:
-        cat = "Islamic Equity" if is_shariah else "Equity"
-    elif "money market" in raw_lower or "cash" in raw_lower or "liquidity" in raw_lower:
-        cat = "Islamic Money Market" if is_shariah else "Money Market"
-    elif "income" in raw_lower or "debt" in raw_lower or "fixed" in raw_lower:
-        cat = "Islamic Income" if is_shariah else "Income"
-    elif "balanced" in raw_lower or "hybrid" in raw_lower:
-        cat = "Balanced"
-    elif "pension" in raw_lower or "vps" in raw_lower:
-        cat = "VPS"
-    elif "allocation" in raw_lower:
-        cat = "Asset Allocation"
-    elif "fund of" in raw_lower or "fof" in raw_lower:
-        cat = "Fund of Funds"
-    elif "protected" in raw_lower or "capital" in raw_lower:
-        cat = "Capital Protected"
-    elif "etf" in raw_lower or "exchange traded" in raw_lower:
-        cat = "ETF"
-    else:
-        cat = raw_category  # pass through unmapped
-    return cat, is_shariah
+    return cleaned, is_shariah
 
 
 def profile_to_fund_dict(p: dict) -> dict:

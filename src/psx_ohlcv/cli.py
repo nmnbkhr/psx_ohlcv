@@ -1280,6 +1280,24 @@ def main(argv: list[str] | None = None) -> int:
         help="Show mutual fund data summary and sync status"
     )
 
+    # mufap performance — sync MUFAP tab=1 returns to fund_performance table
+    mufap_sub.add_parser(
+        "performance",
+        help="Sync MUFAP Performance Summary (tab=1) → fund_performance table"
+    )
+
+    # mufap expense — sync MUFAP tab=5 expense ratios
+    mufap_sub.add_parser(
+        "expense",
+        help="Sync expense ratios from MUFAP (tab=5) → mutual_funds.expense_ratio"
+    )
+
+    # mufap resync-categories — one-time re-sync to fix collapsed categories
+    mufap_sub.add_parser(
+        "resync-categories",
+        help="Re-sync fund categories from MUFAP (fix collapsed categories)"
+    )
+
     # =========================================================================
     # Phase 3: bonds command - Bonds/Sukuk analytics
     # =========================================================================
@@ -4730,6 +4748,12 @@ def handle_mufap(args: argparse.Namespace) -> int:
         return handle_mufap_rankings(args)
     elif args.mufap_command == "status":
         return handle_mufap_status(args)
+    elif args.mufap_command == "performance":
+        return handle_mufap_performance(args)
+    elif args.mufap_command == "expense":
+        return handle_mufap_expense(args)
+    elif args.mufap_command == "resync-categories":
+        return handle_mufap_resync_categories(args)
     return EXIT_ERROR
 
 
@@ -5036,6 +5060,70 @@ def handle_mufap_status(args: argparse.Namespace) -> int:
             )
 
     return EXIT_SUCCESS
+
+
+def handle_mufap_performance(args: argparse.Namespace) -> int:
+    """Sync MUFAP Performance Summary (tab=1) → fund_performance table."""
+    from .sync_mufap import sync_performance
+
+    print("Syncing MUFAP Performance Summary (tab=1)...")
+    print("-" * 50)
+
+    result = sync_performance(db_path=args.db)
+    if result.get("status") == "ok":
+        print(f"  Funds stored:    {result['funds_synced']}")
+        print(f"  MF updated:      {result.get('mutual_funds_updated', 0)}")
+        print(f"  Categories:      {result['categories']}")
+        print(f"  Date:            {result['date']}")
+        print("Done.")
+        return EXIT_SUCCESS
+    else:
+        print(f"  Error: {result.get('error', 'Unknown')}")
+        return EXIT_ERROR
+
+
+def handle_mufap_expense(args: argparse.Namespace) -> int:
+    """Sync expense ratios from MUFAP (tab=5)."""
+    from .sync_mufap import sync_expense_ratios
+
+    print("Syncing MUFAP Expense Ratios (tab=5)...")
+    print("-" * 50)
+
+    result = sync_expense_ratios(db_path=args.db)
+    if result.get("status") == "ok":
+        print(f"  Funds updated:   {result['updated']}")
+        print("Done.")
+        return EXIT_SUCCESS
+    else:
+        print(f"  Error: {result.get('error', 'Unknown')}")
+        return EXIT_ERROR
+
+
+def handle_mufap_resync_categories(args: argparse.Namespace) -> int:
+    """Re-sync fund categories from MUFAP performance data (fix collapsed categories)."""
+    from .sync_mufap import sync_performance
+
+    print("Re-syncing fund categories from MUFAP...")
+    print("This fetches tab=1 and updates mutual_funds.category + sector.")
+    print("-" * 50)
+
+    result = sync_performance(db_path=args.db)
+    if result.get("status") == "ok":
+        print(f"  Funds in performance table: {result['funds_synced']}")
+        print(f"  mutual_funds updated:       {result.get('mutual_funds_updated', 0)}")
+        print(f"  Categories:                 {result['categories']}")
+
+        # Also re-seed to pick up new category mappings
+        from .sync_mufap import seed_mutual_funds
+        print("\nRe-seeding fund master data with corrected category mapping...")
+        seed_result = seed_mutual_funds(db_path=args.db)
+        print(f"  Inserted/updated: {seed_result.get('inserted', 0)}")
+        print(f"  Failed:           {seed_result.get('failed', 0)}")
+        print("Done.")
+        return EXIT_SUCCESS
+    else:
+        print(f"  Error: {result.get('error', 'Unknown')}")
+        return EXIT_ERROR
 
 
 # =============================================================================
@@ -6850,7 +6938,13 @@ def handle_sync_all(args: argparse.Namespace) -> int:
         return s.sync_benchmark(con)
     _add_step("SBP benchmark snapshot", _sync_benchmark)
 
-    # 10. SIR PDF backfill (T-Bills, PIBs, KIBOR, GIS history)
+    # 10. MUFAP fund performance (tab=1 returns)
+    def _sync_fund_perf():
+        from .sync_mufap import sync_performance
+        return sync_performance(db_path=args.db)
+    _add_step("MUFAP fund performance (tab=1)", _sync_fund_perf)
+
+    # 11. SIR PDF backfill (T-Bills, PIBs, KIBOR, GIS history)
     def _sync_sir():
         from .sources.sbp_sir import SBPSirScraper
         s = SBPSirScraper()
@@ -6944,6 +7038,7 @@ def handle_status(args: argparse.Namespace) -> int:
         ("Corp. Announcements", "corporate_announcements", "announcement_date"),
         ("Symbols", "symbols", "updated_at"),
         ("Dividends/Payouts", "company_payouts", "ex_date"),
+        ("Fund Performance", "fund_performance", "validity_date"),
         ("Benchmark Snapshot", "sbp_benchmark_snapshot", "date"),
         ("Bond Trading Daily", "sbp_bond_trading_daily", "date"),
     ]

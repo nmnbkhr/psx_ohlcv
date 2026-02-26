@@ -1,0 +1,6 @@
+{
+  "env": {
+    "CONDA_DEFAULT_ENV": "psx",
+    "PATH": "/opt/miniconda/envs/psx/bin:${PATH}"
+  }
+}

@@ -36,8 +36,10 @@ from .db import (
 )
 from .sources.mufap import (
     async_fetch_nav_batch,
+    fetch_daily_performance_html,
     fetch_mutual_fund_data,
     get_default_funds,
+    map_mufap_category,
     normalize_nav_dataframe,
     save_mufap_config,
 )
@@ -536,3 +538,178 @@ def start_bulk_nav_sync(
 def is_bulk_nav_sync_running() -> bool:
     """Check if a bulk NAV sync thread is currently running."""
     return _bulk_sync_thread is not None and _bulk_sync_thread.is_alive()
+
+
+# =============================================================================
+# Performance & Expense Ratio Sync
+# =============================================================================
+
+def sync_performance(db_path: Path | str | None = None) -> dict:
+    """Fetch MUFAP Performance Summary (tab=1) and persist to fund_performance table.
+
+    Also updates mutual_funds with rating, benchmark, sector from the data.
+
+    Returns:
+        Dict with keys: status, funds_synced, categories, date.
+    """
+    from .db.repositories.fixed_income import (
+        init_fund_performance_schema,
+        upsert_fund_performance,
+    )
+
+    con = connect(db_path)
+    init_schema(con)
+    init_fund_performance_schema(con)
+
+    log.info("Fetching MUFAP Performance Summary (tab=1)...")
+    df = fetch_daily_performance_html()
+    if df.empty:
+        return {"status": "error", "error": "No performance data returned"}
+
+    # Convert DataFrame rows to dicts for upsert
+    records = []
+    for _, row in df.iterrows():
+        raw_cat = row.get("category", "")
+        cleaned_cat, _ = map_mufap_category(raw_cat)
+        records.append({
+            "fund_name": row.get("fund_name"),
+            "fund_id": None,
+            "sector": row.get("sector"),
+            "category": cleaned_cat,
+            "rating": row.get("rating") if row.get("rating") != "N/A" else None,
+            "benchmark": row.get("benchmark") if row.get("benchmark") != "N/A" else None,
+            "validity_date": row.get("validity_date"),
+            "nav": _safe_float(row.get("nav")),
+            "return_ytd": _safe_float(row.get("ytd")),
+            "return_mtd": _safe_float(row.get("mtd")),
+            "return_1d": _safe_float(row.get("day_1")),
+            "return_15d": _safe_float(row.get("day_15")),
+            "return_30d": _safe_float(row.get("day_30")),
+            "return_90d": _safe_float(row.get("day_90")),
+            "return_180d": _safe_float(row.get("day_180")),
+            "return_270d": _safe_float(row.get("day_270")),
+            "return_365d": _safe_float(row.get("year_1")),
+            "return_2y": _safe_float(row.get("year_2")),
+            "return_3y": _safe_float(row.get("year_3")),
+        })
+
+    count = upsert_fund_performance(con, records)
+
+    # Also update mutual_funds metadata (rating, benchmark, sector, category)
+    updated_mf = 0
+    for rec in records:
+        try:
+            con.execute("""
+                UPDATE mutual_funds SET
+                    rating = COALESCE(?, rating),
+                    benchmark = COALESCE(?, benchmark),
+                    sector = COALESCE(?, sector),
+                    category = COALESCE(?, category),
+                    updated_at = datetime('now')
+                WHERE fund_name = ?
+            """, (
+                rec["rating"], rec["benchmark"], rec["sector"],
+                rec["category"], rec["fund_name"],
+            ))
+            if con.execute("SELECT changes()").fetchone()[0] > 0:
+                updated_mf += 1
+        except Exception:
+            continue
+    con.commit()
+
+    validity = records[0]["validity_date"] if records else None
+    cats = len(set(r["category"] for r in records))
+    log.info(
+        "Performance sync: %d funds stored, %d mutual_funds updated, %d categories, date=%s",
+        count, updated_mf, cats, validity,
+    )
+    return {
+        "status": "ok",
+        "funds_synced": count,
+        "mutual_funds_updated": updated_mf,
+        "categories": cats,
+        "date": validity,
+    }
+
+
+def sync_expense_ratios(db_path: Path | str | None = None) -> dict:
+    """Fetch MUFAP Expense Ratios (tab=5) and update mutual_funds.expense_ratio.
+
+    Returns:
+        Dict with keys: status, updated.
+    """
+    import re
+    import requests
+    from bs4 import BeautifulSoup
+
+    con = connect(db_path)
+    init_schema(con)
+
+    log.info("Fetching MUFAP Expense Ratios (tab=5)...")
+    try:
+        resp = requests.get(
+            "https://www.mufap.com.pk/Industry/IndustryStatDaily?tab=5",
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=60,
+        )
+        resp.raise_for_status()
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    table = soup.find("table", {"class": re.compile("table", re.I)})
+    if not table:
+        return {"status": "error", "error": "No table found on tab=5"}
+
+    # Header: Sector(0), AMC(1), Fund(2), Category(3), Inception(4), NAV(5),
+    #         TER MTD%(6), TER YTD%(7), MF%(8), S&M%(9), Validity(10)
+    rows = table.find_all("tr")
+    updated = 0
+    for row in rows[1:]:  # skip header
+        cells = row.find_all("td")
+        if len(cells) < 9:
+            continue
+        fund_name = cells[2].get_text(strip=True)
+        if not fund_name:
+            continue
+        # MF% (management fee) is at index 8
+        mf_txt = cells[8].get_text(strip=True).replace("%", "").replace(",", "")
+        try:
+            mf_pct = float(mf_txt)
+        except (ValueError, TypeError):
+            mf_pct = None
+
+        # TER YTD% at index 7
+        ter_txt = cells[7].get_text(strip=True).replace("%", "").replace(",", "")
+        try:
+            ter_pct = float(ter_txt)
+        except (ValueError, TypeError):
+            ter_pct = None
+
+        expense = ter_pct if ter_pct and 0 < ter_pct < 20 else mf_pct
+        if expense and 0 < expense < 20:
+            con.execute(
+                "UPDATE mutual_funds SET expense_ratio = ?, updated_at = datetime('now') WHERE fund_name = ?",
+                (expense, fund_name),
+            )
+            if con.execute("SELECT changes()").fetchone()[0] > 0:
+                updated += 1
+
+    con.commit()
+    log.info("Expense ratio sync: %d funds updated", updated)
+    return {"status": "ok", "updated": updated}
+
+
+def _safe_float(val) -> float | None:
+    """Convert to float, returning None for N/A or non-numeric values."""
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    s = str(val).strip()
+    if not s or s.upper() == "N/A" or s == "-":
+        return None
+    try:
+        return float(s.replace(",", ""))
+    except (ValueError, TypeError):
+        return None
