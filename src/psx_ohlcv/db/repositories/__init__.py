@@ -68,3 +68,18 @@ from .financials import *  # noqa: F401, F403
 
 # 19. tick  (8 functions)
 from .tick import *  # noqa: F401, F403
+
+# 20. global_rates  (9 functions)
+from .global_rates import *  # noqa: F401, F403
+
+# 21. futures  (8 functions)
+from .futures import *  # noqa: F401, F403
+
+# 22. npc_rates  (8 functions)
+from .npc_rates import *  # noqa: F401, F403
+
+# 23. post_close  (6 functions)
+from .post_close import *  # noqa: F401, F403
+
+# 24. bond_market  (9 functions)
+from .bond_market import *  # noqa: F401, F403

@@ -63,15 +63,18 @@ def _upsert_intraday(con: sqlite3.Connection, symbol: str, records: list) -> int
 
         price = float(item[1])
         volume = float(item[2]) if len(item) >= 3 else 0
-        rows.append((symbol, ts_str, ts_epoch, price, price, price, price, volume, "int"))
+        rows.append((symbol, ts_str, ts_epoch, price, price, price, price, volume, "int", "insert"))
 
     if not rows:
         return 0
 
     con.executemany(
-        """INSERT OR IGNORE INTO intraday_bars
-           (symbol, ts, ts_epoch, open, high, low, close, volume, interval)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        """INSERT INTO intraday_bars
+           (symbol, ts, ts_epoch, open, high, low, close, volume, interval, operation)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (symbol, ts, close) DO UPDATE SET
+               operation = 'upsert',
+               process_ts = datetime('now')""",
         rows,
     )
     con.commit()
@@ -90,16 +93,19 @@ def _upsert_tick_data(con: sqlite3.Connection, symbol: str, records: list) -> in
         ts_epoch = int(item[0])
         price = float(item[1])
         volume = int(item[2]) if len(item) >= 3 else 0
-        rows.append((symbol, ts_epoch, price, 0, 0, volume, 0, 0, 0))
+        rows.append((symbol, ts_epoch, price, 0, 0, volume, 0, 0, 0, "insert"))
 
     if not rows:
         return 0
 
     con.executemany(
-        """INSERT OR IGNORE INTO tick_data
+        """INSERT INTO tick_data
            (symbol, timestamp, price, change, change_pct,
-            cumulative_volume, mw_high, mw_low, mw_open)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            cumulative_volume, mw_high, mw_low, mw_open, operation)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (symbol, timestamp, price) DO UPDATE SET
+               operation = 'upsert',
+               process_ts = datetime('now')""",
         rows,
     )
     con.commit()
@@ -110,8 +116,16 @@ def sync_intraday_all(
     db_path: Path | str | None = None,
     symbols: list[str] | None = None,
     delay: float = 0.3,
+    save_json: bool = False,
 ) -> dict:
-    """Sync today's intraday ticks for all symbols into intraday_bars."""
+    """Sync today's intraday ticks for all symbols into intraday_bars.
+
+    Args:
+        db_path: Path to SQLite database (default: settings)
+        symbols: List of symbols to sync (default: all)
+        delay: Delay between requests in seconds
+        save_json: If True, save raw JSON responses to DATA_ROOT/intraday/{date}/{SYMBOL}.json
+    """
     con = connect(db_path)
     init_schema(con)
 
@@ -123,7 +137,12 @@ def sync_intraday_all(
     ok = 0
     failed = 0
     total_rows = 0
+    json_saved = 0
     errors = []
+
+    # Detect actual trading date from first symbol's data (not system date)
+    today_str = None  # will be set from first successful fetch
+    json_dir = None
 
     progress = {
         "job": "intraday_all",
@@ -134,6 +153,7 @@ def sync_intraday_all(
         "ok": 0,
         "failed": 0,
         "rows_total": 0,
+        "json_saved": 0,
         "current_symbol": "",
         "errors": [],
     }
@@ -154,10 +174,35 @@ def sync_intraday_all(
             if not isinstance(data, list):
                 data = []
 
+            # Detect actual trading date from first symbol with data
+            if today_str is None and data:
+                for item in data:
+                    if isinstance(item, list) and len(item) >= 2:
+                        try:
+                            detected = datetime.fromtimestamp(int(item[0]))
+                            today_str = detected.strftime("%Y-%m-%d")
+                            log.info("Detected trading date from data: %s", today_str)
+                        except (ValueError, OSError):
+                            pass
+                        break
+                if today_str is None:
+                    today_str = datetime.now().strftime("%Y-%m-%d")
+                    log.info("Could not detect date from data, using system date: %s", today_str)
+                # Create JSON dir now that we know the date
+                if save_json:
+                    json_dir = DATA_ROOT / "intraday" / today_str
+                    json_dir.mkdir(parents=True, exist_ok=True)
+
             n1 = _upsert_intraday(con, symbol, data)
             _upsert_tick_data(con, symbol, data)
             ok += 1
             total_rows += n1
+
+            # Save raw JSON response
+            if save_json and json_dir and data:
+                json_path = json_dir / f"{symbol}.json"
+                json_path.write_text(json.dumps(payload, indent=2))
+                json_saved += 1
         except Exception as e:
             failed += 1
             errors.append(f"{symbol}: {e}")
@@ -166,6 +211,7 @@ def sync_intraday_all(
         progress["ok"] = ok
         progress["failed"] = failed
         progress["rows_total"] = total_rows
+        progress["json_saved"] = json_saved
         progress["errors"] = errors
         _write_progress(progress)
 
@@ -175,6 +221,9 @@ def sync_intraday_all(
     con.close()
     progress["status"] = "completed"
     progress["finished_at"] = datetime.now().isoformat()
+    progress["trading_date"] = today_str or datetime.now().strftime("%Y-%m-%d")
+    if save_json and json_dir:
+        progress["json_dir"] = str(json_dir)
     _write_progress(progress)
 
     log.info("Intraday sync: %d/%d ok, %d rows", ok, total, total_rows)
@@ -186,13 +235,14 @@ def sync_intraday_all(
 _int_thread: threading.Thread | None = None
 
 
-def start_intraday_sync(db_path=None) -> bool:
+def start_intraday_sync(db_path=None, save_json: bool = False) -> bool:
     """Launch intraday sync in a background thread. Returns False if already running."""
     global _int_thread
     if _int_thread is not None and _int_thread.is_alive():
         return False
     _int_thread = threading.Thread(
-        target=sync_intraday_all, kwargs={"db_path": db_path},
+        target=sync_intraday_all,
+        kwargs={"db_path": db_path, "save_json": save_json},
         daemon=True, name="intraday-sync",
     )
     _int_thread.start()

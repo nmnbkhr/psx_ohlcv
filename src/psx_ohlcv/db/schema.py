@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS eod_ohlcv (
     low          REAL,
     close        REAL,
     volume       INTEGER,
+    turnover     REAL,                  -- PKR traded value from post_close
     prev_close   REAL,                  -- Previous day close price
     sector_code  TEXT,                  -- Sector code from market summary
     company_name TEXT,                  -- Company name from market summary
@@ -68,6 +69,8 @@ CREATE TABLE IF NOT EXISTS intraday_bars (
     close       REAL NULL,
     volume      REAL NULL,
     interval    TEXT NOT NULL DEFAULT 'int',
+    operation   TEXT NOT NULL DEFAULT 'insert',
+    process_ts  TEXT NOT NULL DEFAULT (datetime('now')),
     ingested_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (symbol, ts, close)
 );

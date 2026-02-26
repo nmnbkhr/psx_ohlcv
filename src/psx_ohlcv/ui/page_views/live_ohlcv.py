@@ -83,7 +83,7 @@ def render_live_ohlcv():
         st.session_state.tick_auto_poll = auto_poll
 
     with c2:
-        if st.button("Poll Once", use_container_width=True):
+        if st.button("Poll Market Watch", use_container_width=True):
             stats = collector.poll_once()
             st.toast(
                 f"Polled: {stats['new_ticks']} new ticks, "
@@ -91,26 +91,26 @@ def render_live_ohlcv():
             )
 
     with c3:
-        if st.button("Save OHLCV to DB", use_container_width=True):
+        if st.button("Save to tick_ohlcv", use_container_width=True):
             n = collector.save_ohlcv_to_db()
             if n:
-                st.toast(f"Saved {n} OHLCV rows to tick_ohlcv table")
+                st.toast(f"Saved {n} OHLCV rows to tick_ohlcv")
             else:
                 st.toast("No data to save")
 
     with c4:
         syncing = is_intraday_sync_running()
         if st.button(
-            "Syncing..." if syncing else "Sync Intraday Tables",
+            "Syncing..." if syncing else "Download Intraday Ticks",
             use_container_width=True,
             disabled=syncing,
         ):
             start_intraday_sync()
-            st.toast("Intraday sync started (intraday_bars + tick_data)")
+            st.toast("Downloading all symbols → intraday_bars + tick_data")
             st.rerun()
 
     with c5:
-        if st.button("Promote to EOD", use_container_width=True):
+        if st.button("Promote Intraday → EOD", use_container_width=True):
             con = get_connection()
             if con:
                 init_tick_schema(con)
@@ -119,14 +119,14 @@ def render_live_ohlcv():
                 n_tick = promote_tick_ohlcv_to_eod(con)
                 n_intra = promote_intraday_to_eod(con)
                 st.toast(
-                    f"Promoted to eod_ohlcv: {n_tick} tick, {n_intra} intraday"
+                    f"Promoted to eod_ohlcv: {n_tick} from tick_ohlcv, {n_intra} from intraday_bars"
                 )
 
     with c6:
-        if st.button("Reset", use_container_width=True):
+        if st.button("Reset Collector", use_container_width=True):
             collector.reset()
             st.session_state.tick_auto_poll = False
-            st.toast("Collector reset")
+            st.toast("Collector reset — all in-memory data cleared")
             st.rerun()
 
     # Show sync progress if running
@@ -146,7 +146,7 @@ def render_live_ohlcv():
     # =================================================================
     # INTRADAY → EOD PROMOTION (historical dates)
     # =================================================================
-    with st.expander("Promote Intraday to EOD (by date)"):
+    with st.expander("Promote intraday_bars → eod_ohlcv (by date)"):
         con = get_connection()
         if con:
             dates = get_intraday_dates(con)
@@ -159,16 +159,16 @@ def render_live_ohlcv():
                         key="promote_intraday_date",
                     )
                 with p2:
-                    if st.button("Promote", key="promote_intraday_btn"):
+                    if st.button("Promote Date → EOD", key="promote_intraday_btn"):
                         n = promote_intraday_to_eod(con, sel_date)
-                        st.toast(f"Promoted {n} symbols for {sel_date}")
+                        st.toast(f"Promoted {n} symbols for {sel_date} → eod_ohlcv")
                         st.rerun()
                 with p3:
-                    if st.button("Promote All Dates", key="promote_all_btn"):
+                    if st.button("Promote All Dates → EOD", key="promote_all_btn"):
                         total = 0
                         for d in dates:
                             total += promote_intraday_to_eod(con, d)
-                        st.toast(f"Promoted {total} total rows across {len(dates)} dates")
+                        st.toast(f"Promoted {total} rows across {len(dates)} dates → eod_ohlcv")
                         st.rerun()
             else:
                 st.info("No intraday data available yet.")

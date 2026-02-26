@@ -102,19 +102,14 @@ def _render_fund_directory(con):
     with col4:
         sel_type = st.selectbox("Type", ["All", "OPEN_END", "VPS"], key="fund_type")
 
-    # Build query
+    # Build query — correlated subquery: 1,182 PK seeks vs 1.9M-row GROUP BY scan
     sql = """SELECT f.fund_id, f.symbol, f.fund_name, f.category, f.amc_name,
                     f.is_shariah, f.fund_type,
-                    ln.nav as latest_nav, ln.date as nav_date
+                    n.nav as latest_nav, n.date as nav_date
              FROM mutual_funds f
-             LEFT JOIN (
-                 SELECT n.fund_id, n.nav, n.date
-                 FROM mutual_fund_nav n
-                 INNER JOIN (
-                     SELECT fund_id, MAX(date) as max_date
-                     FROM mutual_fund_nav GROUP BY fund_id
-                 ) mx ON n.fund_id = mx.fund_id AND n.date = mx.max_date
-             ) ln ON f.fund_id = ln.fund_id
+             LEFT JOIN mutual_fund_nav n ON n.fund_id = f.fund_id
+                 AND n.date = (SELECT MAX(n2.date) FROM mutual_fund_nav n2
+                               WHERE n2.fund_id = f.fund_id)
              WHERE 1=1"""
     params: list = []
 
@@ -149,9 +144,17 @@ def _render_fund_directory(con):
         use_container_width=True, hide_index=True,
     )
 
-    # Fund detail expander
-    fund_ids = df["fund_id"].tolist()
-    selected_fund = st.selectbox("Select fund for detail view", fund_ids, key="fund_detail")
+    # Fund detail selector — show symbol + name instead of raw fund_id
+    fund_options = {
+        row["fund_id"]: f"{row['symbol']} — {row['fund_name']}"
+        for _, row in df.iterrows()
+    }
+    selected_fund = st.selectbox(
+        "Select fund for detail view",
+        options=list(fund_options.keys()),
+        format_func=lambda x: fund_options.get(x, x),
+        key="fund_detail",
+    )
 
     if selected_fund:
         _render_fund_detail(con, selected_fund)
@@ -287,29 +290,18 @@ def _render_top_performers(con):
 
     df = pd.read_sql_query(
         """
-        WITH latest_nav AS (
-            SELECT n.fund_id, n.nav, n.date
-            FROM mutual_fund_nav n
-            INNER JOIN (
-                SELECT fund_id, MAX(date) as max_date FROM mutual_fund_nav GROUP BY fund_id
-            ) mx ON n.fund_id = mx.fund_id AND n.date = mx.max_date
-        ),
-        old_nav AS (
-            SELECT n.fund_id, n.nav, n.date
-            FROM mutual_fund_nav n
-            INNER JOIN (
-                SELECT fund_id, MIN(date) as min_date
-                FROM mutual_fund_nav WHERE date >= date('now', ? || ' days')
-                GROUP BY fund_id
-            ) mn ON n.fund_id = mn.fund_id AND n.date = mn.min_date
-        )
         SELECT f.fund_name, f.category, f.amc_name,
-               l.nav as latest_nav,
-               ROUND((l.nav - o.nav) / o.nav * 100, 2) as return_pct
+               nl.nav as latest_nav,
+               ROUND((nl.nav - older.nav) / older.nav * 100, 2) as return_pct
         FROM mutual_funds f
-        INNER JOIN latest_nav l ON f.fund_id = l.fund_id
-        INNER JOIN old_nav o ON f.fund_id = o.fund_id
-        WHERE o.nav > 0
+        INNER JOIN mutual_fund_nav nl ON nl.fund_id = f.fund_id
+            AND nl.date = (SELECT MAX(date) FROM mutual_fund_nav
+                           WHERE fund_id = f.fund_id)
+        INNER JOIN mutual_fund_nav older ON older.fund_id = f.fund_id
+            AND older.date = (SELECT MIN(date) FROM mutual_fund_nav
+                              WHERE fund_id = f.fund_id
+                              AND date >= date('now', ? || ' days'))
+        WHERE older.nav > 0
         ORDER BY return_pct DESC LIMIT 20
         """,
         con, params=(f"-{days}",),
@@ -331,7 +323,7 @@ def _render_top_performers(con):
     # Rate benchmarks for comparison
     try:
         bm_cols = st.columns(4)
-        pr = con.execute("SELECT rate_pct FROM sbp_policy_rates ORDER BY effective_date DESC LIMIT 1").fetchone()
+        pr = con.execute("SELECT policy_rate FROM sbp_policy_rates ORDER BY rate_date DESC LIMIT 1").fetchone()
         kb = con.execute("SELECT bid, offer FROM kibor_daily WHERE tenor='3M' ORDER BY date DESC LIMIT 1").fetchone()
         tb = con.execute("SELECT cutoff_yield FROM tbill_auctions WHERE tenor='3M' ORDER BY auction_date DESC LIMIT 1").fetchone()
         tb6 = con.execute("SELECT cutoff_yield FROM tbill_auctions WHERE tenor='6M' ORDER BY auction_date DESC LIMIT 1").fetchone()

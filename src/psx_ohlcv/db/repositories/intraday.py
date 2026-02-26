@@ -305,6 +305,8 @@ def promote_intraday_to_eod(
         date = datetime.now().strftime("%Y-%m-%d")
 
     now = datetime.now().isoformat()
+    old_factory = con.row_factory
+    con.row_factory = sqlite3.Row
 
     # Step 1: aggregate intraday_bars into OHLCV per symbol
     rows = con.execute(
@@ -365,6 +367,7 @@ def promote_intraday_to_eod(
         count += 1
 
     con.commit()
+    con.row_factory = old_factory
     return count
 
 
@@ -374,7 +377,10 @@ def get_intraday_dates(con: sqlite3.Connection) -> list[str]:
     Returns:
         List of date strings (YYYY-MM-DD).
     """
+    old_factory = con.row_factory
+    con.row_factory = sqlite3.Row
     rows = con.execute(
         "SELECT DISTINCT DATE(ts) AS d FROM intraday_bars ORDER BY d DESC"
     ).fetchall()
+    con.row_factory = old_factory
     return [r["d"] for r in rows if r["d"]]

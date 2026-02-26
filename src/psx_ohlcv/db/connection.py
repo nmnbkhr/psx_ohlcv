@@ -114,6 +114,15 @@ def init_schema(con: sqlite3.Connection) -> None:
     from .repositories.tick import init_tick_schema
     init_tick_schema(con)
 
+    from .repositories.futures import init_futures_schema
+    init_futures_schema(con)
+
+    from .repositories.post_close import init_post_close_schema
+    init_post_close_schema(con)
+
+    _migrate_intraday_operation_cols(con)
+    _migrate_turnover_col(con)
+
 
 def _migrate_symbols_table(con: sqlite3.Connection) -> None:
     """Add new columns to symbols table if they don't exist."""
@@ -232,4 +241,32 @@ def _migrate_scrape_jobs_table(con: sqlite3.Connection) -> None:
         ON job_notifications(read_at) WHERE read_at IS NULL
     """)
 
+    con.commit()
+
+
+def _migrate_intraday_operation_cols(con: sqlite3.Connection) -> None:
+    """Add operation + process_ts columns to intraday_bars and tick_data."""
+    for table in ("intraday_bars", "tick_data"):
+        try:
+            cursor = con.execute(f"PRAGMA table_info({table})")
+        except Exception:
+            continue
+        existing = {row[1] for row in cursor.fetchall()}
+        if "operation" not in existing:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN operation TEXT NOT NULL DEFAULT 'insert'")
+        if "process_ts" not in existing:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN process_ts TEXT DEFAULT ''")
+    con.commit()
+
+
+def _migrate_turnover_col(con: sqlite3.Connection) -> None:
+    """Add turnover column to eod_ohlcv and futures_eod."""
+    for table in ("eod_ohlcv", "futures_eod"):
+        try:
+            cursor = con.execute(f"PRAGMA table_info({table})")
+        except Exception:
+            continue
+        existing = {row[1] for row in cursor.fetchall()}
+        if "turnover" not in existing:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN turnover REAL")
     con.commit()

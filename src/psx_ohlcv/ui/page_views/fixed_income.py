@@ -11,24 +11,93 @@ from psx_ohlcv.ui.components.helpers import (
 )
 
 
+def _extract_issuer(s) -> str:
+    """Extract issuer name from a PSX debt security."""
+    import re
+    if s.is_government:
+        return "GOP"
+    # Try extracting from name: "Bank Al-Falah(TFC6" → "Bank Al-Falah"
+    name = s.name or ""
+    m = re.match(r"^(.+?)\s*[\(\[]", name)
+    if m:
+        return m.group(1).strip()
+    # Fallback: split symbol on TFC/SC
+    sym = s.symbol or ""
+    for tag in ("TFC", "SC"):
+        if tag in sym:
+            prefix = sym.split(tag)[0]
+            if prefix:
+                return prefix
+    return name[:30] if name else "Corp"
+
+
+def _seed_bonds_from_psx(con) -> dict:
+    """Seed bonds_master from live PSX debt securities."""
+    from psx_ohlcv.sources.psx_debt import fetch_all_debt_securities
+    from psx_ohlcv.db.repositories.fixed_income import upsert_bond
+    from psx_ohlcv.db.connection import init_schema
+
+    init_schema(con)
+    secs = fetch_all_debt_securities()
+    inserted = 0
+    failed = 0
+
+    for cat, items in secs.items():
+        for s in items:
+            bond_type_map = {
+                "T-Bill": "T-Bill", "PIB": "PIB", "GIS": "Sukuk",
+                "FRR Sukuk": "Sukuk", "VRR Sukuk": "Sukuk",
+                "Variable GIS": "Sukuk", "FRZ": "PIB",
+                "Floating": "PIB", "TFC": "TFC",
+                "Corporate Sukuk": "Corporate",
+            }
+            bond_type = bond_type_map.get(s.security_type, "PIB")
+            if not s.is_government and "Sukuk" not in (s.security_type or ""):
+                bond_type = "TFC"
+            elif not s.is_government:
+                bond_type = "Corporate"
+
+            bond_data = {
+                "bond_id": s.symbol,
+                "symbol": s.symbol,
+                "issuer": _extract_issuer(s),
+                "bond_type": bond_type,
+                "is_islamic": 1 if s.is_islamic else 0,
+                "face_value": s.face_value or 100,
+                "coupon_rate": (s.coupon_rate / 100) if s.coupon_rate else None,
+                "coupon_frequency": 2 if s.coupon_rate else 0,
+                "issue_date": s.issue_date,
+                "maturity_date": s.maturity_date or "2030-01-01",
+                "day_count": "ACT/ACT",
+                "is_active": 1,
+                "source": "PSX",
+                "notes": s.name,
+            }
+            if upsert_bond(con, bond_data):
+                inserted += 1
+            else:
+                failed += 1
+
+    return {"success": True, "inserted": inserted, "failed": failed, "total": inserted + failed}
+
+
 def render_bonds_screener():
     """Bonds Screener - Fixed income instruments."""
     import pandas as pd
 
     from psx_ohlcv.analytics_bonds import get_bond_full_analytics
     from psx_ohlcv.db import get_bond_data_summary, get_bonds
-    from psx_ohlcv.sync_bonds import seed_bonds, sync_sample_quotes
 
     # =================================================================
     # HEADER
     # =================================================================
     header_col1, header_col2 = st.columns([3, 1])
     with header_col1:
-        st.markdown("## 🧾 Bonds Screener")
-        st.caption("Fixed Income Analytics (Phase 3 - Read-Only)")
+        st.markdown("## Bonds Screener")
+        st.caption("Fixed Income Securities from PSX Data Portal")
     with header_col2:
         st.markdown(
-            '<div class="data-info">📈 Analytics Only</div>',
+            '<div class="data-info">Live Data</div>',
             unsafe_allow_html=True
         )
 
@@ -37,31 +106,22 @@ def render_bonds_screener():
     # =================================================================
     # DATA SYNC CONTROLS
     # =================================================================
-    with st.expander("🔧 Data Management", expanded=False):
-        sync_col1, sync_col2, sync_col3 = st.columns(3)
+    with st.expander("Data Management", expanded=False):
+        sync_col1, sync_col2 = st.columns(2)
 
         with sync_col1:
-            if st.button("Initialize Bonds", key="bonds_init"):
-                with st.spinner("Seeding default bonds..."):
-                    result = seed_bonds()
+            if st.button("Sync from PSX", key="bonds_init"):
+                with st.spinner("Fetching PSX debt securities..."):
+                    result = _seed_bonds_from_psx(con)
                     if result.get("success"):
-                        st.success(f"Seeded {result['inserted']} bonds")
+                        st.success(f"Loaded {result['inserted']} bonds from PSX")
                         st.rerun()
                     else:
                         st.error(f"Error: {result.get('error')}")
 
         with sync_col2:
-            days = st.number_input("Sample Days", min_value=30, max_value=365, value=90)
-            if st.button("Generate Sample Quotes", key="bonds_sample"):
-                with st.spinner("Generating sample data..."):
-                    summary = sync_sample_quotes(days=days)
-                    st.success(f"Generated {summary.rows_upserted} quotes")
-                    st.rerun()
-
-        with sync_col3:
             summary = get_bond_data_summary(con)
             st.metric("Total Bonds", summary.get("total_bonds", 0))
-            st.metric("Quote Rows", summary.get("total_quote_rows", 0))
 
     # =================================================================
     # FILTERS
@@ -102,40 +162,67 @@ def render_bonds_screener():
     )
 
     if not bonds:
-        st.warning("No bonds found. Click 'Initialize Bonds' to seed default data.")
+        st.warning("No bonds found. Click 'Sync from PSX' to load securities.")
     else:
-        # Build table with analytics
+        from datetime import date as _date
+        from psx_ohlcv.db.repositories.fixed_income import get_all_latest_quotes
+
+        today = _date.today()
+
+        # Bulk-fetch latest quotes (single query, not per-bond)
+        quotes_list = get_all_latest_quotes(con)
+        quotes_map = {q["bond_id"]: q for q in quotes_list}
+        has_any_quotes = len(quotes_map) > 0
+
         table_data = []
         for bond in bonds:
-            analytics = get_bond_full_analytics(con, bond["bond_id"])
-            ytm = analytics.get("ytm")
-
-            # Apply YTM filter
-            if min_ytm > 0 and (ytm is None or ytm * 100 < min_ytm):
-                continue
-
             coupon = bond.get("coupon_rate")
-            coupon_str = f"{coupon * 100:.1f}%" if coupon else "Zero"
-            price = analytics.get("price")
-            price_str = f"{price:.2f}" if price else "N/A"
-            mod_dur = analytics.get("modified_duration")
-            dur_str = f"{mod_dur:.2f}" if mod_dur else "N/A"
+            coupon_str = f"{coupon * 100:.2f}%" if coupon else "Zero"
+            mat = bond.get("maturity_date")
+            remaining = None
+            if mat:
+                try:
+                    mat_dt = _date.fromisoformat(mat)
+                    remaining = round((mat_dt - today).days / 365.25, 1)
+                except ValueError:
+                    pass
 
-            table_data.append({
+            row = {
                 "Symbol": bond.get("symbol"),
+                "Name": (bond.get("notes") or "")[:45],
                 "Type": bond.get("bond_type"),
                 "Issuer": bond.get("issuer"),
                 "Coupon": coupon_str,
-                "Maturity": bond.get("maturity_date"),
-                "Price": price_str,
-                "YTM": f"{ytm * 100:.2f}%" if ytm else "N/A",
-                "Duration": dur_str,
-                "Islamic": "Yes" if bond.get("is_islamic") else "No",
-            })
+                "Face Value": f"{bond.get('face_value', 0):,.0f}",
+                "Issue Date": bond.get("issue_date") or "",
+                "Maturity": mat or "",
+                "Rem. Years": f"{remaining:.1f}" if remaining is not None else "",
+                "Islamic": "Yes" if bond.get("is_islamic") else "",
+            }
+
+            # Add price/YTM only if quotes exist for this bond
+            quote = quotes_map.get(bond["bond_id"])
+            if quote:
+                price = quote.get("price")
+                ytm = quote.get("ytm")
+                if price:
+                    row["Price"] = f"{price:.2f}"
+                if ytm:
+                    row["YTM"] = f"{ytm * 100:.2f}%"
+                if min_ytm > 0 and (ytm is None or ytm * 100 < min_ytm):
+                    continue
+            elif min_ytm > 0:
+                continue
+
+            table_data.append(row)
 
         if table_data:
             df = pd.DataFrame(table_data)
+            # Drop columns that are entirely empty
+            df = df.replace("", pd.NA)
+            df = df.dropna(axis=1, how="all").fillna("")
             st.dataframe(df, use_container_width=True, hide_index=True)
+            st.caption(f"{len(df)} securities")
 
             # =================================================================
             # BOND DETAILS
@@ -279,7 +366,7 @@ def render_yield_curve():
     if not sel_date:
         st.info(
             "No yield curve data available. Go to **Treasury** page and "
-            "click **Sync MUFAP Rates** to download curve data."
+            "click **Sync Yield Curves (MUFAP)** to download curve data."
         )
     else:
         st.caption(f"Curve Date: {sel_date}")
@@ -532,7 +619,7 @@ def render_sukuk_screener():
         get_analytics_by_category,
     )
     from psx_ohlcv.db import get_sukuk_data_summary, get_sukuk_list
-    from psx_ohlcv.sync_sukuk import seed_sukuk, sync_sukuk_quotes
+    from psx_ohlcv.sync_sukuk import seed_sukuk
 
     con = get_connection()
 
@@ -542,8 +629,8 @@ def render_sukuk_screener():
     # =================================================================
     # ADMIN CONTROLS (collapsed)
     # =================================================================
-    with st.expander("⚙️ Data Management", expanded=False):
-        col1, col2, col3 = st.columns(3)
+    with st.expander("Data Management", expanded=False):
+        col1, col2 = st.columns(2)
 
         with col1:
             if st.button("Seed Sukuk Data", key="sukuk_seed"):
@@ -556,13 +643,6 @@ def render_sukuk_screener():
                 st.rerun()
 
         with col2:
-            if st.button("Generate Sample Quotes", key="sukuk_sample"):
-                with st.spinner("Generating sample quote data..."):
-                    summary = sync_sukuk_quotes(source="SAMPLE", days=90)
-                    st.success(f"Generated {summary.rows_upserted} quotes")
-                st.rerun()
-
-        with col3:
             summary = get_sukuk_data_summary(con)
             st.metric("Total Instruments", summary.get("total_sukuk", 0))
             st.metric("With Quotes", summary.get("sukuk_with_quotes", 0))
@@ -727,15 +807,13 @@ def render_sukuk_yield_curve():
         get_yield_curve_data,
         interpolate_yield_curve,
     )
-    from psx_ohlcv.sync_sukuk import sync_sample_yield_curves
-
     st.markdown("## Sukuk Yield Curve")
     st.caption("Term structure of sukuk yields (GOP Sukuk, PIB, T-Bill) + PKISRV from MUFAP")
 
     con = get_connection()
 
-    # Tabs: PKISRV (real data) vs Simulated sukuk curves
-    tab_pkisrv, tab_simulated = st.tabs(["PKISRV (MUFAP Islamic Curve)", "Simulated Sukuk Curves"])
+    # Tabs: PKISRV (real data) vs Sukuk curves from DB
+    tab_pkisrv, tab_simulated = st.tabs(["PKISRV (MUFAP Islamic Curve)", "Sukuk Curves"])
 
     # =================================================================
     # TAB 1: PKISRV (real MUFAP data)
@@ -755,7 +833,7 @@ def render_sukuk_yield_curve():
             if row_count == 0:
                 st.info(
                     "No PKISRV data available. Go to Treasury Dashboard and click "
-                    "'Sync MUFAP Rates' to download Islamic yield curve data."
+                    "'Sync Yield Curves (MUFAP)' to download Islamic yield curve data."
                 )
             else:
                 dates = con.execute(
@@ -868,8 +946,8 @@ def render_sukuk_yield_curve():
     # TAB 2: Simulated sukuk curves (existing logic)
     # =================================================================
     with tab_simulated:
-        st.markdown("### Simulated Sukuk Curves")
-        col1, col2, col3 = st.columns([1, 1, 2])
+        st.markdown("### Sukuk Curves")
+        col1, col2 = st.columns(2)
 
         with col1:
             curve_name = st.selectbox(
@@ -885,13 +963,6 @@ def render_sukuk_yield_curve():
                 key="sukuk_curve_date"
             )
 
-        with col3:
-            if st.button("Generate Sample Curves", key="sukuk_gen_curves"):
-                with st.spinner("Generating yield curves..."):
-                    summary = sync_sample_yield_curves(days=30)
-                    st.success(f"Generated {summary.rows_upserted} curve points")
-                st.rerun()
-
         date_str = curve_date.isoformat() if curve_date else None
         curve_data = get_yield_curve_data(
             curve_name=curve_name,
@@ -901,7 +972,7 @@ def render_sukuk_yield_curve():
         points = curve_data.get("points", [])
 
         if not points:
-            st.info("No yield curve data. Click 'Generate Sample Curves' to create.")
+            st.info("No sukuk yield curve data available for this selection.")
         else:
             df = pd.DataFrame(points)
             df["yield_pct"] = df["yield_rate"]
@@ -967,7 +1038,6 @@ def render_sbp_auction_archive():
         get_documents_by_type,
         get_sbp_document_urls,
         index_documents,
-        create_sample_documents,
         DOC_TYPES,
         INSTRUMENT_TYPES,
         DOCS_DIR,
@@ -980,22 +1050,12 @@ def render_sbp_auction_archive():
     # =================================================================
     # ADMIN CONTROLS
     # =================================================================
-    with st.expander("⚙️ Document Management", expanded=False):
-        col1, col2 = st.columns(2)
-
-        with col1:
-            if st.button("Create Sample Documents", key="sbp_create_samples"):
-                with st.spinner("Creating sample documents..."):
-                    created = create_sample_documents()
-                    st.success(f"Created {len(created)} sample files")
-                st.rerun()
-
-        with col2:
-            if st.button("Re-index Documents", key="sbp_reindex"):
-                with st.spinner("Indexing documents..."):
-                    result = index_sbp_documents()
-                    st.success(f"Indexed {result.get('total_documents', 0)} documents")
-                st.rerun()
+    with st.expander("Document Management", expanded=False):
+        if st.button("Re-index Documents", key="sbp_reindex"):
+            with st.spinner("Indexing documents..."):
+                result = index_sbp_documents()
+                st.success(f"Indexed {result.get('total_documents', 0)} documents")
+            st.rerun()
 
         st.markdown(f"**Document Directory:** `{DOCS_DIR}`")
 
@@ -1269,7 +1329,7 @@ def render_govt_fixed_income():
         instruments = [i for i in instruments if i.get("is_shariah")]
 
     if not instruments:
-        st.warning("No instruments found. Click 'Seed Instruments' to load sample data.")
+        st.warning("No instruments found. Click 'Seed Instruments' to load data.")
     else:
         # Build table
         table_data = []
@@ -1529,7 +1589,7 @@ def render_fi_yield_curve():
             st.warning(f"No data for curve: {analytics.get('error')}")
 
     else:
-        st.info("No yield curve data. Click 'Sync Yield Curves' to load sample data.")
+        st.info("No yield curve data. Click 'Sync Yield Curves' to load data.")
 
     render_footer()
 
@@ -1543,7 +1603,6 @@ def render_sbp_pma_archive():
         PMA_DOCS_DIR,
         SBP_PMA_URL,
         fetch_and_parse_pma,
-        get_sample_pma_documents,
     )
     from psx_ohlcv.sync_fixed_income import sync_sbp_pma_docs
 
@@ -1568,20 +1627,13 @@ def render_sbp_pma_archive():
     # =================================================================
     # DATA CONTROLS
     # =================================================================
-    with st.expander("🔧 Data Management", expanded=False):
-        col1, col2, col3 = st.columns(3)
+    with st.expander("Data Management", expanded=False):
+        col1, col2 = st.columns(2)
 
         with col1:
-            source = st.selectbox(
-                "Source",
-                ["SBP", "SAMPLE"],
-                key="pma_source"
-            )
-
-        with col2:
             download = st.checkbox("Download PDFs", key="pma_download")
 
-        with col3:
+        with col2:
             category = st.selectbox(
                 "Category Filter",
                 ["ALL", "MTB", "PIB", "GOP_SUKUK"],
@@ -1592,7 +1644,7 @@ def render_sbp_pma_archive():
             with st.spinner("Syncing SBP PMA documents..."):
                 cat_filter = None if category == "ALL" else category
                 summary = sync_sbp_pma_docs(
-                    source=source,
+                    source="SBP",
                     download=download,
                     category=cat_filter,
                 )
@@ -1683,19 +1735,6 @@ def render_sbp_pma_archive():
     else:
         st.info("No documents found. Click 'Sync Documents' to fetch from SBP.")
 
-        # Show preview of what would be fetched
-        with st.expander("Preview: Sample Documents"):
-            sample_docs = get_sample_pma_documents()
-            preview_data = []
-            for doc in sample_docs:
-                preview_data.append({
-                    "Title": doc.title,
-                    "Category": doc.category,
-                    "Type": doc.doc_type,
-                    "Date": doc.doc_date,
-                })
-            st.dataframe(pd.DataFrame(preview_data), use_container_width=True, hide_index=True)
-
     render_footer()
 
 
@@ -1775,6 +1814,58 @@ def render_psx_debt_market():
             st.metric(cat_name, count)
 
     # =================================================================
+    # KEY RATES FROM DB (real data)
+    # =================================================================
+    con = get_connection()
+    try:
+        # PKRV 10Y
+        pkrv_row = con.execute(
+            "SELECT yield_pct, date FROM pkrv_daily WHERE tenor_months = 120 ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+        pkrv_prev = con.execute(
+            "SELECT yield_pct FROM pkrv_daily WHERE tenor_months = 120 ORDER BY date DESC LIMIT 1 OFFSET 1"
+        ).fetchone()
+
+        # KONIA
+        konia_row = con.execute(
+            "SELECT rate_pct, date FROM konia_daily ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+
+        # KIBOR 3M
+        kibor_row = con.execute(
+            "SELECT offer, date FROM kibor_daily WHERE tenor = '3M' ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+
+        # Latest T-Bill 3M cutoff
+        tbill_row = con.execute(
+            "SELECT cutoff_yield, auction_date FROM tbill_auctions WHERE tenor = '3M' ORDER BY auction_date DESC LIMIT 1"
+        ).fetchone()
+
+        st.markdown("### Key Rates")
+        rate_cols = st.columns(4)
+        with rate_cols[0]:
+            if pkrv_row:
+                delta = None
+                if pkrv_prev:
+                    delta = f"{(pkrv_row['yield_pct'] - pkrv_prev['yield_pct']) * 100:.0f} bps"
+                st.metric("PKRV 10Y", f"{pkrv_row['yield_pct']:.2f}%", delta=delta)
+                st.caption(f"As of {pkrv_row['date']}")
+        with rate_cols[1]:
+            if konia_row:
+                st.metric("KONIA (O/N)", f"{konia_row['rate_pct']:.2f}%")
+                st.caption(f"As of {konia_row['date']}")
+        with rate_cols[2]:
+            if kibor_row:
+                st.metric("KIBOR 3M", f"{kibor_row['offer']:.2f}%")
+                st.caption(f"As of {kibor_row['date']}")
+        with rate_cols[3]:
+            if tbill_row:
+                st.metric("T-Bill 3M", f"{tbill_row['cutoff_yield']:.2f}%")
+                st.caption(f"Auction {tbill_row['auction_date']}")
+    except Exception:
+        pass  # Gracefully skip if rate tables don't exist
+
+    # =================================================================
     # CATEGORY TABS (matching PSX page structure)
     # =================================================================
     st.markdown("---")
@@ -1784,6 +1875,7 @@ def render_psx_debt_market():
     tab_names.append("📈 Price Chart")
     tab_names.append("📊 Security Analytics")  # Enhanced with Bloomberg-style metrics
     tab_names.append("📉 Yield Curve")  # New yield curve tab
+    tab_names.append("📊 ODL Trading")  # Odd-lot bond trading from market summary
 
     tabs = st.tabs(tab_names)
 
@@ -2325,4 +2417,80 @@ def render_psx_debt_market():
                 else:
                     st.warning(f"No yield curve data for {sel_date}. Try a different date or run MUFAP sync.")
 
+    # --- ODL Trading Tab ---
+    with tabs[7]:
+        _render_fi_odl_trading(con)
+
     render_footer()
+
+
+def _render_fi_odl_trading(con):
+    """ODL trading data from market summary, cross-linked to Fixed Income."""
+    from psx_ohlcv.db.repositories.futures import (
+        init_futures_schema,
+        get_odl_symbols,
+        get_odl_stats,
+    )
+    from psx_ohlcv.sources.psx_debt import parse_symbol_info, build_display_name
+
+    init_futures_schema(con)
+    stats = get_odl_stats(con)
+
+    st.markdown("### Odd-Lot Bond Trading (PSX Market Summary)")
+    st.caption(
+        "Odd-lot bonds (sector 36) from daily PSX .Z files — "
+        "government PIBs, GIS, Sukuk and corporate TFCs traded in small lots"
+    )
+
+    if stats["distinct_symbols"] == 0:
+        st.info(
+            "No odd-lot data yet. Go to **Futures → Sync & Migrate** tab "
+            "to load market summary data."
+        )
+        return
+
+    # Summary
+    c1, c2, c3 = st.columns(3)
+    c1.metric("ODL Instruments", stats["distinct_symbols"])
+    c2.metric("Total Trades", f"{stats['total_rows']:,}")
+    c3.metric("Date Range", f"{stats['min_date']} → {stats['max_date']}")
+
+    # Get latest prices
+    df = get_odl_symbols(con)
+    if df.empty:
+        return
+
+    # Decode symbols
+    decoded = df["symbol"].apply(parse_symbol_info)
+    df = df.copy()
+    df["security_type"] = decoded.apply(lambda x: x.get("security_type") or "Unknown")
+    df["tenor_years"] = decoded.apply(lambda x: x.get("tenor_years"))
+    df["maturity_date"] = decoded.apply(lambda x: x.get("maturity_date"))
+    df["is_government"] = decoded.apply(lambda x: x.get("is_government", True))
+    df["display_name"] = df.apply(
+        lambda r: build_display_name(r["symbol"], decoded[r.name], r.get("company_name")),
+        axis=1,
+    )
+
+    gov = df[df["is_government"] == True]   # noqa: E712
+    corp = df[df["is_government"] == False]  # noqa: E712
+
+    # Government bonds
+    if not gov.empty:
+        st.markdown("#### Government Bonds")
+        gov_cols = ["symbol", "display_name", "security_type", "tenor_years",
+                    "maturity_date", "close", "volume", "change_pct", "date"]
+        show = [c for c in gov_cols if c in gov.columns]
+        st.dataframe(gov[show], use_container_width=True, hide_index=True)
+        st.caption(f"{len(gov)} government instruments (latest prices)")
+
+    # Corporate bonds
+    if not corp.empty:
+        st.markdown("#### Corporate Bonds (TFC / Sukuk)")
+        corp_cols = ["symbol", "display_name", "security_type",
+                     "close", "volume", "change_pct", "company_name", "date"]
+        show = [c for c in corp_cols if c in corp.columns]
+        st.dataframe(corp[show], use_container_width=True, hide_index=True)
+        st.caption(f"{len(corp)} corporate instruments (latest prices)")
+
+    st.info("For full history and auction yield cross-reference, see **Futures → Odd-Lot Bonds** tab.")

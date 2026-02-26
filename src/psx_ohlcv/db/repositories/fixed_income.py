@@ -553,6 +553,98 @@ def upsert_mf_nav(
     return rows
 
 
+def _safe_float_fi(v) -> float | None:
+    """Safely convert to float (local helper to avoid importing from sources)."""
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return None
+
+
+def parse_nav_history_to_tuples(
+    fund_id: str,
+    nav_history: list[dict],
+) -> list[tuple]:
+    """Convert raw MUFAP nav_history records to upsert tuples.
+
+    Args:
+        fund_id: Internal fund_id (e.g., "MUFAP:123").
+        nav_history: List of dicts from MUFAP API Table1.
+
+    Returns:
+        List of (fund_id, date, nav, offer_price, redemption_price,
+                 aum, nav_change_pct, source).
+    """
+    rows = []
+    for rec in nav_history:
+        date_str = rec.get("entryDate") or rec.get("CalDate")
+        nav_val = rec.get("netval")
+        if not date_str or nav_val is None:
+            continue
+        date_clean = str(date_str)[:10]
+        try:
+            nav_float = float(nav_val)
+        except (ValueError, TypeError):
+            continue
+
+        offer = _safe_float_fi(rec.get("offer_price") or rec.get("OfferPrice"))
+        redemp = _safe_float_fi(
+            rec.get("repurchase_price") or rec.get("RedemptionPrice")
+        )
+
+        rows.append((
+            fund_id,
+            date_clean,
+            nav_float,
+            offer or nav_float,
+            redemp or nav_float,
+            None,     # aum
+            None,     # nav_change_pct
+            "MUFAP",
+        ))
+    return rows
+
+
+def upsert_mf_nav_batch(
+    con: sqlite3.Connection,
+    fund_id: str,
+    rows: list[tuple],
+) -> int:
+    """Batch upsert mutual fund NAV data using executemany.
+
+    Args:
+        con: Database connection.
+        fund_id: Mutual fund ID (for logging only; fund_id is in each tuple).
+        rows: List of tuples from parse_nav_history_to_tuples().
+
+    Returns:
+        Number of rows submitted.
+    """
+    if not rows:
+        return 0
+
+    con.executemany(
+        """INSERT INTO mutual_fund_nav (
+            fund_id, date, nav, offer_price, redemption_price,
+            aum, nav_change_pct, source, ingested_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(fund_id, date) DO UPDATE SET
+            nav = excluded.nav,
+            offer_price = excluded.offer_price,
+            redemption_price = excluded.redemption_price,
+            aum = excluded.aum,
+            nav_change_pct = excluded.nav_change_pct,
+            source = excluded.source,
+            ingested_at = datetime('now')
+        """,
+        rows,
+    )
+    con.commit()
+    return len(rows)
+
+
 def get_mf_nav(
     con: sqlite3.Connection,
     fund_id: str,

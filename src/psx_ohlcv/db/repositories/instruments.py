@@ -396,6 +396,130 @@ def create_instruments_sync_run(con: sqlite3.Connection, run_id: str, instrument
         return False
 
 
+def sync_index_membership(con: sqlite3.Connection) -> dict:
+    """Populate instrument_membership from regular_market_current.listed_in.
+
+    Parses the comma-separated listed_in column (e.g. "ALLSHR,KSE100,KSE100PR")
+    and creates parent→child rows in instrument_membership for each index→equity pair.
+
+    Uses REPLACE to refresh all memberships each run (clear + insert pattern).
+
+    Returns:
+        Dict with 'indices' (count of indices with members),
+        'memberships' (total rows inserted), 'skipped' (symbols not in instruments).
+    """
+    from datetime import date
+
+    today = date.today().isoformat()
+
+    # Get all equity symbols with listed_in data
+    rows = con.execute("""
+        SELECT symbol, listed_in FROM regular_market_current
+        WHERE listed_in IS NOT NULL AND listed_in != ''
+    """).fetchall()
+
+    if not rows:
+        return {"indices": 0, "memberships": 0, "skipped": 0}
+
+    # Build lookup: symbol → instrument_id for equities
+    equity_map = {}
+    for r in con.execute(
+        "SELECT instrument_id, symbol FROM instruments WHERE instrument_type = 'EQUITY'"
+    ).fetchall():
+        equity_map[r[0] if isinstance(r, tuple) else r["symbol"]] = (
+            r[1] if isinstance(r, tuple) else r["instrument_id"]
+        )
+    # Fix: use dict(symbol → instrument_id)
+    equity_map = {}
+    for r in con.execute(
+        "SELECT symbol, instrument_id FROM instruments WHERE instrument_type = 'EQUITY'"
+    ).fetchall():
+        equity_map[r[0]] = r[1]
+
+    # Build lookup: index code → instrument_id for indices
+    index_map = {}
+    for r in con.execute(
+        "SELECT symbol, instrument_id FROM instruments WHERE instrument_type = 'INDEX'"
+    ).fetchall():
+        index_map[r[0]] = r[1]
+
+    # Clear existing memberships for today
+    con.execute("DELETE FROM instrument_membership WHERE effective_date = ?", (today,))
+
+    memberships = 0
+    skipped = 0
+    indices_seen = set()
+
+    for row in rows:
+        symbol = row[0]
+        listed_in = row[1]
+
+        child_id = equity_map.get(symbol)
+        if not child_id:
+            skipped += 1
+            continue
+
+        for idx_code in listed_in.split(","):
+            idx_code = idx_code.strip()
+            parent_id = index_map.get(idx_code)
+            if not parent_id:
+                continue
+
+            con.execute("""
+                INSERT OR IGNORE INTO instrument_membership
+                    (parent_instrument_id, child_instrument_id, weight, effective_date, source)
+                VALUES (?, ?, NULL, ?, 'market_watch_listed_in')
+            """, (parent_id, child_id, today))
+            memberships += 1
+            indices_seen.add(idx_code)
+
+    con.commit()
+    return {
+        "indices": len(indices_seen),
+        "memberships": memberships,
+        "skipped": skipped,
+    }
+
+
+def get_index_constituents(
+    con: sqlite3.Connection,
+    index_symbol: str,
+    effective_date: str | None = None,
+) -> list[dict]:
+    """Get constituent symbols for an index.
+
+    Args:
+        con: Database connection
+        index_symbol: Index symbol (e.g. 'KSE100')
+        effective_date: Date for membership (default: latest)
+
+    Returns:
+        List of dicts with symbol, name, instrument_id.
+    """
+    if effective_date is None:
+        # Use the latest effective date
+        row = con.execute("""
+            SELECT MAX(effective_date) FROM instrument_membership im
+            JOIN instruments i ON im.parent_instrument_id = i.instrument_id
+            WHERE i.symbol = ?
+        """, (index_symbol,)).fetchone()
+        effective_date = row[0] if row and row[0] else None
+
+    if not effective_date:
+        return []
+
+    cur = con.execute("""
+        SELECT c.symbol, c.name, c.instrument_id
+        FROM instrument_membership im
+        JOIN instruments p ON im.parent_instrument_id = p.instrument_id
+        JOIN instruments c ON im.child_instrument_id = c.instrument_id
+        WHERE p.symbol = ? AND im.effective_date = ?
+        ORDER BY c.symbol
+    """, (index_symbol, effective_date))
+
+    return [dict(r) for r in cur.fetchall()]
+
+
 def update_instruments_sync_run(con: sqlite3.Connection, run_id: str, stats: dict) -> bool:
     """Update a sync run with final stats."""
     try:

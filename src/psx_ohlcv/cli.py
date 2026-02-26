@@ -1422,6 +1422,18 @@ def main(argv: list[str] | None = None) -> int:
         help="Show bond data summary and sync status"
     )
 
+    # bonds benchmark-sync - scrape SBP benchmark snapshot
+    bonds_sub.add_parser(
+        "benchmark-sync",
+        help="Scrape SBP benchmark rates (policy, KIBOR, MTB/PIB cutoffs)"
+    )
+
+    # bonds smtv-sync - download & parse today's SMTV PDF
+    bonds_sub.add_parser(
+        "smtv-sync",
+        help="Download & parse today's SBP SMTV PDF (OTC bond trading)"
+    )
+
     # =========================================================================
     # Phase 3: sukuk command - Sukuk/Debt Market analytics (additive)
     # =========================================================================
@@ -2043,6 +2055,84 @@ def main(argv: list[str] | None = None) -> int:
     ts_sub.add_parser("stop", help="Stop running tick service")
     ts_sub.add_parser("status", help="Show tick service status")
 
+    # =========================================================================
+    # v5.1: Global Reference Rates (SOFR, EFFR, SONIA, EUSTR, TONA)
+    # =========================================================================
+    gr_parser = subparsers.add_parser(
+        "globalrates",
+        help="Global reference rates (SOFR, SONIA, EUSTR, TONA)"
+    )
+    gr_sub = gr_parser.add_subparsers(dest="gr_command", required=True)
+
+    gr_sync_parser = gr_sub.add_parser("sync", help="Sync SOFR + EFFR from NY Fed")
+    gr_sync_parser.add_argument(
+        "--count", type=int, default=100,
+        help="Number of days to fetch (default: 100)"
+    )
+
+    gr_sub.add_parser("latest", help="Show latest global reference rates")
+
+    gr_spread_parser = gr_sub.add_parser(
+        "spread", help="Show SOFR-KIBOR spread history"
+    )
+    gr_spread_parser.add_argument(
+        "--days", type=int, default=30,
+        help="Number of days of history (default: 30)"
+    )
+
+    gr_hist_parser = gr_sub.add_parser(
+        "history", help="Show rate history for a specific rate"
+    )
+    gr_hist_parser.add_argument(
+        "rate_name", nargs="?", default="SOFR",
+        help="Rate name (default: SOFR)"
+    )
+    gr_hist_parser.add_argument(
+        "--days", type=int, default=30,
+        help="Number of days (default: 30)"
+    )
+
+    # =========================================================================
+    # v5.5: Naya Pakistan Certificate (NPC) rates
+    # =========================================================================
+    npc_parser = subparsers.add_parser(
+        "npc", help="Naya Pakistan Certificate rates"
+    )
+    npc_sub = npc_parser.add_subparsers(dest="npc_command", required=True)
+
+    npc_sync_p = npc_sub.add_parser("sync", help="Scrape and store current NPC rates")
+    npc_sync_p.add_argument(
+        "--force", action="store_true",
+        help="Store even if rates unchanged"
+    )
+
+    npc_latest_p = npc_sub.add_parser("latest", help="Show latest NPC rates")
+    npc_latest_p.add_argument(
+        "--currency", choices=["USD", "GBP", "EUR", "PKR"],
+        help="Filter by currency"
+    )
+
+    npc_curve_p = npc_sub.add_parser("curve", help="Show NPC yield curve")
+    npc_curve_p.add_argument(
+        "--currency", default="USD",
+        choices=["USD", "GBP", "EUR", "PKR"]
+    )
+    npc_curve_p.add_argument("--date", help="Date (YYYY-MM-DD)")
+
+    npc_spread_p = npc_sub.add_parser("spread", help="NPC vs global RFR spread")
+    npc_spread_p.add_argument(
+        "--currency", choices=["USD", "GBP", "EUR"]
+    )
+
+    npc_carry_p = npc_sub.add_parser("carry", help="NPC vs KIBOR carry trade analysis")
+    npc_carry_p.add_argument(
+        "--currency", default="USD",
+        choices=["USD", "GBP", "EUR"]
+    )
+
+    npc_dash_p = npc_sub.add_parser("dashboard", help="Multi-currency NPC dashboard")
+    npc_dash_p.add_argument("--date", help="Date (YYYY-MM-DD)")
+
     args = parser.parse_args(argv)
 
     try:
@@ -2112,6 +2202,10 @@ def main(argv: list[str] | None = None) -> int:
             return handle_collect_ticks(args)
         elif args.command == "tick-service":
             return handle_tick_service(args)
+        elif args.command == "globalrates":
+            return handle_globalrates(args)
+        elif args.command == "npc":
+            return handle_npc(args)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         return 130
@@ -4967,6 +5061,10 @@ def handle_bonds(args: argparse.Namespace) -> int:
         return handle_bonds_curve(args)
     elif cmd == "status":
         return handle_bonds_status(args)
+    elif cmd == "benchmark-sync":
+        return handle_bonds_benchmark_sync(args)
+    elif cmd == "smtv-sync":
+        return handle_bonds_smtv_sync(args)
 
     return EXIT_ERROR
 
@@ -5270,6 +5368,60 @@ def handle_bonds_status(args: argparse.Namespace) -> int:
             )
 
     return EXIT_SUCCESS
+
+
+def handle_bonds_benchmark_sync(args: argparse.Namespace) -> int:
+    """Scrape SBP benchmark rates and store snapshot."""
+    from .sources.sbp_bond_market import SBPBondMarketScraper
+
+    con = connect(args.db)
+    init_schema(con)
+
+    print("Scraping SBP benchmark rates (MSM sidebar)...")
+    scraper = SBPBondMarketScraper()
+    result = scraper.sync_benchmark(con)
+
+    if result["status"] == "ok":
+        print(f"  Date:    {result['date']}")
+        print(f"  Stored:  {result['metrics_stored']}/{result['metrics_total']} metrics")
+
+        # Show key rates
+        from .db.repositories.bond_market import get_benchmark_snapshot
+        snap = get_benchmark_snapshot(con)
+        if snap:
+            print("\n  Key Rates:")
+            for key in ["policy_rate", "overnight_repo", "kibor_6m_offer",
+                        "mtb_6m", "pib_5y", "pib_10y"]:
+                val = snap.get(key)
+                if val is not None:
+                    print(f"    {key:25s} {val:.4f}%")
+        return EXIT_SUCCESS
+
+    print(f"  Error: {result.get('error', 'unknown')}")
+    con.close()
+    return EXIT_ERROR
+
+
+def handle_bonds_smtv_sync(args: argparse.Namespace) -> int:
+    """Download & parse today's SBP SMTV PDF."""
+    from .sources.sbp_bond_market import SBPBondMarketScraper
+
+    con = connect(args.db)
+    init_schema(con)
+
+    print("Attempting SBP SMTV PDF download...")
+    scraper = SBPBondMarketScraper()
+    result = scraper.sync_smtv(con)
+
+    if result["status"] == "ok":
+        print(f"  Date:              {result.get('date')}")
+        print(f"  Trades stored:     {result.get('trades_stored')}")
+        print(f"  Summaries stored:  {result.get('summaries_stored')}")
+        return EXIT_SUCCESS
+
+    print(f"  Skipped: {result.get('reason', 'unknown')}")
+    con.close()
+    return EXIT_SUCCESS  # Not an error — SMTV is unavailable
 
 
 # =============================================================================
@@ -6691,7 +6843,14 @@ def handle_sync_all(args: argparse.Namespace) -> int:
         return s.sync_listings(con)
     _add_step("IPO listings", _sync_ipo)
 
-    # 8. SIR PDF backfill (T-Bills, PIBs, KIBOR, GIS history)
+    # 9. SBP benchmark snapshot (policy rate, KIBOR, MTB/PIB cutoffs)
+    def _sync_benchmark():
+        from .sources.sbp_bond_market import SBPBondMarketScraper
+        s = SBPBondMarketScraper()
+        return s.sync_benchmark(con)
+    _add_step("SBP benchmark snapshot", _sync_benchmark)
+
+    # 10. SIR PDF backfill (T-Bills, PIBs, KIBOR, GIS history)
     def _sync_sir():
         from .sources.sbp_sir import SBPSirScraper
         s = SBPSirScraper()
@@ -6785,6 +6944,8 @@ def handle_status(args: argparse.Namespace) -> int:
         ("Corp. Announcements", "corporate_announcements", "announcement_date"),
         ("Symbols", "symbols", "updated_at"),
         ("Dividends/Payouts", "company_payouts", "ex_date"),
+        ("Benchmark Snapshot", "sbp_benchmark_snapshot", "date"),
+        ("Bond Trading Daily", "sbp_bond_trading_daily", "date"),
     ]
 
     print(f"\n  {'Data Domain':<25s}  {'Rows':>10s}  {'Latest':>12s}  {'Freshness'}")
@@ -6891,6 +7052,165 @@ def handle_backfill_rates(args: argparse.Namespace) -> int:
 
     con.close()
     return 0 if total_fail == 0 else 1
+
+
+def handle_globalrates(args: argparse.Namespace) -> int:
+    """Handle globalrates subcommands (SOFR, EFFR, spread)."""
+    from .db.repositories.global_rates import (
+        ensure_tables,
+        get_all_latest_rates,
+        get_rate_history,
+        get_sofr_kibor_spread,
+    )
+
+    con = connect(args.db)
+    init_schema(con)
+    ensure_tables(con)
+
+    if args.gr_command == "sync":
+        from .sources.global_rates_scraper import GlobalRatesScraper
+
+        count = getattr(args, "count", 100)
+        print(f"Syncing global rates from NY Fed (last {count} days)...")
+        scraper = GlobalRatesScraper()
+        stats = scraper.sync_all(con)
+        print(f"Done: {stats}")
+        con.close()
+        return 0
+
+    elif args.gr_command == "latest":
+        import pandas as pd
+
+        df = get_all_latest_rates(con)
+        con.close()
+        if df.empty:
+            print("No rates found. Run: psxsync globalrates sync")
+            return 0
+        print(df.to_string(index=False))
+        return 0
+
+    elif args.gr_command == "spread":
+        from datetime import datetime, timedelta
+
+        days = getattr(args, "days", 30)
+        start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        df = get_sofr_kibor_spread(con, start_date=start)
+        con.close()
+        if df.empty:
+            print("No spread data. Ensure both KIBOR and SOFR are synced.")
+            return 0
+        print(df.to_string(index=False))
+        return 0
+
+    elif args.gr_command == "history":
+        from datetime import datetime, timedelta
+
+        rate_name = getattr(args, "rate_name", "SOFR").upper()
+        days = getattr(args, "days", 30)
+        start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        df = get_rate_history(con, rate_name=rate_name, start_date=start)
+        con.close()
+        if df.empty:
+            print(f"No data for {rate_name}")
+            return 0
+        print(df.to_string(index=False))
+        return 0
+
+    con.close()
+    return 0
+
+
+def handle_npc(args: argparse.Namespace) -> int:
+    """Handle NPC subcommands."""
+    from .db.repositories.npc_rates import (
+        ensure_tables,
+        get_latest_npc_rates,
+        get_npc_yield_curve,
+        get_npc_vs_rfr_spread,
+        get_carry_trade_analysis,
+        get_multicurrency_dashboard,
+    )
+
+    con = connect(args.db)
+    init_schema(con)
+    ensure_tables(con)
+
+    if args.npc_command == "sync":
+        from .sources.npc_rates_scraper import NPCRatesScraper
+
+        scraper = NPCRatesScraper()
+        count = scraper.sync(con, force=getattr(args, "force", False))
+        print(f"NPC rates: {count} records stored")
+        con.close()
+        return 0
+
+    elif args.npc_command == "latest":
+        df = get_latest_npc_rates(
+            con,
+            currency=getattr(args, "currency", None),
+        )
+        con.close()
+        if df.empty:
+            print("No NPC rates found. Run: psxsync npc sync")
+            return 0
+        print(df.to_string(index=False))
+        return 0
+
+    elif args.npc_command == "curve":
+        curve = get_npc_yield_curve(
+            con,
+            currency=getattr(args, "currency", "USD"),
+            date=getattr(args, "date", None),
+        )
+        con.close()
+        if not curve:
+            print(f"No yield curve data for {args.currency}")
+            return 0
+        print(f"\nNPC {args.currency} Yield Curve ({curve.get('date', 'latest')}):")
+        for tenor in ["3m", "6m", "12m", "3y", "5y"]:
+            val = curve.get(f"rate_{tenor}")
+            if val is not None:
+                print(f"  {tenor.upper():>4}: {val:.2f}%")
+        return 0
+
+    elif args.npc_command == "spread":
+        df = get_npc_vs_rfr_spread(
+            con,
+            currency=getattr(args, "currency", None),
+        )
+        con.close()
+        if df.empty:
+            print("No spread data. Run: psxsync npc sync")
+            return 0
+        print(df.to_string(index=False))
+        return 0
+
+    elif args.npc_command == "carry":
+        df = get_carry_trade_analysis(
+            con,
+            currency=getattr(args, "currency", "USD"),
+        )
+        con.close()
+        if df.empty:
+            print("No carry trade data.")
+            return 0
+        print(df.to_string(index=False))
+        return 0
+
+    elif args.npc_command == "dashboard":
+        df = get_multicurrency_dashboard(
+            con,
+            date=getattr(args, "date", None),
+        )
+        con.close()
+        if df.empty:
+            print("No dashboard data. Run sync commands first.")
+            return 0
+        print(df.to_string(index=False))
+        return 0
+
+    con.close()
+    return 0
 
 
 if __name__ == "__main__":

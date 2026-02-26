@@ -560,11 +560,51 @@ def ingest_market_summary_csv(
         if "date" not in df.columns:
             df["date"] = date_str
 
-        # Upsert the data with source tracking
-        rows = upsert_eod(con, df, source=source)
+        # Classify rows by market type (REG vs FUT/CONT/IDX_FUT/ODL)
+        from psx_ohlcv.sources.market_summary import (
+            classify_market_type,
+            parse_futures_symbol,
+        )
+
+        if "market_type" not in df.columns:
+            df["market_type"] = df.apply(
+                lambda row: classify_market_type(
+                    str(row.get("sector_code", "")), str(row["symbol"])
+                ),
+                axis=1,
+            )
+
+        reg_df = df[df["market_type"] == "REG"]
+        deriv_df = df[df["market_type"] != "REG"]
+
+        # Route REG to eod_ohlcv (existing behavior)
+        reg_rows = upsert_eod(con, reg_df, source=source) if not reg_df.empty else 0
+
+        # Route FUT/CONT/IDX_FUT/ODL to futures_eod
+        futures_rows = 0
+        if not deriv_df.empty:
+            deriv_df = deriv_df.copy()
+            parsed = deriv_df.apply(
+                lambda r: parse_futures_symbol(r["symbol"], r["market_type"]),
+                axis=1,
+                result_type="expand",
+            )
+            deriv_df["base_symbol"] = parsed[0]
+            deriv_df["contract_month"] = parsed[1]
+
+            from .futures import init_futures_schema, upsert_futures_eod
+            init_futures_schema(con)
+            futures_rows = upsert_futures_eod(con, deriv_df, source=source)
+
+        rows = reg_rows + futures_rows
         result["rows_inserted"] = rows
+        result["reg_rows"] = reg_rows
+        result["futures_rows"] = futures_rows
         result["status"] = "ok"
-        result["message"] = f"Inserted {rows} rows for {date_str}"
+        result["message"] = (
+            f"Inserted {rows} rows for {date_str} "
+            f"(REG: {reg_rows}, FUT/CONT/ODL: {futures_rows})"
+        )
         result["source"] = source
 
     except Exception as e:

@@ -14,6 +14,7 @@ def render_mutual_funds():
     """Mutual Funds Browser - Fund listing with filters."""
     from psx_ohlcv.db import get_mf_nav, get_mutual_fund, get_mutual_funds
     from psx_ohlcv.sync_mufap import (
+        clear_nav_staging,
         get_data_summary,
         is_bulk_nav_sync_running,
         read_nav_sync_progress,
@@ -236,9 +237,9 @@ def render_mutual_funds():
             st.metric("Funds in DB", data_summary.get("total_funds", 0))
             st.metric("NAV Records", data_summary.get("total_nav_rows", 0))
 
-        # Bulk NAV History Sync (background job)
+        # Bulk NAV History Sync (background job — two-phase pipeline)
         st.markdown("---")
-        st.markdown("**Bulk NAV History Sync** — fetch full history for all funds (runs in background)")
+        st.markdown("**Bulk NAV History Sync** — async fetch + batch DB write (runs in background)")
 
         running = is_bulk_nav_sync_running()
         progress = read_nav_sync_progress()
@@ -246,15 +247,29 @@ def render_mutual_funds():
         if running:
             st.warning("Bulk sync is running — do not close the app.")
             if progress:
+                phase = progress.get("phase", "fetch")
+                phase_label = "Fetching from MUFAP..." if phase == "fetch" else "Writing to database..."
                 pct = progress["current"] / max(progress["total"], 1)
-                st.progress(pct, text=f"{progress['current']}/{progress['total']} — {progress.get('current_fund', '')}")
+                st.progress(
+                    pct,
+                    text="{} {}/{} — {}".format(
+                        phase_label, progress["current"],
+                        progress["total"], progress.get("current_fund", ""),
+                    ),
+                )
                 c1, c2, c3, c4 = st.columns(4)
-                c1.metric("OK", progress["ok"])
-                c2.metric("Failed", progress["failed"])
-                c3.metric("NAV Rows", f"{progress['rows_total']:,}")
-                c4.metric("Started", progress.get("started_at", "")[:19])
+                if phase == "fetch":
+                    c1.metric("Fetched", progress.get("fetch_ok", 0))
+                    c2.metric("Fetch Failed", progress.get("fetch_failed", 0))
+                    c3.metric("Skipped (Staged)", progress.get("fetch_skipped", 0))
+                    c4.metric("Started", progress.get("started_at", "")[:19])
+                else:
+                    c1.metric("DB OK", progress.get("ok", 0))
+                    c2.metric("DB Failed", progress.get("failed", 0))
+                    c3.metric("NAV Rows", "{:,}".format(progress.get("rows_total", 0)))
+                    c4.metric("Started", progress.get("started_at", "")[:19])
                 if progress.get("errors"):
-                    with st.expander(f"Errors ({len(progress['errors'])})"):
+                    with st.expander("Errors ({})".format(len(progress["errors"]))):
                         for err in progress["errors"]:
                             st.text(err)
             if st.button("Refresh Progress", key="mf_bulk_refresh"):
@@ -262,18 +277,40 @@ def render_mutual_funds():
         else:
             if progress and progress.get("status") == "completed":
                 st.success(
-                    f"Last run: {progress['ok']}/{progress['total']} funds synced, "
-                    f"{progress['rows_total']:,} NAV rows — "
-                    f"finished {progress.get('finished_at', '')[:19]}"
+                    "Last run: {ok}/{total} funds synced, "
+                    "{rows:,} NAV rows — finished {fin}".format(
+                        ok=progress.get("ok", 0),
+                        total=progress["total"],
+                        rows=progress.get("rows_total", 0),
+                        fin=progress.get("finished_at", "")[:19],
+                    )
                 )
 
-            if st.button("Sync ALL NAV History", key="mf_bulk_sync_btn", type="secondary"):
-                started = start_bulk_nav_sync()
-                if started:
-                    st.success("Bulk NAV sync started in background!")
-                else:
-                    st.warning("Sync is already running.")
-                st.rerun()
+            col_resume, col_fresh, col_clear = st.columns(3)
+
+            with col_resume:
+                if st.button("Resume NAV Sync", key="mf_bulk_resume_btn", type="primary"):
+                    started = start_bulk_nav_sync(resume=True)
+                    if started:
+                        st.success("Bulk NAV sync started (resuming from staged data)!")
+                    else:
+                        st.warning("Sync is already running.")
+                    st.rerun()
+
+            with col_fresh:
+                if st.button("Fresh Sync (All)", key="mf_bulk_fresh_btn", type="secondary"):
+                    clear_nav_staging()
+                    started = start_bulk_nav_sync(resume=False)
+                    if started:
+                        st.success("Fresh bulk NAV sync started!")
+                    else:
+                        st.warning("Sync is already running.")
+                    st.rerun()
+
+            with col_clear:
+                if st.button("Clear Staging Files", key="mf_clear_staging_btn"):
+                    count = clear_nav_staging()
+                    st.info("Cleared {} staged JSON files.".format(count))
 
     render_footer()
 

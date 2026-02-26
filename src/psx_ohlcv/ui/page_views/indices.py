@@ -9,8 +9,10 @@ from psx_ohlcv.analytics_phase1 import (
 )
 from psx_ohlcv.config import get_db_path
 from psx_ohlcv.db import (
+    get_index_constituents,
     get_instruments,
     get_ohlcv_instrument,
+    sync_index_membership,
 )
 from psx_ohlcv.sync_instruments import sync_instruments_eod
 from psx_ohlcv.ui.charts import (
@@ -248,6 +250,18 @@ def render_indices():
         else:
             st.info("No OHLCV data available. Run `psxsync instruments sync-eod` to sync index data.")
 
+        # Constituents table
+        constituents = get_index_constituents(con, selected_symbol)
+        if constituents:
+            st.markdown("#### Constituents ({} symbols)".format(len(constituents)))
+            const_df = pd.DataFrame(constituents)[["symbol", "name"]]
+            const_df.rename(columns={"symbol": "Symbol", "name": "Name"}, inplace=True)
+            st.dataframe(const_df, use_container_width=True, hide_index=True)
+        else:
+            st.caption(
+                "No constituents loaded. Use **Download Index Data → Sync Index Membership** below."
+            )
+
     # =================================================================
     # MULTI-INDEX COMPARISON
     # =================================================================
@@ -349,23 +363,34 @@ def render_indices():
     # SYNC SECTION
     # =================================================================
     st.markdown("---")
-    with st.expander("Sync Index Data", expanded=False):
-        col1, col2 = st.columns([2, 4])
+    with st.expander("Download Index Data", expanded=False):
+        col1, col2, col3 = st.columns([2, 2, 2])
 
         with col1:
-            if st.button("Sync Index OHLCV", type="primary", key="idx_sync"):
-                with st.spinner("Syncing index OHLCV..."):
+            if st.button("Download Index OHLCV → ohlcv_instruments", type="primary", key="idx_sync"):
+                with st.spinner("Downloading index OHLCV from PSX..."):
                     summary = sync_instruments_eod(
                         db_path=get_db_path(),
                         instrument_types=["INDEX"],
                         incremental=True,
                     )
                     st.success(
-                        f"Sync: {summary.ok} OK, {summary.rows_upserted} rows"
+                        f"Downloaded: {summary.ok} indices, {summary.rows_upserted} rows → ohlcv_instruments"
                     )
                     st.rerun()
 
         with col2:
-            st.caption("To seed instruments, use the **📦 Instruments** page.")
+            if st.button("Sync Index Membership → instrument_membership", key="idx_membership"):
+                with st.spinner("Parsing listed_in → instrument_membership..."):
+                    result = sync_index_membership(con)
+                    st.success(
+                        "{} indices, {} memberships synced, {} skipped → instrument_membership".format(
+                            result["indices"], result["memberships"], result["skipped"]
+                        )
+                    )
+                    st.rerun()
+
+        with col3:
+            st.caption("To seed instruments, use the **Instruments** page.")
 
     render_footer()

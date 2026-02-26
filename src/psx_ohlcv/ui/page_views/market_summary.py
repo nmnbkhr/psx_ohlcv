@@ -17,6 +17,7 @@ def render_market_summary():
     from datetime import timedelta as td
 
     from psx_ohlcv.sources.market_summary import (
+        fetch_day,
         fetch_day_with_tracking,
         fetch_range_with_tracking,
         get_all_tracking_records,
@@ -80,7 +81,7 @@ def render_market_summary():
 
     # Tabs for different actions
     tab_single, tab_range, tab_retry, tab_history = st.tabs([
-        "📅 Single Day", "📆 Date Range", "🔄 Retry Failed", "📋 History"
+        "📅 Single Day", "📆 Date Range", "🔄 Retry Failed", "📋 History",
     ])
 
     # =========================================================================
@@ -110,16 +111,29 @@ def render_market_summary():
                 key="ms_single_keep_raw",
                 help="Keep the extracted .txt file",
             )
+            single_disk_only = st.checkbox(
+                "Download only (no DB write)",
+                value=False,
+                key="ms_single_disk_only",
+                help="Save CSV and raw files to disk without writing to database",
+            )
 
         if st.button("Download", key="ms_single_download", type="primary"):
             with st.spinner(f"Downloading {single_date}..."):
                 try:
-                    result = fetch_day_with_tracking(
-                        con,
-                        single_date,
-                        force=single_force,
-                        keep_raw=single_keep_raw,
-                    )
+                    if single_disk_only:
+                        result = fetch_day(
+                            single_date,
+                            force=single_force,
+                            keep_raw=single_keep_raw,
+                        )
+                    else:
+                        result = fetch_day_with_tracking(
+                            con,
+                            single_date,
+                            force=single_force,
+                            keep_raw=single_keep_raw,
+                        )
                     if result["status"] == "ok":
                         st.success(
                             f"Downloaded {result['date']}: "
@@ -180,6 +194,13 @@ def render_market_summary():
                 key="ms_range_keep_raw",
             )
 
+        range_disk_only = st.checkbox(
+            "Download only (no DB write)",
+            value=False,
+            key="ms_range_disk_only",
+            help="Save CSV and raw files to disk without writing to database",
+        )
+
         # Calculate expected dates
         from psx_ohlcv.range_utils import iter_dates
         expected_dates = list(iter_dates(
@@ -200,14 +221,23 @@ def render_market_summary():
                 missing_count = 0
                 fail_count = 0
 
-                for i, result in enumerate(fetch_range_with_tracking(
-                    con,
-                    range_start,
-                    range_end,
-                    skip_weekends=range_skip_weekends,
-                    force=range_force,
-                    keep_raw=range_keep_raw,
-                )):
+                if range_disk_only:
+                    # Disk-only: iterate dates and call fetch_day() directly
+                    _range_iter = (
+                        fetch_day(d, force=range_force, keep_raw=range_keep_raw)
+                        for d in expected_dates
+                    )
+                else:
+                    _range_iter = fetch_range_with_tracking(
+                        con,
+                        range_start,
+                        range_end,
+                        skip_weekends=range_skip_weekends,
+                        force=range_force,
+                        keep_raw=range_keep_raw,
+                    )
+
+                for i, result in enumerate(_range_iter):
                     progress = (i + 1) / len(expected_dates)
                     progress_bar.progress(progress)
 

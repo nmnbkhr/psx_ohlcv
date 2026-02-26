@@ -455,6 +455,14 @@ def parse_market_summary(
     # Drop rows with missing critical fields
     df = df.dropna(subset=["symbol", "close"])
 
+    # Classify market type (REG/FUT/CONT/IDX_FUT/ODL)
+    df["market_type"] = df.apply(
+        lambda row: classify_market_type(
+            str(row.get("sector_code", "")), str(row["symbol"])
+        ),
+        axis=1,
+    )
+
     # Sort by symbol
     df = df.sort_values("symbol").reset_index(drop=True)
 
@@ -540,7 +548,7 @@ def _validate_date_format(date: str) -> None:
 
 def _empty_market_summary_df() -> pd.DataFrame:
     """Return empty DataFrame with correct schema."""
-    return pd.DataFrame(columns=MARKET_SUMMARY_COLUMNS)
+    return pd.DataFrame(columns=MARKET_SUMMARY_COLUMNS + ["market_type"])
 
 
 # =============================================================================
@@ -979,3 +987,220 @@ def retry_missing_dates(
             })
 
     return summary
+
+
+# =============================================================================
+# Market Type Classification
+# =============================================================================
+
+_MONTH_CODES = {
+    "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+    "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
+}
+
+
+def _extract_month(suffix: str) -> str | None:
+    """Extract month code from a suffix, handling optional B-series trailing B.
+
+    "FEB" → "FEB", "FEBB" → "FEB", "APR" → "APR", "APRB" → "APR",
+    "XYZ" → None.
+    """
+    s = suffix.upper()
+    if s in _MONTH_CODES:
+        return s
+    # B-series: strip one trailing B
+    if s.endswith("B") and s[:-1] in _MONTH_CODES:
+        return s[:-1]
+    return None
+
+
+def classify_market_type(sector_code: str, symbol: str) -> str:
+    """Classify a market summary row as REG/FUT/CONT/IDX_FUT/ODL.
+
+    Args:
+        sector_code: Sector code from .Z file (e.g. "40", "0807", "36").
+        symbol: Full symbol (e.g. "OGDC", "OGDC-FEB", "OGDC-CFEB").
+
+    Returns:
+        One of: 'REG', 'FUT', 'CONT', 'IDX_FUT', 'ODL'.
+    """
+    sc = str(sector_code).strip()
+    if sc == "36":
+        return "ODL"
+    if sc == "41":
+        return "IDX_FUT"
+    if sc == "40":
+        # CONT: symbol has -C followed by month code (OGDC-CFEB, OGDC-CAPRB)
+        if "-C" in symbol:
+            parts = symbol.rsplit("-C", 1)
+            if len(parts) == 2 and _extract_month(parts[1]) is not None:
+                return "CONT"
+        return "FUT"
+    return "REG"
+
+
+def parse_futures_symbol(
+    symbol: str, market_type: str
+) -> tuple[str, str | None]:
+    """Extract base_symbol and contract_month from a futures symbol.
+
+    Args:
+        symbol: Full symbol (e.g. "OGDC-FEB", "OGDC-CFEB", "P01GIS200826").
+        market_type: One of FUT, CONT, IDX_FUT, ODL.
+
+    Returns:
+        (base_symbol, contract_month). contract_month is None for ODL/REG.
+    """
+    if market_type in ("ODL", "REG"):
+        return symbol, None
+
+    if market_type == "CONT" and "-C" in symbol:
+        parts = symbol.rsplit("-C", 1)
+        if len(parts) == 2:
+            month = _extract_month(parts[1])
+            return parts[0], month
+        return symbol, None
+
+    # FUT or IDX_FUT: OGDC-FEB, KSE30-FEB, OGDC-FEBB
+    if "-" in symbol:
+        parts = symbol.rsplit("-", 1)
+        month = _extract_month(parts[1])
+        return parts[0], month
+
+    return symbol, None
+
+
+# =============================================================================
+# Post-Close Turnover
+# =============================================================================
+
+POST_CLOSE_URL_TEMPLATE = (
+    "https://dps.psx.com.pk/download/post_close/{date}.Z"
+)
+
+
+def download_post_close(
+    d: date | str,
+    session: requests.Session | None = None,
+) -> bytes | None:
+    """Download post_close ZIP for a date. Returns raw bytes or None."""
+    date_str = d if isinstance(d, str) else format_date(d)
+    url = POST_CLOSE_URL_TEMPLATE.format(date=date_str)
+    sess = session or create_session()
+    try:
+        resp = sess.get(url, timeout=30)
+        if resp.status_code == 200 and len(resp.content) > 100:
+            return resp.content
+        logger.warning("post_close %s: HTTP %s (%d bytes)", date_str, resp.status_code, len(resp.content))
+    except Exception as e:
+        logger.warning("post_close %s download failed: %s", date_str, e)
+    return None
+
+
+def parse_post_close(raw_zip: bytes, date_str: str) -> list[dict]:
+    """Parse post_close ZIP content into list of {symbol, date, volume, turnover}.
+
+    The .Z file is actually a ZIP containing a pipe-delimited text file:
+        symbol|company_name|volume|turnover|*
+    """
+    import io
+    import zipfile
+
+    records = []
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(raw_zip))
+        for name in zf.namelist():
+            text = zf.read(name).decode("utf-8", errors="replace")
+            for line in text.strip().split("\n"):
+                parts = line.split("|")
+                if len(parts) < 4:
+                    continue
+                symbol = parts[0].strip()
+                if not symbol:
+                    continue
+                try:
+                    volume = int(parts[2].strip()) if parts[2].strip() else 0
+                    turnover = float(parts[3].strip()) if parts[3].strip() else 0.0
+                except (ValueError, TypeError):
+                    continue
+                records.append({
+                    "symbol": symbol,
+                    "date": date_str,
+                    "company_name": parts[1].strip() if len(parts) > 1 else None,
+                    "volume": volume,
+                    "turnover": turnover,
+                })
+    except (zipfile.BadZipFile, Exception) as e:
+        logger.error("parse_post_close failed: %s", e)
+    return records
+
+
+def fetch_post_close(
+    d: date | str,
+    con,
+    session: requests.Session | None = None,
+    save_raw: bool = True,
+) -> dict[str, Any]:
+    """Download post_close turnover, store in post_close_turnover table,
+    and sync turnover column to eod_ohlcv/futures_eod.
+
+    Returns dict with keys: date, status, stored, eod_updated, futures_updated, total_records.
+    """
+    from psx_ohlcv.db.repositories.post_close import upsert_post_close
+
+    date_str = d if isinstance(d, str) else format_date(d)
+    result = {
+        "date": date_str,
+        "status": "failed",
+        "stored": 0,
+        "eod_updated": 0,
+        "futures_updated": 0,
+        "total_records": 0,
+    }
+
+    raw = download_post_close(d, session=session)
+    if raw is None:
+        result["status"] = "missing"
+        return result
+
+    # Save raw file
+    if save_raw:
+        raw_dir = DATA_ROOT / "market_summary" / "post_close"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        (raw_dir / f"{date_str}.zip").write_bytes(raw)
+
+    records = parse_post_close(raw, date_str)
+    result["total_records"] = len(records)
+
+    if not records:
+        result["status"] = "empty"
+        return result
+
+    # 1. Store in dedicated post_close_turnover table
+    result["stored"] = upsert_post_close(con, records)
+
+    # 2. Sync turnover to eod_ohlcv and futures_eod
+    eod_ok = 0
+    fut_ok = 0
+    for r in records:
+        cur = con.execute(
+            "UPDATE eod_ohlcv SET turnover = ? WHERE symbol = ? AND date = ?",
+            (r["turnover"], r["symbol"], date_str),
+        )
+        eod_ok += cur.rowcount
+
+        cur = con.execute(
+            "UPDATE futures_eod SET turnover = ? WHERE symbol = ? AND date = ?",
+            (r["turnover"], r["symbol"], date_str),
+        )
+        fut_ok += cur.rowcount
+
+    con.commit()
+    result["eod_updated"] = eod_ok
+    result["futures_updated"] = fut_ok
+    result["status"] = "ok"
+    logger.info(
+        "post_close %s: %d records stored, synced eod=%d futures=%d",
+        date_str, len(records), eod_ok, fut_ok,
+    )
+    return result

@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS tick_data (
     mw_high           REAL DEFAULT 0,
     mw_low            REAL DEFAULT 0,
     mw_open           REAL DEFAULT 0,
+    operation         TEXT NOT NULL DEFAULT 'insert',
+    process_ts        TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(symbol, timestamp, price)
 );
 

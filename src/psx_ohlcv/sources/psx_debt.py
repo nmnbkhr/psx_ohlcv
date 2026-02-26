@@ -138,20 +138,78 @@ def parse_number(value_str: str | None) -> float | None:
         return None
 
 
+def _parse_maturity_suffix(symbol: str, match_end: int) -> str | None:
+    """Parse 6-digit DDMMYY maturity date from symbol suffix.
+
+    Example: P01GIS200826 → match_end=6, suffix='200826' → '2026-08-20'
+    """
+    suffix = symbol[match_end:]
+    if len(suffix) != 6 or not suffix.isdigit():
+        return None
+    dd, mm, yy = int(suffix[:2]), int(suffix[2:4]), int(suffix[4:6])
+    year = 2000 + yy
+    try:
+        return f"{year:04d}-{mm:02d}-{dd:02d}"
+    except ValueError:
+        return None
+
+
+def build_display_name(
+    symbol: str,
+    info: dict[str, Any],
+    company_name: str | None = None,
+) -> str:
+    """Build a human-readable display name for a debt/ODL symbol.
+
+    Government: '10Y VRR Sukuk (mat. 2034-10-21)'
+    Corporate:  'HBL TFC #2' or uses company_name if available
+    """
+    sec_type = info.get("security_type")
+    if not sec_type:
+        return company_name or symbol
+
+    if info.get("is_government"):
+        tenor = info.get("tenor_years")
+        maturity = info.get("maturity_date")
+        if tenor and tenor >= 1:
+            tenor_str = f"{int(tenor)}Y"
+        elif tenor:
+            tenor_str = f"{int(tenor * 12)}M"
+        else:
+            tenor_str = ""
+        mat_str = f" (mat. {maturity})" if maturity else ""
+        return f"{tenor_str} {sec_type}{mat_str}".strip()
+
+    # Corporate — prefer company_name from DB when available
+    if company_name:
+        return company_name.strip()
+    issuer = info.get("issuer") or "?"
+    series_match = re.search(r"(\d+)$", symbol)
+    series_str = f" #{series_match.group(1)}" if series_match else ""
+    label = "Sukuk" if info.get("is_islamic") else sec_type
+    return f"{issuer} {label}{series_str}"
+
+
 def parse_symbol_info(symbol: str) -> dict[str, Any]:
     """
-    Parse debt security symbol to extract type and tenor info.
+    Parse debt security symbol to extract type, tenor, maturity, and issuer.
 
     Symbol formats:
-    - Government: P{tenor}{type}{maturity} e.g., P10PIB150136 (10yr PIB)
-    - T-Bills: PK{tenor}TB{maturity} e.g., PK12TB210127 (12m T-Bill)
-    - Corporate: {issuer}{type}{series} e.g., HBLTFC3, KELSC5
+    - Government: P{tenor}{type}{DDMMYY} e.g., P10PIB150136 (10yr PIB mat 2036-01-15)
+    - T-Bills: PK{tenor}TB{DDMMYY} e.g., PK12TB210127 (12m T-Bill mat 2027-01-21)
+    - Corporate: {issuer}TFC{series} e.g., HBLTFC3, or {issuer}SC{series}
+
+    Returns dict with keys: security_type, tenor_years, is_islamic, is_government,
+                            maturity_date, issuer, display_name
     """
-    result = {
+    result: dict[str, Any] = {
         "security_type": None,
         "tenor_years": None,
         "is_islamic": False,
         "is_government": True,
+        "maturity_date": None,
+        "issuer": None,
+        "display_name": symbol,
     }
 
     # Check government patterns
@@ -172,21 +230,39 @@ def parse_symbol_info(symbol: str) -> dict[str, Any]:
         if match:
             result["security_type"] = sec_type
             result["tenor_years"] = tenor_fn(match)
-            result["is_islamic"] = sec_type in ["GIS", "FRR Sukuk", "VRR Sukuk", "Variable GIS"]
+            result["is_islamic"] = sec_type in [
+                "GIS", "FRR Sukuk", "VRR Sukuk", "Variable GIS",
+            ]
+            result["maturity_date"] = _parse_maturity_suffix(symbol, match.end())
+            result["display_name"] = build_display_name(symbol, result)
             return result
 
     # Check corporate patterns
     if "TFC" in symbol:
+        idx = symbol.index("TFC")
         result["security_type"] = "TFC"
         result["is_government"] = False
-    elif "STSC" in symbol:
+        result["issuer"] = symbol[:idx] if idx > 0 else None
+        result["display_name"] = build_display_name(symbol, result)
+        return result
+
+    if "STSC" in symbol:
+        idx = symbol.index("STSC")
         result["security_type"] = "Corporate Sukuk"
         result["is_government"] = False
         result["is_islamic"] = True
-    elif "SC" in symbol:
+        result["issuer"] = symbol[:idx] if idx > 0 else None
+        result["display_name"] = build_display_name(symbol, result)
+        return result
+
+    if "SC" in symbol:
+        idx = symbol.index("SC")
         result["security_type"] = "Corporate Sukuk"
         result["is_government"] = False
         result["is_islamic"] = True
+        result["issuer"] = symbol[:idx] if idx > 0 else None
+        result["display_name"] = build_display_name(symbol, result)
+        return result
 
     return result
 
@@ -311,6 +387,11 @@ def parse_debt_market_tables(html: str) -> dict[str, list[DebtSecurity]]:
                     security.maturity_date = parse_date(cell_texts[6])
                     security.outstanding_days = int(parse_number(cell_texts[-2]) or 0)
                     security.remaining_years = parse_number(cell_texts[-1])
+
+                # If PSX returned the symbol as the name (no real name),
+                # use the decoded display_name instead
+                if not security.name or security.name.strip() == symbol:
+                    security.name = sym_info.get("display_name") or symbol
 
                 result[category_code].append(security)
 

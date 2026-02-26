@@ -93,7 +93,7 @@ def render_treasury_dashboard():
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            if st.button("Sync T-Bill / PIB", type="primary", key="tsy_sync_treasury"):
+            if st.button("Sync T-Bill / PIB (SBP Daily)", type="primary", key="tsy_sync_treasury"):
                 with st.spinner("Syncing treasury auctions from SBP..."):
                     try:
                         result = SBPTreasuryScraper().sync_treasury(con)
@@ -106,7 +106,7 @@ def render_treasury_dashboard():
                         st.error(f"Sync failed: {e}")
 
         with col2:
-            if st.button("Sync Rates (KIBOR/KONIA/PKRV)", key="tsy_sync_rates"):
+            if st.button("Sync Rates (SBP Daily)", key="tsy_sync_rates"):
                 with st.spinner("Syncing rates from SBP..."):
                     try:
                         result = SBPRatesScraper().sync_rates(con)
@@ -119,7 +119,7 @@ def render_treasury_dashboard():
                         st.error(f"Sync failed: {e}")
 
         with col3:
-            if st.button("Sync GIS Auctions", key="tsy_sync_gis"):
+            if st.button("Sync GIS Sukuk (SBP Daily)", key="tsy_sync_gis"):
                 with st.spinner("Syncing GIS auctions from SBP..."):
                     try:
                         result = GSPScraper().sync_gis(con)
@@ -129,7 +129,7 @@ def render_treasury_dashboard():
                         st.error(f"Sync failed: {e}")
 
         st.markdown("##### MUFAP Yield Curves (PKRV/PKISRV/PKFRV)")
-        if st.button("Sync MUFAP Rates", key="tsy_sync_mufap",
+        if st.button("Sync Yield Curves (MUFAP)", key="tsy_sync_mufap",
                       help="Download new PKRV/PKISRV/PKFRV files from MUFAP (incremental — skips dates already in DB)"):
             with st.spinner("Downloading & parsing new MUFAP rate files..."):
                 try:
@@ -150,7 +150,7 @@ def render_treasury_dashboard():
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            if st.button("Backfill SIR PDF", key="tsy_backfill_sir",
+            if st.button("Backfill SIR (T-Bill+PIB+KIBOR)", key="tsy_backfill_sir",
                           help="T-Bills, PIBs, KIBOR, GIS from SBP SIR PDF (~2-4 years)"):
                 with st.spinner("Downloading & parsing SIR PDF..."):
                     try:
@@ -165,7 +165,7 @@ def render_treasury_dashboard():
                         st.error(f"SIR backfill failed: {e}")
 
         with col2:
-            if st.button("Backfill PIB Archive", key="tsy_backfill_pib",
+            if st.button("Backfill PIB (2000–Present)", key="tsy_backfill_pib",
                           help="All PIB auctions from Dec 2000 to present (~42 page PDF)"):
                 with st.spinner("Downloading & parsing PIB archive PDF (42 pages)..."):
                     try:
@@ -212,7 +212,7 @@ def _render_kibor_backfill_button():
             "Start year", min_value=2008, max_value=2026, value=2024,
             key="kibor_start_year", help="Daily KIBOR PDFs from SBP (2008-present)"
         )
-        if st.button("Start KIBOR History Sync", key="tsy_backfill_kibor"):
+        if st.button("Backfill KIBOR (2008–Present)", key="tsy_backfill_kibor"):
             started = start_kibor_history_sync(start_year=int(start_year))
             if started:
                 st.success("KIBOR history sync started in background")
@@ -317,7 +317,7 @@ def _render_yield_curve(con):
     ).fetchall()
 
     if not dates:
-        st.info("No PKRV yield curve data available. Sync MUFAP rates to fetch.")
+        st.info("No PKRV yield curve data available. Sync Yield Curves (MUFAP) to fetch.")
         return
 
     date_list = [r["date"] for r in dates]
@@ -626,7 +626,7 @@ def _render_pkisrv_curve(con):
     row_count = row_count_row["cnt"] if row_count_row else 0
 
     if row_count == 0:
-        st.info("No PKISRV data. Sync MUFAP rates to fetch Islamic yield curve data.")
+        st.info("No PKISRV data. Sync Yield Curves (MUFAP) to fetch Islamic yield curve data.")
         return
 
     # Available dates
@@ -686,7 +686,7 @@ def _render_pkfrv_bonds(con):
     row_count = row_count_row["cnt"] if row_count_row else 0
 
     if row_count == 0:
-        st.info("No PKFRV data. Sync MUFAP rates to fetch floating rate bond valuations.")
+        st.info("No PKFRV data. Sync Yield Curves (MUFAP) to fetch floating rate bond valuations.")
         return
 
     # Available dates

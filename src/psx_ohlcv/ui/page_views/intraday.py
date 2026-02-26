@@ -9,6 +9,8 @@ except ImportError:
     HAS_AUTOREFRESH = False
     st_autorefresh = None
 
+from pathlib import Path
+
 from psx_ohlcv.config import get_db_path
 from psx_ohlcv.query import (
     get_intraday_latest,
@@ -36,6 +38,8 @@ from psx_ohlcv.ui.components.helpers import (
     render_footer,
     render_market_status_badge,
 )
+
+INTRADAY_TEMP_DIR = Path("/mnt/e/psxdata/intradaytemp")
 
 
 def render_intraday():
@@ -74,29 +78,43 @@ def render_intraday():
     # =================================================================
     # BULK INTRADAY SYNC (all symbols)
     # =================================================================
-    with st.expander("Sync All Symbols — Today's Intraday Ticks", expanded=False):
+    with st.expander("Download All Symbols — Today's Intraday Ticks", expanded=False):
         running = is_intraday_sync_running()
         progress = read_intraday_sync_progress()
 
         if running and progress:
             pct = progress["current"] / max(progress["total"], 1)
             st.progress(pct, text=f"{progress['current']}/{progress['total']} — {progress.get('current_symbol', '')}")
-            c1, c2, c3 = st.columns(3)
+            c1, c2, c3, c4 = st.columns(4)
             c1.metric("OK", progress["ok"])
             c2.metric("Failed", progress["failed"])
             c3.metric("Ticks", f"{progress['rows_total']:,}")
+            c4.metric("JSON Saved", progress.get("json_saved", 0))
             if st.button("Refresh", key="int_bulk_refresh"):
                 st.rerun()
         else:
             if progress and progress.get("status") == "completed":
+                json_info = ""
+                if progress.get("json_saved", 0) > 0:
+                    json_info = f", {progress['json_saved']} JSON files"
+                trade_date = progress.get("trading_date", "")
+                date_info = f" (trading date: {trade_date})" if trade_date else ""
                 st.success(
                     f"Last run: {progress['ok']}/{progress['total']} symbols, "
-                    f"{progress['rows_total']:,} ticks — {progress.get('finished_at', '')[:19]}"
+                    f"{progress['rows_total']:,} ticks{json_info}{date_info} — {progress.get('finished_at', '')[:19]}"
                 )
-            if st.button("Sync All Intraday Now", key="int_bulk_btn", type="primary"):
-                started = start_intraday_sync()
+                if progress.get("json_dir"):
+                    st.caption(f"JSON files: {progress['json_dir']}")
+            save_json = st.checkbox(
+                "Save JSON files",
+                value=False,
+                key="int_bulk_save_json",
+                help="Save raw PSX responses to /mnt/e/psxdata/intraday/{date}/{SYMBOL}.json",
+            )
+            if st.button("Download All Intraday Now", key="int_bulk_btn", type="primary"):
+                started = start_intraday_sync(save_json=save_json)
                 if started:
-                    st.success("Bulk intraday sync started in background!")
+                    st.success("Downloading all symbols → intraday_bars + tick_data")
                 else:
                     st.warning("Already running.")
                 st.rerun()
@@ -225,19 +243,19 @@ def render_intraday():
         col1, col2, col3 = st.columns([1, 1, 2])
         with col1:
             fetch_btn = st.button(
-                "🔄 Fetch / Refresh Intraday"
+                f"Download {selected_symbol} Intraday"
                 if not st.session_state.intraday_sync_running
-                else "⏳ Fetching...",
+                else "Downloading...",
                 type="primary",
                 disabled=st.session_state.intraday_sync_running,
-                help=f"Fetch intraday data for {selected_symbol}"
+                help=f"Fetch from PSX API → save to disk (no DB write)"
             )
 
         with col2:
             if st.session_state.intraday_sync_running:
                 st.warning("Fetching...")
 
-        # Execute intraday sync
+        # Execute intraday fetch — disk-only, no DB
         if fetch_btn and not st.session_state.intraday_sync_running:
             st.session_state.intraday_sync_result = None
             st.session_state.intraday_sync_running = True
@@ -246,29 +264,47 @@ def render_intraday():
                 f"Fetching intraday data for {selected_symbol}...",
                 expanded=True
             ) as status:
-                st.write(f"🔄 Fetching intraday data for {selected_symbol}...")
+                st.write(f"Fetching from timeseries/int/{selected_symbol}...")
 
                 try:
-                    summary = sync_intraday(
-                        db_path=get_db_path(),
-                        symbol=selected_symbol,
-                        incremental=incremental_mode,
-                        max_rows=max_rows,
+                    from psx_ohlcv.sources.intraday import (
+                        fetch_intraday_json,
+                        parse_intraday_payload,
                     )
+                    from psx_ohlcv.http import create_session as create_http_session
+                    import json
+                    from datetime import date
 
-                    st.session_state.intraday_sync_result = {
-                        "success": summary.error is None,
-                        "summary": summary,
-                    }
+                    session = create_http_session()
+                    payload = fetch_intraday_json(selected_symbol, session)
+                    df = parse_intraday_payload(selected_symbol, payload)
 
-                    if summary.error:
-                        status.update(
-                            label=f"❌ Failed: {summary.error}", state="error"
-                        )
+                    if df.empty:
+                        st.session_state.intraday_sync_result = {
+                            "success": True,
+                            "rows": 0,
+                            "newest_ts": None,
+                            "csv_path": None,
+                        }
+                        status.update(label="No data returned", state="complete")
                     else:
+                        # Save to disk — intradaytemp/{SYMBOL}.csv (overwrites each fetch)
+                        INTRADAY_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+
+                        csv_path = INTRADAY_TEMP_DIR / f"{selected_symbol}.csv"
+                        save_cols = ["symbol", "ts", "open", "high", "low", "close", "volume"]
+                        df[save_cols].to_csv(csv_path, index=False)
+
+                        newest_ts = df["ts"].max()
+                        st.session_state.intraday_sync_result = {
+                            "success": True,
+                            "rows": len(df),
+                            "newest_ts": newest_ts,
+                            "csv_path": str(csv_path),
+                        }
                         status.update(
-                            label=f"✅ Fetched {summary.rows_upserted} rows",
-                            state="complete"
+                            label=f"Fetched {len(df)} rows → {csv_path}",
+                            state="complete",
                         )
 
                 except Exception as e:
@@ -276,7 +312,7 @@ def render_intraday():
                         "success": False,
                         "error": str(e),
                     }
-                    status.update(label="❌ Fetch failed!", state="error")
+                    status.update(label="Fetch failed!", state="error")
 
                 finally:
                     st.session_state.intraday_sync_running = False
@@ -284,16 +320,20 @@ def render_intraday():
         # Display sync result
         if st.session_state.intraday_sync_result is not None:
             result = st.session_state.intraday_sync_result
-            if result["success"]:
-                summary = result["summary"]
-                st.success(
-                    f"✅ Fetched {summary.rows_upserted} rows for {summary.symbol}"
-                )
-                if summary.newest_ts:
-                    st.caption(f"Latest timestamp: {summary.newest_ts}")
+            if result.get("success"):
+                rows = result.get("rows", 0)
+                csv_path = result.get("csv_path")
+                newest = result.get("newest_ts")
+                if rows > 0:
+                    st.success(f"Fetched {rows} rows for {selected_symbol}")
+                    if csv_path:
+                        st.caption(f"Saved: {csv_path}")
+                    if newest:
+                        st.caption(f"Latest: {newest}")
+                else:
+                    st.info(f"No intraday data returned for {selected_symbol}")
             else:
-                error_msg = result.get("error") or result.get("summary", {}).error
-                st.error(f"❌ Error: {error_msg}")
+                st.error(f"Error: {result.get('error')}")
 
         st.markdown("---")
 
@@ -324,12 +364,20 @@ def render_intraday():
         st.markdown("---")
 
         # Fetch and display intraday data
+        # First try DB, then fall back to temp CSV on disk
         df = get_intraday_latest(con, selected_symbol, limit=limit)
+
+        if df.empty:
+            import pandas as pd
+            temp_csv = INTRADAY_TEMP_DIR / f"{selected_symbol}.csv"
+            if temp_csv.exists():
+                df = pd.read_csv(temp_csv)
+                df = df.sort_values("ts").tail(limit).reset_index(drop=True)
 
         if df.empty:
             st.info(
                 f"No intraday data for {selected_symbol}. "
-                "Click 'Fetch / Refresh Intraday' to fetch data."
+                "Click 'Download' to fetch data."
             )
             render_footer()
             return

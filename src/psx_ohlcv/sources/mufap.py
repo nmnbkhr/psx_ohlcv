@@ -11,12 +11,15 @@ Scrapes live data from mufap.com.pk:
 All endpoints are POST-based JSON APIs (X-Requested-With: XMLHttpRequest).
 """
 
+import asyncio
 import json
 import logging
+import random
 import re
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 import requests
@@ -594,3 +597,140 @@ _STATIC_DEFAULTS = [
      "amc_code": "ABL", "amc_name": "ABL Asset Management", "fund_type": "OPEN_END",
      "category": "Money Market", "is_shariah": 0, "launch_date": "2009-01-01"},
 ]
+
+
+# ---------------------------------------------------------------------------
+# Async batch fetcher (aiohttp)
+# ---------------------------------------------------------------------------
+
+MUFAP_FETCH_TIMEOUT = 120   # seconds per request
+MUFAP_MAX_CONCURRENT = 4    # conservative — MUFAP is a small server
+MUFAP_RATE_DELAY = 0.3      # polite delay between requests
+MUFAP_MAX_RETRIES = 3
+
+
+async def async_fetch_fund_detail(
+    session,
+    semaphore: asyncio.Semaphore,
+    mufap_int_id: str,
+    date: str | None = None,
+) -> tuple[str, dict | None, str | None]:
+    """Async version of fetch_fund_detail.
+
+    Returns:
+        Tuple of (mufap_int_id, parsed_result_dict, error_string_or_None).
+    """
+    import aiohttp  # lazy — avoid import error when aiohttp not installed
+
+    if date is None:
+        date = datetime.now().strftime("%Y-%m-%d")
+
+    url = f"{MUFAP_BASE}/AMC/GetFundDetailbyAMCByDate"
+    body = {"FundID": str(mufap_int_id), "Date": date}
+    last_error = None
+
+    for attempt in range(MUFAP_MAX_RETRIES):
+        async with semaphore:
+            try:
+                timeout = aiohttp.ClientTimeout(total=MUFAP_FETCH_TIMEOUT)
+                async with session.post(
+                    url, json=body, headers=_HEADERS_JSON, timeout=timeout
+                ) as resp:
+                    if resp.status == 200:
+                        resp_data = await resp.json(content_type=None)
+                        await asyncio.sleep(MUFAP_RATE_DELAY)
+
+                        # Parse double-encoded JSON (same as sync version)
+                        inner_str = resp_data.get("data", "{}")
+                        if isinstance(inner_str, str):
+                            inner = json.loads(inner_str) if inner_str else {}
+                        else:
+                            inner = inner_str
+
+                        result = {
+                            "profile": (
+                                inner["Table"][0] if inner.get("Table") else None
+                            ),
+                            "nav_history": inner.get("Table1", []),
+                            "portfolio": (
+                                inner["Table2"][0] if inner.get("Table2") else None
+                            ),
+                            "returns": (
+                                inner["Table4"][0] if inner.get("Table4") else None
+                            ),
+                            "expenses": (
+                                inner["Table5"][0] if inner.get("Table5") else None
+                            ),
+                        }
+                        return mufap_int_id, result, None
+
+                    last_error = "HTTP {}".format(resp.status)
+            except asyncio.TimeoutError:
+                last_error = "timeout"
+            except aiohttp.ClientError as e:
+                last_error = str(e)
+            except json.JSONDecodeError as e:
+                last_error = "JSON decode: {}".format(e)
+            except Exception as e:
+                last_error = str(e)
+
+        # Exponential backoff before retry
+        if attempt < MUFAP_MAX_RETRIES - 1:
+            delay = (2 ** attempt) * 1.0 + random.uniform(0, 1.0)
+            await asyncio.sleep(delay)
+
+    return mufap_int_id, None, last_error
+
+
+async def async_fetch_nav_batch(
+    funds: list[dict],
+    max_concurrent: int = MUFAP_MAX_CONCURRENT,
+    on_result: Callable[[str, str, dict | None, str | None], None] | None = None,
+) -> dict:
+    """Fetch NAV history for multiple funds concurrently.
+
+    Args:
+        funds: List of fund dicts, each must have 'fund_id' and 'mufap_int_id'.
+        max_concurrent: Max concurrent HTTP requests.
+        on_result: Callback(fund_id, mufap_int_id, result_dict, error).
+
+    Returns:
+        Summary dict: {ok, failed, total, elapsed}.
+    """
+    import aiohttp  # lazy — avoid import error when aiohttp not installed
+
+    semaphore = asyncio.Semaphore(max_concurrent)
+    connector = aiohttp.TCPConnector(limit=max_concurrent + 2)
+
+    ok = 0
+    failed = 0
+    start = time.time()
+
+    async with aiohttp.ClientSession(connector=connector) as session:
+
+        async def _fetch_one(fund: dict) -> None:
+            nonlocal ok, failed
+            fund_id = fund["fund_id"]
+            mufap_int_id = fund["mufap_int_id"]
+
+            _mid, result, error = await async_fetch_fund_detail(
+                session, semaphore, mufap_int_id
+            )
+
+            if error:
+                failed += 1
+            else:
+                ok += 1
+
+            if on_result:
+                on_result(fund_id, mufap_int_id, result, error)
+
+        tasks = [_fetch_one(f) for f in funds]
+        await asyncio.gather(*tasks)
+
+    return {
+        "ok": ok,
+        "failed": failed,
+        "total": len(funds),
+        "elapsed": time.time() - start,
+    }

@@ -695,6 +695,14 @@ def symbols_page():
 
 
 # -----------------------------------------------------------------------------
+# Page: Futures & Contracts
+# -----------------------------------------------------------------------------
+def futures_page():
+    from psx_ohlcv.ui.page_views.futures import render_futures
+    render_futures()
+
+
+# -----------------------------------------------------------------------------
 # Page: Schema - Database schema documentation and SQL scripts
 # -----------------------------------------------------------------------------
 def schema_page():
@@ -769,6 +777,11 @@ def ai_insights_page():
 def market_summary_page():
     from psx_ohlcv.ui.page_views.market_summary import render_market_summary
     render_market_summary()
+
+
+def post_close_page():
+    from psx_ohlcv.ui.page_views.post_close import render_post_close
+    render_post_close()
 
 
 # -----------------------------------------------------------------------------
@@ -899,6 +912,11 @@ def psx_debt_market_page():
     render_psx_debt_market()
 
 
+def bond_market_page():
+    from psx_ohlcv.ui.page_views.bond_market import render_bond_market
+    render_bond_market()
+
+
 def treasury_dashboard_page():
     from psx_ohlcv.ui.page_views.treasury_dashboard import render_treasury_dashboard
     render_treasury_dashboard()
@@ -944,6 +962,16 @@ def ws_relay_status_page():
     render_ws_relay_status()
 
 
+def global_rates_page():
+    from psx_ohlcv.ui.page_views.global_rates import render_global_rates
+    render_global_rates()
+
+
+def npc_rates_page():
+    from psx_ohlcv.ui.page_views.npc_rates import render_npc_rates
+    render_npc_rates()
+
+
 # -----------------------------------------------------------------------------
 # Main App — st.navigation() for framework-guaranteed page isolation
 # -----------------------------------------------------------------------------
@@ -969,6 +997,7 @@ def main():
         "📊 Dashboard":      st.Page(dashboard,              title="Dashboard",      url_path="dashboard",      default=True),
         "📡 Live Market":    st.Page(live_market_page,        title="Live Market",    url_path="live-market"),
         "📈 Market Summary": st.Page(market_summary_page,     title="Market Summary", url_path="market-summary"),
+        "💰 Post Close":    st.Page(post_close_page,          title="Post Close",    url_path="post-close"),
         "🔴 Live OHLCV":    st.Page(live_ohlcv_page,          title="Live OHLCV",    url_path="live-ohlcv"),
         "⚡ Live Ticker":   st.Page(live_ticker_page,         title="Live Ticker",   url_path="live-ticker"),
         "📊 Live Indices":  st.Page(live_indices_page,        title="Live Indices",  url_path="live-indices"),
@@ -981,6 +1010,7 @@ def main():
         "🏆 Rankings":       st.Page(rankings_page,           title="Rankings",       url_path="rankings"),
         "📊 Factors":        st.Page(factor_analysis_page,    title="Factors",        url_path="factors"),
         "🧵 Symbols":        st.Page(symbols_page,            title="Symbols",        url_path="symbols"),
+        "📊 Futures":        st.Page(futures_page,            title="Futures",        url_path="futures"),
         # INDICES
         "📊 Index Monitor":  st.Page(indices_analytics_page,  title="Index Monitor",  url_path="index-monitor"),
         "📦 Instruments":    st.Page(instruments_page,        title="Instruments",    url_path="instruments"),
@@ -991,6 +1021,9 @@ def main():
         "🕌 Sukuk":          st.Page(sukuk_screener_page,     title="Sukuk",          url_path="sukuk"),
         "🏛️ SBP Auctions":   st.Page(sbp_auction_archive_page, title="SBP Auctions", url_path="sbp-auctions"),
         "🏦 Treasury":       st.Page(treasury_dashboard_page, title="Treasury",       url_path="treasury"),
+        "📊 Bond Market":    st.Page(bond_market_page,        title="Bond Market",    url_path="bond-market"),
+        "🌐 Global Rates":   st.Page(global_rates_page,       title="Global Rates",   url_path="global-rates"),
+        "🏦 NPC Rates":      st.Page(npc_rates_page,          title="NPC Rates",      url_path="npc-rates"),
         # FX
         "🌍 FX Monitor":     st.Page(fx_overview_page,        title="FX Monitor",     url_path="fx-monitor"),
         "📊 FX Analytics":   st.Page(fx_impact_page,          title="FX Analytics",   url_path="fx-analytics"),
@@ -1017,12 +1050,14 @@ def main():
 
     # Navigation groups — Bloomberg Terminal style
     nav_groups = {
-        "MARKET":       ["📊 Dashboard", "📡 Live Market", "📈 Market Summary", "🔴 Live OHLCV", "⚡ Live Ticker", "📊 Live Indices", "📡 WS Relay"],
+        "MARKET":       ["📊 Dashboard", "📡 Live Market", "📈 Market Summary", "💰 Post Close", "🔴 Live OHLCV", "⚡ Live Ticker", "📊 Live Indices", "📡 WS Relay"],
         "EQUITY":       ["📈 Quote Monitor", "📊 Price Chart", "⏱ Intraday",
-                         "🏢 Company", "🏆 Rankings", "📊 Factors", "🧵 Symbols"],
+                         "🏢 Company", "🏆 Rankings", "📊 Factors", "🧵 Symbols",
+                         "📊 Futures"],
         "INDICES":      ["📊 Index Monitor", "📦 Instruments"],
         "FIXED INCOME": ["📈 FI Overview", "🧾 Bond Search", "📉 Yield Curve",
-                         "🕌 Sukuk", "🏛️ SBP Auctions", "🏦 Treasury"],
+                         "🕌 Sukuk", "🏛️ SBP Auctions", "🏦 Treasury", "🌐 Global Rates",
+                         "🏦 NPC Rates"],
         "FX":           ["🌍 FX Monitor", "📊 FX Analytics", "💱 FX Dashboard"],
         "FUNDS":        ["🏦 Fund Directory", "📊 Fund Analytics", "🔍 Fund Explorer"],
         "DATA":         ["📥 Data Sync", "📂 EOD Loader", "📚 History",

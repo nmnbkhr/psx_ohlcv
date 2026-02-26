@@ -38,7 +38,7 @@ class TestParseMarketSummary:
 
         # Verify shape
         assert len(df) == 3
-        assert list(df.columns) == MARKET_SUMMARY_COLUMNS
+        assert list(df.columns) == MARKET_SUMMARY_COLUMNS + ["market_type"]
 
     def test_correct_column_names(self, tmp_path):
         """Test that parsed DataFrame has correct column names."""
@@ -50,7 +50,8 @@ class TestParseMarketSummary:
 
         expected_columns = [
             "date", "symbol", "sector_code", "company_name",
-            "open", "high", "low", "close", "volume", "prev_close"
+            "open", "high", "low", "close", "volume", "prev_close",
+            "market_type",
         ]
         assert list(df.columns) == expected_columns
 
@@ -96,7 +97,7 @@ class TestParseMarketSummary:
         df = parse_market_summary(test_file)
 
         assert df.empty
-        assert list(df.columns) == MARKET_SUMMARY_COLUMNS
+        assert list(df.columns) == MARKET_SUMMARY_COLUMNS + ["market_type"]
 
     def test_handles_whitespace_lines(self, tmp_path):
         """Test that whitespace-only lines are skipped."""

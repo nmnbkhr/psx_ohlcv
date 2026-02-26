@@ -7,6 +7,7 @@ into the local database for analytics purposes.
 Mutual fund data is READ-ONLY and used for analytics, not investment recommendations.
 """
 
+import asyncio
 import json
 import logging
 import threading
@@ -26,12 +27,15 @@ from .db import (
     get_mutual_fund_by_symbol,
     get_mutual_funds,
     init_schema,
+    parse_nav_history_to_tuples,
     record_mf_sync_run,
     update_mf_sync_run,
     upsert_mf_nav,
+    upsert_mf_nav_batch,
     upsert_mutual_fund,
 )
 from .sources.mufap import (
+    async_fetch_nav_batch,
     fetch_mutual_fund_data,
     get_default_funds,
     normalize_nav_dataframe,
@@ -278,10 +282,12 @@ def get_data_summary(db_path: Path | str | None = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Bulk NAV history sync (background job)
+# Bulk NAV history sync (background job — optimized two-phase pipeline)
 # ---------------------------------------------------------------------------
 
 NAV_SYNC_PROGRESS_FILE = DATA_ROOT / "nav_sync_progress.json"
+NAV_STAGING_DIR = DATA_ROOT / "nav_staging"
+MUFAP_CONCURRENT = 4
 
 log = logging.getLogger("psx_ohlcv.sync_mufap")
 
@@ -303,9 +309,80 @@ def read_nav_sync_progress() -> dict | None:
         return None
 
 
-def sync_all_nav_history(db_path: Path | str | None = None) -> None:
-    """
-    Sync full NAV history for ALL funds that have mufap_int_id.
+# ── Staging helpers ──────────────────────────────────────────────────────
+
+def _stage_nav_json(fund_id: str, mufap_int_id: str, result: dict) -> Path:
+    """Save raw API response to staging directory (atomic write)."""
+    NAV_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+    safe_name = fund_id.replace(":", "_").replace("/", "_")
+    path = NAV_STAGING_DIR / "{}.json".format(safe_name)
+    payload = {
+        "fund_id": fund_id,
+        "mufap_int_id": mufap_int_id,
+        "fetched_at": datetime.now().isoformat(),
+        "data": result,
+    }
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload))
+    tmp.replace(path)
+    return path
+
+
+def _get_staged_fund_ids() -> set[str]:
+    """Return set of fund_ids that already have staged JSON files."""
+    if not NAV_STAGING_DIR.exists():
+        return set()
+    staged = set()
+    for p in NAV_STAGING_DIR.glob("*.json"):
+        try:
+            data = json.loads(p.read_text())
+            staged.add(data["fund_id"])
+        except (json.JSONDecodeError, KeyError, OSError):
+            continue
+    return staged
+
+
+def _read_staged_json(fund_id: str) -> dict | None:
+    """Read a staged JSON file for a fund. Returns parsed dict or None."""
+    safe_name = fund_id.replace(":", "_").replace("/", "_")
+    path = NAV_STAGING_DIR / "{}.json".format(safe_name)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _delete_staged_json(fund_id: str) -> None:
+    """Delete staged JSON file after successful DB write."""
+    safe_name = fund_id.replace(":", "_").replace("/", "_")
+    path = NAV_STAGING_DIR / "{}.json".format(safe_name)
+    path.unlink(missing_ok=True)
+
+
+def clear_nav_staging() -> int:
+    """Delete all staged JSON files. Returns count deleted."""
+    if not NAV_STAGING_DIR.exists():
+        return 0
+    count = 0
+    for p in NAV_STAGING_DIR.glob("*.json"):
+        p.unlink(missing_ok=True)
+        count += 1
+    return count
+
+
+# ── Two-phase orchestrator ───────────────────────────────────────────────
+
+def sync_all_nav_history(
+    db_path: Path | str | None = None,
+    resume: bool = True,
+) -> None:
+    """Optimized bulk NAV sync: async fetch → JSON staging → batch DB write.
+
+    Phase 1: Async HTTP fetch (aiohttp, 4 concurrent) with JSON staging.
+             Skips funds already staged (resume support).
+    Phase 2: Read staged JSON files, batch upsert via executemany.
 
     Writes progress to NAV_SYNC_PROGRESS_FILE so the UI can poll it.
     Designed to run in a background thread.
@@ -316,9 +393,8 @@ def sync_all_nav_history(db_path: Path | str | None = None) -> None:
     # Get all funds with mufap_int_id
     all_funds = get_mutual_funds(con, active_only=False)
     funds = [f for f in all_funds if f.get("mufap_int_id")]
-    con.close()
-
     total = len(funds)
+
     progress = {
         "status": "running",
         "started_at": datetime.now().isoformat(),
@@ -326,54 +402,122 @@ def sync_all_nav_history(db_path: Path | str | None = None) -> None:
         "current": 0,
         "ok": 0,
         "failed": 0,
+        "fetch_ok": 0,
+        "fetch_failed": 0,
+        "fetch_skipped": 0,
         "rows_total": 0,
         "current_fund": "",
+        "phase": "fetch",
         "errors": [],
     }
     _write_progress(progress)
 
+    # ── Phase 1: Async HTTP Fetch + JSON Staging ─────────────────────
+    log.info("Phase 1: Fetching NAV for %d funds (concurrent=%d)", total, MUFAP_CONCURRENT)
+
+    if resume:
+        already_staged = _get_staged_fund_ids()
+        funds_to_fetch = [f for f in funds if f["fund_id"] not in already_staged]
+        progress["fetch_skipped"] = total - len(funds_to_fetch)
+        log.info("Resume: %d already staged, %d to fetch", len(already_staged), len(funds_to_fetch))
+    else:
+        funds_to_fetch = funds
+
+    fetch_count = 0
+
+    def on_fetch_result(fund_id: str, mufap_int_id: str, result: dict | None, error: str | None):
+        nonlocal fetch_count
+        fetch_count += 1
+        progress["current"] = fetch_count + progress["fetch_skipped"]
+        progress["current_fund"] = fund_id
+
+        if error:
+            progress["fetch_failed"] += 1
+            progress["errors"].append("{}: {}".format(fund_id, error))
+            progress["errors"] = progress["errors"][-20:]
+        else:
+            progress["fetch_ok"] += 1
+            _stage_nav_json(fund_id, mufap_int_id, result)
+
+        _write_progress(progress)
+
+    if funds_to_fetch:
+        asyncio.run(
+            async_fetch_nav_batch(
+                funds_to_fetch,
+                max_concurrent=MUFAP_CONCURRENT,
+                on_result=on_fetch_result,
+            )
+        )
+
+    log.info(
+        "Phase 1 complete: %d fetched, %d failed, %d skipped",
+        progress["fetch_ok"], progress["fetch_failed"], progress["fetch_skipped"],
+    )
+
+    # ── Phase 2: DB Batch Write ──────────────────────────────────────
+    log.info("Phase 2: Writing staged NAV data to database")
+    progress["phase"] = "db_write"
+    progress["current"] = 0
+    _write_progress(progress)
+
     for i, fund in enumerate(funds):
         fund_id = fund["fund_id"]
-        symbol = fund.get("symbol", fund_id)
         progress["current"] = i + 1
-        progress["current_fund"] = symbol
-        _write_progress(progress)
+        progress["current_fund"] = fund_id
+        progress["phase"] = "db_write"
+
+        staged = _read_staged_json(fund_id)
+        if staged is None:
+            _write_progress(progress)
+            continue
+
+        nav_history = staged.get("data", {}).get("nav_history", [])
+        if not nav_history:
+            _delete_staged_json(fund_id)
+            _write_progress(progress)
+            continue
 
         try:
-            rows, error = sync_fund_nav(fund_id, db_path=db_path, incremental=False)
-            if error:
-                progress["failed"] += 1
-                progress["errors"].append(f"{symbol}: {error}")
-                # Keep only last 20 errors
-                progress["errors"] = progress["errors"][-20:]
-            else:
-                progress["ok"] += 1
-                progress["rows_total"] += rows
+            rows = parse_nav_history_to_tuples(fund_id, nav_history)
+            count = upsert_mf_nav_batch(con, fund_id, rows)
+            progress["ok"] += 1
+            progress["rows_total"] += count
         except Exception as e:
             progress["failed"] += 1
-            progress["errors"].append(f"{symbol}: {e}")
+            progress["errors"].append("{}: DB: {}".format(fund_id, e))
             progress["errors"] = progress["errors"][-20:]
-            log.exception("Error syncing %s", symbol)
+            log.exception("DB write failed for %s", fund_id)
 
+        _delete_staged_json(fund_id)
         _write_progress(progress)
 
+    # ── Finalize ─────────────────────────────────────────────────────
     progress["status"] = "completed"
     progress["finished_at"] = datetime.now().isoformat()
     _write_progress(progress)
+
     log.info(
-        "Bulk NAV sync complete: %d/%d ok, %d rows",
-        progress["ok"], total, progress["rows_total"],
+        "Bulk NAV sync complete: %d/%d ok, %d rows, %d fetch errors",
+        progress["ok"], total, progress["rows_total"], progress["fetch_failed"],
     )
 
 
 _bulk_sync_thread: threading.Thread | None = None
 
 
-def start_bulk_nav_sync(db_path: Path | str | None = None) -> bool:
-    """
-    Launch bulk NAV sync in a background thread.
+def start_bulk_nav_sync(
+    db_path: Path | str | None = None,
+    resume: bool = True,
+) -> bool:
+    """Launch bulk NAV sync in a background thread.
 
-    Returns True if started, False if already running.
+    Args:
+        db_path: Database path.
+        resume: If True, skip funds already staged on disk.
+
+    Returns:
+        True if started, False if already running.
     """
     global _bulk_sync_thread
     if _bulk_sync_thread is not None and _bulk_sync_thread.is_alive():
@@ -381,7 +525,7 @@ def start_bulk_nav_sync(db_path: Path | str | None = None) -> bool:
 
     _bulk_sync_thread = threading.Thread(
         target=sync_all_nav_history,
-        kwargs={"db_path": db_path},
+        kwargs={"db_path": db_path, "resume": resume},
         daemon=True,
         name="bulk-nav-sync",
     )
