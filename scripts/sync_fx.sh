@@ -1,10 +1,10 @@
 #!/bin/bash
 # Sync FX rates: SBP interbank + forex.pk kerb
-# Cron: 0 13 * * 1-5 ~/psx_ohlcv/scripts/sync_fx.sh
+# Cron: 0 13 * * 1-5 ~/pakfindata/scripts/sync_fx.sh
 
 set -euo pipefail
 
-PROJECT_DIR="$HOME/psx_ohlcv"
+PROJECT_DIR="$HOME/pakfindata"
 CONDA_BIN="/opt/miniconda/bin/conda"
 CONDA_ENV="handwriting"
 LOG_DIR="/mnt/e/psxdata/logs"
@@ -17,9 +17,9 @@ echo "=== FX Sync: $(date) ===" >> "$LOG_FILE"
 
 cd "$PROJECT_DIR"
 $CONDA_BIN run -n "$CONDA_ENV" \
-    python -m psx_ohlcv.cli --db "$DB_PATH" fx-rates sbp-sync >> "$LOG_FILE" 2>&1 || true
+    python -m pakfindata.cli --db "$DB_PATH" fx-rates sbp-sync >> "$LOG_FILE" 2>&1 || true
 
 $CONDA_BIN run -n "$CONDA_ENV" \
-    python -m psx_ohlcv.cli --db "$DB_PATH" fx-rates kerb-sync >> "$LOG_FILE" 2>&1 || true
+    python -m pakfindata.cli --db "$DB_PATH" fx-rates kerb-sync >> "$LOG_FILE" 2>&1 || true
 
 echo "=== Completed: $(date) ===" >> "$LOG_FILE"

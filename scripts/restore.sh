@@ -17,7 +17,7 @@ set -e
 # Configuration
 DB_PATH="/mnt/e/psxdata/psx.sqlite"
 BACKUP_DIR="/mnt/e/psxdata/backups"
-CODE_DIR="/home/adnoman/psx_ohlcv"
+CODE_DIR="/home/adnoman/pakfindata"
 LOG_DIR="/mnt/e/psxdata/logs"
 DATE=$(date +%Y%m%d_%H%M%S)
 
@@ -92,7 +92,7 @@ restore_database() {
 
     # Stop services
     log "Stopping services..."
-    pkill -f "psxsync" 2>/dev/null || true
+    pkill -f "pfsync" 2>/dev/null || true
     pkill -f "streamlit" 2>/dev/null || true
     sleep 2
 
@@ -222,7 +222,7 @@ recover_database() {
 
     # Stop services
     log "Stopping services..."
-    pkill -f "psxsync" 2>/dev/null || true
+    pkill -f "pfsync" 2>/dev/null || true
     pkill -f "streamlit" 2>/dev/null || true
     sleep 2
 

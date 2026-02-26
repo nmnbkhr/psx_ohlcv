@@ -10,7 +10,7 @@
 #   ./backup.sh --quick      # Quick backup (no compression)
 #
 # Cron setup (daily at 2 AM):
-#   0 2 * * * /home/adnoman/psx_ohlcv/scripts/backup.sh >> /mnt/e/psxdata/logs/backup.log 2>&1
+#   0 2 * * * /home/adnoman/pakfindata/scripts/backup.sh >> /mnt/e/psxdata/logs/backup.log 2>&1
 #
 # =============================================================================
 
@@ -19,7 +19,7 @@ set -e
 # Configuration
 DB_PATH="/mnt/e/psxdata/psx.sqlite"
 BACKUP_DIR="/mnt/e/psxdata/backups"
-CODE_DIR="/home/adnoman/psx_ohlcv"
+CODE_DIR="/home/adnoman/pakfindata"
 LOG_DIR="/mnt/e/psxdata/logs"
 RETENTION_DAYS=30
 DATE=$(date +%Y%m%d_%H%M%S)

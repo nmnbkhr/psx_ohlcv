@@ -1,10 +1,10 @@
 #!/bin/bash
 # Sync KIBOR, KONIA, PKRV, and SBP policy rate
-# Cron: 30 12 * * 1-5 ~/psx_ohlcv/scripts/sync_rates.sh
+# Cron: 30 12 * * 1-5 ~/pakfindata/scripts/sync_rates.sh
 
 set -euo pipefail
 
-PROJECT_DIR="$HOME/psx_ohlcv"
+PROJECT_DIR="$HOME/pakfindata"
 CONDA_BIN="/opt/miniconda/bin/conda"
 CONDA_ENV="handwriting"
 LOG_DIR="/mnt/e/psxdata/logs"
@@ -17,12 +17,12 @@ echo "=== Rate Sync: $(date) ===" >> "$LOG_FILE"
 
 cd "$PROJECT_DIR"
 $CONDA_BIN run -n "$CONDA_ENV" \
-    python -m psx_ohlcv.cli --db "$DB_PATH" rates yield-curve >> "$LOG_FILE" 2>&1 || true
+    python -m pakfindata.cli --db "$DB_PATH" rates yield-curve >> "$LOG_FILE" 2>&1 || true
 
 $CONDA_BIN run -n "$CONDA_ENV" \
-    python -m psx_ohlcv.cli --db "$DB_PATH" rates kibor >> "$LOG_FILE" 2>&1 || true
+    python -m pakfindata.cli --db "$DB_PATH" rates kibor >> "$LOG_FILE" 2>&1 || true
 
 $CONDA_BIN run -n "$CONDA_ENV" \
-    python -m psx_ohlcv.cli --db "$DB_PATH" rates konia >> "$LOG_FILE" 2>&1 || true
+    python -m pakfindata.cli --db "$DB_PATH" rates konia >> "$LOG_FILE" 2>&1 || true
 
 echo "=== Completed: $(date) ===" >> "$LOG_FILE"

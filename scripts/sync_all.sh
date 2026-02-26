@@ -5,7 +5,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$HOME/psx_ohlcv"
+PROJECT_DIR="$HOME/pakfindata"
 CONDA_BIN="/opt/miniconda/bin/conda"
 CONDA_ENV="handwriting"
 LOG_DIR="/mnt/e/psxdata/logs"
@@ -42,7 +42,7 @@ bash "$SCRIPT_DIR/sync_etf.sh" >> "$LOG_FILE" 2>&1 || echo "ETF sync had errors"
 echo "--- Step 6: CLI sync-all ---" >> "$LOG_FILE"
 cd "$PROJECT_DIR"
 $CONDA_BIN run -n "$CONDA_ENV" \
-    python -m psx_ohlcv.cli --db "$DB_PATH" sync-all >> "$LOG_FILE" 2>&1 || echo "CLI sync-all had errors" >> "$LOG_FILE"
+    python -m pakfindata.cli --db "$DB_PATH" sync-all >> "$LOG_FILE" 2>&1 || echo "CLI sync-all had errors" >> "$LOG_FILE"
 
 echo "======================================" >> "$LOG_FILE"
 echo "=== Full Sync Complete: $(date) ===" >> "$LOG_FILE"
@@ -50,4 +50,4 @@ echo "======================================" >> "$LOG_FILE"
 
 # Show status
 $CONDA_BIN run -n "$CONDA_ENV" \
-    python -m psx_ohlcv.cli --db "$DB_PATH" status >> "$LOG_FILE" 2>&1 || true
+    python -m pakfindata.cli --db "$DB_PATH" status >> "$LOG_FILE" 2>&1 || true

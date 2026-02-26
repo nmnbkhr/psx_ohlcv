@@ -15,7 +15,7 @@ set -e
 # Configuration
 DB_PATH="/mnt/e/psxdata/psx.sqlite"
 BACKUP_DIR="/mnt/e/psxdata/backups"
-CODE_DIR="/home/adnoman/psx_ohlcv"
+CODE_DIR="/home/adnoman/pakfindata"
 SERVICE_DIR="/mnt/e/psxdata/services"
 
 # Colors
