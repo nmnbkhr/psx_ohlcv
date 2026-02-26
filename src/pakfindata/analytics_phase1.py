@@ -185,7 +185,7 @@ def _get_instrument_ohlcv(
     except Exception:
         symbol = None
 
-    # Try eod_ohlcv first (equities, ETFs, REITs synced via psxsync eod)
+    # Try eod_ohlcv first (equities, ETFs, REITs synced via pfsync eod)
     if symbol:
         df = get_eod_ohlcv(con, symbol=symbol, start_date=start_date, end_date=end_date, limit=limit)
         if not df.empty:

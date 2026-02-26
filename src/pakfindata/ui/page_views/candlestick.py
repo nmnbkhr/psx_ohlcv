@@ -32,7 +32,7 @@ def render_candlestick():
         # Load symbols
         symbols = client.get_symbols(active_only=False)
         if not symbols:
-            st.warning("No symbols found. Run `psxsync symbols refresh` first.")
+            st.warning("No symbols found. Run `pfsync symbols refresh` first.")
             render_footer()
             return
 
@@ -82,7 +82,7 @@ def render_candlestick():
 
         if df.empty:
             st.warning(
-                f"No data for {selected}. Run `psxsync sync --symbols {selected}`."
+                f"No data for {selected}. Run `pfsync sync --symbols {selected}`."
             )
             render_footer()
             return

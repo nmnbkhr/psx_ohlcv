@@ -1172,7 +1172,7 @@ def main():
         pass
 
     st.sidebar.markdown("---")
-    st.sidebar.caption("CLI: `psxsync --help`")
+    st.sidebar.caption("CLI: `pfsync --help`")
     st.sidebar.caption(f"DB: `{get_db_path()}`")
 
     # =================================================================

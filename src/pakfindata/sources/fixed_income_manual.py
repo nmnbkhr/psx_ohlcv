@@ -641,7 +641,7 @@ Yield curve points by tenor.
 ## Loading Data
 
 ```bash
-psxsync fixed-income load \\
+pfsync fixed-income load \\
     --master data/fixed_income/fi_instruments.csv \\
     --quotes data/fixed_income/fi_quotes.csv \\
     --curves data/fixed_income/fi_curves.csv

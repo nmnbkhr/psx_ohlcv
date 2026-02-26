@@ -149,7 +149,7 @@ EXIT_ALL_FAILED = 2
 def main(argv: list[str] | None = None) -> int:
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
-        prog="psxsync",
+        prog="pfsync",
         description="PSX OHLCV data sync tool",
     )
     parser.add_argument(
@@ -2285,7 +2285,7 @@ def handle_tick_service(args: argparse.Namespace) -> int:
 
     action = getattr(args, "ts_action", None)
     if action is None:
-        print("Usage: psxsync tick-service {start|daemon|stop|status}")
+        print("Usage: pfsync tick-service {start|daemon|stop|status}")
         return 1
 
     if action == "start":
@@ -2344,7 +2344,7 @@ def handle_symbols(args: argparse.Namespace) -> int:
         con.close()
 
         if not rows:
-            print("No symbols found. Run 'psxsync symbols refresh' first.")
+            print("No symbols found. Run 'pfsync symbols refresh' first.")
             return 0
 
         if args.format == "csv":
@@ -2376,7 +2376,7 @@ def handle_symbols(args: argparse.Namespace) -> int:
 
         if not result:
             print(
-                "No symbols found. Run 'psxsync symbols refresh' first.",
+                "No symbols found. Run 'pfsync symbols refresh' first.",
                 file=sys.stderr,
             )
             return 1
@@ -2414,7 +2414,7 @@ def handle_sync(args: argparse.Namespace) -> int:
         if not existing_symbols and not args.refresh_symbols:
             print(
                 "No symbols to sync. "
-                "Run 'psxsync symbols refresh' first or use --refresh-symbols."
+                "Run 'pfsync symbols refresh' first or use --refresh-symbols."
             )
             return EXIT_ERROR
 
@@ -3077,10 +3077,10 @@ def handle_intraday_sync_all(args: argparse.Namespace) -> int:
 
     Example cron entries:
         # Every 5 minutes during market hours (9:30 AM - 3:30 PM PKT, Mon-Fri)
-        */5 9-15 * * 1-5 psxsync intraday sync-all --quiet
+        */5 9-15 * * 1-5 pfsync intraday sync-all --quiet
 
         # Full refresh every night at midnight
-        0 0 * * * psxsync intraday sync-all --no-incremental --quiet
+        0 0 * * * pfsync intraday sync-all --no-incremental --quiet
     """
     setup_logging()
 
@@ -3150,7 +3150,7 @@ def handle_intraday_show(args: argparse.Namespace) -> int:
     if stats["row_count"] == 0:
         print(f"No intraday data found for symbol: {symbol}", file=sys.stderr)
         print(
-            f"Run 'psxsync intraday sync --symbol {symbol}' to fetch data.",
+            f"Run 'pfsync intraday sync --symbol {symbol}' to fetch data.",
             file=sys.stderr
         )
         con.close()
@@ -3399,7 +3399,7 @@ def handle_regular_market_show(args: argparse.Namespace) -> int:
     if df.empty:
         print("No regular market data found.", file=sys.stderr)
         print(
-            "Run 'psxsync regular-market snapshot' to fetch data.",
+            "Run 'pfsync regular-market snapshot' to fetch data.",
             file=sys.stderr
         )
         return EXIT_ERROR
@@ -3473,7 +3473,7 @@ def handle_sectors_list(args: argparse.Namespace) -> int:
     if not sectors:
         print("No sectors found.", file=sys.stderr)
         print(
-            "Run 'psxsync sectors refresh' to fetch sectors.",
+            "Run 'pfsync sectors refresh' to fetch sectors.",
             file=sys.stderr
         )
         return EXIT_ERROR
@@ -3508,7 +3508,7 @@ def handle_sectors_export(args: argparse.Namespace) -> int:
     if count == 0:
         print("No sectors to export.", file=sys.stderr)
         print(
-            "Run 'psxsync sectors refresh' to fetch sectors first.",
+            "Run 'pfsync sectors refresh' to fetch sectors first.",
             file=sys.stderr
         )
         return EXIT_ERROR
@@ -3570,7 +3570,7 @@ def handle_master_list(args: argparse.Namespace) -> int:
     if df.empty:
         print("No symbols found.", file=sys.stderr)
         print(
-            "Run 'psxsync master refresh' to fetch symbols.",
+            "Run 'pfsync master refresh' to fetch symbols.",
             file=sys.stderr
         )
         return EXIT_ERROR
@@ -3615,7 +3615,7 @@ def handle_master_export(args: argparse.Namespace) -> int:
     if count == 0:
         print("No symbols to export.", file=sys.stderr)
         print(
-            "Run 'psxsync master refresh' to fetch symbols first.",
+            "Run 'pfsync master refresh' to fetch symbols first.",
             file=sys.stderr
         )
         return EXIT_ERROR
@@ -3920,7 +3920,7 @@ def handle_company_import_payouts(args: argparse.Namespace) -> int:
         2. Wait for page to fully load (payouts section visible)
         3. Right-click > View Page Source (or Ctrl+U)
         4. Save the page source as an HTML file
-        5. Run: psxsync company import-payouts --symbol SYMBOL --file path/to/saved.html
+        5. Run: pfsync company import-payouts --symbol SYMBOL --file path/to/saved.html
     """
     from pathlib import Path
 
@@ -4238,7 +4238,7 @@ def handle_universe_list(args: argparse.Namespace) -> int:
 
     if not instruments:
         print("No instruments found.", file=sys.stderr)
-        print("Run 'psxsync universe seed-phase1' to seed instruments.", file=sys.stderr)
+        print("Run 'pfsync universe seed-phase1' to seed instruments.", file=sys.stderr)
         return EXIT_ERROR
 
     if args.out == "csv":
@@ -4430,7 +4430,7 @@ def handle_instruments_rankings(args: argparse.Namespace) -> int:
 
     if not rankings:
         print("\nNo rankings found.")
-        print("Run 'psxsync instruments rankings --compute' to compute rankings.")
+        print("Run 'pfsync instruments rankings --compute' to compute rankings.")
         return EXIT_SUCCESS
 
     if args.out == "csv":
@@ -4589,7 +4589,7 @@ def handle_fx_show(args: argparse.Namespace) -> int:
     pair_info = get_fx_pair(con, pair)
     if not pair_info:
         print(f"FX pair '{pair}' not found.", file=sys.stderr)
-        print("Run 'psxsync fx seed' to seed FX pairs.", file=sys.stderr)
+        print("Run 'pfsync fx seed' to seed FX pairs.", file=sys.stderr)
         con.close()
         return EXIT_ERROR
 
@@ -4847,7 +4847,7 @@ def handle_mufap_show(args: argparse.Namespace) -> int:
         fund = get_mutual_fund_by_symbol(con, fund_query)
     if not fund:
         print(f"Mutual fund '{fund_query}' not found.", file=sys.stderr)
-        print("Run 'psxsync mufap seed' to seed mutual funds.", file=sys.stderr)
+        print("Run 'pfsync mufap seed' to seed mutual funds.", file=sys.stderr)
         con.close()
         return EXIT_ERROR
 
@@ -4931,7 +4931,7 @@ def handle_mufap_list(args: argparse.Namespace) -> int:
 
     if not funds:
         print("No mutual funds found.", file=sys.stderr)
-        print("Run 'psxsync mufap seed' to seed mutual funds.", file=sys.stderr)
+        print("Run 'pfsync mufap seed' to seed mutual funds.", file=sys.stderr)
         con.close()
         return EXIT_ERROR
 
@@ -4971,7 +4971,7 @@ def handle_mufap_rankings(args: argparse.Namespace) -> int:
 
     if summary.get("error"):
         print(f"No data for category '{category}'.", file=sys.stderr)
-        print("Run 'psxsync mufap seed' and 'psxsync mufap sync' first.", file=sys.stderr)
+        print("Run 'pfsync mufap seed' and 'pfsync mufap sync' first.", file=sys.stderr)
         con.close()
         return EXIT_ERROR
 
@@ -5272,7 +5272,7 @@ def handle_bonds_list(args: argparse.Namespace) -> int:
 
     if not bonds:
         print("No bonds found.", file=sys.stderr)
-        print("Run 'psxsync bonds init' to seed default bonds.", file=sys.stderr)
+        print("Run 'pfsync bonds init' to seed default bonds.", file=sys.stderr)
         con.close()
         return EXIT_ERROR
 
@@ -5375,7 +5375,7 @@ def handle_bonds_curve(args: argparse.Namespace) -> int:
 
     if not points:
         print(f"No yield curve data for {bond_type}.", file=sys.stderr)
-        print("Run 'psxsync bonds compute --curve' first.", file=sys.stderr)
+        print("Run 'pfsync bonds compute --curve' first.", file=sys.stderr)
         con.close()
         return EXIT_ERROR
 
@@ -5751,7 +5751,7 @@ def handle_sukuk_curve(args: argparse.Namespace) -> int:
 
     if result.get("error"):
         print(f"Error: {result['error']}", file=sys.stderr)
-        print("Tip: Run 'psxsync sukuk sync --include-curves' to generate sample curves.")
+        print("Tip: Run 'pfsync sukuk sync --include-curves' to generate sample curves.")
         return EXIT_ERROR
 
     print(f"\nYield Curve: {result.get('curve_name')}")
@@ -6323,7 +6323,7 @@ def handle_etf(args: argparse.Namespace) -> int:
     elif args.etf_command == "list":
         df = get_all_etf_latest_nav(con)
         if df.empty:
-            print("No ETF data. Run 'psxsync etf sync' first.")
+            print("No ETF data. Run 'pfsync etf sync' first.")
             return 0
         print(df.to_string(index=False))
         return 0
@@ -6332,7 +6332,7 @@ def handle_etf(args: argparse.Namespace) -> int:
         symbol = args.symbol.upper()
         detail = get_etf_detail(con, symbol)
         if not detail:
-            print(f"ETF {symbol} not found. Run 'psxsync etf sync' first.")
+            print(f"ETF {symbol} not found. Run 'pfsync etf sync' first.")
             return 1
         print(f"\n{'='*50}")
         print(f"  {detail['symbol']} — {detail['name']}")
@@ -6383,7 +6383,7 @@ def handle_treasury(args: argparse.Namespace) -> int:
     elif args.treasury_command == "tbill-latest":
         yields = get_latest_tbill_yields(con)
         if not yields:
-            print("No T-Bill data. Run 'psxsync treasury sync' first.")
+            print("No T-Bill data. Run 'pfsync treasury sync' first.")
             return 0
         print(f"\n{'='*50}")
         print("  Latest T-Bill Cutoff Yields")
@@ -6398,7 +6398,7 @@ def handle_treasury(args: argparse.Namespace) -> int:
     elif args.treasury_command == "pib-latest":
         yields = get_latest_pib_yields(con)
         if not yields:
-            print("No PIB data. Run 'psxsync treasury sync' first.")
+            print("No PIB data. Run 'pfsync treasury sync' first.")
             return 0
         print(f"\n{'='*50}")
         print("  Latest PIB Cutoff Yields")
@@ -6415,7 +6415,7 @@ def handle_treasury(args: argparse.Namespace) -> int:
     elif args.treasury_command == "tbill-list":
         df = get_tbill_auctions(con, tenor=args.tenor)
         if df.empty:
-            print("No T-Bill auction data. Run 'psxsync treasury sync' first.")
+            print("No T-Bill auction data. Run 'pfsync treasury sync' first.")
             return 0
         print(df.head(args.limit).to_string(index=False))
         return 0
@@ -6435,7 +6435,7 @@ def handle_treasury(args: argparse.Namespace) -> int:
         from .db.repositories.treasury import get_gis_auctions
         df = get_gis_auctions(con)
         if df.empty:
-            print("No GIS data. Run 'psxsync treasury gis-sync' first.")
+            print("No GIS data. Run 'pfsync treasury gis-sync' first.")
             return 0
         print(df.to_string(index=False))
         return 0
@@ -6488,7 +6488,7 @@ def handle_rates(args: argparse.Namespace) -> int:
     elif args.rates_command == "konia":
         konia = get_latest_konia(con)
         if not konia:
-            print("No KONIA data. Run 'psxsync rates sync' first.")
+            print("No KONIA data. Run 'pfsync rates sync' first.")
             return 0
         print(f"\n  KONIA (Overnight Rate): {konia['rate_pct']}%")
         print(f"  Date: {konia['date']}")
@@ -6497,7 +6497,7 @@ def handle_rates(args: argparse.Namespace) -> int:
     elif args.rates_command == "kibor":
         df = get_kibor_history(con)
         if df.empty:
-            print("No KIBOR data. Run 'psxsync rates sync' first.")
+            print("No KIBOR data. Run 'pfsync rates sync' first.")
             return 0
         # Show latest date only
         latest_date = df.iloc[0]["date"]
@@ -6511,7 +6511,7 @@ def handle_rates(args: argparse.Namespace) -> int:
     elif args.rates_command == "curve":
         df = get_pkrv_curve(con, date=args.date)
         if df.empty:
-            print("No yield curve data. Run 'psxsync rates sync' first.")
+            print("No yield curve data. Run 'pfsync rates sync' first.")
             return 0
         curve_date = df.iloc[0]["date"]
         print(f"\n{'='*50}")
@@ -6598,7 +6598,7 @@ def handle_fx_rates(args: argparse.Namespace) -> int:
                         f"{row['selling']:>10.2f}  {row['date']:>12s}"
                     )
             else:
-                print("  No interbank data. Run 'psxsync fx-rates sbp-sync' first.")
+                print("  No interbank data. Run 'pfsync fx-rates sbp-sync' first.")
 
         if args.source in ("kerb", "all"):
             df = get_all_fx_latest(con, source="kerb")
@@ -6611,7 +6611,7 @@ def handle_fx_rates(args: argparse.Namespace) -> int:
                         f"{row['selling']:>10.2f}  {row['date']:>12s}"
                     )
             else:
-                print("  No kerb data. Run 'psxsync fx-rates kerb-sync' first.")
+                print("  No kerb data. Run 'pfsync fx-rates kerb-sync' first.")
         return 0
 
     elif args.fxe_command == "spread":
@@ -6739,7 +6739,7 @@ def handle_ipo(args: argparse.Namespace) -> int:
     elif args.ipo_command == "list":
         df = get_ipo_listings(con, status=args.status, board=args.board)
         if df.empty:
-            print("No IPO records found. Run 'psxsync ipo sync' first.")
+            print("No IPO records found. Run 'pfsync ipo sync' first.")
             return 0
         print(f"\n  IPO Listings ({len(df)} records)")
         print(f"  {'Symbol':>8s}  {'Board':>5s}  {'Status':>10s}  {'Listing Date':>12s}  {'Company'}")
@@ -7179,7 +7179,7 @@ def handle_globalrates(args: argparse.Namespace) -> int:
         df = get_all_latest_rates(con)
         con.close()
         if df.empty:
-            print("No rates found. Run: psxsync globalrates sync")
+            print("No rates found. Run: pfsync globalrates sync")
             return 0
         print(df.to_string(index=False))
         return 0
@@ -7246,7 +7246,7 @@ def handle_npc(args: argparse.Namespace) -> int:
         )
         con.close()
         if df.empty:
-            print("No NPC rates found. Run: psxsync npc sync")
+            print("No NPC rates found. Run: pfsync npc sync")
             return 0
         print(df.to_string(index=False))
         return 0
@@ -7275,7 +7275,7 @@ def handle_npc(args: argparse.Namespace) -> int:
         )
         con.close()
         if df.empty:
-            print("No spread data. Run: psxsync npc sync")
+            print("No spread data. Run: pfsync npc sync")
             return 0
         print(df.to_string(index=False))
         return 0

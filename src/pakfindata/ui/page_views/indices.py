@@ -44,7 +44,7 @@ def render_indices():
     indices = get_instruments(con, instrument_type="INDEX", active_only=True)
 
     if not indices:
-        st.warning("No indices found. Run `psxsync universe seed-phase1` to seed indices.")
+        st.warning("No indices found. Run `pfsync universe seed-phase1` to seed indices.")
         render_footer()
         return
 
@@ -248,7 +248,7 @@ def render_indices():
                 )
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No OHLCV data available. Run `psxsync instruments sync-eod` to sync index data.")
+            st.info("No OHLCV data available. Run `pfsync instruments sync-eod` to sync index data.")
 
         # Constituents table
         constituents = get_index_constituents(con, selected_symbol)

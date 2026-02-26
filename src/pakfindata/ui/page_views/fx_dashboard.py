@@ -181,7 +181,7 @@ def _render_history_chart(con):
         )
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info(f"No historical data for {currency}. Run `psxsync fx-rates sync-all` to fetch.")
+        st.info(f"No historical data for {currency}. Run `pfsync fx-rates sync-all` to fetch.")
 
 
 def _render_spread_analysis(con):
@@ -256,7 +256,7 @@ def _render_all_currencies(con):
             st.caption("Showing kerb market rates (interbank data not yet available)")
 
     if df.empty:
-        st.info("No currency data available. Run `psxsync fx-rates sync-all` to fetch.")
+        st.info("No currency data available. Run `pfsync fx-rates sync-all` to fetch.")
         return
 
     st.dataframe(

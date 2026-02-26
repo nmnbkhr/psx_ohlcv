@@ -392,7 +392,7 @@ def _render_etf_section(con):
     )
 
     if df.empty:
-        st.info("No ETF data. Run `psxsync etf sync` to fetch.")
+        st.info("No ETF data. Run `pfsync etf sync` to fetch.")
         return
 
     st.dataframe(

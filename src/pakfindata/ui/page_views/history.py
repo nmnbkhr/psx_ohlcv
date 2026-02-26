@@ -43,8 +43,8 @@ def render_history():
     if ohlcv_stats["total_rows"] == 0:
         st.warning(
             "No OHLCV history data available yet. To populate history:\n\n"
-            "1. Run `psxsync sync --all` to fetch historical EOD data\n"
-            "2. Or use `psxsync sync SYMBOL` for specific symbols"
+            "1. Run `pfsync sync --all` to fetch historical EOD data\n"
+            "2. Or use `pfsync sync SYMBOL` for specific symbols"
         )
         render_footer()
         return

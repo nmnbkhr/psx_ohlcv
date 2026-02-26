@@ -142,7 +142,7 @@ def render_sync_monitor():
             if incremental_mode:
                 cli_flags += " --incremental"
             st.caption("Equivalent CLI command:")
-            st.code(f"psxsync sync {cli_flags}", language="bash")
+            st.code(f"pfsync sync {cli_flags}", language="bash")
 
         # Run Sync Button
         col1, col2, col3 = st.columns([1, 1, 2])
@@ -244,7 +244,7 @@ def render_sync_monitor():
                 language="bash"
             )
             st.caption("Cron example (every 5 min during market hours):")
-            st.code("*/5 9-15 * * 1-5 psxsync intraday sync-all -q", language="bash")
+            st.code("*/5 9-15 * * 1-5 pfsync intraday sync-all -q", language="bash")
 
         # Start button
         if st.button("▶️ Start Background Service", type="primary", key="btn_start_service"):
@@ -294,7 +294,7 @@ def render_sync_monitor():
         if intraday_limit > 0:
             cli_flags += f" --limit {intraday_limit}"
         st.caption("Equivalent CLI command:")
-        st.code(f"psxsync intraday sync-all{cli_flags}", language="bash")
+        st.code(f"pfsync intraday sync-all{cli_flags}", language="bash")
 
     # Bulk Intraday Sync Buttons
     col1, col2, col3 = st.columns([1, 1, 1])
@@ -471,7 +471,7 @@ def render_sync_monitor():
         with col2:
             st.caption("CLI equivalent:")
             st.code(
-                f"psxsync announcements service start --interval {ann_interval}",
+                f"pfsync announcements service start --interval {ann_interval}",
                 language="bash"
             )
 

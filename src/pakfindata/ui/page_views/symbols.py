@@ -76,7 +76,7 @@ def render_symbols():
         st.markdown(f"**{len(df)} symbols found**")
 
         if df.empty:
-            st.info("No symbols found. Run `psxsync master refresh` to fetch.")
+            st.info("No symbols found. Run `pfsync master refresh` to fetch.")
         else:
             # Show symbols table from DB
             df["is_active"] = df["is_active"].map({1: "Yes", 0: "No"})

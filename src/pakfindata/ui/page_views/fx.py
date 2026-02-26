@@ -46,8 +46,8 @@ def render_fx_overview():
 
     if not fx_pairs:
         st.warning(
-            "No FX pairs found. Run `psxsync fx seed` to seed FX pairs, "
-            "then `psxsync fx sync` to fetch data."
+            "No FX pairs found. Run `pfsync fx seed` to seed FX pairs, "
+            "then `pfsync fx sync` to fetch data."
         )
         render_footer()
         return
@@ -69,7 +69,7 @@ def render_fx_overview():
     if analytics.get("error"):
         st.info(
             f"No data available for {selected_pair}. "
-            "Run `psxsync fx sync` to fetch data."
+            "Run `pfsync fx sync` to fetch data."
         )
         render_footer()
         return
@@ -278,7 +278,7 @@ def render_fx_impact():
     fx_pairs = get_fx_pairs(con, active_only=True)
 
     if not fx_pairs:
-        st.warning("No FX pairs found. Run `psxsync fx seed` first.")
+        st.warning("No FX pairs found. Run `pfsync fx seed` first.")
         render_footer()
         return
 
@@ -351,7 +351,7 @@ def render_fx_impact():
     if not metrics:
         st.info(
             "No FX-adjusted metrics available. "
-            "Run `psxsync fx compute-adjusted` to compute."
+            "Run `pfsync fx compute-adjusted` to compute."
         )
 
         if st.button("Compute FX-Adjusted Metrics", type="primary"):

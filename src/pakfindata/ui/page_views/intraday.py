@@ -176,7 +176,7 @@ def render_intraday():
         symbols = get_symbols_list(con)
 
         if not symbols:
-            st.warning("No symbols found. Run `psxsync symbols refresh` first.")
+            st.warning("No symbols found. Run `pfsync symbols refresh` first.")
             render_footer()
             return
 

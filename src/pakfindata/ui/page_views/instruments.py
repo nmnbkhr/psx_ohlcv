@@ -52,7 +52,7 @@ def render_instruments():
     instruments = get_instruments(con, instrument_type=type_filter, active_only=active_only)
 
     if not instruments:
-        st.warning("No instruments found. Run `psxsync universe seed-phase1` to seed the instrument universe.")
+        st.warning("No instruments found. Run `pfsync universe seed-phase1` to seed the instrument universe.")
         render_footer()
         return
 
@@ -128,7 +128,7 @@ def render_instruments():
                 instrument_id = selected_inst.get("instrument_id")
 
                 ohlcv_df = None
-                # Try eod_ohlcv first (equities, ETFs, REITs via psxsync eod)
+                # Try eod_ohlcv first (equities, ETFs, REITs via pfsync eod)
                 if symbol:
                     ohlcv_df = get_eod_ohlcv(con, symbol=symbol, limit=90)
 
@@ -146,7 +146,7 @@ def render_instruments():
                     )
                     st.plotly_chart(fig, use_container_width=True)
                 else:
-                    st.info(f"No OHLCV data available. Run `psxsync eod {symbol}` to sync data.")
+                    st.info(f"No OHLCV data available. Run `pfsync eod {symbol}` to sync data.")
 
     # Sync Section
     st.markdown("---")

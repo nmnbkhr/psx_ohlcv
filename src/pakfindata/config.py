@@ -16,7 +16,7 @@ _s = _get_settings()
 DATA_ROOT = Path(_s.data_root)
 DEFAULT_DB_PATH = Path(_s.db_path)
 DEFAULT_LOGS_DIR = Path(_s.logs_dir)
-DEFAULT_LOG_FILE = DEFAULT_LOGS_DIR / "psxsync.log"
+DEFAULT_LOG_FILE = DEFAULT_LOGS_DIR / "pfsync.log"
 
 # Logging config
 LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
