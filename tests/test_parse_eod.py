@@ -2,7 +2,7 @@
 
 import pandas as pd
 
-from psx_ohlcv.sources.eod import parse_eod_payload
+from pakfindata.sources.eod import parse_eod_payload
 
 # Payload shape 1: Direct list of records
 PAYLOAD_LIST = [

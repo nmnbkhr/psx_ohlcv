@@ -4,7 +4,7 @@ from datetime import date
 
 import pytest
 
-from psx_ohlcv.range_utils import (
+from pakfindata.range_utils import (
     count_weekdays,
     format_date,
     iter_dates,

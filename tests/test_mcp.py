@@ -287,7 +287,7 @@ def con():
 @pytest.fixture
 def _patch_db(con, monkeypatch):
     """Patch get_db to return the in-memory test connection."""
-    import psx_ohlcv.mcp.server as srv
+    import pakfindata.mcp.server as srv
     monkeypatch.setattr(srv, "get_db", lambda: con)
 
 
@@ -300,11 +300,11 @@ def _run(coro):
 
 class TestServerStartup:
     def test_server_name(self):
-        from psx_ohlcv.mcp.server import server
+        from pakfindata.mcp.server import server
         assert server.name == "psx-ohlcv"
 
     def test_list_tools_returns_all(self, _patch_db):
-        from psx_ohlcv.mcp.server import list_tools
+        from pakfindata.mcp.server import list_tools
         tools = _run(list_tools())
         assert len(tools) == 30
         names = [t.name for t in tools]
@@ -319,14 +319,14 @@ class TestServerStartup:
 
 class TestGetEod:
     def test_valid_symbol(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("get_eod", {"symbol": "OGDC", "limit": 10}))
         data = json.loads(result[0].text)
         assert data["count"] == 2
         assert data["data"][0]["symbol"] == "OGDC" if "symbol" in data["data"][0] else True
 
     def test_invalid_symbol_returns_empty(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("get_eod", {"symbol": "ZZZZZ"}))
         data = json.loads(result[0].text)
         assert data["count"] == 0
@@ -334,14 +334,14 @@ class TestGetEod:
 
 class TestSearchSymbols:
     def test_search_by_name(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("search_symbols", {"query": "habib"}))
         data = json.loads(result[0].text)
         assert data["count"] >= 1
         assert any(r["symbol"] == "HBL" for r in data["results"])
 
     def test_search_by_symbol(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("search_symbols", {"query": "OGDC"}))
         data = json.loads(result[0].text)
         assert data["count"] >= 1
@@ -349,14 +349,14 @@ class TestSearchSymbols:
 
 class TestGetCompanyProfile:
     def test_fallback_to_symbols(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("get_company_profile", {"symbol": "OGDC"}))
         data = json.loads(result[0].text)
         assert data["symbol"] == "OGDC"
         assert "close" in data  # Should have EOD fallback
 
     def test_not_found(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("get_company_profile", {"symbol": "ZZZZZ"}))
         data = json.loads(result[0].text)
         assert "error" in data
@@ -364,7 +364,7 @@ class TestGetCompanyProfile:
 
 class TestGetMarketSnapshot:
     def test_returns_indices(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("get_market_snapshot", {}))
         data = json.loads(result[0].text)
         assert len(data["indices"]) >= 1
@@ -373,7 +373,7 @@ class TestGetMarketSnapshot:
 
 class TestGetTopMovers:
     def test_gainers_and_losers(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("get_top_movers", {"n": 5, "direction": "both"}))
         data = json.loads(result[0].text)
         assert "gainers" in data
@@ -385,27 +385,27 @@ class TestGetTopMovers:
 
 class TestFixedIncome:
     def test_yield_curve(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("get_yield_curve", {"curve_type": "pkrv"}))
         data = json.loads(result[0].text)
         assert len(data["points"]) == 3
         assert data["date"] == "2026-02-06"
 
     def test_tbill_auctions(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("get_tbill_auctions", {}))
         data = json.loads(result[0].text)
         assert data["count"] == 1
 
     def test_latest_yields(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("get_latest_yields", {}))
         data = json.loads(result[0].text)
         assert data["policy_rate"]["policy_rate"] == 12.0
         assert len(data["kibor"]["rates"]) == 2
 
     def test_sukuk(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("get_sukuk", {}))
         data = json.loads(result[0].text)
         assert data["count"] == 1
@@ -415,40 +415,40 @@ class TestFixedIncome:
 
 class TestFundFxTools:
     def test_mutual_funds(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("get_mutual_funds", {}))
         data = json.loads(result[0].text)
         assert data["count"] == 1
         assert data["data"][0]["fund_name"] == "ABL Islamic Stock Fund"
 
     def test_fund_nav_history(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("get_fund_nav_history", {"fund_id": "MUFAP:ABL-ISF"}))
         data = json.loads(result[0].text)
         assert data["count"] == 2
 
     def test_etf_list(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("get_etf_list", {}))
         data = json.loads(result[0].text)
         assert data["count"] == 1
 
     def test_fx_rates(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("get_fx_rates", {"currency": "USD", "source": "all"}))
         data = json.loads(result[0].text)
         assert len(data["interbank"]) == 1
         assert data["interbank"][0]["buying"] == 279.0
 
     def test_fx_spread(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("get_fx_spread", {"currency": "USD"}))
         data = json.loads(result[0].text)
         assert data["interbank"]["buying"] == 279.0
         assert data["kerb"]["buying"] == 280.0
 
     def test_kibor(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("get_kibor", {}))
         data = json.loads(result[0].text)
         assert len(data["rates"]) == 2
@@ -458,32 +458,32 @@ class TestFundFxTools:
 
 class TestAnalytics:
     def test_screen_stocks(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("screen_stocks", {"limit": 10}))
         data = json.loads(result[0].text)
         assert data["count"] == 3
 
     def test_compare_securities(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("compare_securities", {"symbols": ["OGDC", "HBL"]}))
         data = json.loads(result[0].text)
         assert len(data["securities"]) == 2
 
     def test_calculate_returns(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("calculate_returns", {"symbol": "OGDC"}))
         data = json.loads(result[0].text)
         assert data["symbol"] == "OGDC"
         assert "price" in data
 
     def test_sector_performance(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("get_sector_performance", {}))
         data = json.loads(result[0].text)
         assert len(data["sectors"]) >= 1
 
     def test_correlation(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         # Only 2 overlapping dates, so correlation needs at least 5
         result = _run(call_tool("get_correlation", {"symbol1": "OGDC", "symbol2": "HBL", "days": 365}))
         data = json.loads(result[0].text)
@@ -492,27 +492,27 @@ class TestAnalytics:
 
 class TestSystemTools:
     def test_data_freshness(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("get_data_freshness", {}))
         data = json.loads(result[0].text)
         assert "domains" in data
         assert data["table_count"] > 0
 
     def test_coverage_summary(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("get_coverage_summary", {}))
         data = json.loads(result[0].text)
         assert data["active_symbols"] == 3
         assert data["eod_records"] == 6
 
     def test_run_sql_select(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("run_sql", {"query": "SELECT COUNT(*) as cnt FROM symbols"}))
         data = json.loads(result[0].text)
         assert data["data"][0]["cnt"] == 3
 
     def test_run_sql_rejects_write(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         for query in ["DELETE FROM symbols", "DROP TABLE symbols",
                        "INSERT INTO symbols VALUES ('X')", "UPDATE symbols SET name='X'"]:
             result = _run(call_tool("run_sql", {"query": query}))
@@ -520,7 +520,7 @@ class TestSystemTools:
             assert "error" in data, f"Write query should be rejected: {query}"
 
     def test_run_sql_rejects_multiple_statements(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("run_sql", {"query": "SELECT 1; DROP TABLE symbols"}))
         data = json.loads(result[0].text)
         assert "error" in data
@@ -530,54 +530,54 @@ class TestSystemTools:
 
 class TestResources:
     def test_list_resources(self, _patch_db):
-        from psx_ohlcv.mcp.server import list_resources
+        from pakfindata.mcp.server import list_resources
         resources = _run(list_resources())
         assert len(resources) == 4
         uris = [str(r.uri) for r in resources]
         assert "psx://schema" in uris
 
     def test_read_schema(self, _patch_db):
-        from psx_ohlcv.mcp.server import read_resource
+        from pakfindata.mcp.server import read_resource
         schema = _run(read_resource("psx://schema"))
         assert "CREATE TABLE" in schema
         assert "eod_ohlcv" in schema
 
     def test_read_symbols(self, _patch_db):
-        from psx_ohlcv.mcp.server import read_resource
+        from pakfindata.mcp.server import read_resource
         symbols = _run(read_resource("psx://symbols"))
         assert "OGDC" in symbols
         assert "HBL" in symbols
 
     def test_read_data_dictionary(self, _patch_db):
-        from psx_ohlcv.mcp.server import read_resource
+        from pakfindata.mcp.server import read_resource
         dd = _run(read_resource("psx://data-dictionary"))
         assert "eod_ohlcv" in dd
 
     def test_read_trading_calendar(self, _patch_db):
-        from psx_ohlcv.mcp.server import read_resource
+        from pakfindata.mcp.server import read_resource
         cal = _run(read_resource("psx://trading-calendar"))
         assert "2026-02-06" in cal
 
 
 class TestPrompts:
     def test_list_prompts(self, _patch_db):
-        from psx_ohlcv.mcp.server import list_prompts
+        from pakfindata.mcp.server import list_prompts
         prompts = _run(list_prompts())
         assert len(prompts) == 6
         names = [p.name for p in prompts]
         assert "daily_market_brief" in names
 
     def test_get_daily_market_brief(self, _patch_db):
-        from psx_ohlcv.mcp.server import get_prompt
+        from pakfindata.mcp.server import get_prompt
         result = _run(get_prompt("daily_market_brief", {}))
         assert "get_market_snapshot" in result.messages[0].content.text
 
     def test_get_stock_deep_dive(self, _patch_db):
-        from psx_ohlcv.mcp.server import get_prompt
+        from pakfindata.mcp.server import get_prompt
         result = _run(get_prompt("stock_deep_dive", {"symbol": "HBL"}))
         assert "HBL" in result.messages[0].content.text
 
     def test_unknown_tool(self, _patch_db):
-        from psx_ohlcv.mcp.server import call_tool
+        from pakfindata.mcp.server import call_tool
         result = _run(call_tool("nonexistent_tool", {}))
         assert "Unknown tool" in result[0].text

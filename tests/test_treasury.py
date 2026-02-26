@@ -11,7 +11,7 @@ import pytest
 @pytest.fixture
 def con():
     """In-memory SQLite connection with treasury schema."""
-    from psx_ohlcv.db.repositories.treasury import init_treasury_schema
+    from pakfindata.db.repositories.treasury import init_treasury_schema
 
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -91,7 +91,7 @@ class TestInitTreasurySchema:
 
     def test_idempotent(self, con):
         """init_treasury_schema should be safe to call multiple times."""
-        from psx_ohlcv.db.repositories.treasury import init_treasury_schema
+        from pakfindata.db.repositories.treasury import init_treasury_schema
         init_treasury_schema(con)
         init_treasury_schema(con)
         # No error means success
@@ -101,7 +101,7 @@ class TestInitTreasurySchema:
 
 class TestUpsertTbillAuction:
     def test_insert(self, con, sample_tbill):
-        from psx_ohlcv.db.repositories.treasury import upsert_tbill_auction
+        from pakfindata.db.repositories.treasury import upsert_tbill_auction
         result = upsert_tbill_auction(con, sample_tbill)
         assert result is True
 
@@ -114,7 +114,7 @@ class TestUpsertTbillAuction:
         assert row["tenor"] == "3M"
 
     def test_upsert_updates(self, con, sample_tbill):
-        from psx_ohlcv.db.repositories.treasury import upsert_tbill_auction
+        from pakfindata.db.repositories.treasury import upsert_tbill_auction
         upsert_tbill_auction(con, sample_tbill)
 
         # Update yield
@@ -130,7 +130,7 @@ class TestUpsertTbillAuction:
 
     def test_minimal_data(self, con):
         """Upsert with only required fields should work."""
-        from psx_ohlcv.db.repositories.treasury import upsert_tbill_auction
+        from pakfindata.db.repositories.treasury import upsert_tbill_auction
         data = {"auction_date": "2026-01-01", "tenor": "6M"}
         result = upsert_tbill_auction(con, data)
         assert result is True
@@ -138,13 +138,13 @@ class TestUpsertTbillAuction:
 
 class TestGetTbillAuctions:
     def test_empty(self, con):
-        from psx_ohlcv.db.repositories.treasury import get_tbill_auctions
+        from pakfindata.db.repositories.treasury import get_tbill_auctions
         df = get_tbill_auctions(con)
         assert isinstance(df, pd.DataFrame)
         assert df.empty
 
     def test_with_data(self, con, sample_tbill):
-        from psx_ohlcv.db.repositories.treasury import (
+        from pakfindata.db.repositories.treasury import (
             get_tbill_auctions,
             upsert_tbill_auction,
         )
@@ -154,7 +154,7 @@ class TestGetTbillAuctions:
         assert df.iloc[0]["tenor"] == "3M"
 
     def test_filter_by_tenor(self, con, sample_tbill):
-        from psx_ohlcv.db.repositories.treasury import (
+        from pakfindata.db.repositories.treasury import (
             get_tbill_auctions,
             upsert_tbill_auction,
         )
@@ -168,7 +168,7 @@ class TestGetTbillAuctions:
         assert len(df) == 1
 
     def test_filter_by_date_range(self, con):
-        from psx_ohlcv.db.repositories.treasury import (
+        from pakfindata.db.repositories.treasury import (
             get_tbill_auctions,
             upsert_tbill_auction,
         )
@@ -185,12 +185,12 @@ class TestGetTbillAuctions:
 
 class TestGetLatestTbillYields:
     def test_empty(self, con):
-        from psx_ohlcv.db.repositories.treasury import get_latest_tbill_yields
+        from pakfindata.db.repositories.treasury import get_latest_tbill_yields
         result = get_latest_tbill_yields(con)
         assert result == {}
 
     def test_returns_latest_per_tenor(self, con):
-        from psx_ohlcv.db.repositories.treasury import (
+        from pakfindata.db.repositories.treasury import (
             get_latest_tbill_yields,
             upsert_tbill_auction,
         )
@@ -217,7 +217,7 @@ class TestGetLatestTbillYields:
 
 class TestUpsertPibAuction:
     def test_insert(self, con, sample_pib):
-        from psx_ohlcv.db.repositories.treasury import upsert_pib_auction
+        from pakfindata.db.repositories.treasury import upsert_pib_auction
         result = upsert_pib_auction(con, sample_pib)
         assert result is True
 
@@ -229,7 +229,7 @@ class TestUpsertPibAuction:
         assert row["cutoff_yield"] == 10.525
 
     def test_upsert_updates(self, con, sample_pib):
-        from psx_ohlcv.db.repositories.treasury import upsert_pib_auction
+        from pakfindata.db.repositories.treasury import upsert_pib_auction
         upsert_pib_auction(con, sample_pib)
 
         updated = {**sample_pib, "cutoff_yield": 10.6}
@@ -245,7 +245,7 @@ class TestUpsertPibAuction:
 
 class TestGetLatestPibYields:
     def test_returns_latest(self, con, sample_pib):
-        from psx_ohlcv.db.repositories.treasury import (
+        from pakfindata.db.repositories.treasury import (
             get_latest_pib_yields,
             upsert_pib_auction,
         )
@@ -259,7 +259,7 @@ class TestGetLatestPibYields:
 
 class TestUpsertGisAuction:
     def test_insert(self, con, sample_gis):
-        from psx_ohlcv.db.repositories.treasury import upsert_gis_auction
+        from pakfindata.db.repositories.treasury import upsert_gis_auction
         result = upsert_gis_auction(con, sample_gis)
         assert result is True
 
@@ -273,13 +273,13 @@ class TestUpsertGisAuction:
 
 class TestGetGisAuctions:
     def test_empty(self, con):
-        from psx_ohlcv.db.repositories.treasury import get_gis_auctions
+        from pakfindata.db.repositories.treasury import get_gis_auctions
         df = get_gis_auctions(con)
         assert isinstance(df, pd.DataFrame)
         assert df.empty
 
     def test_with_data(self, con, sample_gis):
-        from psx_ohlcv.db.repositories.treasury import (
+        from pakfindata.db.repositories.treasury import (
             get_gis_auctions,
             upsert_gis_auction,
         )
@@ -292,13 +292,13 @@ class TestGetGisAuctions:
 
 class TestGetYieldTrend:
     def test_empty(self, con):
-        from psx_ohlcv.db.repositories.treasury import get_yield_trend
+        from pakfindata.db.repositories.treasury import get_yield_trend
         df = get_yield_trend(con, "3M")
         assert isinstance(df, pd.DataFrame)
         assert df.empty
 
     def test_returns_limited(self, con):
-        from psx_ohlcv.db.repositories.treasury import (
+        from pakfindata.db.repositories.treasury import (
             get_yield_trend,
             upsert_tbill_auction,
         )
@@ -321,37 +321,37 @@ class TestGetYieldTrend:
 
 class TestSBPTreasuryScraper:
     def test_parse_rate_valid(self):
-        from psx_ohlcv.sources.sbp_treasury import SBPTreasuryScraper
+        from pakfindata.sources.sbp_treasury import SBPTreasuryScraper
         assert SBPTreasuryScraper._parse_rate("10.1977%") == 10.1977
         assert SBPTreasuryScraper._parse_rate("10.1977") == 10.1977
         assert SBPTreasuryScraper._parse_rate("  10.525 % ") == 10.525
 
     def test_parse_rate_invalid(self):
-        from psx_ohlcv.sources.sbp_treasury import SBPTreasuryScraper
+        from pakfindata.sources.sbp_treasury import SBPTreasuryScraper
         assert SBPTreasuryScraper._parse_rate("") is None
         assert SBPTreasuryScraper._parse_rate(None) is None
         assert SBPTreasuryScraper._parse_rate("N/A") is None
 
     def test_parse_rate_out_of_range(self):
-        from psx_ohlcv.sources.sbp_treasury import SBPTreasuryScraper
+        from pakfindata.sources.sbp_treasury import SBPTreasuryScraper
         assert SBPTreasuryScraper._parse_rate("150.0%") is None
         assert SBPTreasuryScraper._parse_rate("0.0%") is None
 
     def test_try_parse_date(self):
-        from psx_ohlcv.sources.sbp_treasury import SBPTreasuryScraper
+        from pakfindata.sources.sbp_treasury import SBPTreasuryScraper
         assert SBPTreasuryScraper._try_parse_date("February 04, 2026") == "2026-02-04"
         assert SBPTreasuryScraper._try_parse_date("04-Feb-2026") == "2026-02-04"
         assert SBPTreasuryScraper._try_parse_date("2026-02-04") == "2026-02-04"
 
     def test_try_parse_date_invalid(self):
-        from psx_ohlcv.sources.sbp_treasury import SBPTreasuryScraper
+        from pakfindata.sources.sbp_treasury import SBPTreasuryScraper
         assert SBPTreasuryScraper._try_parse_date("not a date") is None
         assert SBPTreasuryScraper._try_parse_date("") is None
 
     def test_sync_treasury_to_db(self, con):
         """Test that sync_treasury can write to the DB (with mocked scrape)."""
         from unittest.mock import patch
-        from psx_ohlcv.sources.sbp_treasury import SBPTreasuryScraper
+        from pakfindata.sources.sbp_treasury import SBPTreasuryScraper
 
         mock_pma = {
             "tbills": [
@@ -375,7 +375,7 @@ class TestSBPTreasuryScraper:
         assert result["auction_date"] == "2026-02-04"
 
         # Verify data in DB
-        from psx_ohlcv.db.repositories.treasury import get_latest_tbill_yields
+        from pakfindata.db.repositories.treasury import get_latest_tbill_yields
         yields = get_latest_tbill_yields(con)
         assert "3M" in yields
         assert "6M" in yields
@@ -385,7 +385,7 @@ class TestSBPTreasuryScraper:
 
 class TestGSPScraper:
     def test_extract_gis_tenors(self):
-        from psx_ohlcv.sources.sbp_gsp import GSPScraper
+        from pakfindata.sources.sbp_gsp import GSPScraper
         section = "Tenor Cut-off Rental Rate/Price 3-Y 100.2842 5-Y 100.0022"
         results = GSPScraper._extract_gis_tenors(section, "GIS FRR")
         assert len(results) == 2
@@ -398,14 +398,14 @@ class TestGSPScraper:
         assert "GIS FRR 5Y" in types
 
     def test_extract_gis_tenors_empty(self):
-        from psx_ohlcv.sources.sbp_gsp import GSPScraper
+        from pakfindata.sources.sbp_gsp import GSPScraper
         results = GSPScraper._extract_gis_tenors("no data here", "GIS FRR")
         assert results == []
 
     def test_sync_gis_to_db(self, con):
         """Test GIS sync with mocked scrape."""
         from unittest.mock import patch
-        from psx_ohlcv.sources.sbp_gsp import GSPScraper
+        from pakfindata.sources.sbp_gsp import GSPScraper
 
         mock_records = [
             {
@@ -429,6 +429,6 @@ class TestGSPScraper:
         assert result["ok"] == 2
         assert result["failed"] == 0
 
-        from psx_ohlcv.db.repositories.treasury import get_gis_auctions
+        from pakfindata.db.repositories.treasury import get_gis_auctions
         df = get_gis_auctions(con)
         assert len(df) == 2

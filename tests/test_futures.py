@@ -5,11 +5,11 @@ import sqlite3
 import pandas as pd
 import pytest
 
-from psx_ohlcv.sources.market_summary import (
+from pakfindata.sources.market_summary import (
     classify_market_type,
     parse_futures_symbol,
 )
-from psx_ohlcv.db.repositories.futures import (
+from pakfindata.db.repositories.futures import (
     init_futures_schema,
     upsert_futures_eod,
     get_futures_eod,
@@ -258,7 +258,7 @@ class TestMigration:
         con.commit()
 
     def test_dry_run(self, con):
-        from psx_ohlcv.db.repositories.futures import migrate_from_eod_ohlcv
+        from pakfindata.db.repositories.futures import migrate_from_eod_ohlcv
 
         self._setup_eod(con)
         result = migrate_from_eod_ohlcv(con, dry_run=True)
@@ -272,7 +272,7 @@ class TestMigration:
         assert total == 4
 
     def test_execute_migration(self, con):
-        from psx_ohlcv.db.repositories.futures import migrate_from_eod_ohlcv
+        from pakfindata.db.repositories.futures import migrate_from_eod_ohlcv
 
         self._setup_eod(con)
         result = migrate_from_eod_ohlcv(con, dry_run=False)
@@ -299,7 +299,7 @@ class TestODLSymbolParsing:
     """Test parse_symbol_info with ODL-specific symbols."""
 
     def test_gis_1y(self):
-        from psx_ohlcv.sources.psx_debt import parse_symbol_info
+        from pakfindata.sources.psx_debt import parse_symbol_info
         info = parse_symbol_info("P01GIS200826")
         assert info["security_type"] == "GIS"
         assert info["tenor_years"] == 1
@@ -308,7 +308,7 @@ class TestODLSymbolParsing:
         assert info["maturity_date"] == "2026-08-20"
 
     def test_vrr_10y(self):
-        from psx_ohlcv.sources.psx_debt import parse_symbol_info
+        from pakfindata.sources.psx_debt import parse_symbol_info
         info = parse_symbol_info("P10VRR211034")
         assert info["security_type"] == "VRR Sukuk"
         assert info["tenor_years"] == 10
@@ -316,14 +316,14 @@ class TestODLSymbolParsing:
         assert info["is_islamic"] is True
 
     def test_frr_5y(self):
-        from psx_ohlcv.sources.psx_debt import parse_symbol_info
+        from pakfindata.sources.psx_debt import parse_symbol_info
         info = parse_symbol_info("P05FRR070330")
         assert info["security_type"] == "FRR Sukuk"
         assert info["tenor_years"] == 5
         assert info["maturity_date"] == "2030-03-07"
 
     def test_frz_10y(self):
-        from psx_ohlcv.sources.psx_debt import parse_symbol_info
+        from pakfindata.sources.psx_debt import parse_symbol_info
         info = parse_symbol_info("P10FRZ141135")
         assert info["security_type"] == "FRZ"
         assert info["tenor_years"] == 10
@@ -331,7 +331,7 @@ class TestODLSymbolParsing:
         assert info["is_islamic"] is False
 
     def test_gvr_3y(self):
-        from psx_ohlcv.sources.psx_debt import parse_symbol_info
+        from pakfindata.sources.psx_debt import parse_symbol_info
         info = parse_symbol_info("P03GVR190528")
         assert info["security_type"] == "Variable GIS"
         assert info["tenor_years"] == 3
@@ -339,13 +339,13 @@ class TestODLSymbolParsing:
         assert info["is_islamic"] is True
 
     def test_tbill_12m(self):
-        from psx_ohlcv.sources.psx_debt import parse_symbol_info
+        from pakfindata.sources.psx_debt import parse_symbol_info
         info = parse_symbol_info("PK12TB210127")
         assert info["security_type"] == "T-Bill"
         assert info["maturity_date"] == "2027-01-21"
 
     def test_pib_10y(self):
-        from psx_ohlcv.sources.psx_debt import parse_symbol_info
+        from pakfindata.sources.psx_debt import parse_symbol_info
         info = parse_symbol_info("P10PIB150136")
         assert info["security_type"] == "PIB"
         assert info["tenor_years"] == 10
@@ -353,20 +353,20 @@ class TestODLSymbolParsing:
         assert info["is_islamic"] is False
 
     def test_corporate_tfc_issuer(self):
-        from psx_ohlcv.sources.psx_debt import parse_symbol_info
+        from pakfindata.sources.psx_debt import parse_symbol_info
         info = parse_symbol_info("HBLTFC2")
         assert info["security_type"] == "TFC"
         assert info["is_government"] is False
         assert info["issuer"] == "HBL"
 
     def test_corporate_tfc_multi_letter(self):
-        from psx_ohlcv.sources.psx_debt import parse_symbol_info
+        from pakfindata.sources.psx_debt import parse_symbol_info
         info = parse_symbol_info("AKBLTFC6")
         assert info["issuer"] == "AKBL"
         assert info["security_type"] == "TFC"
 
     def test_corporate_sukuk_issuer(self):
-        from psx_ohlcv.sources.psx_debt import parse_symbol_info
+        from pakfindata.sources.psx_debt import parse_symbol_info
         info = parse_symbol_info("KELSC5")
         assert info["security_type"] == "Corporate Sukuk"
         assert info["is_government"] is False
@@ -375,26 +375,26 @@ class TestODLSymbolParsing:
 
     def test_pesc_edge_case(self):
         """P-prefix but not government — PESC is Pak Energy Sukuk."""
-        from psx_ohlcv.sources.psx_debt import parse_symbol_info
+        from pakfindata.sources.psx_debt import parse_symbol_info
         info = parse_symbol_info("PESC1")
         assert info["security_type"] == "Corporate Sukuk"
         assert info["is_government"] is False
 
     def test_display_name_gov(self):
-        from psx_ohlcv.sources.psx_debt import parse_symbol_info
+        from pakfindata.sources.psx_debt import parse_symbol_info
         info = parse_symbol_info("P10VRR211034")
         assert "10Y" in info["display_name"]
         assert "VRR Sukuk" in info["display_name"]
         assert "2034-10-21" in info["display_name"]
 
     def test_display_name_corp(self):
-        from psx_ohlcv.sources.psx_debt import parse_symbol_info
+        from pakfindata.sources.psx_debt import parse_symbol_info
         info = parse_symbol_info("HBLTFC2")
         assert "HBL" in info["display_name"]
         assert "TFC" in info["display_name"]
 
     def test_display_name_with_company(self):
-        from psx_ohlcv.sources.psx_debt import parse_symbol_info, build_display_name
+        from pakfindata.sources.psx_debt import parse_symbol_info, build_display_name
         info = parse_symbol_info("PESC1")
         name = build_display_name("PESC1", info, "Pak Energy(Sukuk)")
         assert name == "Pak Energy(Sukuk)"
@@ -407,27 +407,27 @@ class TestODLSymbolParsing:
 class TestODLQueries:
     def test_get_odl_symbols(self, con, sample_df):
         upsert_futures_eod(con, sample_df)
-        from psx_ohlcv.db.repositories.futures import get_odl_symbols
+        from pakfindata.db.repositories.futures import get_odl_symbols
         df = get_odl_symbols(con)
         assert len(df) == 1
         assert df.iloc[0]["symbol"] == "P01GIS200826"
 
     def test_get_odl_stats(self, con, sample_df):
         upsert_futures_eod(con, sample_df)
-        from psx_ohlcv.db.repositories.futures import get_odl_stats
+        from pakfindata.db.repositories.futures import get_odl_stats
         stats = get_odl_stats(con)
         assert stats["distinct_symbols"] == 1
         assert stats["total_rows"] == 1
 
     def test_get_odl_history(self, con, sample_df):
         upsert_futures_eod(con, sample_df)
-        from psx_ohlcv.db.repositories.futures import get_odl_history
+        from pakfindata.db.repositories.futures import get_odl_history
         hist = get_odl_history(con, "P01GIS200826")
         assert len(hist) == 1
         assert hist.iloc[0]["close"] == 100.2
 
     def test_get_odl_stats_empty(self, con):
-        from psx_ohlcv.db.repositories.futures import get_odl_stats
+        from pakfindata.db.repositories.futures import get_odl_stats
         stats = get_odl_stats(con)
         assert stats["distinct_symbols"] == 0
         assert stats["total_rows"] == 0

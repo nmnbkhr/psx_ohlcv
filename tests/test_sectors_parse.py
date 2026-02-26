@@ -5,14 +5,14 @@ import sqlite3
 import pandas as pd
 import pytest
 
-from psx_ohlcv.db import (
+from pakfindata.db import (
     get_sector_map,
     get_sector_name,
     get_sectors,
     init_schema,
     upsert_sectors,
 )
-from psx_ohlcv.sources.sectors import (
+from pakfindata.sources.sectors import (
     _empty_sectors_df,
     get_sector_list,
     parse_sectors_from_sector_summary,

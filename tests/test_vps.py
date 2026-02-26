@@ -72,12 +72,12 @@ def _seed_vps(con):
 
 class TestGetVpsFunds:
     def test_empty(self, con):
-        from psx_ohlcv.db.repositories.vps import get_vps_funds
+        from pakfindata.db.repositories.vps import get_vps_funds
         df = get_vps_funds(con)
         assert df.empty
 
     def test_returns_only_vps(self, con):
-        from psx_ohlcv.db.repositories.vps import get_vps_funds
+        from pakfindata.db.repositories.vps import get_vps_funds
         _seed_vps(con)
         df = get_vps_funds(con)
         assert len(df) == 2  # Only VPS, not HBL-MF (OPEN_END)
@@ -88,19 +88,19 @@ class TestGetVpsFunds:
 
 class TestGetVpsNavHistory:
     def test_empty(self, con):
-        from psx_ohlcv.db.repositories.vps import get_vps_nav_history
+        from pakfindata.db.repositories.vps import get_vps_nav_history
         df = get_vps_nav_history(con, "MUFAP:ABL-VPS-EQ")
         assert df.empty
 
     def test_returns_history(self, con):
-        from psx_ohlcv.db.repositories.vps import get_vps_nav_history
+        from pakfindata.db.repositories.vps import get_vps_nav_history
         _seed_vps(con)
         df = get_vps_nav_history(con, "MUFAP:ABL-VPS-EQ")
         assert len(df) == 3
         assert df.iloc[0]["date"] == "2026-02-08"  # newest first
 
     def test_date_filter(self, con):
-        from psx_ohlcv.db.repositories.vps import get_vps_nav_history
+        from pakfindata.db.repositories.vps import get_vps_nav_history
         _seed_vps(con)
         df = get_vps_nav_history(con, "MUFAP:ABL-VPS-EQ", start_date="2026-01-01")
         assert len(df) == 2  # Only Jan + Feb
@@ -110,12 +110,12 @@ class TestGetVpsNavHistory:
 
 class TestCompareVpsPerformance:
     def test_empty(self, con):
-        from psx_ohlcv.db.repositories.vps import compare_vps_performance
+        from pakfindata.db.repositories.vps import compare_vps_performance
         df = compare_vps_performance(con)
         assert df.empty
 
     def test_computes_returns(self, con):
-        from psx_ohlcv.db.repositories.vps import compare_vps_performance
+        from pakfindata.db.repositories.vps import compare_vps_performance
         _seed_vps(con)
         df = compare_vps_performance(con, days=365)
         assert len(df) == 2
@@ -128,12 +128,12 @@ class TestCompareVpsPerformance:
 
 class TestGetVpsSummary:
     def test_empty(self, con):
-        from psx_ohlcv.db.repositories.vps import get_vps_summary
+        from pakfindata.db.repositories.vps import get_vps_summary
         s = get_vps_summary(con)
         assert s["total_funds"] == 0
 
     def test_with_data(self, con):
-        from psx_ohlcv.db.repositories.vps import get_vps_summary
+        from pakfindata.db.repositories.vps import get_vps_summary
         _seed_vps(con)
         s = get_vps_summary(con)
         assert s["total_funds"] == 2

@@ -1,7 +1,7 @@
 """Tests for market watch HTML parsing."""
 
 
-from psx_ohlcv.sources.market_watch import (
+from pakfindata.sources.market_watch import (
     _extract_symbols_by_regex,
     _is_valid_symbol,
     parse_symbols_from_market_watch,

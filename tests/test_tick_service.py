@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from psx_ohlcv.services.tick_service import (
+from pakfindata.services.tick_service import (
     BAR_INTERVAL,
     BarBuilder,
     TickService,
@@ -20,7 +20,7 @@ from psx_ohlcv.services.tick_service import (
     _safe_float,
     _safe_int,
 )
-from psx_ohlcv.services.ws_relay import (
+from pakfindata.services.ws_relay import (
     ConnectionManager,
     broadcast_tick,
     manager,
@@ -213,7 +213,7 @@ class TestTickService:
         })
 
         snap_path = tmp_path / "snapshot.json"
-        with patch("psx_ohlcv.services.tick_service.SNAPSHOT_PATH", snap_path):
+        with patch("pakfindata.services.tick_service.SNAPSHOT_PATH", snap_path):
             svc.write_snapshot()
 
         assert snap_path.exists()
@@ -238,7 +238,7 @@ class TestTickService:
             })
 
         snap_path = tmp_path / "snapshot.json"
-        with patch("psx_ohlcv.services.tick_service.SNAPSHOT_PATH", snap_path):
+        with patch("pakfindata.services.tick_service.SNAPSHOT_PATH", snap_path):
             svc.write_snapshot()
 
         data = json.loads(snap_path.read_text())
@@ -256,7 +256,7 @@ class TestTickService:
             })
 
         snap_path = tmp_path / "snapshot.json"
-        with patch("psx_ohlcv.services.tick_service.SNAPSHOT_PATH", snap_path):
+        with patch("pakfindata.services.tick_service.SNAPSHOT_PATH", snap_path):
             svc.write_snapshot()
 
         data = json.loads(snap_path.read_text())
@@ -631,7 +631,7 @@ class TestIndexTracking:
         })
 
         snap_path = tmp_path / "snapshot.json"
-        with patch("psx_ohlcv.services.tick_service.SNAPSHOT_PATH", snap_path):
+        with patch("pakfindata.services.tick_service.SNAPSHOT_PATH", snap_path):
             svc.write_snapshot()
 
         data = json.loads(snap_path.read_text())
@@ -758,7 +758,7 @@ class TestConnectionManager:
 class TestBroadcastTick:
     def test_broadcast_no_loop_noop(self):
         """broadcast_tick does nothing when relay loop is not set."""
-        import psx_ohlcv.services.ws_relay as relay
+        import pakfindata.services.ws_relay as relay
         old_loop = relay._loop
         relay._loop = None
         try:
@@ -769,7 +769,7 @@ class TestBroadcastTick:
 
     def test_broadcast_no_clients_noop(self):
         """broadcast_tick skips when no clients connected."""
-        import psx_ohlcv.services.ws_relay as relay
+        import pakfindata.services.ws_relay as relay
         old_loop = relay._loop
         relay._loop = MagicMock()
         # manager has no clients (client_count == 0)
@@ -782,7 +782,7 @@ class TestBroadcastTick:
 
 class TestSetCollector:
     def test_set_collector(self):
-        import psx_ohlcv.services.ws_relay as relay
+        import pakfindata.services.ws_relay as relay
         old = relay._collector
         try:
             mock_svc = MagicMock()
@@ -798,7 +798,7 @@ class TestTickServiceRelay:
 
     def test_has_relay_flag(self):
         """HAS_RELAY should be True when ws_relay is importable."""
-        from psx_ohlcv.services.tick_service import HAS_RELAY
+        from pakfindata.services.tick_service import HAS_RELAY
         assert HAS_RELAY is True
 
     def test_status_line_ws_clients(self, tmp_path):

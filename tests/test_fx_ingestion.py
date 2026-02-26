@@ -3,8 +3,8 @@
 import pandas as pd
 import pytest
 
-from psx_ohlcv import connect, init_schema
-from psx_ohlcv.db import (
+from pakfindata import connect, init_schema
+from pakfindata.db import (
     get_fx_latest_date,
     get_fx_latest_rate,
     get_fx_ohlcv,
@@ -13,7 +13,7 @@ from psx_ohlcv.db import (
     upsert_fx_ohlcv,
     upsert_fx_pair,
 )
-from psx_ohlcv.sources.fx import (
+from pakfindata.sources.fx import (
     fetch_fx_sample_data,
     get_default_fx_pairs,
     normalize_fx_dataframe,

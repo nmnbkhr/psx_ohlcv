@@ -5,7 +5,7 @@ from datetime import date
 
 import pytest
 
-from psx_ohlcv.sources.sbp_kibor_history import (
+from pakfindata.sources.sbp_kibor_history import (
     SBPKiborHistoryScraper,
     _build_pdf_url,
     _business_days,
@@ -58,7 +58,7 @@ class TestParsePdf:
         """Test that a properly structured PDF table produces records."""
         # We can't easily create a real PDF in tests, so test the parse
         # logic indirectly via the tenor map
-        from psx_ohlcv.sources.sbp_kibor_history import TENOR_MAP
+        from pakfindata.sources.sbp_kibor_history import TENOR_MAP
         assert TENOR_MAP["1 - Week"] == "1W"
         assert TENOR_MAP["3 - Month"] == "3M"
         assert TENOR_MAP["1 - Year"] == "1Y"
@@ -77,7 +77,7 @@ class TestParsePdf:
 
 @pytest.fixture
 def con():
-    from psx_ohlcv.db.repositories.yield_curves import init_yield_curve_schema
+    from pakfindata.db.repositories.yield_curves import init_yield_curve_schema
 
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -154,13 +154,13 @@ class TestTenorMapCompleteness:
     """Verify tenor map covers all known SBP KIBOR tenor formats."""
 
     def test_standard_tenors(self):
-        from psx_ohlcv.sources.sbp_kibor_history import TENOR_MAP
+        from pakfindata.sources.sbp_kibor_history import TENOR_MAP
         expected = {"1W", "2W", "1M", "3M", "6M", "9M", "1Y", "2Y", "3Y"}
         actual = set(TENOR_MAP.values())
         assert expected == actual
 
     def test_format_variants(self):
-        from psx_ohlcv.sources.sbp_kibor_history import TENOR_MAP
+        from pakfindata.sources.sbp_kibor_history import TENOR_MAP
         # All format variants should map to the same canonical name
         assert TENOR_MAP["1 - Month"] == "1M"
         assert TENOR_MAP["1 -Month"] == "1M"

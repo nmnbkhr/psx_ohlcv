@@ -22,7 +22,7 @@ import pytest
 @pytest.fixture
 def con():
     """In-memory SQLite connection with schema."""
-    from psx_ohlcv.db.connection import init_schema
+    from pakfindata.db.connection import init_schema
 
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -38,61 +38,61 @@ def con():
 
 class TestClassifyPage:
     def test_pl_statement(self):
-        from psx_ohlcv.sources.financial_parser import classify_page
+        from pakfindata.sources.financial_parser import classify_page
 
         text = "CONDENSED INTERIM\nSTATEMENT OF PROFIT OR LOSS\nFor the period ended"
         assert classify_page(text) == "pl"
 
     def test_pl_income_statement(self):
-        from psx_ohlcv.sources.financial_parser import classify_page
+        from pakfindata.sources.financial_parser import classify_page
 
         text = "INCOME STATEMENT\nFor the year ended December 31, 2024"
         assert classify_page(text) == "pl"
 
     def test_pl_profit_and_loss(self):
-        from psx_ohlcv.sources.financial_parser import classify_page
+        from pakfindata.sources.financial_parser import classify_page
 
         text = "PROFIT AND LOSS ACCOUNT\nFor the year ended"
         assert classify_page(text) == "pl"
 
     def test_bs_financial_position(self):
-        from psx_ohlcv.sources.financial_parser import classify_page
+        from pakfindata.sources.financial_parser import classify_page
 
         text = "STATEMENT OF FINANCIAL POSITION\nAs at September 30, 2025"
         assert classify_page(text) == "bs"
 
     def test_bs_balance_sheet(self):
-        from psx_ohlcv.sources.financial_parser import classify_page
+        from pakfindata.sources.financial_parser import classify_page
 
         text = "BALANCE SHEET\nAs at December 31, 2024"
         assert classify_page(text) == "bs"
 
     def test_cash_flow(self):
-        from psx_ohlcv.sources.financial_parser import classify_page
+        from pakfindata.sources.financial_parser import classify_page
 
         text = "STATEMENT OF CASH FLOW\nFor the year ended"
         assert classify_page(text) == "cf"
 
     def test_comprehensive_income(self):
-        from psx_ohlcv.sources.financial_parser import classify_page
+        from pakfindata.sources.financial_parser import classify_page
 
         text = "STATEMENT OF COMPREHENSIVE INCOME\nFor the year ended"
         assert classify_page(text) == "ci"
 
     def test_notes(self):
-        from psx_ohlcv.sources.financial_parser import classify_page
+        from pakfindata.sources.financial_parser import classify_page
 
         text = "NOTES TO THE FINANCIAL STATEMENTS\nNote 1"
         assert classify_page(text) == "notes"
 
     def test_unknown(self):
-        from psx_ohlcv.sources.financial_parser import classify_page
+        from pakfindata.sources.financial_parser import classify_page
 
         text = "Directors Report\nThe board is pleased to present"
         assert classify_page(text) == "unknown"
 
     def test_empty(self):
-        from psx_ohlcv.sources.financial_parser import classify_page
+        from pakfindata.sources.financial_parser import classify_page
 
         assert classify_page("") == "unknown"
         assert classify_page(None) == "unknown"
@@ -105,31 +105,31 @@ class TestClassifyPage:
 
 class TestDetectScale:
     def test_thousands_ascii(self):
-        from psx_ohlcv.sources.financial_parser import _detect_scale
+        from pakfindata.sources.financial_parser import _detect_scale
 
         lines = ["Company Name", "(Rupees '000)", "For the year ended"]
         assert _detect_scale(lines) == 1000.0
 
     def test_thousands_unicode(self):
-        from psx_ohlcv.sources.financial_parser import _detect_scale
+        from pakfindata.sources.financial_parser import _detect_scale
 
         lines = ["Company Name", "(Rupees \u2018000)", "For the year ended"]
         assert _detect_scale(lines) == 1000.0
 
     def test_millions(self):
-        from psx_ohlcv.sources.financial_parser import _detect_scale
+        from pakfindata.sources.financial_parser import _detect_scale
 
         lines = ["Company Name", "(in million Rupees)", "For the year ended"]
         assert _detect_scale(lines) == 1_000_000.0
 
     def test_no_scale(self):
-        from psx_ohlcv.sources.financial_parser import _detect_scale
+        from pakfindata.sources.financial_parser import _detect_scale
 
         lines = ["Company Name", "For the year ended", "Note 2025 2024"]
         assert _detect_scale(lines) == 1.0
 
     def test_thousand_word(self):
-        from psx_ohlcv.sources.financial_parser import _detect_scale
+        from pakfindata.sources.financial_parser import _detect_scale
 
         lines = ["Amounts in thousand"]
         assert _detect_scale(lines) == 1000.0
@@ -142,7 +142,7 @@ class TestDetectScale:
 
 class TestExtractPeriodInfo:
     def test_month_dd_yyyy(self):
-        from psx_ohlcv.sources.financial_parser import _extract_period_info_extended
+        from pakfindata.sources.financial_parser import _extract_period_info_extended
 
         lines = ["", "For the year ended December 31, 2024", ""]
         info = _extract_period_info_extended(lines)
@@ -150,7 +150,7 @@ class TestExtractPeriodInfo:
         assert info.get("period_type") == "annual"
 
     def test_dd_month_yyyy(self):
-        from psx_ohlcv.sources.financial_parser import _extract_period_info_extended
+        from pakfindata.sources.financial_parser import _extract_period_info_extended
 
         lines = ["", "For the quarter ended 30 September 2025", ""]
         info = _extract_period_info_extended(lines)
@@ -158,7 +158,7 @@ class TestExtractPeriodInfo:
         assert info.get("period_type") == "quarterly"
 
     def test_nine_month_period(self):
-        from psx_ohlcv.sources.financial_parser import _extract_period_info_extended
+        from pakfindata.sources.financial_parser import _extract_period_info_extended
 
         lines = ["", "For the nine month period ended 30 September 2025", ""]
         info = _extract_period_info_extended(lines)
@@ -166,7 +166,7 @@ class TestExtractPeriodInfo:
         assert info.get("period_type") == "quarterly"
 
     def test_as_at_dd_month(self):
-        from psx_ohlcv.sources.financial_parser import _extract_period_info_extended
+        from pakfindata.sources.financial_parser import _extract_period_info_extended
 
         lines = ["", "As at 30 September 2025", ""]
         info = _extract_period_info_extended(lines)
@@ -180,7 +180,7 @@ class TestExtractPeriodInfo:
 
 class TestLabelMatching:
     def test_pl_sales_regex(self):
-        from psx_ohlcv.sources.financial_parser import PL_LABELS
+        from pakfindata.sources.financial_parser import PL_LABELS
 
         sales_pat = next(p for p, n in PL_LABELS if n == "sales")
         assert sales_pat.search("NET SALES")
@@ -191,7 +191,7 @@ class TestLabelMatching:
 
     def test_cost_of_sales_not_extracted_as_sales(self):
         """Verify _extract_line_items correctly excludes 'COST OF SALES' from 'sales'."""
-        from psx_ohlcv.sources.financial_parser import PL_LABELS, _extract_line_items
+        from pakfindata.sources.financial_parser import PL_LABELS, _extract_line_items
 
         lines = ["Cost of Sales 30,000,000 25,000,000"]
         result = _extract_line_items(lines, PL_LABELS)
@@ -200,14 +200,14 @@ class TestLabelMatching:
         assert "sales" not in result
 
     def test_pl_markup_earned(self):
-        from psx_ohlcv.sources.financial_parser import PL_LABELS
+        from pakfindata.sources.financial_parser import PL_LABELS
 
         pat = next(p for p, n in PL_LABELS if n == "markup_earned")
         assert pat.search("Mark-up / return earned on:")
         assert pat.search("INTEREST EARNED")
 
     def test_pl_profit_after_tax_no_participation(self):
-        from psx_ohlcv.sources.financial_parser import PL_LABELS
+        from pakfindata.sources.financial_parser import PL_LABELS
 
         pat = next(p for p, n in PL_LABELS if n == "profit_after_tax")
         assert pat.search("PROFIT AFTER TAX")
@@ -216,7 +216,7 @@ class TestLabelMatching:
         assert not pat.search("PARTICIPATION")
 
     def test_bs_total_equity_excludes_and_liabilities(self):
-        from psx_ohlcv.sources.financial_parser import BS_LABELS
+        from pakfindata.sources.financial_parser import BS_LABELS
 
         pat = next(p for p, n in BS_LABELS if n == "total_equity")
         assert pat.search("TOTAL EQUITY")
@@ -226,7 +226,7 @@ class TestLabelMatching:
         assert not pat.search("TOTAL EQUITY AND LIABILITIES")
 
     def test_bs_non_current_liabilities_dash(self):
-        from psx_ohlcv.sources.financial_parser import BS_LABELS
+        from pakfindata.sources.financial_parser import BS_LABELS
 
         pat = next(p for p, n in BS_LABELS if n == "non_current_liabilities")
         assert pat.search("NON-CURRENT LIABILITIES")
@@ -243,7 +243,7 @@ class TestLabelMatching:
 
 class TestExtractLineItems:
     def test_basic_extraction(self):
-        from psx_ohlcv.sources.financial_parser import PL_LABELS, _extract_line_items
+        from pakfindata.sources.financial_parser import PL_LABELS, _extract_line_items
 
         lines = [
             "Net Sales 50,000,000 42,000,000",
@@ -257,7 +257,7 @@ class TestExtractLineItems:
         assert "gross_profit" in result
 
     def test_taxation_excludes_net_of(self):
-        from psx_ohlcv.sources.financial_parser import PL_LABELS, _extract_line_items
+        from pakfindata.sources.financial_parser import PL_LABELS, _extract_line_items
 
         lines = [
             "Taxation 5,000,000 4,000,000",
@@ -268,7 +268,7 @@ class TestExtractLineItems:
         assert result["taxation"][0] == 5_000_000
 
     def test_first_match_wins(self):
-        from psx_ohlcv.sources.financial_parser import PL_LABELS, _extract_line_items
+        from pakfindata.sources.financial_parser import PL_LABELS, _extract_line_items
 
         lines = [
             "Profit after tax 10,000,000 8,000,000",
@@ -286,7 +286,7 @@ class TestExtractLineItems:
 
 class TestExtractBSTotals:
     def test_bank_format(self):
-        from psx_ohlcv.sources.financial_parser import _extract_bs_totals
+        from pakfindata.sources.financial_parser import _extract_bs_totals
 
         lines = [
             "ASSETS",
@@ -307,7 +307,7 @@ class TestExtractBSTotals:
         assert found["total_liabilities"][0] == 270_000
 
     def test_ael_identity_computes_missing_equity(self):
-        from psx_ohlcv.sources.financial_parser import _extract_bs_totals
+        from pakfindata.sources.financial_parser import _extract_bs_totals
 
         found: dict = {
             "total_assets": [100_000, 80_000],
@@ -318,7 +318,7 @@ class TestExtractBSTotals:
         assert found["total_equity"][0] == 40_000
 
     def test_ael_identity_computes_missing_liabilities(self):
-        from psx_ohlcv.sources.financial_parser import _extract_bs_totals
+        from pakfindata.sources.financial_parser import _extract_bs_totals
 
         found: dict = {
             "total_assets": [100_000, 80_000],
@@ -329,7 +329,7 @@ class TestExtractBSTotals:
         assert found["total_liabilities"][0] == 60_000
 
     def test_equity_section_detection(self):
-        from psx_ohlcv.sources.financial_parser import _extract_bs_totals
+        from pakfindata.sources.financial_parser import _extract_bs_totals
 
         lines = [
             "EQUITY AND LIABILITIES",
@@ -361,7 +361,7 @@ class TestExtractBSTotals:
 
 class TestFlattenParsed:
     def test_basic_flatten(self):
-        from psx_ohlcv.sources.financial_parser import flatten_parsed_to_financials
+        from pakfindata.sources.financial_parser import flatten_parsed_to_financials
 
         parsed = {
             "income_statement": {"sales": 100_000_000, "profit_after_tax": 10_000_000},
@@ -388,7 +388,7 @@ class TestFlattenParsed:
         assert "2023" in prior["period_end"]
 
     def test_empty_parsed(self):
-        from psx_ohlcv.sources.financial_parser import flatten_parsed_to_financials
+        from pakfindata.sources.financial_parser import flatten_parsed_to_financials
 
         parsed = {
             "income_statement": {},
@@ -408,7 +408,7 @@ class TestFlattenParsed:
 
 class TestFinancialsSchema:
     def test_pdf_parse_log_created(self, con):
-        from psx_ohlcv.db.repositories.financials import init_financials_schema
+        from pakfindata.db.repositories.financials import init_financials_schema
 
         init_financials_schema(con)
         tables = [
@@ -420,7 +420,7 @@ class TestFinancialsSchema:
         assert "pdf_parse_log" in tables
 
     def test_new_columns_added(self, con):
-        from psx_ohlcv.db.repositories.financials import init_financials_schema
+        from pakfindata.db.repositories.financials import init_financials_schema
 
         init_financials_schema(con)
         cols = {
@@ -435,7 +435,7 @@ class TestFinancialsSchema:
         assert "source" in cols
 
     def test_ratio_columns_added(self, con):
-        from psx_ohlcv.db.repositories.financials import init_financials_schema
+        from pakfindata.db.repositories.financials import init_financials_schema
 
         init_financials_schema(con)
         cols = {
@@ -451,7 +451,7 @@ class TestFinancialsSchema:
 
 class TestPdfParseLog:
     def test_upsert_and_query(self, con):
-        from psx_ohlcv.db.repositories.financials import (
+        from pakfindata.db.repositories.financials import (
             get_parsed_pdfs,
             upsert_pdf_parse_log,
         )
@@ -473,7 +473,7 @@ class TestPdfParseLog:
         assert df.iloc[0]["parse_status"] == "success"
 
     def test_is_pdf_parsed(self, con):
-        from psx_ohlcv.db.repositories.financials import (
+        from pakfindata.db.repositories.financials import (
             is_pdf_parsed,
             upsert_pdf_parse_log,
         )
@@ -488,7 +488,7 @@ class TestPdfParseLog:
         assert is_pdf_parsed(con, "TEST", "other_hash") is False
 
     def test_is_psx_pdf_parsed(self, con):
-        from psx_ohlcv.db.repositories.financials import (
+        from pakfindata.db.repositories.financials import (
             is_psx_pdf_parsed,
             upsert_pdf_parse_log,
         )
@@ -506,8 +506,8 @@ class TestPdfParseLog:
 
 class TestComputeRatios:
     def test_nonbank_ratios(self, con):
-        from psx_ohlcv.db.repositories.company import upsert_company_financials
-        from psx_ohlcv.db.repositories.financials import compute_ratios_from_financials
+        from pakfindata.db.repositories.company import upsert_company_financials
+        from pakfindata.db.repositories.financials import compute_ratios_from_financials
 
         # Seed a non-bank financial row
         upsert_company_financials(con, "TEST", [{
@@ -541,8 +541,8 @@ class TestComputeRatios:
         assert row["interest_coverage"] == 4.0
 
     def test_bank_ratios(self, con):
-        from psx_ohlcv.db.repositories.company import upsert_company_financials
-        from psx_ohlcv.db.repositories.financials import compute_ratios_from_financials
+        from pakfindata.db.repositories.company import upsert_company_financials
+        from pakfindata.db.repositories.financials import compute_ratios_from_financials
 
         upsert_company_financials(con, "BANK", [{
             "period_end": "2024",
@@ -569,8 +569,8 @@ class TestComputeRatios:
         assert row["debt_to_equity"] == 16.5
 
     def test_sanity_check_blocks_bad_ratios(self, con):
-        from psx_ohlcv.db.repositories.company import upsert_company_financials
-        from psx_ohlcv.db.repositories.financials import compute_ratios_from_financials
+        from pakfindata.db.repositories.company import upsert_company_financials
+        from pakfindata.db.repositories.financials import compute_ratios_from_financials
 
         # Simulates mixed DPS + PDF data: sales from DPS (unscaled), PAT from PDF (scaled)
         upsert_company_financials(con, "MIX", [{
@@ -598,7 +598,7 @@ class TestComputeRatios:
 
 class TestGetParseSummary:
     def test_summary_stats(self, con):
-        from psx_ohlcv.db.repositories.financials import (
+        from pakfindata.db.repositories.financials import (
             get_parse_summary,
             upsert_pdf_parse_log,
         )

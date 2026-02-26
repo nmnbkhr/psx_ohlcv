@@ -3,9 +3,9 @@
 import pandas as pd
 import pytest
 
-from psx_ohlcv import connect, init_schema, upsert_eod, upsert_symbols
-from psx_ohlcv.analytics import init_analytics_schema
-from psx_ohlcv.query import (
+from pakfindata import connect, init_schema, upsert_eod, upsert_symbols
+from pakfindata.analytics import init_analytics_schema
+from pakfindata.query import (
     get_latest_close,
     get_market_history,
     get_market_history_stats,
@@ -18,7 +18,7 @@ from psx_ohlcv.query import (
     get_symbols_string,
     get_time_range_bounds,
 )
-from psx_ohlcv.sources.regular_market import init_regular_market_schema
+from pakfindata.sources.regular_market import init_regular_market_schema
 
 
 @pytest.fixture

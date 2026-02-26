@@ -3,8 +3,8 @@
 import pandas as pd
 import pytest
 
-from psx_ohlcv import connect, init_schema
-from psx_ohlcv.db import (
+from pakfindata import connect, init_schema
+from pakfindata.db import (
     get_instruments,
     upsert_instrument,
     upsert_ohlcv_instrument,
@@ -13,7 +13,7 @@ from psx_ohlcv.db import (
     upsert_instrument_ranking,
     get_instrument_rankings,
 )
-from psx_ohlcv.analytics_phase1 import (
+from pakfindata.analytics_phase1 import (
     compute_returns,
     compute_volatility,
     compute_all_metrics,

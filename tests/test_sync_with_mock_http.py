@@ -4,8 +4,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from psx_ohlcv import connect, init_schema, upsert_symbols
-from psx_ohlcv.sync import sync_all
+from pakfindata import connect, init_schema, upsert_symbols
+from pakfindata.sync import sync_all
 
 # Sample EOD responses for two symbols
 HBL_EOD_RESPONSE = [
@@ -98,8 +98,8 @@ class TestSyncAllWithMockHttp:
 
     def test_sync_all_with_explicit_symbols(self, mock_session):
         """Should sync explicit list of symbols."""
-        with patch("psx_ohlcv.sync.create_session", return_value=mock_session):
-            with patch("psx_ohlcv.http.time.sleep"):  # Skip polite delays
+        with patch("pakfindata.sync.create_session", return_value=mock_session):
+            with patch("pakfindata.http.time.sleep"):  # Skip polite delays
                 summary = sync_all(
                     db_path=":memory:",
                     symbols_list=["HBL", "OGDC"],
@@ -121,7 +121,7 @@ class TestSyncAllWithMockHttp:
         upsert_symbols(con, [{"symbol": "HBL"}, {"symbol": "OGDC"}])
         con.close()
 
-        with patch("psx_ohlcv.http.time.sleep"):
+        with patch("pakfindata.http.time.sleep"):
             sync_all(
                 db_path=db_path,
                 symbols_list=["HBL", "OGDC"],
@@ -158,7 +158,7 @@ class TestSyncAllWithMockHttp:
         upsert_symbols(con, [{"symbol": "HBL"}])
         con.close()
 
-        with patch("psx_ohlcv.http.time.sleep"):
+        with patch("pakfindata.http.time.sleep"):
             summary = sync_all(
                 db_path=db_path,
                 symbols_list=["HBL"],
@@ -206,7 +206,7 @@ class TestSyncAllWithMockHttp:
 
         mock_session.get = mock_get
 
-        with patch("psx_ohlcv.http.time.sleep"):
+        with patch("pakfindata.http.time.sleep"):
             summary = sync_all(
                 db_path=db_path,
                 symbols_list=["HBL", "BADONE"],
@@ -238,7 +238,7 @@ class TestSyncAllWithMockHttp:
         upsert_symbols(con, [{"symbol": "HBL"}, {"symbol": "OGDC"}])
         con.close()
 
-        with patch("psx_ohlcv.http.time.sleep"):
+        with patch("pakfindata.http.time.sleep"):
             summary = sync_all(
                 db_path=db_path,
                 session=mock_session,
@@ -259,7 +259,7 @@ class TestSyncAllWithMockHttp:
         )
         con.close()
 
-        with patch("psx_ohlcv.http.time.sleep"):
+        with patch("pakfindata.http.time.sleep"):
             summary = sync_all(
                 db_path=db_path,
                 limit_symbols=2,
@@ -277,7 +277,7 @@ class TestSyncAllWithMockHttp:
         init_schema(con)
         con.close()
 
-        with patch("psx_ohlcv.http.time.sleep"):
+        with patch("pakfindata.http.time.sleep"):
             summary = sync_all(
                 db_path=db_path,
                 session=mock_session,
@@ -306,7 +306,7 @@ class TestSyncAllWithMockHttp:
         con.commit()
         con.close()
 
-        with patch("psx_ohlcv.http.time.sleep"):
+        with patch("pakfindata.http.time.sleep"):
             sync_all(
                 db_path=db_path,
                 symbols_list=["HBL"],

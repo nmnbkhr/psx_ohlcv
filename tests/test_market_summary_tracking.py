@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from psx_ohlcv.sources.market_summary import (
+from pakfindata.sources.market_summary import (
     fetch_day_with_tracking,
     get_download_record,
     get_failed_dates,
@@ -98,7 +98,7 @@ class TestTrackingTable:
 
     def test_get_all_tracking_records(self, con):
         """Test that get_all_tracking_records returns all records."""
-        from psx_ohlcv.sources.market_summary import get_all_tracking_records
+        from pakfindata.sources.market_summary import get_all_tracking_records
 
         upsert_download_record(con, "2025-01-15", "ok", row_count=100)
         upsert_download_record(con, "2025-01-16", "failed", message="Error")
@@ -113,7 +113,7 @@ class TestTrackingTable:
 
     def test_get_tracking_stats(self, con):
         """Test that get_tracking_stats returns correct summary."""
-        from psx_ohlcv.sources.market_summary import get_tracking_stats
+        from pakfindata.sources.market_summary import get_tracking_stats
 
         upsert_download_record(con, "2025-01-15", "ok", row_count=100)
         upsert_download_record(con, "2025-01-16", "ok", row_count=150)
@@ -133,7 +133,7 @@ class TestTrackingTable:
 class TestFirstAttemptInserts:
     """Test that first download attempt inserts a tracking record."""
 
-    @patch("psx_ohlcv.sources.market_summary.fetch_day")
+    @patch("pakfindata.sources.market_summary.fetch_day")
     def test_first_attempt_ok_inserts_record(self, mock_fetch_day, con, tmp_path):
         """Test that successful first attempt inserts tracking record."""
         # Create a fake CSV file
@@ -166,7 +166,7 @@ class TestFirstAttemptInserts:
 class TestSecondAttemptSkips:
     """Test that second attempt without force is skipped."""
 
-    @patch("psx_ohlcv.sources.market_summary.fetch_day")
+    @patch("pakfindata.sources.market_summary.fetch_day")
     def test_second_attempt_without_force_skips(self, mock_fetch_day, con, tmp_path):
         """Test that second attempt without force flag skips download."""
         # Insert initial OK record
@@ -195,7 +195,7 @@ class TestSecondAttemptSkips:
 class TestMissingDateHandling:
     """Test that missing dates are handled correctly."""
 
-    @patch("psx_ohlcv.sources.market_summary.fetch_day")
+    @patch("pakfindata.sources.market_summary.fetch_day")
     def test_missing_date_sets_status_missing(self, mock_fetch_day, con, tmp_path):
         """Test that 404 response sets status to 'missing'."""
         mock_fetch_day.return_value = {
@@ -217,7 +217,7 @@ class TestMissingDateHandling:
         assert record is not None
         assert record["status"] == "missing"
 
-    @patch("psx_ohlcv.sources.market_summary.fetch_day")
+    @patch("pakfindata.sources.market_summary.fetch_day")
     def test_missing_date_does_not_crash(self, mock_fetch_day, con, tmp_path):
         """Test that missing date does not cause crash."""
         mock_fetch_day.return_value = {
@@ -238,7 +238,7 @@ class TestMissingDateHandling:
 class TestRetryFlags:
     """Test that retry flags allow re-attempt of failed/missing dates."""
 
-    @patch("psx_ohlcv.sources.market_summary.fetch_day")
+    @patch("pakfindata.sources.market_summary.fetch_day")
     def test_retry_failed_allows_reattempt(self, mock_fetch_day, con, tmp_path):
         """Test that --retry-failed flag allows re-attempt."""
         # Insert failed record
@@ -272,7 +272,7 @@ class TestRetryFlags:
         assert result_retry["status"] == "ok"
         mock_fetch_day.assert_called_once()
 
-    @patch("psx_ohlcv.sources.market_summary.fetch_day")
+    @patch("pakfindata.sources.market_summary.fetch_day")
     def test_retry_missing_allows_reattempt(self, mock_fetch_day, con, tmp_path):
         """Test that --retry-missing flag allows re-attempt."""
         # Insert missing record
@@ -306,7 +306,7 @@ class TestRetryFlags:
         assert result_retry["status"] == "ok"
         mock_fetch_day.assert_called_once()
 
-    @patch("psx_ohlcv.sources.market_summary.fetch_day")
+    @patch("pakfindata.sources.market_summary.fetch_day")
     def test_force_overrides_all_statuses(self, mock_fetch_day, con, tmp_path):
         """Test that --force flag overrides all previous statuses."""
         # Insert OK record with existing CSV

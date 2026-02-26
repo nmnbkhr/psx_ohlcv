@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from psx_ohlcv.sources.market_summary import (
+from pakfindata.sources.market_summary import (
     MARKET_SUMMARY_COLUMNS,
     _validate_date_format,
     fetch_day,
@@ -259,8 +259,8 @@ class TestFetchDay:
 class TestFetchRange:
     """Tests for fetch_range function."""
 
-    @patch("psx_ohlcv.sources.market_summary.fetch_day")
-    @patch("psx_ohlcv.sources.market_summary.create_session")
+    @patch("pakfindata.sources.market_summary.fetch_day")
+    @patch("pakfindata.sources.market_summary.create_session")
     def test_iterates_over_dates(self, mock_session, mock_fetch_day):
         """Test that fetch_range iterates over correct dates."""
         mock_session.return_value = MagicMock()
@@ -284,8 +284,8 @@ class TestFetchRange:
         assert len(results) == 3
         assert mock_fetch_day.call_count == 3
 
-    @patch("psx_ohlcv.sources.market_summary.fetch_day")
-    @patch("psx_ohlcv.sources.market_summary.create_session")
+    @patch("pakfindata.sources.market_summary.fetch_day")
+    @patch("pakfindata.sources.market_summary.create_session")
     def test_skips_weekends(self, mock_session, mock_fetch_day):
         """Test that weekends are skipped by default."""
         mock_session.return_value = MagicMock()
@@ -313,7 +313,7 @@ class TestFetchRange:
 class TestFetchRangeSummary:
     """Tests for fetch_range_summary function."""
 
-    @patch("psx_ohlcv.sources.market_summary.fetch_range")
+    @patch("pakfindata.sources.market_summary.fetch_range")
     def test_aggregates_results(self, mock_fetch_range):
         """Test that fetch_range_summary aggregates results correctly."""
         mock_fetch_range.return_value = iter([
@@ -338,7 +338,7 @@ class TestFetchRangeSummary:
         assert summary["failed"][0]["date"] == "2025-01-20"
         assert summary["failed"][0]["message"] == "Test error"
 
-    @patch("psx_ohlcv.sources.market_summary.fetch_range")
+    @patch("pakfindata.sources.market_summary.fetch_range")
     def test_empty_range(self, mock_fetch_range):
         """Test with no dates (e.g., weekend-only range with skip_weekends)."""
         mock_fetch_range.return_value = iter([])

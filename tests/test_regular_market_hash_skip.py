@@ -3,8 +3,8 @@
 import pandas as pd
 import pytest
 
-from psx_ohlcv import connect, init_schema
-from psx_ohlcv.sources.regular_market import (
+from pakfindata import connect, init_schema
+from pakfindata.sources.regular_market import (
     _compute_row_hash,
     get_current_hash,
     init_regular_market_schema,

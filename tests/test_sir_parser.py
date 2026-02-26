@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from psx_ohlcv.sources.sbp_sir import (
+from pakfindata.sources.sbp_sir import (
     SBPSirScraper,
     _parse_float,
     _parse_month_date,
@@ -66,8 +66,8 @@ class TestParseFloat:
 @pytest.fixture
 def con():
     """In-memory SQLite connection with required schemas."""
-    from psx_ohlcv.db.repositories.treasury import init_treasury_schema
-    from psx_ohlcv.db.repositories.yield_curves import init_yield_curve_schema
+    from pakfindata.db.repositories.treasury import init_treasury_schema
+    from pakfindata.db.repositories.yield_curves import init_yield_curve_schema
 
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row

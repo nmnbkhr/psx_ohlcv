@@ -5,9 +5,9 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
-from psx_ohlcv import connect, init_schema
-from psx_ohlcv.db import get_intraday_sync_state, upsert_intraday
-from psx_ohlcv.sync import IntradaySyncSummary, sync_intraday
+from pakfindata import connect, init_schema
+from pakfindata.db import get_intraday_sync_state, upsert_intraday
+from pakfindata.sync import IntradaySyncSummary, sync_intraday
 
 
 @pytest.fixture
@@ -37,7 +37,7 @@ class TestSyncIntraday:
             [1705317600, 105.0, 60000, 104.0],
         ]
 
-        with patch("psx_ohlcv.sync.fetch_intraday_json") as mock_fetch:
+        with patch("pakfindata.sync.fetch_intraday_json") as mock_fetch:
             mock_fetch.return_value = mock_payload
 
             summary = sync_intraday(
@@ -59,7 +59,7 @@ class TestSyncIntraday:
 
     def test_sync_intraday_empty_response(self, db_path, db):
         """Test sync with empty API response."""
-        with patch("psx_ohlcv.sync.fetch_intraday_json") as mock_fetch:
+        with patch("pakfindata.sync.fetch_intraday_json") as mock_fetch:
             mock_fetch.return_value = []
 
             summary = sync_intraday(
@@ -73,7 +73,7 @@ class TestSyncIntraday:
 
     def test_sync_intraday_api_error(self, db_path, db):
         """Test sync with API error."""
-        with patch("psx_ohlcv.sync.fetch_intraday_json") as mock_fetch:
+        with patch("pakfindata.sync.fetch_intraday_json") as mock_fetch:
             mock_fetch.side_effect = Exception("Connection timeout")
 
             summary = sync_intraday(
@@ -132,7 +132,7 @@ class TestSyncIntraday:
              "open": 102.5},
         ]
 
-        with patch("psx_ohlcv.sync.fetch_intraday_json") as mock_fetch:
+        with patch("pakfindata.sync.fetch_intraday_json") as mock_fetch:
             mock_fetch.return_value = mock_payload
 
             summary = sync_intraday(
@@ -168,7 +168,7 @@ class TestSyncIntraday:
             [1705316400, 102.5, 2000, 101.5],
         ]
 
-        with patch("psx_ohlcv.sync.fetch_intraday_json") as mock_fetch:
+        with patch("pakfindata.sync.fetch_intraday_json") as mock_fetch:
             mock_fetch.return_value = mock_payload
 
             summary = sync_intraday(
@@ -187,7 +187,7 @@ class TestSyncIntraday:
             [1705320000, 103.5, 2500, 102.5],  # Latest
         ]
 
-        with patch("psx_ohlcv.sync.fetch_intraday_json") as mock_fetch:
+        with patch("pakfindata.sync.fetch_intraday_json") as mock_fetch:
             mock_fetch.return_value = mock_payload
 
             summary = sync_intraday(
@@ -212,7 +212,7 @@ class TestSyncIntraday:
             for i in range(10)
         ]
 
-        with patch("psx_ohlcv.sync.fetch_intraday_json") as mock_fetch:
+        with patch("pakfindata.sync.fetch_intraday_json") as mock_fetch:
             mock_fetch.return_value = mock_payload
 
             summary = sync_intraday(
@@ -234,7 +234,7 @@ class TestSyncIntraday:
             ]
         }
 
-        with patch("psx_ohlcv.sync.fetch_intraday_json") as mock_fetch:
+        with patch("pakfindata.sync.fetch_intraday_json") as mock_fetch:
             mock_fetch.return_value = mock_payload
 
             summary = sync_intraday(
@@ -248,7 +248,7 @@ class TestSyncIntraday:
 
     def test_sync_intraday_symbol_required(self, db_path):
         """Test that symbol is required."""
-        with patch("psx_ohlcv.sync.fetch_intraday_json"):
+        with patch("pakfindata.sync.fetch_intraday_json"):
             summary = sync_intraday(
                 db_path=db_path,
                 symbol="",  # Empty symbol

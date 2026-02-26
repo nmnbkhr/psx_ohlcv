@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from psx_ohlcv.db import (
+from pakfindata.db import (
     get_company_key_people,
     get_company_profile,
     get_last_quote_hash,
@@ -14,7 +14,7 @@ from psx_ohlcv.db import (
     replace_company_key_people,
     upsert_company_profile,
 )
-from psx_ohlcv.sources.company_page import (
+from pakfindata.sources.company_page import (
     _compute_raw_hash,
     _parse_numeric,
     _parse_range,

@@ -8,7 +8,7 @@ Verifies that prompts contain all required sections:
 
 import pytest
 
-from psx_ohlcv.agents.prompts import (
+from pakfindata.agents.prompts import (
     PromptBuilder,
     InsightMode,
     SYSTEM_PROMPT,

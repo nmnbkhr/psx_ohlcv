@@ -4,13 +4,13 @@ import sqlite3
 
 import pytest
 
-from psx_ohlcv.db import (
+from pakfindata.db import (
     get_last_quote_hash,
     get_quote_snapshots,
     init_schema,
     insert_quote_snapshot,
 )
-from psx_ohlcv.sources.company_page import (
+from pakfindata.sources.company_page import (
     _compute_raw_hash,
 )
 

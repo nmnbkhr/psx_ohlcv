@@ -11,7 +11,7 @@ class TestSukukManual:
 
     def test_get_default_sukuk(self):
         """Test default sukuk data generation."""
-        from psx_ohlcv.sources.sukuk_manual import get_default_sukuk
+        from pakfindata.sources.sukuk_manual import get_default_sukuk
 
         sukuk_list = get_default_sukuk()
 
@@ -28,7 +28,7 @@ class TestSukukManual:
 
     def test_generate_sample_quotes(self):
         """Test sample quote generation."""
-        from psx_ohlcv.sources.sukuk_manual import (
+        from pakfindata.sources.sukuk_manual import (
             generate_sample_quotes,
             get_default_sukuk,
         )
@@ -43,7 +43,7 @@ class TestSukukManual:
 
     def test_generate_sample_yield_curve(self):
         """Test sample yield curve generation."""
-        from psx_ohlcv.sources.sukuk_manual import generate_sample_yield_curve
+        from pakfindata.sources.sukuk_manual import generate_sample_yield_curve
 
         points = generate_sample_yield_curve("2026-01-15", "GOP_SUKUK")
 
@@ -54,7 +54,7 @@ class TestSukukManual:
 
     def test_load_sukuk_master_csv(self):
         """Test loading sukuk master from CSV."""
-        from psx_ohlcv.sources.sukuk_manual import load_sukuk_master_csv
+        from pakfindata.sources.sukuk_manual import load_sukuk_master_csv
 
         csv_content = """instrument_id,issuer,name,category,maturity_date,coupon_rate
 TEST-SUKUK-1,Test Issuer,Test Sukuk,GOP_SUKUK,2027-01-15,15.0
@@ -80,7 +80,7 @@ class TestSukukAnalytics:
 
     def test_calculate_ytm_coupon_bond(self):
         """Test YTM calculation for coupon bond."""
-        from psx_ohlcv.analytics_sukuk import calculate_ytm
+        from pakfindata.analytics_sukuk import calculate_ytm
 
         # Bond priced at par should have YTM close to coupon rate
         ytm = calculate_ytm(
@@ -96,7 +96,7 @@ class TestSukukAnalytics:
 
     def test_calculate_ytm_zero_coupon(self):
         """Test YTM calculation for zero coupon bond."""
-        from psx_ohlcv.analytics_sukuk import calculate_ytm
+        from pakfindata.analytics_sukuk import calculate_ytm
 
         # T-Bill style zero coupon
         ytm = calculate_ytm(
@@ -112,7 +112,7 @@ class TestSukukAnalytics:
 
     def test_calculate_macaulay_duration(self):
         """Test Macaulay duration calculation."""
-        from psx_ohlcv.analytics_sukuk import calculate_macaulay_duration
+        from pakfindata.analytics_sukuk import calculate_macaulay_duration
 
         duration = calculate_macaulay_duration(
             ytm=15.0,
@@ -127,7 +127,7 @@ class TestSukukAnalytics:
 
     def test_calculate_modified_duration(self):
         """Test modified duration calculation."""
-        from psx_ohlcv.analytics_sukuk import (
+        from pakfindata.analytics_sukuk import (
             calculate_macaulay_duration,
             calculate_modified_duration,
         )
@@ -150,7 +150,7 @@ class TestSukukAnalytics:
 
     def test_calculate_convexity(self):
         """Test convexity calculation."""
-        from psx_ohlcv.analytics_sukuk import calculate_convexity
+        from pakfindata.analytics_sukuk import calculate_convexity
 
         convexity = calculate_convexity(
             ytm=15.0,
@@ -164,7 +164,7 @@ class TestSukukAnalytics:
 
     def test_interpolate_yield_curve(self):
         """Test yield curve interpolation."""
-        from psx_ohlcv.analytics_sukuk import interpolate_yield_curve
+        from pakfindata.analytics_sukuk import interpolate_yield_curve
 
         curve_points = [
             {"tenor_days": 365, "yield_rate": 14.0},
@@ -187,7 +187,7 @@ class TestSukukSync:
 
     def test_seed_sukuk(self):
         """Test seeding sukuk master data."""
-        from psx_ohlcv.sync_sukuk import seed_sukuk
+        from pakfindata.sync_sukuk import seed_sukuk
 
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
@@ -203,7 +203,7 @@ class TestSukukSync:
 
     def test_sync_sample_quotes(self):
         """Test syncing sample quotes."""
-        from psx_ohlcv.sync_sukuk import seed_sukuk, sync_sample_quotes
+        from pakfindata.sync_sukuk import seed_sukuk, sync_sample_quotes
 
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
@@ -222,7 +222,7 @@ class TestSukukSync:
 
     def test_get_data_summary(self):
         """Test data summary retrieval."""
-        from psx_ohlcv.sync_sukuk import get_data_summary, seed_sukuk
+        from pakfindata.sync_sukuk import get_data_summary, seed_sukuk
 
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
@@ -242,7 +242,7 @@ class TestSBPPrimaryMarket:
 
     def test_parse_document_filename(self):
         """Test document filename parsing."""
-        from psx_ohlcv.sources.sbp_primary_market import parse_document_filename
+        from pakfindata.sources.sbp_primary_market import parse_document_filename
 
         # Test standard format
         info = parse_document_filename("TBILL_AUCTION_RESULT_2026-01-15.pdf")
@@ -257,14 +257,14 @@ class TestSBPPrimaryMarket:
 
     def test_generate_doc_id(self):
         """Test document ID generation."""
-        from psx_ohlcv.sources.sbp_primary_market import generate_doc_id
+        from pakfindata.sources.sbp_primary_market import generate_doc_id
 
         doc_id = generate_doc_id("TBILL", "AUCTION_RESULT", "2026-01-15")
         assert doc_id == "SBP:TBILL:AUCTION_RESULT:2026-01-15"
 
     def test_get_sbp_document_urls(self):
         """Test SBP URL retrieval."""
-        from psx_ohlcv.sources.sbp_primary_market import get_sbp_document_urls
+        from pakfindata.sources.sbp_primary_market import get_sbp_document_urls
 
         urls = get_sbp_document_urls()
 
@@ -278,7 +278,7 @@ class TestDatabaseOperations:
 
     def test_sukuk_crud(self):
         """Test sukuk CRUD operations."""
-        from psx_ohlcv.db import (
+        from pakfindata.db import (
             connect,
             get_sukuk,
             get_sukuk_list,
@@ -322,7 +322,7 @@ class TestDatabaseOperations:
 
     def test_sukuk_quote_crud(self):
         """Test sukuk quote CRUD operations."""
-        from psx_ohlcv.db import (
+        from pakfindata.db import (
             connect,
             get_sukuk_latest_quote,
             init_schema,

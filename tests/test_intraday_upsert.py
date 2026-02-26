@@ -3,13 +3,13 @@
 import pandas as pd
 import pytest
 
-from psx_ohlcv import connect, init_schema
-from psx_ohlcv.db import (
+from pakfindata import connect, init_schema
+from pakfindata.db import (
     get_intraday_sync_state,
     update_intraday_sync_state,
     upsert_intraday,
 )
-from psx_ohlcv.db.repositories.intraday import (
+from pakfindata.db.repositories.intraday import (
     get_intraday_dates,
     promote_intraday_to_eod,
 )
@@ -287,7 +287,7 @@ class TestIntradayQueryHelpers:
 
     def test_get_intraday_range(self, db):
         """Test querying intraday data with time range."""
-        from psx_ohlcv.db import get_intraday_range
+        from pakfindata.db import get_intraday_range
 
         # Insert test data
         df = pd.DataFrame([
@@ -315,7 +315,7 @@ class TestIntradayQueryHelpers:
 
     def test_get_intraday_latest(self, db):
         """Test getting latest intraday bars."""
-        from psx_ohlcv.db import get_intraday_latest
+        from pakfindata.db import get_intraday_latest
 
         # Insert test data
         df = pd.DataFrame([
@@ -334,7 +334,7 @@ class TestIntradayQueryHelpers:
 
     def test_get_intraday_stats(self, db):
         """Test getting intraday statistics."""
-        from psx_ohlcv.db import get_intraday_stats
+        from pakfindata.db import get_intraday_stats
 
         # Insert test data
         df = pd.DataFrame([
@@ -353,7 +353,7 @@ class TestIntradayQueryHelpers:
 
     def test_get_intraday_stats_empty(self, db):
         """Stats for nonexistent symbol should return zeros."""
-        from psx_ohlcv.db import get_intraday_stats
+        from pakfindata.db import get_intraday_stats
 
         stats = get_intraday_stats(db, "NONEXISTENT")
 

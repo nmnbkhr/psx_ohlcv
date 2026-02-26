@@ -7,8 +7,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from psx_ohlcv.db import init_schema
-from psx_ohlcv.sources.listed_companies import (
+from pakfindata.db import init_schema
+from pakfindata.sources.listed_companies import (
     get_master_symbols,
     parse_listed_companies,
     upsert_symbols_from_master,

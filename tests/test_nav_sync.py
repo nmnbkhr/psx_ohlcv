@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from psx_ohlcv.db.repositories.fixed_income import (
+from pakfindata.db.repositories.fixed_income import (
     parse_nav_history_to_tuples,
     upsert_mf_nav_batch,
 )
@@ -146,8 +146,8 @@ class TestUpsertMfNavBatch:
 class TestStagingHelpers:
 
     def test_stage_read_delete_roundtrip(self, staging_dir):
-        with patch("psx_ohlcv.sync_mufap.NAV_STAGING_DIR", staging_dir):
-            from psx_ohlcv.sync_mufap import (
+        with patch("pakfindata.sync_mufap.NAV_STAGING_DIR", staging_dir):
+            from pakfindata.sync_mufap import (
                 _delete_staged_json,
                 _read_staged_json,
                 _stage_nav_json,
@@ -167,8 +167,8 @@ class TestStagingHelpers:
             assert _read_staged_json("MUFAP:100") is None
 
     def test_get_staged_fund_ids(self, staging_dir):
-        with patch("psx_ohlcv.sync_mufap.NAV_STAGING_DIR", staging_dir):
-            from psx_ohlcv.sync_mufap import _get_staged_fund_ids, _stage_nav_json
+        with patch("pakfindata.sync_mufap.NAV_STAGING_DIR", staging_dir):
+            from pakfindata.sync_mufap import _get_staged_fund_ids, _stage_nav_json
 
             _stage_nav_json("MUFAP:A", "A", {"nav_history": []})
             _stage_nav_json("MUFAP:B", "B", {"nav_history": []})
@@ -177,8 +177,8 @@ class TestStagingHelpers:
             assert ids == {"MUFAP:A", "MUFAP:B"}
 
     def test_clear_nav_staging(self, staging_dir):
-        with patch("psx_ohlcv.sync_mufap.NAV_STAGING_DIR", staging_dir):
-            from psx_ohlcv.sync_mufap import _stage_nav_json, clear_nav_staging
+        with patch("pakfindata.sync_mufap.NAV_STAGING_DIR", staging_dir):
+            from pakfindata.sync_mufap import _stage_nav_json, clear_nav_staging
 
             _stage_nav_json("MUFAP:X", "X", {})
             _stage_nav_json("MUFAP:Y", "Y", {})
@@ -187,13 +187,13 @@ class TestStagingHelpers:
             assert list(staging_dir.glob("*.json")) == []
 
     def test_read_nonexistent_returns_none(self, staging_dir):
-        with patch("psx_ohlcv.sync_mufap.NAV_STAGING_DIR", staging_dir):
-            from psx_ohlcv.sync_mufap import _read_staged_json
+        with patch("pakfindata.sync_mufap.NAV_STAGING_DIR", staging_dir):
+            from pakfindata.sync_mufap import _read_staged_json
 
             assert _read_staged_json("MUFAP:NOPE") is None
 
     def test_clear_empty_dir(self, staging_dir):
-        with patch("psx_ohlcv.sync_mufap.NAV_STAGING_DIR", staging_dir):
-            from psx_ohlcv.sync_mufap import clear_nav_staging
+        with patch("pakfindata.sync_mufap.NAV_STAGING_DIR", staging_dir):
+            from pakfindata.sync_mufap import clear_nav_staging
 
             assert clear_nav_staging() == 0

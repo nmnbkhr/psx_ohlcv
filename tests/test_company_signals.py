@@ -5,7 +5,7 @@ import sqlite3
 import pandas as pd
 import pytest
 
-from psx_ohlcv.company_analytics import (
+from pakfindata.company_analytics import (
     VOLUME_SPIKE_THRESHOLD,
     compute_and_persist_signals,
     compute_company_signals,
@@ -13,7 +13,7 @@ from psx_ohlcv.company_analytics import (
     get_signals_history,
     persist_company_signals,
 )
-from psx_ohlcv.db import init_schema
+from pakfindata.db import init_schema
 
 
 @pytest.fixture

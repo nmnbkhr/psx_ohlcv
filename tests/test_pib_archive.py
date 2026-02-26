@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from psx_ohlcv.sources.sbp_pib_archive import (
+from pakfindata.sources.sbp_pib_archive import (
     SBPPibArchiveScraper,
     _clean_amount,
     _parse_coupon,
@@ -137,7 +137,7 @@ Total -
 
 @pytest.fixture
 def con():
-    from psx_ohlcv.db.repositories.treasury import init_treasury_schema
+    from pakfindata.db.repositories.treasury import init_treasury_schema
 
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row

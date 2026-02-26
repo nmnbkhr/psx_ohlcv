@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import pytest
 
-from psx_ohlcv.ui.charts import (
+from pakfindata.ui.charts import (
     COLOR_BEARISH,
     COLOR_BULLISH,
     MIN_CHART_HEIGHT,
