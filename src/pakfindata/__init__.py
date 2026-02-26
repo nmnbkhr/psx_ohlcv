@@ -1,6 +1,6 @@
-"""PSX OHLCV data fetcher."""
+"""Pakistan Financial Data Platform."""
 
-__version__ = "3.3.0"
+__version__ = "3.7.0"
 
 from .db import (
     connect,
