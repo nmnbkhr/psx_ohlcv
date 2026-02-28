@@ -78,7 +78,7 @@ def render_intraday():
     # =================================================================
     # BULK INTRADAY SYNC (all symbols)
     # =================================================================
-    with st.expander("Download All Symbols — Today's Intraday Ticks", expanded=False):
+    with st.expander("PSX Intraday Ticks — All Symbols (Bulk)", expanded=False):
         running = is_intraday_sync_running()
         progress = read_intraday_sync_progress()
 
@@ -105,19 +105,90 @@ def render_intraday():
                 )
                 if progress.get("json_dir"):
                     st.caption(f"JSON files: {progress['json_dir']}")
-            save_json = st.checkbox(
-                "Save JSON files",
-                value=False,
-                key="int_bulk_save_json",
-                help="Save raw PSX responses to /mnt/e/psxdata/intraday/{date}/{SYMBOL}.json",
-            )
-            if st.button("Download All Intraday Now", key="int_bulk_btn", type="primary"):
-                started = start_intraday_sync(save_json=save_json)
-                if started:
-                    st.success("Downloading all symbols → intraday_bars + tick_data")
-                else:
-                    st.warning("Already running.")
-                st.rerun()
+
+            from datetime import date as _date
+            _today = _date.today().isoformat()
+
+            bulk_col1, bulk_col2, bulk_col3 = st.columns(3)
+            with bulk_col1:
+                save_json = st.checkbox(
+                    "Save JSON files",
+                    value=False,
+                    key="int_bulk_save_json",
+                    help="Save raw PSX responses to /mnt/e/psxdata/intraday/{date}/{SYMBOL}.json",
+                )
+                if st.button(
+                    "Fetch PSX Ticks → intraday_bars",
+                    key="int_bulk_btn",
+                    type="primary",
+                    help=(
+                        "Source: PSX /timeseries/int/{symbol} API\n"
+                        "Destination: intraday_bars + tick_data tables\n"
+                        "Fetches today's tick-level trades for all ~620 symbols."
+                    ),
+                ):
+                    started = start_intraday_sync(save_json=save_json)
+                    if started:
+                        st.success("Fetching PSX ticks for all symbols → intraday_bars + tick_data")
+                    else:
+                        st.warning("Already running.")
+                    st.rerun()
+
+            with bulk_col2:
+                if st.button(
+                    f"intraday_bars → JSON Disk ({_today})",
+                    key="int_bulk_export_btn",
+                    help=(
+                        f"Source: intraday_bars table (all symbols for {_today})\n"
+                        f"Destination: /mnt/e/psxdata/intraday/{_today}/{{SYMBOL}}.json\n"
+                        "Exports DB tick data to per-symbol JSON files on disk."
+                    ),
+                ):
+                    try:
+                        import json as _json
+                        from collections import defaultdict
+                        from pakfindata.config import DATA_ROOT
+
+                        _con = get_connection()
+                        rows = _con.execute(
+                            "SELECT symbol, ts_epoch, close, volume "
+                            "FROM intraday_bars WHERE DATE(ts) = ? "
+                            "ORDER BY symbol, ts_epoch",
+                            (_today,),
+                        ).fetchall()
+                        by_sym = defaultdict(list)
+                        for r in rows:
+                            by_sym[r["symbol"]].append([r["ts_epoch"], r["close"], r["volume"]])
+
+                        _dir = DATA_ROOT / "intraday" / _today
+                        _dir.mkdir(parents=True, exist_ok=True)
+                        for sym, data in by_sym.items():
+                            (_dir / f"{sym}.json").write_text(_json.dumps(data, indent=2))
+
+                        st.success(
+                            f"Exported {len(by_sym)} symbols ({len(rows):,} ticks) "
+                            f"→ {_dir}"
+                        )
+                    except Exception as e:
+                        st.error(f"Export failed: {e}")
+
+            with bulk_col3:
+                if st.button(
+                    f"intraday_bars → eod_ohlcv ({_today})",
+                    key="int_bulk_promote_btn",
+                    help=(
+                        "Aggregates intraday_bars into eod_ohlcv for today.\n"
+                        "open=first tick, high=MAX, low=MIN, close=last tick, volume=MAX.\n"
+                        "Run AFTER bulk fetch completes."
+                    ),
+                ):
+                    try:
+                        from pakfindata.db.repositories.intraday import promote_intraday_to_eod
+                        _con = get_connection()
+                        eod_count = promote_intraday_to_eod(_con, _today)
+                        st.success(f"Promoted {eod_count} symbols to eod_ohlcv for {_today}")
+                    except Exception as e:
+                        st.error(f"Promote failed: {e}")
 
     # =================================================================
     # LATEST TICKS TABLE — all symbols, today only
@@ -216,10 +287,10 @@ def render_intraday():
 
         st.markdown("---")
 
-        # Sync controls
-        st.subheader("Fetch / Refresh Data")
+        # Sync controls for single symbol
+        st.subheader(f"Single Symbol — {selected_symbol}")
 
-        col1, col2, col3 = st.columns([1, 1, 2])
+        col1, col2 = st.columns([1, 1])
 
         with col1:
             incremental_mode = st.checkbox(
@@ -240,22 +311,46 @@ def render_intraday():
                 disabled=st.session_state.intraday_sync_running
             )
 
-        col1, col2, col3 = st.columns([1, 1, 2])
-        with col1:
+        # ── Three separate action buttons ──
+        btn_col1, btn_col2, btn_col3 = st.columns(3)
+        with btn_col1:
+            from datetime import date
+            today_str = date.today().isoformat()
             fetch_btn = st.button(
-                f"Download {selected_symbol} Intraday"
-                if not st.session_state.intraday_sync_running
-                else "Downloading...",
+                f"PSX API → Disk ({selected_symbol})",
                 type="primary",
                 disabled=st.session_state.intraday_sync_running,
-                help=f"Fetch from PSX API → save to disk (no DB write)"
+                help=(
+                    f"Source: PSX /timeseries/int/{selected_symbol}\n"
+                    f"Saves to: intraday/{today_str}/{selected_symbol}.json + intradaytemp/{selected_symbol}.csv\n"
+                    "Downloads tick data from PSX and saves to disk only."
+                ),
+            )
+        with btn_col2:
+            load_btn = st.button(
+                f"Disk → intraday_bars ({selected_symbol})",
+                disabled=st.session_state.intraday_sync_running,
+                help=(
+                    f"Source: intraday/{today_str}/{selected_symbol}.json (on disk)\n"
+                    "Destination: intraday_bars table\n"
+                    "Loads previously downloaded JSON into the database."
+                ),
+            )
+        with btn_col3:
+            promote_btn = st.button(
+                f"intraday_bars → eod_ohlcv ({today_str})",
+                disabled=st.session_state.intraday_sync_running,
+                help=(
+                    "Source: intraday_bars (all symbols for today)\n"
+                    "Destination: eod_ohlcv table\n"
+                    "Aggregates ticks: open=first, high=MAX, low=MIN, close=last, vol=MAX."
+                ),
             )
 
-        with col2:
-            if st.session_state.intraday_sync_running:
-                st.warning("Fetching...")
+        if st.session_state.intraday_sync_running:
+            st.warning("Processing...")
 
-        # Execute intraday fetch — disk-only, no DB
+        # ── Action 1: Download (fetch + save to disk only) ──
         if fetch_btn and not st.session_state.intraday_sync_running:
             st.session_state.intraday_sync_result = None
             st.session_state.intraday_sync_running = True
@@ -272,66 +367,177 @@ def render_intraday():
                         parse_intraday_payload,
                     )
                     from pakfindata.http import create_session as create_http_session
-                    import json
-                    from datetime import date
 
                     session = create_http_session()
                     payload = fetch_intraday_json(selected_symbol, session)
-                    df = parse_intraday_payload(selected_symbol, payload)
+                    df_fetched = parse_intraday_payload(selected_symbol, payload)
 
-                    if df.empty:
+                    if df_fetched.empty:
                         st.session_state.intraday_sync_result = {
-                            "success": True,
-                            "rows": 0,
-                            "newest_ts": None,
-                            "csv_path": None,
+                            "action": "download", "success": True, "rows": 0,
                         }
                         status.update(label="No data returned", state="complete")
                     else:
-                        # Save to disk — intradaytemp/{SYMBOL}.csv (overwrites each fetch)
-                        INTRADAY_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+                        import json
+                        from pakfindata.config import DATA_ROOT
 
+                        # Save JSON to intraday/{date}/{SYMBOL}.json
+                        json_dir = DATA_ROOT / "intraday" / today_str
+                        json_dir.mkdir(parents=True, exist_ok=True)
+                        json_path = json_dir / f"{selected_symbol}.json"
+                        json_path.write_text(json.dumps(payload, indent=2))
+
+                        # Save CSV to intradaytemp/{SYMBOL}.csv
+                        INTRADAY_TEMP_DIR.mkdir(parents=True, exist_ok=True)
                         csv_path = INTRADAY_TEMP_DIR / f"{selected_symbol}.csv"
                         save_cols = ["symbol", "ts", "open", "high", "low", "close", "volume"]
-                        df[save_cols].to_csv(csv_path, index=False)
+                        df_fetched[save_cols].to_csv(csv_path, index=False)
 
-                        newest_ts = df["ts"].max()
                         st.session_state.intraday_sync_result = {
+                            "action": "download",
                             "success": True,
-                            "rows": len(df),
-                            "newest_ts": newest_ts,
-                            "csv_path": str(csv_path),
+                            "rows": len(df_fetched),
+                            "newest_ts": df_fetched["ts"].max(),
+                            "json_path": str(json_path),
                         }
                         status.update(
-                            label=f"Fetched {len(df)} rows → {csv_path}",
+                            label=f"Downloaded {len(df_fetched)} ticks → JSON + CSV saved",
                             state="complete",
                         )
 
                 except Exception as e:
                     st.session_state.intraday_sync_result = {
-                        "success": False,
-                        "error": str(e),
+                        "action": "download", "success": False, "error": str(e),
                     }
-                    status.update(label="Fetch failed!", state="error")
-
+                    status.update(label="Download failed!", state="error")
                 finally:
                     st.session_state.intraday_sync_running = False
 
-        # Display sync result
+        # ── Action 2: Load to DB (from saved JSON on disk) ──
+        if load_btn and not st.session_state.intraday_sync_running:
+            st.session_state.intraday_sync_result = None
+            st.session_state.intraday_sync_running = True
+
+            with st.status(
+                f"Loading {selected_symbol} into intraday_bars...",
+                expanded=True
+            ) as status:
+                try:
+                    import json as _json
+                    from pakfindata.config import DATA_ROOT
+                    from pakfindata.sources.intraday import parse_intraday_payload
+                    from pakfindata.db.repositories.intraday import upsert_intraday
+
+                    # Find the most recent JSON file for this symbol
+                    json_path = DATA_ROOT / "intraday" / today_str / f"{selected_symbol}.json"
+                    if not json_path.exists():
+                        # Try to find any date folder with this symbol
+                        intraday_dir = DATA_ROOT / "intraday"
+                        found = None
+                        if intraday_dir.exists():
+                            for d in sorted(intraday_dir.iterdir(), reverse=True):
+                                candidate = d / f"{selected_symbol}.json"
+                                if candidate.exists():
+                                    found = candidate
+                                    break
+                        if found:
+                            json_path = found
+                        else:
+                            raise FileNotFoundError(
+                                f"No JSON file found for {selected_symbol}. Download first."
+                            )
+
+                    st.write(f"Loading from {json_path}")
+                    payload = _json.loads(json_path.read_text())
+                    df_load = parse_intraday_payload(selected_symbol, payload)
+
+                    if df_load.empty:
+                        st.session_state.intraday_sync_result = {
+                            "action": "load", "success": True, "db_rows": 0,
+                        }
+                        status.update(label="No rows to load", state="complete")
+                    else:
+                        db_rows = upsert_intraday(con, df_load)
+                        st.session_state.intraday_sync_result = {
+                            "action": "load",
+                            "success": True,
+                            "db_rows": db_rows,
+                            "total_ticks": len(df_load),
+                            "source": str(json_path),
+                        }
+                        status.update(
+                            label=f"Loaded {db_rows} rows into intraday_bars",
+                            state="complete",
+                        )
+
+                except Exception as e:
+                    st.session_state.intraday_sync_result = {
+                        "action": "load", "success": False, "error": str(e),
+                    }
+                    status.update(label="Load failed!", state="error")
+                finally:
+                    st.session_state.intraday_sync_running = False
+
+        # ── Action 3: Promote intraday_bars → eod_ohlcv ──
+        if promote_btn and not st.session_state.intraday_sync_running:
+            st.session_state.intraday_sync_result = None
+            st.session_state.intraday_sync_running = True
+
+            with st.status(
+                f"Promoting intraday_bars → eod_ohlcv for {today_str}...",
+                expanded=True
+            ) as status:
+                try:
+                    from pakfindata.db.repositories.intraday import promote_intraday_to_eod
+
+                    eod_promoted = promote_intraday_to_eod(con, today_str)
+                    st.session_state.intraday_sync_result = {
+                        "action": "promote",
+                        "success": True,
+                        "eod_promoted": eod_promoted,
+                        "date": today_str,
+                    }
+                    status.update(
+                        label=f"Promoted {eod_promoted} symbols to eod_ohlcv for {today_str}",
+                        state="complete",
+                    )
+
+                except Exception as e:
+                    st.session_state.intraday_sync_result = {
+                        "action": "promote", "success": False, "error": str(e),
+                    }
+                    status.update(label="Promote failed!", state="error")
+                finally:
+                    st.session_state.intraday_sync_running = False
+
+        # Display result
         if st.session_state.intraday_sync_result is not None:
             result = st.session_state.intraday_sync_result
+            action = result.get("action", "")
             if result.get("success"):
-                rows = result.get("rows", 0)
-                csv_path = result.get("csv_path")
-                newest = result.get("newest_ts")
-                if rows > 0:
-                    st.success(f"Fetched {rows} rows for {selected_symbol}")
-                    if csv_path:
-                        st.caption(f"Saved: {csv_path}")
-                    if newest:
-                        st.caption(f"Latest: {newest}")
-                else:
-                    st.info(f"No intraday data returned for {selected_symbol}")
+                if action == "download":
+                    rows = result.get("rows", 0)
+                    if rows > 0:
+                        st.success(f"Downloaded {rows} ticks for {selected_symbol}")
+                        if result.get("json_path"):
+                            st.caption(f"JSON: {result['json_path']}")
+                        if result.get("newest_ts"):
+                            st.caption(f"Latest: {result['newest_ts']}")
+                    else:
+                        st.info(f"No intraday data returned for {selected_symbol}")
+                elif action == "load":
+                    db_rows = result.get("db_rows", 0)
+                    st.success(
+                        f"Loaded {db_rows} rows into intraday_bars "
+                        f"({result.get('total_ticks', 0)} ticks from file)"
+                    )
+                    if result.get("source"):
+                        st.caption(f"Source: {result['source']}")
+                elif action == "promote":
+                    eod = result.get("eod_promoted", 0)
+                    st.success(
+                        f"Promoted {eod} symbols to eod_ohlcv for {result.get('date', today_str)}"
+                    )
             else:
                 st.error(f"Error: {result.get('error')}")
 

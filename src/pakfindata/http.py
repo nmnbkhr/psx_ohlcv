@@ -1,15 +1,56 @@
 """HTTP client with retries, backoff, jitter, and polite delays."""
 
 import random
+import ssl
 import time
 
 import requests
 from requests.adapters import HTTPAdapter
+from urllib3.poolmanager import PoolManager
 from urllib3.util.retry import Retry
+from urllib3.util.ssl_ import create_urllib3_context
 
 from .config import DEFAULT_SYNC_CONFIG, SyncConfig
 
 DEFAULT_USER_AGENT = "pakfindata/0.1.0 (Python; educational project)"
+
+
+class LegacySSLAdapter(HTTPAdapter):
+    """HTTPS adapter for servers with broken/legacy SSL configurations.
+
+    Handles two common issues with Pakistani bank and government websites:
+      1. Missing intermediate certificates ("unable to verify the first certificate")
+      2. Unsafe legacy TLS renegotiation (blocked by modern OpenSSL)
+
+    Usage::
+
+        session = create_session(legacy_ssl=True)
+        # or manually:
+        session = requests.Session()
+        session.mount("https://", LegacySSLAdapter())
+    """
+
+    def __init__(self, max_retries=None, **kwargs):
+        self._ssl_context = self._build_context()
+        super().__init__(max_retries=max_retries, **kwargs)
+
+    @staticmethod
+    def _build_context() -> ssl.SSLContext:
+        ctx = create_urllib3_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        # Allow unsafe legacy renegotiation (required by some .pk servers)
+        ctx.options |= 0x4  # SSL_OP_LEGACY_SERVER_CONNECT
+        return ctx
+
+    def init_poolmanager(self, connections, maxsize, block=False, **kwargs):
+        kwargs["ssl_context"] = self._ssl_context
+        self.poolmanager = PoolManager(
+            num_pools=connections,
+            maxsize=maxsize,
+            block=block,
+            **kwargs,
+        )
 
 
 def create_session(
@@ -17,6 +58,7 @@ def create_session(
     backoff_factor: float = 0.5,
     status_forcelist: tuple[int, ...] = (500, 502, 503, 504),
     user_agent: str = DEFAULT_USER_AGENT,
+    legacy_ssl: bool = False,
 ) -> requests.Session:
     """
     Create a requests Session with retry logic.
@@ -26,6 +68,9 @@ def create_session(
         backoff_factor: Exponential backoff factor (delay = factor * 2^retry)
         status_forcelist: HTTP status codes to retry on
         user_agent: User-Agent header value
+        legacy_ssl: Use LegacySSLAdapter for servers with broken SSL
+                    (e.g. samba.com.pk, some .gov.pk sites). Disables
+                    certificate verification and allows legacy renegotiation.
 
     Returns:
         Configured requests.Session
@@ -43,7 +88,10 @@ def create_session(
         raise_on_status=False,
     )
 
-    adapter = HTTPAdapter(max_retries=retry_strategy)
+    if legacy_ssl:
+        adapter = LegacySSLAdapter(max_retries=retry_strategy)
+    else:
+        adapter = HTTPAdapter(max_retries=retry_strategy)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
 

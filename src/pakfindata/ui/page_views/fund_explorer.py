@@ -652,3 +652,62 @@ def _render_top_performers_fallback(con):
         }),
         use_container_width=True, hide_index=True,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Standalone page render functions (called from app.py for individual pages)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def render_vps_standalone():
+    """VPS Pension as a standalone page."""
+    st.markdown("## VPS Pension Funds")
+    st.caption("Voluntary Pension Scheme — fund comparison by AMC and category")
+
+    con = get_connection()
+    if con is None:
+        st.error("Database connection not available")
+        return
+
+    try:
+        from pakfindata.db.repositories.fixed_income import init_fund_performance_schema
+        init_fund_performance_schema(con)
+    except Exception:
+        pass
+
+    _render_vps_section(con)
+    render_footer()
+
+
+def render_top_performers_standalone():
+    """Top Performers as a standalone page."""
+    st.markdown("## Top Performers")
+    st.caption("Fund rankings by period and category")
+
+    con = get_connection()
+    if con is None:
+        st.error("Database connection not available")
+        return
+
+    try:
+        from pakfindata.db.repositories.fixed_income import init_fund_performance_schema
+        init_fund_performance_schema(con)
+    except Exception:
+        pass
+
+    _render_top_performers(con)
+    render_footer()
+
+
+def render_etfs_standalone():
+    """ETFs as a standalone page."""
+    st.markdown("## Listed ETFs")
+    st.caption("Exchange-traded funds — NAV, market price, premium/discount")
+
+    con = get_connection()
+    if con is None:
+        st.error("Database connection not available")
+        return
+
+    _render_etf_section(con)
+    render_footer()

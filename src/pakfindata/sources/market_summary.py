@@ -9,6 +9,7 @@ Format: UNIX compress (.Z), pipe-delimited text
 
 import logging
 import subprocess
+import zipfile
 from datetime import date
 from pathlib import Path
 from typing import Any, Iterator
@@ -312,7 +313,8 @@ def download_market_summary(
 
 def extract_z_file(z_path: Path) -> Path:
     """
-    Extract a .Z compressed file using system uncompress.
+    Extract a .Z file. Handles both genuine LZW-compressed (.Z) files
+    and ZIP archives that PSX sometimes serves with a .Z extension.
 
     Args:
         z_path: Path to .Z file
@@ -322,7 +324,7 @@ def extract_z_file(z_path: Path) -> Path:
 
     Raises:
         FileNotFoundError: If .Z file doesn't exist
-        RuntimeError: If uncompress command fails or is not available
+        RuntimeError: If extraction fails
     """
     if not z_path.exists():
         raise FileNotFoundError(f"File not found: {z_path}")
@@ -337,36 +339,60 @@ def extract_z_file(z_path: Path) -> Path:
     if extracted_path.exists():
         extracted_path.unlink()
 
-    # Try uncompress command
-    try:
-        result = subprocess.run(
-            ["uncompress", "-f", str(z_path)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+    # Check magic bytes to determine actual file format
+    with open(z_path, "rb") as f:
+        magic = f.read(4)
 
-        if result.returncode != 0:
-            # Try gzip as fallback (gzip can decompress .Z files)
+    # ZIP archive (PK\x03\x04) — PSX sometimes serves .Z files as ZIPs
+    if magic[:2] == b"PK":
+        try:
+            with zipfile.ZipFile(z_path, "r") as zf:
+                names = zf.namelist()
+                if not names:
+                    raise RuntimeError(f"ZIP archive is empty: {z_path}")
+                # Extract first file to the expected output path
+                content = zf.read(names[0])
+                extracted_path.write_bytes(content)
+                logger.debug(
+                    "Extracted ZIP-format .Z file: %s → %s (%d bytes)",
+                    z_path.name, extracted_path.name, len(content),
+                )
+            # Remove the .Z file to match uncompress behavior
+            z_path.unlink()
+        except zipfile.BadZipFile as e:
+            raise RuntimeError(f"File has PK header but is not a valid ZIP: {e}")
+
+    # LZW compressed (magic bytes 1F 9D) — use uncompress/gzip
+    else:
+        try:
             result = subprocess.run(
-                ["gzip", "-d", "-f", str(z_path)],
+                ["uncompress", "-f", str(z_path)],
                 capture_output=True,
                 text=True,
                 check=False,
             )
 
             if result.returncode != 0:
-                raise RuntimeError(
-                    f"Failed to extract {z_path}. "
-                    f"Neither 'uncompress' nor 'gzip -d' succeeded.\n"
-                    f"Error: {result.stderr}"
+                # Try gzip as fallback (gzip can decompress .Z files)
+                result = subprocess.run(
+                    ["gzip", "-d", "-f", str(z_path)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
                 )
 
-    except FileNotFoundError:
-        raise RuntimeError(
-            "Neither 'uncompress' nor 'gzip' command found. "
-            "Install ncompress package: sudo apt install ncompress"
-        )
+                if result.returncode != 0:
+                    raise RuntimeError(
+                        f"Failed to extract {z_path}. "
+                        f"Neither 'uncompress' nor 'gzip -d' succeeded.\n"
+                        f"Error: {result.stderr}"
+                    )
+
+        except FileNotFoundError:
+            raise RuntimeError(
+                "Neither 'uncompress' nor 'gzip' command found. "
+                "Install ncompress package: sudo apt install ncompress"
+            )
 
     if not extracted_path.exists():
         raise RuntimeError(

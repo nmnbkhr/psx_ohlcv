@@ -46,11 +46,10 @@ def render_mutual_funds():
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        categories = [
-            "All", "Equity", "Islamic Equity", "Money Market",
-            "Islamic Money Market", "Income", "Islamic Income",
-            "Balanced", "VPS", "Asset Allocation"
-        ]
+        db_categories = con.execute(
+            "SELECT DISTINCT category FROM mutual_funds WHERE category IS NOT NULL ORDER BY category"
+        ).fetchall()
+        categories = ["All"] + [r["category"] for r in db_categories]
         category = st.selectbox("Category", categories, key="mf_category")
         category_filter = None if category == "All" else category
 
@@ -357,11 +356,10 @@ def render_fund_analytics():
     col1, col2, col3 = st.columns([1, 1, 2])
 
     with col1:
-        categories = [
-            "Equity", "Islamic Equity", "Money Market",
-            "Islamic Money Market", "Income", "Islamic Income",
-            "Balanced", "VPS"
-        ]
+        db_cats = con.execute(
+            "SELECT DISTINCT category FROM mutual_funds WHERE category IS NOT NULL ORDER BY category"
+        ).fetchall()
+        categories = [r["category"] for r in db_cats] if db_cats else ["Equity"]
         category = st.selectbox("Select Category", categories, key="fa_category")
 
     with col2:

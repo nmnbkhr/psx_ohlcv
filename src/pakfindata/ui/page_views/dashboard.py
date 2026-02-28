@@ -86,6 +86,160 @@ def _sync_rates(con):
     return rates, treas
 
 
+def _render_blueprint_panels(con):
+    """Render blueprint panels: Fixed Income + Funds + FX + Data Freshness."""
+    from datetime import date
+
+    panel_col1, panel_col2 = st.columns(2)
+
+    # ── Fixed Income Snapshot ────────────────────────────────────
+    with panel_col1:
+        st.markdown("**Fixed Income**")
+        try:
+            # Latest T-Bill auction cutoff
+            tb = con.execute(
+                "SELECT tenor, cutoff_yield, auction_date FROM tbill_auctions "
+                "WHERE tenor = '3M' ORDER BY auction_date DESC LIMIT 1"
+            ).fetchone()
+            if tb:
+                st.metric("T-Bill 3M Cutoff", f"{tb[1]:.2f}%", help=f"Auction {tb[2]}")
+
+            # OTC Volume from SMTV
+            try:
+                smtv = con.execute(
+                    """SELECT SUM(total_face_amount) as vol, date
+                       FROM sbp_bond_trading_summary
+                       WHERE date = (SELECT MAX(date) FROM sbp_bond_trading_summary)
+                       GROUP BY date"""
+                ).fetchone()
+                if smtv and smtv[0]:
+                    vol = smtv[0]
+                    vol_str = f"PKR {vol / 1e9:.0f}B" if vol >= 1e9 else f"PKR {vol / 1e6:.0f}M"
+                    st.metric("OTC Volume", vol_str, help=f"SMTV {smtv[1]}")
+            except Exception:
+                pass
+
+            # PKRV 10Y
+            try:
+                pv = con.execute(
+                    "SELECT yield_pct FROM pkrv_daily "
+                    "WHERE tenor_months = 120 ORDER BY date DESC LIMIT 1"
+                ).fetchone()
+                if pv:
+                    st.metric("PKRV 10Y", f"{pv[0]:.2f}%")
+            except Exception:
+                pass
+        except Exception:
+            st.info("Fixed income data not yet available.")
+
+    # ── Funds Snapshot ───────────────────────────────────────────
+    with panel_col2:
+        st.markdown("**Funds**")
+        try:
+            # Best fund today by return
+            best = con.execute(
+                """SELECT fp.fund_name, fp.return_ytd, fp.category
+                   FROM fund_performance fp
+                   WHERE fp.validity_date = (SELECT MAX(validity_date) FROM fund_performance)
+                   AND fp.return_ytd IS NOT NULL
+                   ORDER BY fp.return_ytd DESC LIMIT 1"""
+            ).fetchone()
+            if best:
+                st.metric(
+                    f"Best Fund ({best[2]})" if best[2] else "Best Fund",
+                    best[0][:30],
+                    delta=f"{best[1]:+.1f}% YTD" if best[1] else None,
+                )
+
+            # Category averages
+            cats = con.execute(
+                """SELECT
+                     CASE
+                       WHEN category LIKE '%Equity%' THEN 'Equity'
+                       WHEN category LIKE '%Income%' OR category LIKE '%Bond%' THEN 'Income'
+                       WHEN category LIKE '%Money%' THEN 'Money Mkt'
+                       ELSE 'Other'
+                     END as cat_group,
+                     ROUND(AVG(return_ytd), 1) as avg_ytd
+                   FROM fund_performance
+                   WHERE validity_date = (SELECT MAX(validity_date) FROM fund_performance)
+                   AND return_ytd IS NOT NULL
+                   GROUP BY cat_group
+                   ORDER BY avg_ytd DESC"""
+            ).fetchall()
+            if cats:
+                for row in cats[:3]:
+                    st.caption(f"{row[0]}: **{row[1]:+.1f}%** YTD")
+        except Exception:
+            st.info("Fund data not yet available.")
+
+    st.markdown("---")
+
+    # ── FX Rates Panel (DB-sourced fallback) ─────────────────────
+    try:
+        fx_currencies = ["USD", "EUR", "GBP", "AED", "SAR"]
+        fx_data = []
+        for curr in fx_currencies:
+            row = con.execute(
+                """SELECT date, selling FROM sbp_fx_interbank
+                   WHERE UPPER(currency) = ? ORDER BY date DESC LIMIT 1""",
+                (curr,),
+            ).fetchone()
+            if row:
+                fx_data.append((curr, row[1], row[0]))
+
+        if not fx_data:
+            # Try kerb as fallback
+            for curr in fx_currencies:
+                row = con.execute(
+                    """SELECT date, selling FROM forex_kerb
+                       WHERE UPPER(currency) = ? ORDER BY date DESC LIMIT 1""",
+                    (curr,),
+                ).fetchone()
+                if row:
+                    fx_data.append((curr, row[1], row[0]))
+
+        if fx_data:
+            st.markdown("**FX Rates**")
+            fx_cols = st.columns(len(fx_data))
+            for col, (curr, rate, dt) in zip(fx_cols, fx_data):
+                col.metric(f"{curr}/PKR", f"{rate:.2f}", help=f"As of {dt}")
+            st.markdown("---")
+    except Exception:
+        pass
+
+    # ── Data Freshness Bar ───────────────────────────────────────
+    st.markdown("**Data Freshness**")
+    sources = [
+        ("EOD", "SELECT MAX(date) FROM eod_ohlcv"),
+        ("NAV", "SELECT MAX(nav_date) FROM mutual_fund_nav"),
+        ("KIBOR", "SELECT MAX(date) FROM kibor_daily"),
+        ("PKRV", "SELECT MAX(date) FROM pkrv_daily"),
+        ("FX", "SELECT MAX(date) FROM sbp_fx_interbank"),
+        ("SMTV", "SELECT MAX(date) FROM sbp_bond_trading_daily"),
+    ]
+    today = date.today().isoformat()
+    fresh_cols = st.columns(len(sources))
+    for col, (name, query) in zip(fresh_cols, sources):
+        try:
+            latest = con.execute(query).fetchone()[0]
+            if latest and str(latest) >= today:
+                col.markdown(f"**{name}**: :green[Today]")
+            elif latest:
+                from datetime import datetime
+                days = (date.today() - date.fromisoformat(str(latest)[:10])).days
+                if days <= 2:
+                    col.markdown(f"**{name}**: :orange[{days}d ago]")
+                else:
+                    col.markdown(f"**{name}**: :red[{days}d ago]")
+            else:
+                col.markdown(f"**{name}**: :red[empty]")
+        except Exception:
+            col.markdown(f"**{name}**: :red[N/A]")
+
+    st.markdown("---")
+
+
 def render_dashboard():
     """Main dashboard with KPIs, market breadth, and top movers."""
 
@@ -954,6 +1108,11 @@ def render_dashboard():
 
         except Exception:
             pass  # Analytics data not available
+
+        # =================================================================
+        # BLUEPRINT PANELS — Fixed Income + Funds + FX + Data Freshness
+        # =================================================================
+        _render_blueprint_panels(con)
 
         # =================================================================
         # SYNC & DATA MANAGEMENT

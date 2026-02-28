@@ -87,23 +87,55 @@ FUND_CATEGORIES = [
 # Low-level API helpers
 # ---------------------------------------------------------------------------
 
-def _post_json(path: str, data: dict | None = None, timeout: int = _TIMEOUT) -> dict:
-    """POST to MUFAP JSON API and return parsed response."""
+def _post_json(
+    path: str, data: dict | None = None, timeout: int = _TIMEOUT, max_retries: int = 3,
+) -> dict:
+    """POST to MUFAP JSON API and return parsed response.
+
+    Retries on transient network errors with exponential backoff.
+    """
     url = f"{MUFAP_BASE}{path}"
-    if data:
-        r = requests.post(url, headers=_HEADERS_API, data=data, timeout=timeout)
-    else:
-        r = requests.post(url, headers=_HEADERS_API, timeout=timeout)
-    r.raise_for_status()
-    return r.json()
+    last_error: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            if data:
+                r = requests.post(url, headers=_HEADERS_API, data=data, timeout=timeout)
+            else:
+                r = requests.post(url, headers=_HEADERS_API, timeout=timeout)
+            r.raise_for_status()
+            return r.json()
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            last_error = e
+            delay = (2 ** attempt) + random.uniform(0, 1.0)
+            logger.warning(
+                "MUFAP API transient error (%s, attempt %d/%d): %s — retrying in %.1fs",
+                path, attempt + 1, max_retries, e, delay,
+            )
+            time.sleep(delay)
+    raise last_error  # type: ignore[misc]
 
 
-def _get_html(path: str, params: dict | None = None) -> html.HtmlElement:
-    """GET an HTML page and return parsed tree."""
+def _get_html(path: str, params: dict | None = None, max_retries: int = 3) -> html.HtmlElement:
+    """GET an HTML page and return parsed tree.
+
+    Retries on transient network errors with exponential backoff.
+    """
     url = f"{MUFAP_BASE}{path}"
-    r = requests.get(url, headers=_HEADERS_HTML, params=params, timeout=_TIMEOUT)
-    r.raise_for_status()
-    return html.fromstring(r.text)
+    last_error: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            r = requests.get(url, headers=_HEADERS_HTML, params=params, timeout=_TIMEOUT)
+            r.raise_for_status()
+            return html.fromstring(r.text)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            last_error = e
+            delay = (2 ** attempt) + random.uniform(0, 1.0)
+            logger.warning(
+                "MUFAP HTML transient error (%s, attempt %d/%d): %s — retrying in %.1fs",
+                path, attempt + 1, max_retries, e, delay,
+            )
+            time.sleep(delay)
+    raise last_error  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
@@ -255,15 +287,33 @@ def fetch_daily_performance_html() -> pd.DataFrame:
 # Historical NAV per fund (JSON API)
 # ---------------------------------------------------------------------------
 
-def fetch_fund_detail(mufap_int_id: str, date: str | None = None) -> dict[str, Any]:
+_TRANSIENT_ERRORS = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+)
+
+_SYNC_MAX_RETRIES = 3
+
+
+def fetch_fund_detail(
+    mufap_int_id: str,
+    date: str | None = None,
+    max_retries: int = _SYNC_MAX_RETRIES,
+) -> dict[str, Any]:
     """Fetch full fund detail via MUFAP JSON API.
 
     Uses /AMC/GetFundDetailbyAMCByDate which returns full NAV history
     (thousands of records back to inception).
 
+    Retries up to *max_retries* times on transient network errors
+    (ConnectionError, Timeout, ChunkedEncodingError) with exponential
+    backoff + jitter.
+
     Args:
         mufap_int_id: Integer fund ID from the 'fund' field in FundProfile API.
         date: Date string (YYYY-M-D format accepted). Defaults to today.
+        max_retries: Max retry attempts for transient failures (default 3).
 
     Returns dict with keys:
         profile    — fund metadata (AMC, category, loads, benchmark, etc.)
@@ -277,8 +327,33 @@ def fetch_fund_detail(mufap_int_id: str, date: str | None = None) -> dict[str, A
     # MUFAP accepts "YYYY-M-D" format
     url = f"{MUFAP_BASE}/AMC/GetFundDetailbyAMCByDate"
     body = {"FundID": str(mufap_int_id), "Date": date}
-    r = requests.post(url, headers=_HEADERS_JSON, json=body, timeout=120)
-    r.raise_for_status()
+
+    last_error: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            r = requests.post(url, headers=_HEADERS_JSON, json=body, timeout=120)
+            r.raise_for_status()
+            break
+        except _TRANSIENT_ERRORS as e:
+            last_error = e
+            delay = (2 ** attempt) + random.uniform(0, 1.0)
+            logger.warning(
+                "MUFAP transient error (int_id=%s, attempt %d/%d): %s — retrying in %.1fs",
+                mufap_int_id, attempt + 1, max_retries, e, delay,
+            )
+            time.sleep(delay)
+        except requests.exceptions.HTTPError as e:
+            # Non-transient HTTP error (4xx, etc.) — don't retry
+            logger.error("MUFAP HTTP error (int_id=%s): %s", mufap_int_id, e)
+            raise
+    else:
+        # All retries exhausted
+        logger.error(
+            "MUFAP fetch failed after %d retries (int_id=%s): %s",
+            max_retries, mufap_int_id, last_error,
+        )
+        raise last_error  # type: ignore[misc]
+
     resp = r.json()
 
     # Response has double-encoded JSON: {"data": "<json_string>"}
@@ -547,7 +622,8 @@ def fetch_mutual_fund_data(
 ) -> pd.DataFrame:
     """Fetch NAV data from MUFAP for a specific fund.
 
-    If mufap_int_id is provided, fetches full history via the historical API.
+    If mufap_int_id is provided, fetches full history via the historical API
+    (with automatic retries on transient network errors).
     Otherwise falls back to the daily HTML scrape.
     """
     if mufap_int_id:
@@ -558,8 +634,22 @@ def fetch_mutual_fund_data(
             if not df.empty and end_date:
                 df = df[df["date"] <= end_date]
             return df
+        except _TRANSIENT_ERRORS as e:
+            # Already retried inside fetch_fund_detail — log at error level
+            logger.error(
+                "Historical NAV fetch failed for int_id=%s after retries "
+                "(network unreachable / timeout): %s",
+                mufap_int_id, e,
+            )
+        except requests.exceptions.HTTPError as e:
+            logger.error(
+                "Historical NAV fetch HTTP error for int_id=%s: %s",
+                mufap_int_id, e,
+            )
         except Exception as e:
-            logger.warning("Historical NAV fetch failed for int_id=%s: %s", mufap_int_id, e)
+            logger.warning(
+                "Historical NAV fetch failed for int_id=%s: %s", mufap_int_id, e,
+            )
     return fetch_nav_from_mufap(fund_id, start_date, end_date)
 
 

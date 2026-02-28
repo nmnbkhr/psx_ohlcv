@@ -972,6 +972,95 @@ def npc_rates_page():
     render_npc_rates()
 
 
+# =============================================================================
+# Blueprint Page Wrappers — New pages for 5-pillar navigation
+# =============================================================================
+
+def market_pulse_page():
+    from pakfindata.ui.page_views.market_pulse import render_market_pulse
+    render_market_pulse()
+
+
+def stock_screener_page():
+    from pakfindata.ui.page_views.stock_screener import render_stock_screener
+    render_stock_screener()
+
+
+def company_profile_page():
+    from pakfindata.ui.page_views.company_deep import render_company_deep
+    render_company_deep()
+
+
+def sector_analysis_page():
+    from pakfindata.ui.page_views.sector_analysis import render_sector_analysis
+    render_sector_analysis()
+
+
+def rates_overview_page():
+    from pakfindata.ui.page_views.rates_overview import render_rates_overview
+    render_rates_overview()
+
+
+def yield_curves_page():
+    from pakfindata.ui.page_views.fixed_income import render_yield_curve
+    render_yield_curve()
+
+
+def treasury_auctions_page():
+    from pakfindata.ui.page_views.treasury_dashboard import render_treasury_dashboard
+    render_treasury_dashboard()
+
+
+def bond_market_otc_page():
+    from pakfindata.ui.page_views.bond_market import render_bond_market
+    render_bond_market()
+
+
+def benchmark_monitor_page():
+    from pakfindata.ui.page_views.benchmark_monitor import render_benchmark_monitor
+    render_benchmark_monitor()
+
+
+def vps_pension_page():
+    from pakfindata.ui.page_views.fund_explorer import render_vps_standalone
+    render_vps_standalone()
+
+
+def top_performers_page():
+    from pakfindata.ui.page_views.fund_explorer import render_top_performers_standalone
+    render_top_performers_standalone()
+
+
+def etfs_page():
+    from pakfindata.ui.page_views.fund_explorer import render_etfs_standalone
+    render_etfs_standalone()
+
+
+def currency_dashboard_page():
+    from pakfindata.ui.page_views.fx_dashboard import render_fx_dashboard
+    render_fx_dashboard()
+
+
+def fx_interbank_page():
+    from pakfindata.ui.page_views.fx_interbank import render_fx_interbank
+    render_fx_interbank()
+
+
+def fx_history_page():
+    from pakfindata.ui.page_views.fx_history import render_fx_history
+    render_fx_history()
+
+
+def data_status_page():
+    from pakfindata.ui.page_views.data_quality import render_data_quality
+    render_data_quality()
+
+
+def sync_center_page():
+    from pakfindata.ui.page_views.sync_monitor import render_sync_monitor
+    render_sync_monitor()
+
+
 # -----------------------------------------------------------------------------
 # Main App — st.navigation() for framework-guaranteed page isolation
 # -----------------------------------------------------------------------------
@@ -990,86 +1079,106 @@ def main():
     inject_theme_css()
 
     # =================================================================
-    # BUILD st.Page REGISTRY
+    # BUILD st.Page REGISTRY — 5-pillar blueprint navigation
     # =================================================================
+
+    # PRIMARY PAGES — shown in sidebar (the 5 pillars + admin)
     _pages = {
-        # MARKET
-        "📊 Dashboard":      st.Page(dashboard,              title="Dashboard",      url_path="dashboard",      default=True),
-        "📡 Live Market":    st.Page(live_market_page,        title="Live Market",    url_path="live-market"),
-        "📈 Market Summary": st.Page(market_summary_page,     title="Market Summary", url_path="market-summary"),
-        "💰 Post Close":    st.Page(post_close_page,          title="Post Close",    url_path="post-close"),
-        "🔴 Live OHLCV":    st.Page(live_ohlcv_page,          title="Live OHLCV",    url_path="live-ohlcv"),
-        "⚡ Live Ticker":   st.Page(live_ticker_page,         title="Live Ticker",   url_path="live-ticker"),
-        "📊 Live Indices":  st.Page(live_indices_page,        title="Live Indices",  url_path="live-indices"),
-        "📡 WS Relay":      st.Page(ws_relay_status_page,     title="WS Relay",      url_path="ws-relay"),
-        # EQUITY
-        "📈 Quote Monitor":  st.Page(regular_market_page,     title="Quote Monitor",  url_path="quote-monitor"),
-        "📊 Price Chart":    st.Page(candlestick_explorer,    title="Price Chart",    url_path="price-chart"),
-        "⏱ Intraday":       st.Page(intraday_trend_page,     title="Intraday",       url_path="intraday"),
-        "🏢 Company":        st.Page(company_analytics_page,  title="Company",        url_path="company"),
-        "🏆 Rankings":       st.Page(rankings_page,           title="Rankings",       url_path="rankings"),
-        "📊 Factors":        st.Page(factor_analysis_page,    title="Factors",        url_path="factors"),
-        "🧵 Symbols":        st.Page(symbols_page,            title="Symbols",        url_path="symbols"),
-        "📊 Futures":        st.Page(futures_page,            title="Futures",        url_path="futures"),
-        # INDICES
-        "📊 Index Monitor":  st.Page(indices_analytics_page,  title="Index Monitor",  url_path="index-monitor"),
-        "📦 Instruments":    st.Page(instruments_page,        title="Instruments",    url_path="instruments"),
+        # MARKET OVERVIEW
+        "Dashboard":          st.Page(dashboard,              title="Dashboard",          url_path="dashboard",          default=True),
+        "Market Pulse":       st.Page(market_pulse_page,      title="Market Pulse",       url_path="market-pulse"),
+        "Index Monitor":      st.Page(indices_analytics_page, title="Index Monitor",      url_path="index-monitor"),
+        # EQUITIES
+        "Market Summary":     st.Page(market_summary_page,    title="Market Summary",     url_path="market-summary"),
+        "Stock Screener":     st.Page(stock_screener_page,    title="Stock Screener",     url_path="stock-screener"),
+        "Company Profile":    st.Page(company_profile_page,   title="Company Profile",    url_path="company"),
+        "Sector Analysis":    st.Page(sector_analysis_page,   title="Sector Analysis",    url_path="sector-analysis"),
+        "Factors":            st.Page(factor_analysis_page,   title="Factors",            url_path="factors"),
+        "Intraday":           st.Page(intraday_trend_page,    title="Intraday",           url_path="intraday"),
+        "Live Ticker":        st.Page(live_ticker_page,       title="Live Ticker",        url_path="live-ticker"),
+        "Futures & Odd Lot":  st.Page(futures_page,           title="Futures & Odd Lot",  url_path="futures"),
+        "Post Close":         st.Page(post_close_page,        title="Post Close",         url_path="post-close"),
         # FIXED INCOME
-        "📈 FI Overview":    st.Page(psx_debt_market_page,    title="FI Overview",    url_path="fi-overview"),
-        "🧾 Bond Search":    st.Page(bonds_screener_page,     title="Bond Search",    url_path="bond-search"),
-        "📉 Yield Curve":    st.Page(yield_curve_page,        title="Yield Curve",    url_path="yield-curve"),
-        "🕌 Sukuk":          st.Page(sukuk_screener_page,     title="Sukuk",          url_path="sukuk"),
-        "🏛️ SBP Auctions":   st.Page(sbp_auction_archive_page, title="SBP Auctions", url_path="sbp-auctions"),
-        "🏦 Treasury":       st.Page(treasury_dashboard_page, title="Treasury",       url_path="treasury"),
-        "📊 Bond Market":    st.Page(bond_market_page,        title="Bond Market",    url_path="bond-market"),
-        "🌐 Global Rates":   st.Page(global_rates_page,       title="Global Rates",   url_path="global-rates"),
-        "🏦 NPC Rates":      st.Page(npc_rates_page,          title="NPC Rates",      url_path="npc-rates"),
-        # FX
-        "🌍 FX Monitor":     st.Page(fx_overview_page,        title="FX Monitor",     url_path="fx-monitor"),
-        "📊 FX Analytics":   st.Page(fx_impact_page,          title="FX Analytics",   url_path="fx-analytics"),
-        "💱 FX Dashboard":   st.Page(fx_dashboard_page,       title="FX Dashboard",   url_path="fx-dashboard"),
+        "Rates Overview":     st.Page(rates_overview_page,    title="Rates Overview",     url_path="rates-overview"),
+        "Yield Curves":       st.Page(yield_curves_page,      title="Yield Curves",       url_path="yield-curves"),
+        "Treasury Auctions":  st.Page(treasury_auctions_page, title="Treasury Auctions",  url_path="treasury-auctions"),
+        "Bond Market":        st.Page(bond_market_otc_page,   title="Bond Market",        url_path="bond-market"),
+        "Benchmark Monitor":  st.Page(benchmark_monitor_page, title="Benchmark Monitor",  url_path="benchmark"),
         # FUNDS
-        "🏦 Fund Directory": st.Page(mutual_funds_page,       title="Fund Directory", url_path="fund-directory"),
-        "📊 Fund Analytics": st.Page(fund_analytics_page,     title="Fund Analytics", url_path="fund-analytics"),
-        "🔍 Fund Explorer":  st.Page(fund_explorer_page,      title="Fund Explorer",  url_path="fund-explorer"),
-        # DATA
-        "📥 Data Sync":      st.Page(data_acquisition_page,   title="Data Sync",      url_path="data-sync"),
-        "📂 EOD Loader":     st.Page(eod_data_loader_page,    title="EOD Loader",     url_path="eod-loader"),
-        "📚 History":        st.Page(history_page,             title="History",        url_path="history"),
-        "🔄 Sync Monitor":   st.Page(sync_monitor,            title="Sync Monitor",   url_path="sync-monitor"),
-        "🩺 Data Quality":   st.Page(data_quality_page,       title="Data Quality",   url_path="data-quality"),
-        "🔗 Website Scan":   st.Page(website_scan_page,       title="Website Scan",   url_path="website-scan"),
-        # AI
-        "💬 AI Chat":        st.Page(chat_page,                title="AI Chat",        url_path="ai-chat"),
-        "🤖 AI Insights":    st.Page(ai_insights_page,        title="AI Insights",    url_path="ai-insights"),
+        "Fund Explorer":      st.Page(fund_explorer_page,     title="Fund Explorer",      url_path="fund-explorer"),
+        "VPS Pension":        st.Page(vps_pension_page,       title="VPS Pension",        url_path="vps-pension"),
+        "Top Performers":     st.Page(top_performers_page,    title="Top Performers",     url_path="top-performers"),
+        "Fund Analytics":     st.Page(fund_analytics_page,    title="Fund Analytics",     url_path="fund-analytics"),
+        "ETFs":               st.Page(etfs_page,              title="ETFs",               url_path="etfs"),
+        # FX & RATES
+        "Currency Dashboard": st.Page(currency_dashboard_page, title="Currency Dashboard", url_path="currency-dashboard"),
+        "Interbank vs Open":  st.Page(fx_interbank_page,      title="Interbank vs Open",  url_path="fx-interbank"),
+        "Rate History":       st.Page(fx_history_page,        title="Rate History",       url_path="fx-history"),
         # ADMIN
-        "📋 Schema":         st.Page(schema_page,              title="Schema",         url_path="schema"),
-        "🔬 Research":       st.Page(research_terminal_page,   title="Research",       url_path="research"),
-        "⚙️ Settings":       st.Page(settings_page,            title="Settings",       url_path="settings"),
+        "Data Status":        st.Page(data_status_page,       title="Data Status",        url_path="data-status"),
+        "Sync Center":        st.Page(sync_center_page,       title="Sync Center",        url_path="sync-center"),
+        "Schema Explorer":    st.Page(schema_page,            title="Schema Explorer",    url_path="schema"),
     }
 
-    # Navigation groups — Bloomberg Terminal style
+    # Navigation groups — 5-pillar blueprint structure
     nav_groups = {
-        "MARKET":       ["📊 Dashboard", "📡 Live Market", "📈 Market Summary", "💰 Post Close", "🔴 Live OHLCV", "⚡ Live Ticker", "📊 Live Indices", "📡 WS Relay"],
-        "EQUITY":       ["📈 Quote Monitor", "📊 Price Chart", "⏱ Intraday",
-                         "🏢 Company", "🏆 Rankings", "📊 Factors", "🧵 Symbols",
-                         "📊 Futures"],
-        "INDICES":      ["📊 Index Monitor", "📦 Instruments"],
-        "FIXED INCOME": ["📈 FI Overview", "🧾 Bond Search", "📉 Yield Curve",
-                         "🕌 Sukuk", "🏛️ SBP Auctions", "🏦 Treasury", "🌐 Global Rates",
-                         "🏦 NPC Rates"],
-        "FX":           ["🌍 FX Monitor", "📊 FX Analytics", "💱 FX Dashboard"],
-        "FUNDS":        ["🏦 Fund Directory", "📊 Fund Analytics", "🔍 Fund Explorer"],
-        "DATA":         ["📥 Data Sync", "📂 EOD Loader", "📚 History",
-                         "🔄 Sync Monitor", "🩺 Data Quality", "🔗 Website Scan"],
-        "AI":           ["💬 AI Chat", "🤖 AI Insights"],
-        "ADMIN":        ["📋 Schema", "🔬 Research", "⚙️ Settings"],
+        "MARKET OVERVIEW": ["Dashboard", "Market Pulse", "Index Monitor"],
+        "EQUITIES":        ["Market Summary", "Stock Screener", "Company Profile",
+                            "Sector Analysis", "Factors",
+                            "Intraday", "Live Ticker",
+                            "Futures & Odd Lot", "Post Close"],
+        "FIXED INCOME":    ["Rates Overview", "Yield Curves", "Treasury Auctions",
+                            "Bond Market", "Benchmark Monitor"],
+        "FUNDS":           ["Fund Explorer", "VPS Pension", "Top Performers",
+                            "Fund Analytics", "ETFs"],
+        "FX & RATES":      ["Currency Dashboard", "Interbank vs Open", "Rate History"],
+        "ADMIN":           ["Data Status", "Sync Center", "Schema Explorer"],
     }
 
-    # Build grouped dict of st.Page objects for st.navigation
+    # HIDDEN PAGES — registered for URL access but no sidebar button
+    # Preserves backwards-compatible URLs for bookmarks
+    _hidden_pages = {
+        "Live Market":      st.Page(live_market_page,        title="Live Market",      url_path="live-market"),
+        "Live OHLCV":       st.Page(live_ohlcv_page,         title="Live OHLCV",       url_path="live-ohlcv"),
+        "Live Indices":     st.Page(live_indices_page,        title="Live Indices",     url_path="live-indices"),
+        "WS Relay":         st.Page(ws_relay_status_page,     title="WS Relay",         url_path="ws-relay"),
+        "Quote Monitor":    st.Page(regular_market_page,      title="Quote Monitor",    url_path="quote-monitor"),
+        "Price Chart":      st.Page(candlestick_explorer,     title="Price Chart",      url_path="price-chart"),
+        "Rankings":         st.Page(rankings_page,            title="Rankings",          url_path="rankings"),
+        "Symbols":          st.Page(symbols_page,             title="Symbols",           url_path="symbols"),
+        "Instruments":      st.Page(instruments_page,         title="Instruments",      url_path="instruments"),
+        "FI Overview":      st.Page(psx_debt_market_page,     title="FI Overview",      url_path="fi-overview"),
+        "Bond Search":      st.Page(bonds_screener_page,      title="Bond Search",      url_path="bond-search"),
+        "Yield Curve":      st.Page(yield_curve_page,         title="Yield Curve",      url_path="yield-curve"),
+        "Sukuk":            st.Page(sukuk_screener_page,      title="Sukuk",            url_path="sukuk"),
+        "SBP Auctions":     st.Page(sbp_auction_archive_page, title="SBP Auctions",    url_path="sbp-auctions"),
+        "Treasury":         st.Page(treasury_dashboard_page,  title="Treasury",         url_path="treasury"),
+        "Global Rates":     st.Page(global_rates_page,        title="Global Rates",     url_path="global-rates"),
+        "NPC Rates":        st.Page(npc_rates_page,           title="NPC Rates",        url_path="npc-rates"),
+        "FX Monitor":       st.Page(fx_overview_page,         title="FX Monitor",       url_path="fx-monitor"),
+        "FX Analytics":     st.Page(fx_impact_page,           title="FX Analytics",     url_path="fx-analytics"),
+        "FX Dashboard":     st.Page(fx_dashboard_page,        title="FX Dashboard",     url_path="fx-dashboard"),
+        "Fund Directory":   st.Page(mutual_funds_page,        title="Fund Directory",   url_path="fund-directory"),
+        "Data Sync":        st.Page(data_acquisition_page,    title="Data Sync",        url_path="data-sync"),
+        "EOD Loader":       st.Page(eod_data_loader_page,     title="EOD Loader",       url_path="eod-loader"),
+        "History":          st.Page(history_page,             title="History",           url_path="history"),
+        "Sync Monitor":     st.Page(sync_monitor,             title="Sync Monitor",     url_path="sync-monitor"),
+        "Data Quality":     st.Page(data_quality_page,        title="Data Quality",     url_path="data-quality"),
+        "Website Scan":     st.Page(website_scan_page,        title="Website Scan",     url_path="website-scan"),
+        "AI Chat":          st.Page(chat_page,                title="AI Chat",          url_path="ai-chat"),
+        "AI Insights":      st.Page(ai_insights_page,         title="AI Insights",      url_path="ai-insights"),
+        "Research":         st.Page(research_terminal_page,   title="Research",          url_path="research"),
+        "Settings":         st.Page(settings_page,            title="Settings",          url_path="settings"),
+    }
+
+    # Build grouped dict for st.navigation (primary + hidden)
     nav_dict = {}
     for group_name, page_names in nav_groups.items():
         nav_dict[group_name] = [_pages[name] for name in page_names]
+
+    # Add hidden pages — they get URL routing but no sidebar buttons
+    # (position="hidden" means Streamlit doesn't render any group headers)
+    nav_dict["OTHER"] = list(_hidden_pages.values())
 
     # =================================================================
     # REGISTER NAVIGATION — hidden (we render our own Bloomberg sidebar)
@@ -1079,36 +1188,81 @@ def main():
     # =================================================================
     # HANDLE PROGRAMMATIC NAVIGATION (nav_to from page_views)
     # =================================================================
+    all_pages = {**_pages, **_hidden_pages}
+
     if "nav_to" in st.session_state and st.session_state.nav_to:
         nav_target = st.session_state.nav_to
         st.session_state.nav_to = None
 
         # Map old page names to new names for backwards compatibility
         page_mapping = {
-            "📊 Regular Market": "📈 Quote Monitor",
-            "📈 Candlestick Explorer": "📊 Price Chart",
-            "⏱ Intraday Trend": "⏱ Intraday",
-            "🏢 Company Analytics": "🏢 Company",
-            "📊 Factor Analysis": "📊 Factors",
-            "📊 Indices": "📊 Index Monitor",
-            "📈 PSX Debt Market": "📈 FI Overview",
-            "🧾 Bonds Screener": "🧾 Bond Search",
-            "🕌 Sukuk Screener": "🕌 Sukuk",
-            "🏛️ SBP Archive": "🏛️ SBP Auctions",
-            "🌍 FX Overview": "🌍 FX Monitor",
-            "📊 FX Impact": "📊 FX Analytics",
-            "🏦 Mutual Funds": "🏦 Fund Directory",
-            "📥 Data Acquisition": "📥 Data Sync",
-            "📥 Market Summary": "📈 Market Summary",
+            # Old emoji-prefixed names → new clean names
+            "📊 Dashboard": "Dashboard",
+            "📡 Live Market": "Live Market",
+            "📈 Market Summary": "Market Summary",
+            "💰 Post Close": "Post Close",
+            "📈 Quote Monitor": "Quote Monitor",
+            "📊 Price Chart": "Price Chart",
+            "⏱ Intraday": "Intraday",
+            "🏢 Company": "Company Profile",
+            "🏆 Rankings": "Rankings",
+            "📊 Factors": "Factors",
+            "🧵 Symbols": "Symbols",
+            "📊 Futures": "Futures & Odd Lot",
+            "Futures": "Futures & Odd Lot",
+            "📊 Index Monitor": "Index Monitor",
+            "📦 Instruments": "Instruments",
+            "📈 FI Overview": "FI Overview",
+            "🧾 Bond Search": "Bond Search",
+            "📉 Yield Curve": "Yield Curves",
+            "🕌 Sukuk": "Sukuk",
+            "🏛️ SBP Auctions": "SBP Auctions",
+            "🏦 Treasury": "Treasury",
+            "📊 Bond Market": "Bond Market",
+            "🌐 Global Rates": "Global Rates",
+            "🏦 NPC Rates": "NPC Rates",
+            "🌍 FX Monitor": "FX Monitor",
+            "📊 FX Analytics": "FX Analytics",
+            "💱 FX Dashboard": "Currency Dashboard",
+            "🏦 Fund Directory": "Fund Directory",
+            "📊 Fund Analytics": "Fund Analytics",
+            "🔍 Fund Explorer": "Fund Explorer",
+            "📥 Data Sync": "Data Sync",
+            "📂 EOD Loader": "EOD Loader",
+            "📚 History": "History",
+            "🔄 Sync Monitor": "Sync Center",
+            "🩺 Data Quality": "Data Status",
+            "🔗 Website Scan": "Website Scan",
+            "💬 AI Chat": "AI Chat",
+            "🤖 AI Insights": "AI Insights",
+            "📋 Schema": "Schema Explorer",
+            "🔬 Research": "Research",
+            "⚙️ Settings": "Settings",
+            # Legacy names
+            "📊 Regular Market": "Quote Monitor",
+            "📈 Candlestick Explorer": "Price Chart",
+            "⏱ Intraday Trend": "Intraday",
+            "🏢 Company Analytics": "Company Profile",
+            "📊 Factor Analysis": "Factors",
+            "📊 Indices": "Index Monitor",
+            "📈 PSX Debt Market": "FI Overview",
+            "🧾 Bonds Screener": "Bond Search",
+            "🕌 Sukuk Screener": "Sukuk",
+            "🏛️ SBP Archive": "SBP Auctions",
+            "🌍 FX Overview": "FX Monitor",
+            "📊 FX Impact": "FX Analytics",
+            "🏦 Mutual Funds": "Fund Directory",
+            "📥 Data Acquisition": "Data Sync",
+            "📥 Market Summary": "Market Summary",
         }
         nav_target = page_mapping.get(nav_target, nav_target)
-        if nav_target in _pages:
-            st.switch_page(_pages[nav_target])
+        if nav_target in all_pages:
+            st.switch_page(all_pages[nav_target])
 
     # =================================================================
-    # CUSTOM BLOOMBERG-STYLE SIDEBAR
+    # CUSTOM BLOOMBERG-STYLE SIDEBAR — 5-pillar navigation
     # =================================================================
-    st.sidebar.title("PakFinData Explorer")
+    st.sidebar.title("PakFinData")
 
     # Theme toggle
     theme_options = {
@@ -1163,11 +1317,11 @@ def main():
         if latest_date:
             badge_color, badge_text = get_freshness_badge(days_old)
             if badge_color == "green":
-                st.sidebar.success(f"📅 {badge_text}")
+                st.sidebar.success(f"Data: {badge_text}")
             elif badge_color == "orange":
-                st.sidebar.warning(f"📅 {badge_text}")
+                st.sidebar.warning(f"Data: {badge_text}")
             elif badge_color == "red":
-                st.sidebar.error(f"📅 {badge_text}")
+                st.sidebar.error(f"Data: {badge_text}")
     except Exception:
         pass
 

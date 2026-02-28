@@ -554,6 +554,42 @@ def _render_sync(con, stats, migrate_from_eod_ohlcv):
     c2.metric("Trading dates", f"{stats['total_dates']:,}")
     c3.metric("Base symbols", stats["unique_base_symbols"])
 
+    # ── Download .Z from PSX → CSV ──────────────────────────────
+    st.markdown("### Download Market Summary (.Z → CSV)")
+    st.caption(
+        "Download the daily .Z file from PSX, extract, and save as CSV. "
+        "This does NOT load into the database — use the buttons below to ingest."
+    )
+
+    from datetime import date as _date
+
+    dl_date = st.date_input(
+        "Date to download",
+        value=_date.today(),
+        key="fut_dl_date",
+    )
+
+    if st.button(
+        f"PSX .Z → CSV ({dl_date.isoformat()})",
+        key="fut_download_z",
+        help="Source: dps.psx.com.pk/download/mkt_summary/{date}.Z → "
+             "Destination: /mnt/e/psxdata/market_summary/csv/{date}.csv",
+    ):
+        with st.spinner(f"Downloading & extracting {dl_date.isoformat()}.Z ..."):
+            from pakfindata.sources.market_summary import fetch_day
+            result = fetch_day(dl_date.isoformat(), force=True)
+
+        if result["status"] == "ok":
+            st.success(
+                f"Downloaded {result['row_count']} records → {result['csv_path']}"
+            )
+        elif result["status"] == "skipped":
+            st.info(f"CSV already exists ({result['row_count']} records). Use force to re-download.")
+        else:
+            st.error(f"Download failed: {result.get('message', 'unknown error')}")
+
+    st.divider()
+
     # Check eod_ohlcv pollution
     eod_pollution = con.execute(
         "SELECT COUNT(*) FROM eod_ohlcv WHERE sector_code IN ('40', '41', '36')"

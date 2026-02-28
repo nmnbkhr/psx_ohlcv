@@ -894,11 +894,22 @@ def init_fund_performance_schema(con: sqlite3.Connection) -> None:
     con.execute("CREATE INDEX IF NOT EXISTS idx_fund_perf_date ON fund_performance(validity_date)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_fund_perf_category ON fund_performance(category)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_fund_perf_sector ON fund_performance(sector)")
+
+    # Migration: add source column if missing (mufap=official, computed=NAV-derived)
+    existing_cols = {row[1] for row in con.execute("PRAGMA table_info(fund_performance)").fetchall()}
+    if "source" not in existing_cols:
+        con.execute("ALTER TABLE fund_performance ADD COLUMN source TEXT NOT NULL DEFAULT 'mufap'")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_fund_perf_source ON fund_performance(source)")
+
     con.commit()
 
 
 def upsert_fund_performance(con: sqlite3.Connection, records: list[dict]) -> int:
-    """Bulk upsert fund performance records. Returns count of rows upserted."""
+    """Bulk upsert fund performance records. Returns count of rows upserted.
+
+    Priority: 'mufap' source always wins over 'computed' source.
+    String comparison 'mufap' >= 'computed' gates the ON CONFLICT UPDATE.
+    """
     if not records:
         return 0
     init_fund_performance_schema(con)
@@ -911,8 +922,8 @@ def upsert_fund_performance(con: sqlite3.Connection, records: list[dict]) -> int
                     validity_date, nav,
                     return_ytd, return_mtd, return_1d, return_15d,
                     return_30d, return_90d, return_180d, return_270d,
-                    return_365d, return_2y, return_3y
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    return_365d, return_2y, return_3y, source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(fund_name, validity_date) DO UPDATE SET
                     fund_id = excluded.fund_id,
                     sector = excluded.sector,
@@ -931,7 +942,9 @@ def upsert_fund_performance(con: sqlite3.Connection, records: list[dict]) -> int
                     return_365d = excluded.return_365d,
                     return_2y = excluded.return_2y,
                     return_3y = excluded.return_3y,
+                    source = excluded.source,
                     scraped_at = datetime('now')
+                WHERE excluded.source >= fund_performance.source
             """, (
                 rec.get("fund_name"),
                 rec.get("fund_id"),
@@ -952,6 +965,7 @@ def upsert_fund_performance(con: sqlite3.Connection, records: list[dict]) -> int
                 rec.get("return_365d"),
                 rec.get("return_2y"),
                 rec.get("return_3y"),
+                rec.get("source", "mufap"),
             ))
             count += 1
         except Exception:

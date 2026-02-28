@@ -342,27 +342,73 @@ def promote_intraday_to_eod(
     if not rows:
         return 0
 
-    # Step 2: upsert each aggregated row into eod_ohlcv
+    # Step 2: get prev_close, sector_code, company_name from prior date
+    prev_close_map = {}
+    sector_map = {}
+    name_map = {}
+    prev_rows = con.execute(
+        """
+        SELECT symbol, close, sector_code, company_name
+        FROM eod_ohlcv
+        WHERE date = (
+            SELECT MAX(date) FROM eod_ohlcv WHERE date < ?
+        )
+        """,
+        (date,),
+    ).fetchall()
+    def _pad_sector(code):
+        """Normalize sector code to 4-digit zero-padded (e.g. '807' → '0807')."""
+        if code and code.isdigit() and len(code) < 4:
+            return code.zfill(4)
+        return code
+
+    for pr in prev_rows:
+        prev_close_map[pr["symbol"]] = pr["close"]
+        if pr["sector_code"]:
+            sector_map[pr["symbol"]] = _pad_sector(pr["sector_code"])
+        if pr["company_name"]:
+            name_map[pr["symbol"]] = pr["company_name"]
+
+    # Fill gaps from symbols table (already uses 4-digit codes)
+    sym_rows = con.execute(
+        "SELECT symbol, sector, name FROM symbols WHERE sector IS NOT NULL"
+    ).fetchall()
+    for sr in sym_rows:
+        if sr["symbol"] not in sector_map and sr["sector"]:
+            sector_map[sr["symbol"]] = _pad_sector(sr["sector"])
+        if sr["symbol"] not in name_map and sr["name"]:
+            name_map[sr["symbol"]] = sr["name"]
+
+    # Step 3: upsert each aggregated row into eod_ohlcv
     count = 0
     for r in rows:
+        sym = r["symbol"]
+        prev_close = prev_close_map.get(sym)
+        sector_code = sector_map.get(sym)
+        company_name = name_map.get(sym)
         con.execute(
             """
             INSERT INTO eod_ohlcv
                 (symbol, date, open, high, low, close, volume,
+                 prev_close, sector_code, company_name,
                  ingested_at, source, processname)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'intraday_aggregation', 'sync_timeseries')
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'intraday_aggregation', 'sync_timeseries')
             ON CONFLICT(symbol, date) DO UPDATE SET
-                open        = excluded.open,
-                high        = excluded.high,
-                low         = excluded.low,
-                close       = excluded.close,
-                volume      = excluded.volume,
-                ingested_at = excluded.ingested_at,
-                source      = excluded.source,
-                processname = excluded.processname
+                open         = excluded.open,
+                high         = excluded.high,
+                low          = excluded.low,
+                close        = excluded.close,
+                volume       = excluded.volume,
+                prev_close   = excluded.prev_close,
+                sector_code  = COALESCE(excluded.sector_code, eod_ohlcv.sector_code),
+                company_name = COALESCE(excluded.company_name, eod_ohlcv.company_name),
+                ingested_at  = excluded.ingested_at,
+                source       = excluded.source,
+                processname  = excluded.processname
             """,
-            (r["symbol"], date, r["open"], r["high"], r["low"],
-             r["close"], r["volume"], now),
+            (sym, date, r["open"], r["high"], r["low"],
+             r["close"], r["volume"], prev_close, sector_code,
+             company_name, now),
         )
         count += 1
 

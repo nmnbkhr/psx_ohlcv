@@ -591,6 +591,7 @@ def sync_performance(db_path: Path | str | None = None) -> dict:
             "return_365d": _safe_float(row.get("year_1")),
             "return_2y": _safe_float(row.get("year_2")),
             "return_3y": _safe_float(row.get("year_3")),
+            "source": "mufap",
         })
 
     count = upsert_fund_performance(con, records)
@@ -713,3 +714,211 @@ def _safe_float(val) -> float | None:
         return float(s.replace(",", ""))
     except (ValueError, TypeError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# NAV-derived fund return computation (backfill)
+# ---------------------------------------------------------------------------
+
+# Calendar-day lookback periods → fund_performance column names
+_RETURN_PERIODS = {
+    "return_1d": 1,
+    "return_15d": 15,
+    "return_30d": 30,
+    "return_90d": 90,
+    "return_180d": 180,
+    "return_270d": 270,
+    "return_365d": 365,
+    "return_2y": 730,
+    "return_3y": 1095,
+}
+
+
+def compute_fund_returns(
+    con,
+    as_of_date: str,
+) -> list[dict]:
+    """Compute fund returns from NAV history for a single date.
+
+    For each fund with a NAV on *as_of_date*, computes percentage returns for
+    fixed calendar-day lookback periods (1d … 3y) plus MTD and YTD.
+
+    Uses the nearest prior trading day when the exact lookback date has no NAV.
+    Formula: (nav_today - nav_past) / nav_past * 100
+
+    Returns a list of dicts ready for ``upsert_fund_performance()``.
+    """
+    from datetime import date as _date
+
+    try:
+        dt = _date.fromisoformat(as_of_date)
+    except ValueError:
+        log.warning("Skipping invalid date: %s", as_of_date)
+        return []
+
+    # MTD reference: last calendar day of previous month
+    mtd_ref = (dt.replace(day=1) - timedelta(days=1)).isoformat()
+    # YTD reference: Dec 31 of the prior year
+    ytd_ref = _date(dt.year - 1, 12, 31).isoformat()
+
+    # All funds with a valid NAV on the target date
+    funds_today = con.execute(
+        """
+        SELECT n.fund_id, n.nav, m.fund_name, m.category, m.sector,
+               m.rating, m.benchmark
+        FROM mutual_fund_nav n
+        JOIN mutual_funds m ON m.fund_id = n.fund_id
+        WHERE n.date = ? AND n.nav > 0 AND m.fund_name IS NOT NULL
+        """,
+        (as_of_date,),
+    ).fetchall()
+
+    if not funds_today:
+        return []
+
+    records: list[dict] = []
+
+    for fund_id, nav_today, fund_name, category, sector, rating, benchmark in funds_today:
+        rec: dict = {
+            "fund_name": fund_name,
+            "fund_id": fund_id,
+            "sector": sector,
+            "category": category or "",
+            "rating": rating,
+            "benchmark": benchmark,
+            "validity_date": as_of_date,
+            "nav": nav_today,
+            "source": "computed",
+        }
+
+        # Fixed-period returns
+        for col, days_back in _RETURN_PERIODS.items():
+            target = (dt - timedelta(days=days_back)).isoformat()
+            past = con.execute(
+                """
+                SELECT nav FROM mutual_fund_nav
+                WHERE fund_id = ? AND date <= ? AND nav > 0
+                ORDER BY date DESC LIMIT 1
+                """,
+                (fund_id, target),
+            ).fetchone()
+            if past and past[0] and past[0] > 0:
+                rec[col] = round((nav_today - past[0]) / past[0] * 100, 4)
+            else:
+                rec[col] = None
+
+        # MTD return
+        past = con.execute(
+            "SELECT nav FROM mutual_fund_nav WHERE fund_id = ? AND date <= ? AND nav > 0 ORDER BY date DESC LIMIT 1",
+            (fund_id, mtd_ref),
+        ).fetchone()
+        rec["return_mtd"] = (
+            round((nav_today - past[0]) / past[0] * 100, 4)
+            if past and past[0] and past[0] > 0
+            else None
+        )
+
+        # YTD return
+        past = con.execute(
+            "SELECT nav FROM mutual_fund_nav WHERE fund_id = ? AND date <= ? AND nav > 0 ORDER BY date DESC LIMIT 1",
+            (fund_id, ytd_ref),
+        ).fetchone()
+        rec["return_ytd"] = (
+            round((nav_today - past[0]) / past[0] * 100, 4)
+            if past and past[0] and past[0] > 0
+            else None
+        )
+
+        records.append(rec)
+
+    return records
+
+
+def backfill_fund_returns(
+    db_path: Path | str | None = None,
+    start_date: str = "2024-01-01",
+    end_date: str | None = None,
+    chunk_days: int = 30,
+    progress_cb: Callable[[str, int, int], None] | None = None,
+) -> dict:
+    """Backfill fund_performance with NAV-computed returns for a date range.
+
+    Processes only trading dates that have NAV data, in chunks of
+    *chunk_days* dates each to control memory usage.
+
+    Args:
+        db_path: Database path (default from config).
+        start_date: Start date YYYY-MM-DD.
+        end_date: End date YYYY-MM-DD (default: today).
+        chunk_days: Number of trading dates per processing chunk.
+        progress_cb: Optional ``callback(date_str, current_idx, total)``.
+
+    Returns:
+        Summary dict with status, dates_processed, records_upserted.
+    """
+    from .db.repositories.fixed_income import (
+        init_fund_performance_schema,
+        upsert_fund_performance,
+    )
+
+    if end_date is None:
+        end_date = datetime.now().strftime("%Y-%m-%d")
+
+    con = connect(db_path)
+    init_schema(con)
+    init_fund_performance_schema(con)
+
+    # Distinct trading dates with NAV data in the requested range
+    trading_dates = [
+        row[0]
+        for row in con.execute(
+            "SELECT DISTINCT date FROM mutual_fund_nav WHERE date >= ? AND date <= ? ORDER BY date",
+            (start_date, end_date),
+        ).fetchall()
+    ]
+
+    if not trading_dates:
+        return {"status": "ok", "dates_processed": 0, "records_upserted": 0}
+
+    log.info(
+        "Backfill fund returns: %d trading dates from %s to %s",
+        len(trading_dates),
+        trading_dates[0],
+        trading_dates[-1],
+    )
+
+    total_upserted = 0
+    dates_processed = 0
+
+    for i in range(0, len(trading_dates), chunk_days):
+        chunk = trading_dates[i : i + chunk_days]
+        chunk_records: list[dict] = []
+
+        for dt_str in chunk:
+            chunk_records.extend(compute_fund_returns(con, dt_str))
+            dates_processed += 1
+            if progress_cb:
+                progress_cb(dt_str, dates_processed, len(trading_dates))
+
+        if chunk_records:
+            count = upsert_fund_performance(con, chunk_records)
+            total_upserted += count
+            log.info(
+                "  Chunk %d–%d: %d records (%d/%d dates)",
+                i + 1,
+                min(i + chunk_days, len(trading_dates)),
+                count,
+                dates_processed,
+                len(trading_dates),
+            )
+
+    log.info("Backfill done: %d dates, %d records", dates_processed, total_upserted)
+
+    return {
+        "status": "ok",
+        "dates_processed": dates_processed,
+        "records_upserted": total_upserted,
+        "trading_dates_total": len(trading_dates),
+        "start": trading_dates[0],
+        "end": trading_dates[-1],
+    }

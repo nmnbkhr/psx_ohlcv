@@ -1298,6 +1298,30 @@ def main(argv: list[str] | None = None) -> int:
         help="Re-sync fund categories from MUFAP (fix collapsed categories)"
     )
 
+    # mufap backfill-returns — compute historical returns from NAV data
+    backfill_returns_parser = mufap_sub.add_parser(
+        "backfill-returns",
+        help="Backfill fund_performance with NAV-computed returns for a date range"
+    )
+    backfill_returns_parser.add_argument(
+        "--start",
+        type=str,
+        default="2024-01-01",
+        help="Start date YYYY-MM-DD (default: 2024-01-01)",
+    )
+    backfill_returns_parser.add_argument(
+        "--end",
+        type=str,
+        default=None,
+        help="End date YYYY-MM-DD (default: today)",
+    )
+    backfill_returns_parser.add_argument(
+        "--chunk",
+        type=int,
+        default=30,
+        help="Trading dates per processing chunk (default: 30)",
+    )
+
     # =========================================================================
     # Phase 3: bonds command - Bonds/Sukuk analytics
     # =========================================================================
@@ -1450,6 +1474,12 @@ def main(argv: list[str] | None = None) -> int:
     bonds_sub.add_parser(
         "smtv-sync",
         help="Download & parse today's SBP SMTV PDF (OTC bond trading)"
+    )
+
+    # bonds smtv-backfill - attempt to backfill historical SMTV data
+    bonds_sub.add_parser(
+        "smtv-backfill",
+        help="Attempt to backfill SMTV data from SBP archives"
     )
 
     # =========================================================================
@@ -4754,6 +4784,8 @@ def handle_mufap(args: argparse.Namespace) -> int:
         return handle_mufap_expense(args)
     elif args.mufap_command == "resync-categories":
         return handle_mufap_resync_categories(args)
+    elif args.mufap_command == "backfill-returns":
+        return handle_mufap_backfill_returns(args)
     return EXIT_ERROR
 
 
@@ -5126,6 +5158,65 @@ def handle_mufap_resync_categories(args: argparse.Namespace) -> int:
         return EXIT_ERROR
 
 
+def handle_mufap_backfill_returns(args: argparse.Namespace) -> int:
+    """Backfill fund_performance with NAV-computed returns."""
+    import time
+
+    from .sync_mufap import backfill_fund_returns
+
+    start = getattr(args, "start", "2024-01-01")
+    end = getattr(args, "end", None)
+    chunk = getattr(args, "chunk", 30)
+
+    print("Backfilling fund returns from NAV history...")
+    print(f"  Start: {start}")
+    print(f"  End:   {end or 'today'}")
+    print(f"  Chunk: {chunk} dates")
+    print("-" * 50)
+
+    t0 = time.time()
+    last_print = [0.0]
+
+    def progress(date_str: str, current: int, total: int) -> None:
+        now = time.time()
+        if now - last_print[0] >= 2.0 or current == total:
+            elapsed = now - t0
+            rate = current / elapsed if elapsed > 0 else 0
+            eta = (total - current) / rate if rate > 0 else 0
+            pct = current / total * 100 if total else 0
+            print(
+                f"  [{current}/{total}] {pct:.0f}% | {date_str} | "
+                f"{rate:.1f} dates/s | ETA {eta:.0f}s",
+                flush=True,
+            )
+            last_print[0] = now
+
+    try:
+        result = backfill_fund_returns(
+            db_path=args.db,
+            start_date=start,
+            end_date=end,
+            chunk_days=chunk,
+            progress_cb=progress,
+        )
+    except KeyboardInterrupt:
+        print("\n  Interrupted by user (progress saved).")
+        return EXIT_ERROR
+
+    elapsed = time.time() - t0
+    if result.get("status") == "ok":
+        print(f"\n  {'=' * 50}")
+        print(f"  Dates processed:  {result['dates_processed']}")
+        print(f"  Records upserted: {result['records_upserted']}")
+        print(f"  Range:            {result.get('start', '?')} to {result.get('end', '?')}")
+        print(f"  Time:             {elapsed:.1f}s")
+        print(f"  {'=' * 50}")
+        return EXIT_SUCCESS
+    else:
+        print(f"  Error: {result.get('error', 'Unknown')}")
+        return EXIT_ERROR
+
+
 # =============================================================================
 # Phase 3: Bonds/Sukuk Handlers
 # =============================================================================
@@ -5153,6 +5244,8 @@ def handle_bonds(args: argparse.Namespace) -> int:
         return handle_bonds_benchmark_sync(args)
     elif cmd == "smtv-sync":
         return handle_bonds_smtv_sync(args)
+    elif cmd == "smtv-backfill":
+        return handle_bonds_smtv_backfill(args)
 
     return EXIT_ERROR
 
@@ -5455,6 +5548,32 @@ def handle_bonds_status(args: argparse.Namespace) -> int:
                 f"{run.get('rows_upserted', 0):<8}"
             )
 
+    # Bond Market (SMTV + Benchmark) data coverage
+    try:
+        from .db.repositories.bond_market import get_bond_market_status
+        con = connect(args.db)
+        bm_status = get_bond_market_status(con)
+        con.close()
+
+        print("\nBond Market Data (SBP):")
+        print("=" * 60)
+        trading_rows = bm_status.get("trading_rows", 0)
+        if trading_rows:
+            print(f"  SMTV trades:    {trading_rows} rows")
+            print(f"  Trading days:   {bm_status.get('trading_days', 0)}")
+            print(f"  Date range:     {bm_status.get('trading_earliest')} to {bm_status.get('trading_latest')}")
+        else:
+            print("  SMTV trades:    (none — run 'pfsync bonds smtv-sync')")
+
+        bm_days = bm_status.get("benchmark_days", 0)
+        if bm_days:
+            print(f"  Benchmark days: {bm_days}")
+            print(f"  Date range:     {bm_status.get('benchmark_earliest')} to {bm_status.get('benchmark_latest')}")
+        else:
+            print("  Benchmarks:     (none — run 'pfsync bonds benchmark-sync')")
+    except Exception:
+        pass
+
     return EXIT_SUCCESS
 
 
@@ -5510,6 +5629,29 @@ def handle_bonds_smtv_sync(args: argparse.Namespace) -> int:
     print(f"  Skipped: {result.get('reason', 'unknown')}")
     con.close()
     return EXIT_SUCCESS  # Not an error — SMTV is unavailable
+
+
+def handle_bonds_smtv_backfill(args: argparse.Namespace) -> int:
+    """Attempt to backfill SMTV data from SBP archives."""
+    print("SMTV Backfill")
+    print("=" * 60)
+    print(
+        "  Historical SMTV PDFs are not available via date-parameterized URLs.\n"
+        "  SBP archive pages (SecMarBankArc.asp, SecMarNonBankArc.asp) link to\n"
+        "  monthly PDFs, but recent ones (2024-2026) return 404.\n"
+        "\n"
+        "  The daily SMTV PDF at sbp.org.pk/ecodata/Outright-SMTV.pdf is\n"
+        "  overwritten each trading day. To build history, run:\n"
+        "\n"
+        "    pfsync bonds smtv-sync\n"
+        "\n"
+        "  daily (via cron) to accumulate data going forward.\n"
+        "\n"
+        "  Recommended cron (18:00 PKT Mon-Fri, after market close):\n"
+        "    0 18 * * 1-5 cd /path/to/pakfindata && "
+        "conda run -n psx pfsync bonds smtv-sync"
+    )
+    return EXIT_SUCCESS
 
 
 # =============================================================================
