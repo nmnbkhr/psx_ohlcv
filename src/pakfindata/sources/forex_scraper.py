@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup
 from pakfindata.db.repositories.fx_extended import (
     init_fx_extended_schema,
     upsert_fx_kerb,
+    upsert_fx_open_market,
 )
 
 __all__ = ["ForexPKScraper"]
@@ -120,13 +121,20 @@ class ForexPKScraper:
         return rates
 
     def sync_kerb(self, con: sqlite3.Connection) -> dict:
-        """Scrape and upsert kerb rates from forex.pk."""
+        """Scrape and upsert kerb + open market rates from forex.pk.
+
+        forex.pk's open_market_rates page provides dealer/kerb rates.
+        We store the same data in both forex_kerb and sbp_fx_open_market
+        so the Interbank vs Open Market comparison page works.
+        """
         init_fx_extended_schema(con)
         rates = self.scrape_open_market()
         counts = {"ok": 0, "failed": 0, "total": len(rates)}
 
         for rate in rates:
-            if upsert_fx_kerb(con, rate):
+            kerb_ok = upsert_fx_kerb(con, rate)
+            upsert_fx_open_market(con, rate)
+            if kerb_ok:
                 counts["ok"] += 1
             else:
                 counts["failed"] += 1

@@ -36,6 +36,7 @@ from .db import (
 )
 from .sources.mufap import (
     async_fetch_nav_batch,
+    fetch_daily_nav_html,
     fetch_daily_performance_html,
     fetch_mutual_fund_data,
     get_default_funds,
@@ -154,8 +155,13 @@ def sync_fund_nav(
         if incremental:
             latest = get_mf_latest_date(con, actual_fund_id)
             if latest:
-                # Start from day after latest
                 latest_dt = datetime.strptime(latest, "%Y-%m-%d")
+                # Skip if already up-to-date (latest is today or yesterday)
+                age_days = (datetime.now() - latest_dt).days
+                if age_days <= 1:
+                    con.close()
+                    return 0, None
+                # Start from day after latest
                 start_date = (latest_dt + timedelta(days=1)).strftime("%Y-%m-%d")
 
         # Fetch data (uses historical API if mufap_int_id available)
@@ -256,6 +262,239 @@ def sync_mutual_funds(
         con, run_id, status, summary.ok, summary.rows_upserted, error_msg
     )
 
+    con.close()
+    return summary
+
+
+def sync_daily_nav(db_path: Path | str | None = None) -> MufapSyncSummary:
+    """Sync today's NAV for all funds in a single HTTP request.
+
+    Uses the MUFAP daily NAV HTML page (nav.php?tab=3) which returns
+    ~519 active funds' latest NAV in one scrape. Much faster than
+    per-fund historical API calls.
+    """
+    con = connect(db_path)
+    init_schema(con)
+
+    summary = MufapSyncSummary()
+
+    run_id = str(uuid.uuid4())[:8]
+    record_mf_sync_run(con, run_id, "NAV_DAILY_SYNC", 0)
+
+    try:
+        df = fetch_daily_nav_html()
+        if df.empty:
+            update_mf_sync_run(con, run_id, "completed", 0, 0, "No data from MUFAP")
+            con.close()
+            return summary
+
+        # Build fund lookup by fund_name (case-insensitive)
+        all_funds = get_mutual_funds(con, active_only=False)
+        name_to_fund: dict[str, dict] = {}
+        for f in all_funds:
+            name_to_fund[f["fund_name"].strip().lower()] = f
+
+        summary.total = len(df)
+        matched = 0
+
+        for _, row in df.iterrows():
+            nav_val = row.get("nav")
+            nav_date = row.get("validity_date")
+            fund_name = (row.get("fund_name") or "").strip()
+
+            if not fund_name or not nav_val or not nav_date:
+                summary.no_data += 1
+                continue
+
+            fund = name_to_fund.get(fund_name.lower())
+            if not fund:
+                summary.no_data += 1
+                continue
+
+            try:
+                con.execute("""
+                    INSERT INTO mutual_fund_nav (
+                        fund_id, date, nav, offer_price, redemption_price,
+                        aum, nav_change_pct, source, ingested_at
+                    ) VALUES (?, ?, ?, ?, ?, NULL, NULL, 'MUFAP_DAILY', datetime('now'))
+                    ON CONFLICT(fund_id, date) DO UPDATE SET
+                        nav = excluded.nav,
+                        offer_price = excluded.offer_price,
+                        redemption_price = excluded.redemption_price,
+                        source = excluded.source,
+                        ingested_at = datetime('now')
+                """, (
+                    fund["fund_id"],
+                    nav_date,
+                    nav_val,
+                    row.get("offer_price"),
+                    row.get("repurchase_price"),
+                ))
+                matched += 1
+                summary.rows_upserted += 1
+                summary.ok += 1
+            except Exception as e:
+                summary.failed += 1
+                summary.errors.append((fund["fund_id"], str(e)))
+
+        con.commit()
+
+        status = "completed" if summary.failed == 0 else "partial"
+        error_msg = None
+        if summary.errors:
+            error_msg = "; ".join([f"{f}: {e}" for f, e in summary.errors[:5]])
+        update_mf_sync_run(
+            con, run_id, status, summary.ok, summary.rows_upserted, error_msg
+        )
+
+    except Exception as e:
+        update_mf_sync_run(con, run_id, "failed", 0, 0, str(e))
+        summary.failed += 1
+        summary.errors.append(("DAILY_SYNC", str(e)))
+
+    con.close()
+    return summary
+
+
+def sync_mutual_funds_parallel(
+    fund_ids: list[str] | None = None,
+    db_path: Path | str | None = None,
+    incremental: bool = True,
+    source: str = "AUTO",
+    category: str | None = None,
+    max_workers: int = 10,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+) -> MufapSyncSummary:
+    """Sync NAV data using parallel downloads + sequential DB writes.
+
+    Phase 1: Pre-filter — skip funds already up-to-date (age <= 1 day).
+    Phase 2: Download — fetch NAV data from MUFAP in parallel (ThreadPool).
+    Phase 3: Write — upsert downloaded data into DB sequentially (no lock contention).
+
+    ~5-10x faster than sequential sync.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    con = connect(db_path)
+    init_schema(con)
+
+    # Resolve fund list
+    if fund_ids is None:
+        fund_records = get_mutual_funds(con, active_only=True, category=category)
+        fund_ids = [f["fund_id"] for f in fund_records]
+
+    if not fund_ids:
+        con.close()
+        return MufapSyncSummary()
+
+    run_id = str(uuid.uuid4())[:8]
+    record_mf_sync_run(con, run_id, "NAV_SYNC_PARALLEL", len(fund_ids))
+
+    summary = MufapSyncSummary(total=len(fund_ids))
+
+    # ── Phase 1: Pre-filter — build download list ──────────────────────
+    # Bulk-load latest NAV dates from summary table (1 query vs 1,194)
+    latest_dates: dict[str, str] = {}
+    try:
+        rows = con.execute("SELECT fund_id, date FROM fund_nav_latest").fetchall()
+        latest_dates = {r[0]: r[1] for r in rows}
+    except Exception:
+        pass
+
+    # Build fund lookup (single query)
+    fund_records_map: dict[str, dict] = {}
+    for f in get_mutual_funds(con, active_only=False):
+        fund_records_map[f["fund_id"]] = f
+
+    to_download: list[dict] = []
+    now = datetime.now()
+
+    for fid in fund_ids:
+        fund = fund_records_map.get(fid)
+        if not fund:
+            summary.failed += 1
+            summary.errors.append((fid, "Fund not found"))
+            continue
+
+        actual_id = fund["fund_id"]
+        start_date = None
+
+        if incremental:
+            latest = latest_dates.get(actual_id)
+            if latest:
+                age_days = (now - datetime.strptime(latest, "%Y-%m-%d")).days
+                if age_days <= 1:
+                    summary.ok += 1
+                    summary.no_data += 1
+                    continue
+                start_date = (
+                    datetime.strptime(latest, "%Y-%m-%d") + timedelta(days=1)
+                ).strftime("%Y-%m-%d")
+
+        to_download.append({
+            "fund_id": actual_id,
+            "mufap_int_id": fund.get("mufap_int_id"),
+            "start_date": start_date,
+        })
+
+    skipped = summary.no_data
+    total_progress = summary.total
+    completed = summary.ok + summary.failed
+
+    if progress_callback:
+        progress_callback(completed, total_progress, f"Skipped {skipped} up-to-date")
+
+    # ── Phase 2: Download in parallel (no DB access) ───────────────────
+    def _download_one(item: dict):
+        """Pure download — no DB connection needed."""
+        try:
+            df = fetch_mutual_fund_data(
+                item["fund_id"],
+                start_date=item["start_date"],
+                source=source,
+                mufap_int_id=item["mufap_int_id"],
+            )
+            if not df.empty:
+                df = normalize_nav_dataframe(df)
+            return item["fund_id"], df, None
+        except Exception as e:
+            return item["fund_id"], None, str(e)
+
+    downloaded: list[tuple[str, object, str | None]] = []
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_download_one, item): item for item in to_download}
+        for future in as_completed(futures):
+            result = future.result()
+            downloaded.append(result)
+            completed += 1
+            if progress_callback:
+                progress_callback(completed, total_progress, result[0])
+
+    # ── Phase 3: Write to DB sequentially ──────────────────────────────
+    for fund_id, df, error in downloaded:
+        if error:
+            summary.failed += 1
+            summary.errors.append((fund_id, error))
+        elif df is None or df.empty:
+            summary.ok += 1
+            summary.no_data += 1
+        else:
+            try:
+                rows = upsert_mf_nav(con, fund_id, df)
+                summary.ok += 1
+                summary.rows_upserted += rows
+            except Exception as e:
+                summary.failed += 1
+                summary.errors.append((fund_id, str(e)))
+
+    status = "completed" if summary.failed == 0 else "partial"
+    error_msg = None
+    if summary.errors:
+        error_msg = "; ".join([f"{f}: {e}" for f, e in summary.errors[:5]])
+    update_mf_sync_run(
+        con, run_id, status, summary.ok, summary.rows_upserted, error_msg
+    )
     con.close()
     return summary
 

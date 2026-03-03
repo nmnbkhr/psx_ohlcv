@@ -120,6 +120,10 @@ def init_schema(con: sqlite3.Connection) -> None:
     from .repositories.post_close import init_post_close_schema
     init_post_close_schema(con)
 
+    # Commodity data tables (v3.8+)
+    from pakfindata.commodities.models import init_commodity_schema
+    init_commodity_schema(con)
+
     _migrate_intraday_operation_cols(con)
     _migrate_turnover_col(con)
 

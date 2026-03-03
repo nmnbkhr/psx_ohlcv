@@ -809,6 +809,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Save raw HTML to database (for debugging)",
     )
+    company_deep_parser.add_argument(
+        "--stop",
+        action="store_true",
+        help="Stop a running background deep scrape",
+    )
+    company_deep_parser.add_argument(
+        "--status",
+        action="store_true",
+        help="Show progress of a running background deep scrape",
+    )
 
     # company import-payouts - import payouts from saved HTML file
     company_import_parser = company_sub.add_parser(
@@ -2181,6 +2191,249 @@ def main(argv: list[str] | None = None) -> int:
     npc_dash_p = npc_sub.add_parser("dashboard", help="Multi-currency NPC dashboard")
     npc_dash_p.add_argument("--date", help="Date (YYYY-MM-DD)")
 
+    # =========================================================================
+    # Commodity command — global commodity data (Phase: Commodities)
+    # =========================================================================
+    commodity_parser = subparsers.add_parser(
+        "commodity",
+        help="Global commodity data — prices, PKR conversions, sync"
+    )
+    commodity_sub = commodity_parser.add_subparsers(
+        dest="commodity_command", required=True
+    )
+
+    # commodity list
+    commodity_list_parser = commodity_sub.add_parser(
+        "list", help="List commodity universe"
+    )
+    commodity_list_parser.add_argument(
+        "--category",
+        type=str,
+        choices=["metals", "energy", "agriculture", "livestock", "fx"],
+        default=None,
+        help="Filter by category",
+    )
+    commodity_list_parser.add_argument(
+        "--pk-high",
+        action="store_true",
+        help="Show only HIGH Pakistan relevance commodities",
+    )
+
+    # commodity sync
+    commodity_sync_parser = commodity_sub.add_parser(
+        "sync", help="Sync commodity data from free sources"
+    )
+    commodity_sync_parser.add_argument(
+        "--all",
+        action="store_true",
+        dest="sync_all",
+        help="Sync from all sources (yfinance, FRED, World Bank, khistocks)",
+    )
+    commodity_sync_parser.add_argument(
+        "--source",
+        type=str,
+        choices=["yfinance", "fred", "worldbank", "khistocks", "pmex_portal", "pmex_ohlc", "pmex_margins"],
+        default=None,
+        help="Sync from a specific source only",
+    )
+    commodity_sync_parser.add_argument(
+        "--feeds",
+        type=str,
+        default=None,
+        help="khistocks feeds filter (comma-separated: pmex,sarafa,intl_bullion,mandi,lme)",
+    )
+    commodity_sync_parser.add_argument(
+        "--category",
+        type=str,
+        choices=["metals", "energy", "agriculture", "livestock", "fx"],
+        default=None,
+        help="Filter by category",
+    )
+    commodity_sync_parser.add_argument(
+        "--symbols",
+        type=str,
+        default=None,
+        help="Comma-separated commodity symbols (e.g., 'GOLD,BRENT,COTTON')",
+    )
+    commodity_sync_parser.add_argument(
+        "--incremental",
+        action="store_true",
+        default=True,
+        help="Only fetch new data (default: True)",
+    )
+    commodity_sync_parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Full refresh (ignore existing data)",
+    )
+    commodity_sync_parser.add_argument(
+        "--fred-api-key",
+        type=str,
+        default=None,
+        help="FRED API key (or set FRED_API_KEY env var)",
+    )
+
+    # commodity show
+    commodity_show_parser = commodity_sub.add_parser(
+        "show", help="Show price data for a commodity"
+    )
+    commodity_show_parser.add_argument(
+        "--symbol",
+        type=str,
+        required=True,
+        help="Commodity symbol (e.g., GOLD, BRENT, COTTON)",
+    )
+    commodity_show_parser.add_argument(
+        "--limit",
+        type=int,
+        default=30,
+        help="Number of recent rows (default: 30)",
+    )
+
+    # commodity pkr
+    commodity_pkr_parser = commodity_sub.add_parser(
+        "pkr", help="Show PKR prices for commodities"
+    )
+    commodity_pkr_parser.add_argument(
+        "--symbols",
+        type=str,
+        default=None,
+        help="Comma-separated symbols (default: all with PKR conversion)",
+    )
+
+    # commodity khistocks — browse Pakistan local market data
+    commodity_khi_parser = commodity_sub.add_parser(
+        "khistocks", help="Show khistocks.com Pakistan local market data"
+    )
+    commodity_khi_parser.add_argument(
+        "--feed",
+        type=str,
+        choices=["khistocks_pmex", "khistocks_sarafa", "khistocks_intl_bullion", "khistocks_mandi", "khistocks_lme"],
+        default=None,
+        help="Filter by feed",
+    )
+    commodity_khi_parser.add_argument(
+        "--symbol",
+        type=str,
+        default=None,
+        help="Show history for a specific symbol",
+    )
+    commodity_khi_parser.add_argument(
+        "--limit",
+        type=int,
+        default=30,
+        help="Number of recent rows (default: 30)",
+    )
+
+    # commodity pmex — browse PMEX market watch data
+    commodity_pmex_parser = commodity_sub.add_parser(
+        "pmex", help="Show PMEX market watch data (direct portal)"
+    )
+    commodity_pmex_parser.add_argument(
+        "--category",
+        type=str,
+        choices=["Indices", "Metals", "Oil", "Cots", "Energy",
+                 "Agri", "Phy_Agri", "Phy_Gold", "Financials"],
+        default=None,
+        help="Filter by PMEX category",
+    )
+    commodity_pmex_parser.add_argument(
+        "--contract",
+        type=str,
+        default=None,
+        help="Show history for a specific contract (e.g., GOLDJUN26)",
+    )
+    commodity_pmex_parser.add_argument(
+        "--limit",
+        type=int,
+        default=30,
+        help="Number of recent rows (default: 30)",
+    )
+
+    # commodity pmex-ohlc — PMEX OHLC API data
+    commodity_pmex_ohlc_parser = commodity_sub.add_parser(
+        "pmex-ohlc", help="Fetch/show PMEX OHLC data from official API"
+    )
+    commodity_pmex_ohlc_parser.add_argument(
+        "--action",
+        choices=["fetch", "backfill", "show", "status"],
+        default="fetch",
+        help="Action to perform (default: fetch)",
+    )
+    commodity_pmex_ohlc_parser.add_argument(
+        "--from-date", type=str, default=None,
+        help="Start date YYYY-MM-DD (default: 7 days ago)",
+    )
+    commodity_pmex_ohlc_parser.add_argument(
+        "--to-date", type=str, default=None,
+        help="End date YYYY-MM-DD (default: today)",
+    )
+    commodity_pmex_ohlc_parser.add_argument(
+        "--symbol", type=str, default=None,
+        help="Filter by symbol (e.g., GO1OZ-AP26)",
+    )
+    commodity_pmex_ohlc_parser.add_argument(
+        "--active-only", action="store_true",
+        help="Only show contracts with volume > 0",
+    )
+    commodity_pmex_ohlc_parser.add_argument(
+        "--save-json", action="store_true",
+        help="Save raw JSON to disk",
+    )
+    commodity_pmex_ohlc_parser.add_argument(
+        "--populate", action="store_true",
+        help="Upsert into commod.db",
+    )
+    commodity_pmex_ohlc_parser.add_argument(
+        "--limit", type=int, default=50,
+        help="Number of rows to display (default: 50)",
+    )
+
+    # commodity pmex-margins — PMEX Margins Excel data
+    commodity_pmex_margins_parser = commodity_sub.add_parser(
+        "pmex-margins", help="Fetch/show PMEX margins data from Excel downloads"
+    )
+    commodity_pmex_margins_parser.add_argument(
+        "--action",
+        choices=["fetch", "backfill", "show", "status"],
+        default="fetch",
+        help="Action to perform (default: fetch)",
+    )
+    commodity_pmex_margins_parser.add_argument(
+        "--date", type=str, default=None,
+        help="Report date YYYY-MM-DD (default: today)",
+    )
+    commodity_pmex_margins_parser.add_argument(
+        "--from-date", type=str, default=None,
+        help="Backfill start date YYYY-MM-DD",
+    )
+    commodity_pmex_margins_parser.add_argument(
+        "--to-date", type=str, default=None,
+        help="Backfill end date YYYY-MM-DD",
+    )
+    commodity_pmex_margins_parser.add_argument(
+        "--active-only", action="store_true",
+        help="Only show active contracts",
+    )
+    commodity_pmex_margins_parser.add_argument(
+        "--save-xlsx", action="store_true",
+        help="Save raw Excel to disk",
+    )
+    commodity_pmex_margins_parser.add_argument(
+        "--populate", action="store_true",
+        help="Upsert into commod.db",
+    )
+
+    # commodity seed
+    commodity_sub.add_parser(
+        "seed", help="Seed commodity universe into database"
+    )
+
+    # commodity status
+    commodity_sub.add_parser(
+        "status", help="Show commodity data status and recent syncs"
+    )
+
     args = parser.parse_args(argv)
 
     try:
@@ -2254,6 +2507,8 @@ def main(argv: list[str] | None = None) -> int:
             return handle_globalrates(args)
         elif args.command == "npc":
             return handle_npc(args)
+        elif args.command == "commodity":
+            return handle_commodity(args)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         return 130
@@ -3865,6 +4120,49 @@ def handle_company_deep_scrape(args: argparse.Namespace) -> int:
     """
     from .sources.deep_scraper import deep_scrape_batch, deep_scrape_symbol
 
+    # Handle --stop flag
+    if getattr(args, "stop", False):
+        from .sources.deep_scraper import is_deep_scrape_running, stop_deep_scrape
+
+        if is_deep_scrape_running():
+            stop_deep_scrape()
+            print("Stop signal sent — will finish current symbol then stop.")
+        else:
+            print("No background deep scrape is currently running.")
+        return EXIT_SUCCESS
+
+    # Handle --status flag
+    if getattr(args, "status", False):
+        from .sources.deep_scraper import is_deep_scrape_running, read_deep_scrape_progress
+
+        progress = read_deep_scrape_progress()
+        running = is_deep_scrape_running()
+
+        if not progress:
+            print("No deep scrape progress found.")
+            return EXIT_SUCCESS
+
+        status = progress.get("status", "unknown")
+        print(f"Status:    {status} {'(thread active)' if running else ''}")
+        print(f"Total:     {progress.get('total', 0)}")
+        print(f"Completed: {progress.get('ok', 0)}")
+        print(f"Failed:    {progress.get('failed', 0)}")
+        print(f"Remaining: {progress.get('remaining', 0)}")
+        if progress.get("current_symbol"):
+            print(f"Current:   {progress['current_symbol']}")
+        if progress.get("started_at"):
+            print(f"Started:   {progress['started_at']}")
+
+        errors = progress.get("errors", [])
+        if errors:
+            print(f"\nErrors ({len(errors)}):")
+            for err in errors[:10]:
+                print(f"  {err}")
+            if len(errors) > 10:
+                print(f"  ... and {len(errors) - 10} more")
+
+        return EXIT_SUCCESS
+
     # Determine symbols to scrape
     symbols = []
     if args.symbol:
@@ -3872,11 +4170,11 @@ def handle_company_deep_scrape(args: argparse.Namespace) -> int:
     elif args.symbols:
         symbols = [s.strip().upper() for s in args.symbols.split(",")]
     elif getattr(args, "all", False):
-        # Get all active symbols
-        from .db import get_symbols_list
+        # Get all active symbols (normalized — strips XD/XB/NC suffixes)
+        from .db.repositories.symbols import get_scrapable_symbols
         con = connect(args.db)
         init_schema(con)
-        symbols = get_symbols_list(con)
+        symbols = get_scrapable_symbols(con)
         con.close()
 
     if not symbols:
@@ -7447,6 +7745,637 @@ def handle_npc(args: argparse.Namespace) -> int:
         return 0
 
     con.close()
+    return 0
+
+
+def handle_commodity(args: argparse.Namespace) -> int:
+    """Handle commodity subcommands."""
+    from .commodities.config import (
+        COMMODITY_UNIVERSE,
+        get_commodities_by_category,
+        get_pk_high_commodities,
+    )
+    from .commodities.models import init_commodity_schema
+
+    con = connect(args.db)
+    init_schema(con)
+    init_commodity_schema(con)
+
+    if args.commodity_command == "list":
+        # List commodity universe
+        if getattr(args, "pk_high", False):
+            commodities = get_pk_high_commodities()
+        elif getattr(args, "category", None):
+            commodities = get_commodities_by_category(args.category)
+        else:
+            commodities = list(COMMODITY_UNIVERSE.values())
+
+        header = f"{'Symbol':<16} {'Name':<22} {'Category':<14} {'Unit':<14} {'PK':<6} {'yf Ticker':<12} {'FRED':<16}"
+        print(header)
+        print("-" * len(header))
+        for c in commodities:
+            print(
+                f"{c.symbol:<16} {c.name:<22} {c.category:<14} {c.unit:<14} "
+                f"{c.pk_relevance:<6} {(c.yf_ticker or '-'):<12} {(c.fred_series or '-'):<16}"
+            )
+        print(f"\nTotal: {len(commodities)} commodities")
+        con.close()
+        return 0
+
+    elif args.commodity_command == "seed":
+        from .commodities.sync import seed_commodity_universe
+        count = seed_commodity_universe(args.db)
+        print(f"Seeded {count} commodity symbols into database.")
+        con.close()
+        return 0
+
+    elif args.commodity_command == "sync":
+        from .commodities.sync import (
+            seed_commodity_universe,
+            sync_all_commodities,
+            sync_yfinance,
+            sync_fred,
+            sync_worldbank,
+            sync_khistocks,
+        )
+
+        # Ensure universe is seeded
+        seed_commodity_universe(args.db)
+
+        symbols = None
+        if getattr(args, "symbols", None):
+            symbols = [s.strip().upper() for s in args.symbols.split(",")]
+
+        category = getattr(args, "category", None)
+        incremental = not getattr(args, "full", False)
+        fred_key = getattr(args, "fred_api_key", None)
+
+        if getattr(args, "sync_all", False) or not getattr(args, "source", None):
+            # Sync all sources
+            def progress(cur, total, sym):
+                print(f"  [{cur}/{total}] {sym}", flush=True)
+
+            print("=== Commodity Sync: All Sources ===")
+            results = sync_all_commodities(
+                db_path=args.db,
+                incremental=incremental,
+                category=category,
+                symbols=symbols,
+                fred_api_key=fred_key,
+                progress_callback=progress,
+            )
+
+            for source, summary in results.items():
+                print(
+                    f"\n{source}: {summary.symbols_ok}/{summary.symbols_total} symbols, "
+                    f"{summary.rows_upserted} rows upserted"
+                )
+                if summary.errors:
+                    for sym, err in summary.errors[:5]:
+                        print(f"  ERROR {sym}: {err}")
+
+        elif args.source == "yfinance":
+            print("=== Commodity Sync: yfinance ===")
+            summary = sync_yfinance(
+                db_path=args.db, symbols=symbols,
+                category=category, incremental=incremental,
+            )
+            print(
+                f"yfinance: {summary.symbols_ok}/{summary.symbols_total} symbols, "
+                f"{summary.rows_upserted} rows"
+            )
+
+        elif args.source == "fred":
+            print("=== Commodity Sync: FRED ===")
+            summary = sync_fred(db_path=args.db, api_key=fred_key, symbols=symbols)
+            print(
+                f"FRED: {summary.symbols_ok}/{summary.symbols_total} series, "
+                f"{summary.rows_upserted} rows"
+            )
+
+        elif args.source == "worldbank":
+            print("=== Commodity Sync: World Bank ===")
+            summary = sync_worldbank(db_path=args.db)
+            print(
+                f"World Bank: {summary.symbols_ok} commodities, "
+                f"{summary.rows_upserted} rows"
+            )
+
+        elif args.source == "khistocks":
+            feeds = None
+            if getattr(args, "feeds", None):
+                feeds = [f.strip() for f in args.feeds.split(",")]
+
+            print("=== Commodity Sync: khistocks.com ===")
+            summary = sync_khistocks(db_path=args.db, feeds=feeds)
+            print(
+                f"khistocks: {summary.symbols_ok}/{summary.symbols_total} symbols, "
+                f"{summary.rows_upserted} rows"
+            )
+            if summary.errors:
+                for sym, err in summary.errors[:5]:
+                    print(f"  ERROR {sym}: {err}")
+
+        elif args.source == "pmex_portal":
+            from .commodities.sync import sync_pmex
+            print("=== Commodity Sync: PMEX Portal ===")
+            summary = sync_pmex(db_path=args.db)
+            print(
+                f"PMEX Portal: {summary.symbols_ok}/{summary.symbols_total} contracts, "
+                f"{summary.rows_upserted} rows"
+            )
+            if summary.errors:
+                for sym, err in summary.errors[:5]:
+                    print(f"  ERROR {sym}: {err}")
+
+        elif args.source == "pmex_ohlc":
+            from .commodities.sync import sync_pmex_ohlc
+            print("=== Commodity Sync: PMEX OHLC ===")
+            summary = sync_pmex_ohlc()
+            print(
+                f"PMEX OHLC: {summary.symbols_ok}/{summary.symbols_total} symbols, "
+                f"{summary.rows_upserted} rows"
+            )
+            if summary.errors:
+                for sym, err in summary.errors[:5]:
+                    print(f"  ERROR {sym}: {err}")
+
+        elif args.source == "pmex_margins":
+            from .commodities.sync import sync_pmex_margins
+            print("=== Commodity Sync: PMEX Margins ===")
+            summary = sync_pmex_margins()
+            print(
+                f"PMEX Margins: {summary.symbols_ok}/{summary.symbols_total} contracts, "
+                f"{summary.rows_upserted} rows"
+            )
+            if summary.errors:
+                for sym, err in summary.errors[:5]:
+                    print(f"  ERROR {sym}: {err}")
+
+        con.close()
+        return 0
+
+    elif args.commodity_command == "show":
+        from .commodities.models import get_commodity_eod_range
+
+        symbol = args.symbol.upper()
+        limit = getattr(args, "limit", 30)
+
+        rows = get_commodity_eod_range(con, symbol, limit=limit)
+        if not rows:
+            print(f"No data for {symbol}. Run: pfsync commodity sync --all")
+            con.close()
+            return 0
+
+        import pandas as pd
+        df = pd.DataFrame(rows)
+        cols = ["symbol", "date", "open", "high", "low", "close", "volume", "source"]
+        existing = [c for c in cols if c in df.columns]
+        print(df[existing].to_string(index=False))
+        con.close()
+        return 0
+
+    elif args.commodity_command == "pkr":
+        from .commodities.models import get_commodity_pkr_latest
+
+        symbols = None
+        if getattr(args, "symbols", None):
+            symbols = [s.strip().upper() for s in args.symbols.split(",")]
+
+        rows = get_commodity_pkr_latest(con, symbols)
+        if not rows:
+            print("No PKR prices. Run: pfsync commodity sync --all")
+            con.close()
+            return 0
+
+        import pandas as pd
+        df = pd.DataFrame(rows)
+        cols = ["symbol", "date", "pkr_price", "pk_unit", "usd_price", "usd_pkr", "source"]
+        existing = [c for c in cols if c in df.columns]
+        print(df[existing].to_string(index=False))
+        con.close()
+        return 0
+
+    elif args.commodity_command == "khistocks":
+        from .commodities.models import get_khistocks_latest, get_khistocks_history
+
+        symbol = getattr(args, "symbol", None)
+        feed = getattr(args, "feed", None)
+        limit = getattr(args, "limit", 30)
+
+        if symbol:
+            # Show history for a specific symbol
+            rows = get_khistocks_history(con, symbol.upper(), feed=feed, limit=limit)
+            if not rows:
+                print(f"No khistocks data for {symbol}. Run: pfsync commodity sync --source khistocks")
+                con.close()
+                return 0
+            import pandas as pd
+            df = pd.DataFrame(rows)
+            cols = ["symbol", "date", "feed", "name", "open", "high", "low", "close",
+                    "rate", "cash_buyer", "cash_seller", "net_change", "change_pct"]
+            existing = [c for c in cols if c in df.columns]
+            print(df[existing].to_string(index=False))
+        else:
+            # Show latest prices for all khistocks symbols
+            rows = get_khistocks_latest(con, feed=feed)
+            if not rows:
+                print("No khistocks data. Run: pfsync commodity sync --source khistocks")
+                con.close()
+                return 0
+
+            import pandas as pd
+            df = pd.DataFrame(rows)
+
+            # Group by feed for display
+            for feed_name, group in df.groupby("feed"):
+                print(f"\n=== {feed_name} ===")
+                cols = ["symbol", "date", "name", "open", "high", "low", "close",
+                        "rate", "cash_buyer", "cash_seller", "net_change", "change_pct"]
+                existing = [c for c in cols if c in group.columns]
+                # Drop columns that are all NaN
+                display = group[existing].dropna(axis=1, how="all")
+                print(display.to_string(index=False))
+
+        con.close()
+        return 0
+
+    elif args.commodity_command == "pmex":
+        from .commodities.models import get_pmex_latest, get_pmex_history
+
+        contract = getattr(args, "contract", None)
+        category = getattr(args, "category", None)
+        limit = getattr(args, "limit", 30)
+
+        if contract:
+            rows = get_pmex_history(con, contract.upper(), limit=limit)
+            if not rows:
+                print(f"No PMEX data for {contract}. Run: pfsync commodity sync --source pmex_portal")
+                con.close()
+                return 0
+            import pandas as pd
+            df = pd.DataFrame(rows)
+            cols = ["contract", "snapshot_date", "category", "bid", "ask", "open",
+                    "close", "high", "low", "last_price", "total_vol", "change", "change_pct", "state"]
+            existing = [c for c in cols if c in df.columns]
+            print(df[existing].to_string(index=False))
+        else:
+            rows = get_pmex_latest(con, category=category)
+            if not rows:
+                print("No PMEX data. Run: pfsync commodity sync --source pmex_portal")
+                con.close()
+                return 0
+
+            import pandas as pd
+            df = pd.DataFrame(rows)
+
+            for cat_name, group in df.groupby("category"):
+                print(f"\n=== {cat_name} ({len(group)} contracts) ===")
+                cols = ["contract", "snapshot_date", "bid", "ask", "last_price",
+                        "change", "change_pct", "total_vol", "state"]
+                existing = [c for c in cols if c in group.columns]
+                display = group[existing].dropna(axis=1, how="all")
+                print(display.to_string(index=False))
+
+        con.close()
+        return 0
+
+    elif args.commodity_command == "pmex-ohlc":
+        return _handle_pmex_ohlc(args)
+
+    elif args.commodity_command == "pmex-margins":
+        return _handle_pmex_margins(args)
+
+    elif args.commodity_command == "status":
+        # Show commodity data status
+        eod_count = con.execute("SELECT COUNT(*) as c FROM commodity_eod").fetchone()["c"]
+        monthly_count = con.execute("SELECT COUNT(*) as c FROM commodity_monthly").fetchone()["c"]
+        pkr_count = con.execute("SELECT COUNT(*) as c FROM commodity_pkr").fetchone()["c"]
+        fx_count = con.execute("SELECT COUNT(*) as c FROM commodity_fx_rates").fetchone()["c"]
+        sym_count = con.execute("SELECT COUNT(*) as c FROM commodity_symbols").fetchone()["c"]
+        khi_count = con.execute("SELECT COUNT(*) as c FROM khistocks_prices").fetchone()["c"]
+        pmex_count = 0
+        try:
+            pmex_count = con.execute("SELECT COUNT(*) as c FROM pmex_market_watch").fetchone()["c"]
+        except Exception:
+            pass
+
+        print("=== Commodity Data Status ===")
+        print(f"Symbols:          {sym_count}")
+        print(f"Daily OHLCV:      {eod_count:,} rows")
+        print(f"Monthly Prices:   {monthly_count:,} rows")
+        print(f"PKR Prices:       {pkr_count:,} rows")
+        print(f"FX Rates:         {fx_count:,} rows")
+        print(f"khistocks Local:  {khi_count:,} rows")
+        print(f"PMEX Portal:      {pmex_count:,} rows")
+
+        # khistocks feed breakdown
+        if khi_count > 0:
+            feed_rows = con.execute(
+                "SELECT feed, COUNT(*) as cnt FROM khistocks_prices GROUP BY feed ORDER BY feed"
+            ).fetchall()
+            print("\nkhistocks by feed:")
+            for r in feed_rows:
+                print(f"  {r['feed']:<28} {r['cnt']:,} rows")
+
+        # PMEX category breakdown
+        if pmex_count > 0:
+            cat_rows = con.execute(
+                "SELECT category, COUNT(DISTINCT contract) as cnt FROM pmex_market_watch GROUP BY category ORDER BY category"
+            ).fetchall()
+            print("\nPMEX by category:")
+            for r in cat_rows:
+                print(f"  {r['category']:<20} {r['cnt']} contracts")
+
+        # Latest sync
+        sync_row = con.execute(
+            "SELECT * FROM commodity_sync_runs ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+        if sync_row:
+            print(f"\nLast sync: {dict(sync_row).get('started_at', 'N/A')} "
+                  f"({dict(sync_row).get('source', 'N/A')})")
+
+        # commod.db stats
+        try:
+            from .commodities.commod_db import get_commod_connection, init_commod_schema, get_pmex_ohlc_stats, get_pmex_margins_stats
+            ccon = get_commod_connection()
+            init_commod_schema(ccon)
+            ohlc_st = get_pmex_ohlc_stats(ccon)
+            mgn_st = get_pmex_margins_stats(ccon)
+            print(f"\n=== commod.db (PMEX OHLC + Margins) ===")
+            print(f"PMEX OHLC:    {ohlc_st['total_rows']:,} rows, {ohlc_st['symbols']:,} symbols")
+            if ohlc_st['min_date']:
+                print(f"  Date Range: {ohlc_st['min_date']} → {ohlc_st['max_date']}")
+            print(f"PMEX Margins: {mgn_st['total_rows']:,} rows, {mgn_st['contracts']:,} contracts")
+            if mgn_st['min_date']:
+                print(f"  Date Range: {mgn_st['min_date']} → {mgn_st['max_date']}")
+            ccon.close()
+        except Exception:
+            pass
+
+        con.close()
+        return 0
+
+    con.close()
+    return 0
+
+
+def _handle_pmex_ohlc(args) -> int:
+    """Handle commodity pmex-ohlc subcommand."""
+    from datetime import date as _date, timedelta as _td
+    import pandas as pd
+    from .commodities.commod_db import (
+        get_commod_connection, init_commod_schema,
+        upsert_pmex_ohlc, get_pmex_ohlc_stats, query_pmex_ohlc,
+        save_ohlc_json,
+    )
+
+    action = getattr(args, "action", "fetch")
+
+    if action == "status":
+        con = get_commod_connection()
+        init_commod_schema(con)
+        stats = get_pmex_ohlc_stats(con)
+        print("=== PMEX OHLC Status (commod.db) ===")
+        print(f"Total Rows:  {stats['total_rows']:,}")
+        print(f"Symbols:     {stats['symbols']:,}")
+        print(f"Date Range:  {stats['min_date']} → {stats['max_date']}")
+        con.close()
+        return 0
+
+    if action == "show":
+        con = get_commod_connection()
+        init_commod_schema(con)
+        rows = query_pmex_ohlc(
+            con,
+            symbol=getattr(args, "symbol", None),
+            start_date=getattr(args, "from_date", None),
+            end_date=getattr(args, "to_date", None),
+            active_only=getattr(args, "active_only", False),
+            limit=getattr(args, "limit", 50),
+        )
+        if not rows:
+            print("No OHLC data in commod.db. Run: pfsync commodity pmex-ohlc --action fetch --populate")
+        else:
+            df = pd.DataFrame(rows)
+            cols = ["trading_date", "symbol", "open", "high", "low", "close",
+                    "traded_volume", "settlement_price", "fx_rate"]
+            existing = [c for c in cols if c in df.columns]
+            print(df[existing].to_string(index=False))
+        con.close()
+        return 0
+
+    if action == "fetch":
+        from .commodities.fetcher_pmex_ohlc import fetch_ohlc
+
+        from_date_str = getattr(args, "from_date", None)
+        to_date_str = getattr(args, "to_date", None)
+        from_dt = _date.fromisoformat(from_date_str) if from_date_str else _date.today() - _td(days=7)
+        to_dt = _date.fromisoformat(to_date_str) if to_date_str else _date.today()
+
+        print(f"=== Fetching PMEX OHLC: {from_dt} → {to_dt} ===")
+        df = fetch_ohlc(from_dt, to_dt)
+
+        if df.empty:
+            print("No data returned.")
+            return 0
+
+        if getattr(args, "active_only", False):
+            df = df[df["traded_volume"] > 0]
+
+        # Convert datetime to string
+        df["trading_date"] = df["trading_date"].dt.strftime("%Y-%m-%d")
+
+        active = len(df[df["traded_volume"] > 0])
+        print(f"Fetched: {len(df)} rows, {df['symbol'].nunique()} symbols, {active} active")
+
+        if getattr(args, "save_json", False):
+            fpath = save_ohlc_json(df.to_dict("records"), from_dt, to_dt)
+            print(f"Saved: {fpath}")
+
+        if getattr(args, "populate", False):
+            con = get_commod_connection()
+            init_commod_schema(con)
+            rows = df.to_dict("records")
+            n = upsert_pmex_ohlc(con, rows)
+            print(f"Populated: {n} rows into pmex_ohlc")
+            con.close()
+        else:
+            # Display preview
+            cols = ["trading_date", "symbol", "open", "high", "low", "close",
+                    "traded_volume", "settlement_price", "fx_rate"]
+            existing = [c for c in cols if c in df.columns]
+            limit = getattr(args, "limit", 50)
+            print(df[existing].head(limit).to_string(index=False))
+
+        return 0
+
+    if action == "backfill":
+        from .commodities.fetcher_pmex_ohlc import backfill
+
+        from_date_str = getattr(args, "from_date", None)
+        to_date_str = getattr(args, "to_date", None)
+        from_dt = _date.fromisoformat(from_date_str) if from_date_str else _date(2024, 1, 1)
+        to_dt = _date.fromisoformat(to_date_str) if to_date_str else _date.today()
+
+        print(f"=== PMEX OHLC Backfill: {from_dt} → {to_dt} ===")
+
+        def _progress(cur, total, label):
+            print(f"  [{cur}/{total}] {label}")
+
+        df = backfill(
+            start_date=from_dt,
+            end_date=to_dt,
+            active_only=getattr(args, "active_only", False),
+            progress_callback=_progress,
+        )
+
+        if df.empty:
+            print("No data returned.")
+            return 0
+
+        df["trading_date"] = df["trading_date"].dt.strftime("%Y-%m-%d")
+        print(f"Total: {len(df)} rows, {df['symbol'].nunique()} symbols")
+
+        if getattr(args, "save_json", False):
+            fpath = save_ohlc_json(df.to_dict("records"), from_dt, to_dt)
+            print(f"Saved: {fpath}")
+
+        if getattr(args, "populate", False):
+            con = get_commod_connection()
+            init_commod_schema(con)
+            n = upsert_pmex_ohlc(con, df.to_dict("records"))
+            print(f"Populated: {n} rows into pmex_ohlc")
+            con.close()
+
+        return 0
+
+    return 0
+
+
+def _handle_pmex_margins(args) -> int:
+    """Handle commodity pmex-margins subcommand."""
+    from datetime import date as _date, timedelta as _td
+    import pandas as pd
+    from .commodities.commod_db import (
+        get_commod_connection, init_commod_schema,
+        upsert_pmex_margins, get_pmex_margins_stats, query_pmex_margins,
+        save_margins_excel,
+    )
+
+    action = getattr(args, "action", "fetch")
+
+    if action == "status":
+        con = get_commod_connection()
+        init_commod_schema(con)
+        stats = get_pmex_margins_stats(con)
+        print("=== PMEX Margins Status (commod.db) ===")
+        print(f"Total Rows:  {stats['total_rows']:,}")
+        print(f"Contracts:   {stats['contracts']:,}")
+        print(f"Date Range:  {stats['min_date']} → {stats['max_date']}")
+        con.close()
+        return 0
+
+    if action == "show":
+        con = get_commod_connection()
+        init_commod_schema(con)
+        report_date = getattr(args, "date", None)
+        rows = query_pmex_margins(
+            con,
+            report_date=report_date,
+            active_only=getattr(args, "active_only", False),
+        )
+        if not rows:
+            print("No margins data in commod.db. Run: pfsync commodity pmex-margins --action fetch --populate")
+        else:
+            df = pd.DataFrame(rows)
+            cols = ["report_date", "sheet_name", "product_group", "contract_code",
+                    "reference_price", "initial_margin_pct", "initial_margin_value",
+                    "maintenance_margin", "lower_limit", "upper_limit", "fx_rate", "is_active"]
+            existing = [c for c in cols if c in df.columns]
+            print(df[existing].to_string(index=False))
+        con.close()
+        return 0
+
+    if action == "fetch":
+        from .commodities.fetcher_pmex_margins import fetch_margins_file, parse_margins_excel
+
+        date_str = getattr(args, "date", None)
+        target_dt = _date.fromisoformat(date_str) if date_str else _date.today()
+
+        print(f"=== Fetching PMEX Margins for {target_dt} ===")
+        raw_bytes, actual_date = fetch_margins_file(target_dt)
+
+        if raw_bytes is None:
+            print("No margins file found (walked back 5 business days).")
+            return 0
+
+        print(f"Downloaded margins for {actual_date} ({len(raw_bytes):,} bytes)")
+
+        df = parse_margins_excel(raw_bytes, actual_date)
+        if df.empty:
+            print("Parsing returned no data.")
+            return 0
+
+        active = int(df["is_active"].sum())
+        print(f"Parsed: {len(df)} contracts ({active} active)")
+
+        if getattr(args, "save_xlsx", False):
+            fpath = save_margins_excel(raw_bytes, actual_date)
+            print(f"Saved: {fpath}")
+
+        if getattr(args, "populate", False):
+            con = get_commod_connection()
+            init_commod_schema(con)
+            rows = df.to_dict("records")
+            n = upsert_pmex_margins(con, rows)
+            print(f"Populated: {n} rows into pmex_margins")
+            con.close()
+        else:
+            cols = ["contract_code", "product_group", "reference_price",
+                    "initial_margin_pct", "maintenance_margin", "fx_rate", "is_active"]
+            existing = [c for c in cols if c in df.columns]
+            if getattr(args, "active_only", False):
+                df = df[df["is_active"] == True]  # noqa: E712
+            print(df[existing].to_string(index=False))
+
+        return 0
+
+    if action == "backfill":
+        from .commodities.fetcher_pmex_margins import backfill_margins
+
+        from_date_str = getattr(args, "from_date", None)
+        to_date_str = getattr(args, "to_date", None)
+        from_dt = _date.fromisoformat(from_date_str) if from_date_str else _date.today() - _td(days=30)
+        to_dt = _date.fromisoformat(to_date_str) if to_date_str else _date.today()
+
+        print(f"=== PMEX Margins Backfill: {from_dt} → {to_dt} ===")
+
+        def _progress(cur, total, label):
+            pct = cur / total * 100 if total > 0 else 0
+            print(f"  [{cur}/{total}] {pct:.0f}% {label}")
+
+        df = backfill_margins(
+            start_date=from_dt,
+            end_date=to_dt,
+            progress_callback=_progress,
+        )
+
+        if df.empty:
+            print("No data returned.")
+            return 0
+
+        print(f"Total: {len(df)} rows")
+
+        if getattr(args, "populate", False):
+            con = get_commod_connection()
+            init_commod_schema(con)
+            n = upsert_pmex_margins(con, df.to_dict("records"))
+            print(f"Populated: {n} rows into pmex_margins")
+            con.close()
+
+        return 0
+
     return 0
 
 

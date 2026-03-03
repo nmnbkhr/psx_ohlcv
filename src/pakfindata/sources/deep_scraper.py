@@ -972,6 +972,181 @@ def deep_scrape_batch(
 
 
 # =============================================================================
+# Background Deep Scrape (thread-based, progress via JSON file)
+# =============================================================================
+
+import json
+import logging
+import threading
+from pathlib import Path
+
+from ..config import DATA_ROOT
+
+_log = logging.getLogger("pakfindata.deep_scraper")
+
+DEEP_SCRAPE_PROGRESS_FILE = DATA_ROOT / "deep_scrape_progress.json"
+
+_deep_scrape_thread: threading.Thread | None = None
+_deep_scrape_stop = threading.Event()
+
+
+def _write_deep_scrape_progress(data: dict) -> None:
+    """Write progress dict to JSON file atomically."""
+    tmp = DEEP_SCRAPE_PROGRESS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data))
+    tmp.replace(DEEP_SCRAPE_PROGRESS_FILE)
+
+
+def read_deep_scrape_progress() -> dict | None:
+    """Read the current deep scrape progress. Returns None if no job has run."""
+    if not DEEP_SCRAPE_PROGRESS_FILE.exists():
+        return None
+    try:
+        return json.loads(DEEP_SCRAPE_PROGRESS_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _run_deep_scrape_background(
+    symbols: list[str],
+    delay: float = 1.0,
+    save_raw_html: bool = False,
+    db_path: str | Path | None = None,
+) -> None:
+    """Worker function that runs in a background thread."""
+    from ..db.connection import connect, init_schema
+    from ..db.repositories.symbols import get_scrapable_symbols, normalize_symbol
+
+    con = connect(db_path)
+    init_schema(con)
+
+    # Normalize symbols — strip PSX status suffixes (XD, XB, NC …)
+    # and deduplicate using the master symbol list as reference.
+    master_rows = con.execute(
+        "SELECT symbol FROM symbols WHERE is_active = 1"
+    ).fetchall()
+    master_set = {r["symbol"] for r in master_rows}
+
+    seen: set[str] = set()
+    clean_symbols: list[str] = []
+    for sym in symbols:
+        base, _ = normalize_symbol(sym, master_set)
+        if base not in seen:
+            seen.add(base)
+            clean_symbols.append(base)
+
+    symbols = clean_symbols
+    total = len(symbols)
+    progress = {
+        "status": "running",
+        "total": total,
+        "current": 0,
+        "ok": 0,
+        "failed": 0,
+        "current_symbol": "",
+        "errors": [],
+        "started_at": datetime.now().isoformat(),
+        "finished_at": None,
+    }
+    _write_deep_scrape_progress(progress)
+
+    for i, symbol in enumerate(symbols):
+        if _deep_scrape_stop.is_set():
+            progress["status"] = "stopped"
+            progress["finished_at"] = datetime.now().isoformat()
+            progress["current_symbol"] = ""
+            _write_deep_scrape_progress(progress)
+            _log.info("Deep scrape stopped by user at %d/%d", i, total)
+            break
+
+        progress["current"] = i + 1
+        progress["current_symbol"] = symbol
+        _write_deep_scrape_progress(progress)
+
+        try:
+            result = deep_scrape_symbol(con, symbol, save_raw_html)
+            if result.get("success"):
+                progress["ok"] += 1
+            else:
+                progress["failed"] += 1
+                progress["errors"].append(
+                    f"{symbol}: {result.get('error', 'unknown')}"
+                )
+        except Exception as e:
+            progress["failed"] += 1
+            progress["errors"].append(f"{symbol}: {e}")
+
+        _write_deep_scrape_progress(progress)
+
+        if i < total - 1:
+            time.sleep(delay)
+    else:
+        # Loop completed without break (not stopped)
+        progress["status"] = "completed"
+        progress["finished_at"] = datetime.now().isoformat()
+        progress["current_symbol"] = ""
+        _write_deep_scrape_progress(progress)
+
+    try:
+        con.close()
+    except Exception:
+        pass
+
+    _log.info(
+        "Deep scrape complete: %d/%d OK, %d failed",
+        progress["ok"], total, progress["failed"],
+    )
+
+
+def start_deep_scrape_background(
+    symbols: list[str],
+    delay: float = 1.0,
+    save_raw_html: bool = False,
+    db_path: str | Path | None = None,
+) -> bool:
+    """Launch deep scrape in a background thread.
+
+    Returns True if started, False if already running.
+    """
+    global _deep_scrape_thread
+    if _deep_scrape_thread is not None and _deep_scrape_thread.is_alive():
+        return False
+
+    _deep_scrape_stop.clear()
+
+    _deep_scrape_thread = threading.Thread(
+        target=_run_deep_scrape_background,
+        kwargs={
+            "symbols": symbols,
+            "delay": delay,
+            "save_raw_html": save_raw_html,
+            "db_path": db_path,
+        },
+        daemon=True,
+        name="deep-scrape-batch",
+    )
+    _deep_scrape_thread.start()
+    return True
+
+
+def stop_deep_scrape() -> bool:
+    """Signal the running deep scrape to stop gracefully.
+
+    The thread will finish the current symbol then exit.
+    Returns True if a running scrape was signalled, False if nothing was running.
+    """
+    if _deep_scrape_thread is None or not _deep_scrape_thread.is_alive():
+        return False
+    _deep_scrape_stop.set()
+    return True
+
+
+def is_deep_scrape_running() -> bool:
+    """Check if a deep scrape thread is currently running."""
+    return _deep_scrape_thread is not None and _deep_scrape_thread.is_alive()
+
+
+# =============================================================================
 # PSX Financial Announcements Scraper (Dividends from www.psx.com.pk)
 # =============================================================================
 

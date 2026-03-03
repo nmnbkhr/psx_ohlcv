@@ -151,6 +151,61 @@ def render_market_summary():
                 except Exception as e:
                     st.error(f"Error: {e}")
 
+        st.markdown("---")
+        st.subheader("Sync to EOD Database")
+        st.caption(
+            "Ingest downloaded CSV into `eod_ohlcv` (REG) and `futures_eod` "
+            "(FUT/CONT/ODL) tables. This fills gaps left by intraday promotion "
+            "which only covers regular market."
+        )
+
+        sync_col1, sync_col2 = st.columns([2, 1])
+        with sync_col1:
+            sync_date = st.date_input(
+                "Select date to sync",
+                value=single_date,
+                max_value=date_type.today(),
+                key="ms_sync_date",
+            )
+        with sync_col2:
+            sync_force = st.checkbox(
+                "Overwrite existing",
+                value=False,
+                key="ms_sync_force",
+                help="Re-ingest even if date already has data in eod_ohlcv",
+            )
+
+        if st.button("Sync to DB", key="ms_sync_single", type="primary"):
+            from pakfindata.config import DATA_ROOT
+            from pakfindata.db.repositories.eod import ingest_market_summary_csv
+
+            csv_path = (
+                DATA_ROOT / "market_summary" / "csv"
+                / f"{sync_date.isoformat()}.csv"
+            )
+            if not csv_path.exists():
+                st.error(
+                    f"CSV not found: `{csv_path.name}`. "
+                    "Download the file first using the button above."
+                )
+            else:
+                with st.spinner(f"Ingesting {sync_date} into DB..."):
+                    result = ingest_market_summary_csv(
+                        con,
+                        csv_path,
+                        skip_existing=not sync_force,
+                        source="market_summary",
+                    )
+                if result["status"] == "ok":
+                    st.success(result["message"])
+                elif result["status"] == "skipped":
+                    st.info(
+                        f"{result['message']} — enable "
+                        "'Overwrite existing' to re-ingest."
+                    )
+                else:
+                    st.error(f"Failed: {result.get('message', '')}")
+
     # =========================================================================
     # Tab 2: Date Range Download
     # =========================================================================
@@ -262,6 +317,68 @@ def render_market_summary():
                         f"Completed! OK: {ok_count}, Skipped: {skip_count}, "
                         f"Missing: {missing_count}, Failed: {fail_count}"
                     )
+
+        st.markdown("---")
+        st.subheader("Sync Range to EOD Database")
+        st.caption(
+            "Ingest all downloaded CSVs within the date range into "
+            "`eod_ohlcv` and `futures_eod` tables."
+        )
+
+        range_sync_force = st.checkbox(
+            "Overwrite existing",
+            value=False,
+            key="ms_range_sync_force",
+            help="Re-ingest even if date already has data in eod_ohlcv",
+        )
+
+        if st.button("Sync Range to DB", key="ms_sync_range", type="primary"):
+            from pakfindata.config import DATA_ROOT
+            from pakfindata.db.repositories.eod import ingest_market_summary_csv
+
+            csv_dir = DATA_ROOT / "market_summary" / "csv"
+            sync_ok = 0
+            sync_skip = 0
+            sync_fail = 0
+            sync_total = 0
+
+            # Build list of CSV files for the date range
+            csv_files = []
+            for d in expected_dates:
+                p = csv_dir / f"{d.isoformat() if hasattr(d, 'isoformat') else d}.csv"
+                if p.exists():
+                    csv_files.append(p)
+
+            if not csv_files:
+                st.warning("No downloaded CSVs found for this date range.")
+            else:
+                sync_total = len(csv_files)
+                sync_progress = st.progress(0)
+                sync_status = st.empty()
+
+                for i, csv_path in enumerate(csv_files):
+                    sync_progress.progress((i + 1) / sync_total)
+                    result = ingest_market_summary_csv(
+                        con,
+                        csv_path,
+                        skip_existing=not range_sync_force,
+                        source="market_summary",
+                    )
+                    if result["status"] == "ok":
+                        sync_ok += 1
+                    elif result["status"] == "skipped":
+                        sync_skip += 1
+                    else:
+                        sync_fail += 1
+                    sync_status.text(
+                        f"Syncing {csv_path.stem}: {result['status']} | "
+                        f"OK: {sync_ok}, Skip: {sync_skip}, Fail: {sync_fail}"
+                    )
+
+                st.success(
+                    f"Sync complete! OK: {sync_ok}, Skipped: {sync_skip}, "
+                    f"Failed: {sync_fail} (of {sync_total} CSVs)"
+                )
 
     # =========================================================================
     # Tab 3: Retry Failed/Missing

@@ -7,8 +7,10 @@ import plotly.graph_objects as go
 from pakfindata.ui.components.helpers import get_connection, render_footer
 from pakfindata.sync_mufap import (
     seed_mutual_funds,
+    sync_daily_nav,
     sync_fund_nav,
     sync_mutual_funds,
+    sync_mutual_funds_parallel,
     sync_performance,
     sync_expense_ratios,
 )
@@ -52,7 +54,17 @@ def render_fund_explorer():
     # Sync section
     st.markdown("---")
     with st.expander("Sync Fund Data"):
-        c1, c2, c3, c4, c5 = st.columns(5)
+        # Show latest NAV date so user knows how fresh the data is
+        try:
+            latest_nav = con.execute(
+                "SELECT MAX(date) FROM fund_nav_latest"
+            ).fetchone()[0]
+            if latest_nav:
+                st.caption(f"Latest NAV date in DB: **{latest_nav}**")
+        except Exception:
+            pass
+
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
 
         with c1:
             if st.button("Seed Funds", type="primary", key="fexp_seed_funds"):
@@ -68,24 +80,56 @@ def render_fund_explorer():
                         st.error(f"Sync failed: {e}")
 
         with c2:
-            if st.button("Sync NAV Data", key="fexp_sync_nav"):
-                with st.spinner("Syncing NAV data from MUFAP..."):
+            if st.button("Daily NAV", type="primary", key="fexp_daily_nav"):
+                with st.spinner("Fetching today's NAV for all funds (single request)..."):
                     try:
-                        summary = sync_mutual_funds(source="AUTO")
+                        summary = sync_daily_nav()
+                        from pakfindata.db.repositories.fixed_income import refresh_fund_nav_latest
+                        refresh_fund_nav_latest(con)
+                        _load_fund_directory.clear()
                         st.success(
-                            f"Synced {summary.ok} funds, "
-                            f"{summary.rows_upserted} NAV records"
+                            f"Daily sync: {summary.ok} funds updated, "
+                            f"{summary.rows_upserted} NAV rows "
+                            f"({summary.no_data} unmatched)"
                         )
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Sync failed: {e}")
+                        st.error(f"Daily sync failed: {e}")
 
         with c3:
+            if st.button("Sync NAV History", key="fexp_sync_nav"):
+                try:
+                    progress_bar = st.progress(0, text="Starting parallel NAV sync (10 workers)...")
+                    def _nav_progress(current, total, fund_id):
+                        pct = current / total if total else 0
+                        progress_bar.progress(pct, text=f"Synced {current}/{total}: {fund_id}")
+                    summary = sync_mutual_funds_parallel(
+                        source="AUTO", max_workers=10,
+                        progress_callback=_nav_progress,
+                    )
+                    progress_bar.progress(1.0, text="Refreshing summary tables...")
+                    from pakfindata.db.repositories.fixed_income import refresh_fund_nav_latest
+                    refresh_fund_nav_latest(con)
+                    _load_fund_directory.clear()
+                    progress_bar.empty()
+                    st.success(
+                        f"Synced {summary.ok} funds, "
+                        f"{summary.rows_upserted} NAV records "
+                        f"(skipped {summary.no_data} up-to-date)"
+                    )
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Sync failed: {e}")
+
+        with c4:
             if st.button("Sync Performance", key="fexp_sync_perf"):
                 with st.spinner("Fetching MUFAP performance data (tab=1)..."):
                     try:
                         result = sync_performance()
                         if result.get("status") == "ok":
+                            from pakfindata.db.repositories.fixed_income import refresh_fund_performance_latest
+                            refresh_fund_performance_latest(con)
+                            _load_fund_directory.clear()
                             st.success(
                                 f"Stored {result['funds_synced']} fund returns "
                                 f"({result['categories']} categories, {result['date']})"
@@ -96,7 +140,7 @@ def render_fund_explorer():
                     except Exception as e:
                         st.error(f"Sync failed: {e}")
 
-        with c4:
+        with c5:
             if st.button("Sync Expense", key="fexp_sync_expense"):
                 with st.spinner("Fetching expense ratios (tab=5)..."):
                     try:
@@ -109,7 +153,7 @@ def render_fund_explorer():
                     except Exception as e:
                         st.error(f"Sync failed: {e}")
 
-        with c5:
+        with c6:
             if st.button("Sync ETFs", key="fexp_sync_etfs"):
                 with st.spinner("Syncing ETF data..."):
                     try:
@@ -134,11 +178,7 @@ def _render_category_summary(con):
     """Top-level category group metrics from fund_performance."""
     try:
         perf = pd.read_sql_query(
-            """SELECT fp.sector, fp.category, fp.return_ytd FROM fund_performance fp
-               WHERE fp.validity_date = (
-                   SELECT MAX(fp2.validity_date) FROM fund_performance fp2
-                   WHERE fp2.fund_name = fp.fund_name
-               )""",
+            "SELECT sector, category, return_ytd FROM fund_performance_latest",
             con,
         )
     except Exception:
@@ -178,6 +218,31 @@ def _render_category_summary(con):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+@st.cache_data(ttl=300, show_spinner="Loading fund data...")
+def _load_fund_directory(_con) -> pd.DataFrame:
+    """Load all funds with latest NAV and performance from summary tables."""
+    import sqlite3 as _sqlite3
+
+    db_path = _con.execute("PRAGMA database_list").fetchone()[2]
+    con = _sqlite3.connect(db_path)
+    con.row_factory = _sqlite3.Row
+
+    df = pd.read_sql_query(
+        """SELECT f.fund_id, f.symbol, f.fund_name, f.category, f.amc_name,
+                  f.is_shariah, f.fund_type, f.expense_ratio,
+                  nl.nav AS latest_nav, nl.date AS nav_date,
+                  pl.return_30d, pl.return_90d, pl.return_ytd,
+                  pl.return_365d, pl.rating
+           FROM mutual_funds f
+           LEFT JOIN fund_nav_latest nl ON nl.fund_id = f.fund_id
+           LEFT JOIN fund_performance_latest pl ON pl.fund_name = f.fund_name
+           ORDER BY f.fund_name""",
+        con,
+    )
+    con.close()
+    return df
+
+
 def _render_fund_directory(con):
     """Fund listing with filters, performance columns, and detail view."""
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -203,40 +268,22 @@ def _render_fund_directory(con):
     with col5:
         search_term = st.text_input("Search", key="fund_search", placeholder="Fund name...")
 
-    # Build query with LEFT JOIN to fund_performance for return columns
-    sql = """SELECT f.fund_id, f.symbol, f.fund_name, f.category, f.amc_name,
-                    f.is_shariah, f.fund_type, f.expense_ratio,
-                    n.nav as latest_nav, n.date as nav_date,
-                    p.return_30d, p.return_90d, p.return_ytd, p.return_365d, p.rating
-             FROM mutual_funds f
-             LEFT JOIN mutual_fund_nav n ON n.fund_id = f.fund_id
-                 AND n.date = (SELECT MAX(n2.date) FROM mutual_fund_nav n2
-                               WHERE n2.fund_id = f.fund_id)
-             LEFT JOIN fund_performance p ON p.fund_name = f.fund_name
-                 AND p.validity_date = (SELECT MAX(p2.validity_date) FROM fund_performance p2
-                                        WHERE p2.fund_name = p.fund_name)
-             WHERE 1=1"""
-    params: list = []
+    # Load full fund data (cached — heavy queries run once, reused for 5 min)
+    df = _load_fund_directory(con)
 
+    # Apply filters in-memory (fast)
     if sel_category != "All":
-        sql += " AND f.category = ?"
-        params.append(sel_category)
+        df = df[df["category"] == sel_category]
     if sel_amc != "All":
-        sql += " AND f.amc_name = ?"
-        params.append(sel_amc)
+        df = df[df["amc_name"] == sel_amc]
     if sel_shariah == "Yes":
-        sql += " AND f.is_shariah = 1"
+        df = df[df["is_shariah"] == 1]
     elif sel_shariah == "No":
-        sql += " AND f.is_shariah = 0"
+        df = df[df["is_shariah"] == 0]
     if sel_type != "All":
-        sql += " AND f.fund_type = ?"
-        params.append(sel_type)
+        df = df[df["fund_type"] == sel_type]
     if search_term:
-        sql += " AND f.fund_name LIKE ?"
-        params.append(f"%{search_term}%")
-
-    sql += " ORDER BY f.fund_name"
-    df = pd.read_sql_query(sql, con, params=params)
+        df = df[df["fund_name"].str.contains(search_term, case=False, na=False)]
 
     if df.empty:
         st.info("No funds match filters")
@@ -312,9 +359,8 @@ def _render_fund_detail(con, fund_id):
         perf = con.execute(
             """SELECT return_ytd, return_mtd, return_1d, return_15d, return_30d,
                       return_90d, return_180d, return_270d, return_365d, return_2y, return_3y
-               FROM fund_performance fp WHERE fp.fund_name = ?
-               AND fp.validity_date = (SELECT MAX(fp2.validity_date) FROM fund_performance fp2
-                                       WHERE fp2.fund_name = fp.fund_name)""",
+               FROM fund_performance_latest
+               WHERE fund_name = ?""",
             (fund["fund_name"],),
         ).fetchone()
         if perf:
@@ -434,16 +480,12 @@ def _render_vps_section(con):
 
     try:
         df = pd.read_sql_query(
-            """SELECT fp.fund_name, fp.category, fp.nav, fp.rating,
-                      fp.return_ytd, fp.return_30d, fp.return_90d,
-                      fp.return_365d, fp.return_2y, fp.return_3y
-               FROM fund_performance fp
-               WHERE fp.validity_date = (
-                   SELECT MAX(fp2.validity_date) FROM fund_performance fp2
-                   WHERE fp2.fund_name = fp.fund_name
-               )
-                 AND (fp.sector LIKE '%VPS%' OR fp.category LIKE 'VPS%')
-               ORDER BY fp.category, fp.return_ytd DESC""",
+            """SELECT fund_name, category, nav, rating,
+                      return_ytd, return_30d, return_90d,
+                      return_365d, return_2y, return_3y
+               FROM fund_performance_latest
+               WHERE (sector LIKE '%VPS%' OR category LIKE 'VPS%')
+               ORDER BY category, return_ytd DESC""",
             con,
         )
     except Exception:
@@ -454,7 +496,7 @@ def _render_vps_section(con):
         return
 
     validity = con.execute(
-        "SELECT MAX(validity_date) FROM fund_performance WHERE sector LIKE '%VPS%' OR category LIKE 'VPS%'"
+        "SELECT MAX(validity_date) FROM fund_performance_latest WHERE sector LIKE '%VPS%' OR category LIKE 'VPS%'"
     ).fetchone()[0]
     st.caption(f"Data as of: **{validity}** | {len(df)} VPS funds")
 
@@ -519,7 +561,7 @@ def _render_top_performers(con):
 
     # Check if fund_performance has data
     try:
-        perf_count = con.execute("SELECT COUNT(*) FROM fund_performance").fetchone()[0]
+        perf_count = con.execute("SELECT COUNT(*) FROM fund_performance_latest").fetchone()[0]
     except Exception:
         perf_count = 0
 
@@ -546,7 +588,7 @@ def _render_top_performers(con):
         # Category filter from fund_performance
         try:
             cats = pd.read_sql_query(
-                "SELECT DISTINCT category FROM fund_performance ORDER BY category", con
+                "SELECT DISTINCT category FROM fund_performance_latest ORDER BY category", con
             )["category"].tolist()
         except Exception:
             cats = []
@@ -557,13 +599,10 @@ def _render_top_performers(con):
     period_col = period_map[sel_period]
 
     query = f"""
-        SELECT fund_name, category, sector, nav, rating, {period_col} as return_pct
-        FROM fund_performance fp
-        WHERE fp.validity_date = (
-            SELECT MAX(fp2.validity_date) FROM fund_performance fp2
-            WHERE fp2.fund_name = fp.fund_name
-        )
-          AND {period_col} IS NOT NULL
+        SELECT fund_name, category, sector, nav, rating,
+               {period_col} as return_pct
+        FROM fund_performance_latest
+        WHERE {period_col} IS NOT NULL
     """
     params: list = []
     if sel_cat != "All":
@@ -579,7 +618,7 @@ def _render_top_performers(con):
         return
 
     validity = con.execute(
-        "SELECT MAX(validity_date) FROM fund_performance"
+        "SELECT MAX(validity_date) FROM fund_performance_latest"
     ).fetchone()[0]
     st.caption(f"MUFAP official returns as of **{validity}**")
 

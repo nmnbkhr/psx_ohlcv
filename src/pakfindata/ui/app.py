@@ -1062,6 +1062,22 @@ def sync_center_page():
 
 
 # -----------------------------------------------------------------------------
+# Page: Commodities Dashboard
+# -----------------------------------------------------------------------------
+def commodities_page():
+    from pakfindata.ui.page_views.commodities import render_commodities
+    render_commodities()
+
+
+# -----------------------------------------------------------------------------
+# Page: PMEX Commodities (OHLC + Margins)
+# -----------------------------------------------------------------------------
+def pmex_page():
+    from pakfindata.ui.page_views.pmex import render_pmex
+    render_pmex()
+
+
+# -----------------------------------------------------------------------------
 # Main App — st.navigation() for framework-guaranteed page isolation
 # -----------------------------------------------------------------------------
 def main():
@@ -1114,6 +1130,9 @@ def main():
         "Currency Dashboard": st.Page(currency_dashboard_page, title="Currency Dashboard", url_path="currency-dashboard"),
         "Interbank vs Open":  st.Page(fx_interbank_page,      title="Interbank vs Open",  url_path="fx-interbank"),
         "Rate History":       st.Page(fx_history_page,        title="Rate History",       url_path="fx-history"),
+        # COMMODITIES
+        "Commodities":        st.Page(commodities_page,        title="Commodities",        url_path="commodities"),
+        "PMEX":               st.Page(pmex_page,               title="PMEX",               url_path="pmex"),
         # ADMIN
         "Data Status":        st.Page(data_status_page,       title="Data Status",        url_path="data-status"),
         "Sync Center":        st.Page(sync_center_page,       title="Sync Center",        url_path="sync-center"),
@@ -1132,6 +1151,7 @@ def main():
         "FUNDS":           ["Fund Explorer", "VPS Pension", "Top Performers",
                             "Fund Analytics", "ETFs"],
         "FX & RATES":      ["Currency Dashboard", "Interbank vs Open", "Rate History"],
+        "COMMODITIES":     ["Commodities", "PMEX"],
         "ADMIN":           ["Data Status", "Sync Center", "Schema Explorer"],
     }
 

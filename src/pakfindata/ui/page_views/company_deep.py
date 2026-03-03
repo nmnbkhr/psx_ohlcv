@@ -2,7 +2,6 @@
 
 import pandas as pd
 import streamlit as st
-import time
 
 from pakfindata.api_client import get_client
 from pakfindata.sources.deep_scraper import deep_scrape_symbol
@@ -86,6 +85,155 @@ def render_company_deep():
             </p>
         </div>
         """, unsafe_allow_html=True)
+
+        # =============================================================
+        # BATCH DEEP SCRAPE - equivalent to: pfsync company deep-scrape
+        # =============================================================
+        from pakfindata.db.repositories.symbols import get_scrapable_symbols
+        from pakfindata.sources.deep_scraper import (
+            is_deep_scrape_running,
+            read_deep_scrape_progress,
+            start_deep_scrape_background,
+            stop_deep_scrape,
+        )
+
+        scrapable_symbols = get_scrapable_symbols(con)
+
+        st.markdown("---")
+        st.subheader("Batch Deep Scrape")
+        st.caption(
+            "Scrape company pages from PSX DPS: trading data (REG/FUT/CSF/ODL), "
+            "profile, financials, ratios, announcements, and payouts. "
+            "Runs in background — you can navigate to other pages."
+        )
+
+        running = is_deep_scrape_running()
+        progress = read_deep_scrape_progress()
+
+        if running:
+            # ----- RUNNING: show live progress -----
+            st.warning("Deep scrape is running in the background — do not close the app.")
+            if progress:
+                pct = progress["current"] / max(progress["total"], 1)
+                st.progress(
+                    pct,
+                    text=(
+                        f"[{progress['current']}/{progress['total']}] "
+                        f"Scraping {progress.get('current_symbol', '')}..."
+                    ),
+                )
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("OK", progress.get("ok", 0))
+                c2.metric("Failed", progress.get("failed", 0))
+                c3.metric("Remaining", progress["total"] - progress["current"])
+                c4.metric("Started", progress.get("started_at", "")[:19])
+
+                if progress.get("errors"):
+                    with st.expander(f"Errors ({len(progress['errors'])})"):
+                        for err in progress["errors"][:50]:
+                            st.text(err)
+                        if len(progress["errors"]) > 50:
+                            st.caption(f"...and {len(progress['errors']) - 50} more")
+
+            btn_col1, btn_col2 = st.columns(2)
+            with btn_col1:
+                if st.button("Refresh Progress", key="ds_refresh_progress"):
+                    st.rerun()
+            with btn_col2:
+                if st.button("Stop Scrape", key="ds_stop", type="secondary"):
+                    if stop_deep_scrape():
+                        st.info("Stop signal sent — will finish current symbol then stop.")
+                    else:
+                        st.warning("No scrape is running.")
+                    st.rerun()
+        else:
+            # ----- NOT RUNNING: show last result + launch controls -----
+            if progress and progress.get("status") == "stopped":
+                st.warning(
+                    f"Stopped: {progress.get('ok', 0)}/{progress['total']} OK, "
+                    f"{progress.get('failed', 0)} failed — "
+                    f"stopped at {progress['current']}/{progress['total']}"
+                )
+            elif progress and progress.get("status") == "completed":
+                st.success(
+                    f"Last run: {progress.get('ok', 0)}/{progress['total']} OK, "
+                    f"{progress.get('failed', 0)} failed — "
+                    f"finished {(progress.get('finished_at') or '')[:19]}"
+                )
+                if progress.get("errors"):
+                    with st.expander(f"Errors ({len(progress['errors'])})"):
+                        for err in progress["errors"][:50]:
+                            st.text(err)
+                        if len(progress["errors"]) > 50:
+                            st.caption(f"...and {len(progress['errors']) - 50} more")
+
+            scrape_mode_col, scrape_opts_col = st.columns([2, 1])
+
+            with scrape_mode_col:
+                scrape_mode = st.radio(
+                    "Symbols to scrape",
+                    options=["All active symbols", "Custom list"],
+                    key="ds_scrape_mode",
+                    horizontal=True,
+                )
+                if scrape_mode == "Custom list":
+                    custom_symbols_input = st.text_input(
+                        "Enter symbols (comma-separated)",
+                        placeholder="OGDC, HBL, ENGRO, PSO",
+                        key="ds_custom_symbols",
+                    )
+                else:
+                    custom_symbols_input = ""
+
+            with scrape_opts_col:
+                scrape_delay = st.number_input(
+                    "Delay between requests (sec)",
+                    min_value=0.5,
+                    max_value=10.0,
+                    value=1.0,
+                    step=0.5,
+                    key="ds_delay",
+                    help="Rate limit delay to avoid overloading PSX",
+                )
+                scrape_save_html = st.checkbox(
+                    "Save raw HTML",
+                    value=False,
+                    key="ds_save_html",
+                    help="Store raw HTML in database (for debugging)",
+                )
+
+            # Resolve symbol list
+            if scrape_mode == "All active symbols":
+                scrape_symbols = scrapable_symbols
+            else:
+                scrape_symbols = [
+                    s.strip().upper()
+                    for s in custom_symbols_input.split(",")
+                    if s.strip()
+                ]
+
+            st.caption(f"Will scrape **{len(scrape_symbols)}** symbol(s)")
+
+            if st.button(
+                "Deep Scrape All" if scrape_mode == "All active symbols" else "Deep Scrape",
+                key="ds_batch_start",
+                type="primary",
+                disabled=len(scrape_symbols) == 0,
+            ):
+                started = start_deep_scrape_background(
+                    symbols=scrape_symbols,
+                    delay=scrape_delay,
+                    save_raw_html=scrape_save_html,
+                )
+                if started:
+                    st.success(
+                        f"Deep scrape started for {len(scrape_symbols)} symbols! "
+                        "You can navigate away — the job runs in the background."
+                    )
+                else:
+                    st.warning("A deep scrape is already running.")
+                st.rerun()
+
         render_footer()
         return
 

@@ -894,6 +894,7 @@ def init_fund_performance_schema(con: sqlite3.Connection) -> None:
     con.execute("CREATE INDEX IF NOT EXISTS idx_fund_perf_date ON fund_performance(validity_date)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_fund_perf_category ON fund_performance(category)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_fund_perf_sector ON fund_performance(sector)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_fund_perf_name_date ON fund_performance(fund_name, validity_date DESC)")
 
     # Migration: add source column if missing (mufap=official, computed=NAV-derived)
     existing_cols = {row[1] for row in con.execute("PRAGMA table_info(fund_performance)").fetchall()}
@@ -901,7 +902,118 @@ def init_fund_performance_schema(con: sqlite3.Connection) -> None:
         con.execute("ALTER TABLE fund_performance ADD COLUMN source TEXT NOT NULL DEFAULT 'mufap'")
     con.execute("CREATE INDEX IF NOT EXISTS idx_fund_perf_source ON fund_performance(source)")
 
+    # Summary tables — pre-computed latest row per fund for fast UI queries
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS fund_performance_latest (
+            fund_name TEXT PRIMARY KEY,
+            fund_id TEXT,
+            sector TEXT,
+            category TEXT,
+            rating TEXT,
+            validity_date TEXT,
+            nav REAL,
+            return_ytd REAL,
+            return_mtd REAL,
+            return_1d REAL,
+            return_15d REAL,
+            return_30d REAL,
+            return_90d REAL,
+            return_180d REAL,
+            return_270d REAL,
+            return_365d REAL,
+            return_2y REAL,
+            return_3y REAL,
+            refreshed_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS fund_nav_latest (
+            fund_id TEXT PRIMARY KEY,
+            nav REAL,
+            date TEXT,
+            refreshed_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+
     con.commit()
+
+
+def refresh_fund_performance_latest(con: sqlite3.Connection) -> int:
+    """Rebuild fund_performance_latest from fund_performance (~2-3s)."""
+    con.execute("DELETE FROM fund_performance_latest")
+    con.execute("""
+        INSERT INTO fund_performance_latest
+            (fund_name, fund_id, sector, category, rating, validity_date, nav,
+             return_ytd, return_mtd, return_1d, return_15d, return_30d,
+             return_90d, return_180d, return_270d, return_365d,
+             return_2y, return_3y)
+        SELECT fp.fund_name, fp.fund_id, fp.sector, fp.category, fp.rating,
+               fp.validity_date, fp.nav,
+               fp.return_ytd, fp.return_mtd, fp.return_1d, fp.return_15d,
+               fp.return_30d, fp.return_90d, fp.return_180d, fp.return_270d,
+               fp.return_365d, fp.return_2y, fp.return_3y
+        FROM fund_performance fp
+        INNER JOIN (
+            SELECT fund_name, MAX(validity_date) as max_date
+            FROM fund_performance GROUP BY fund_name
+        ) latest ON fp.fund_name = latest.fund_name
+                 AND fp.validity_date = latest.max_date
+    """)
+    con.commit()
+    return con.execute("SELECT COUNT(*) FROM fund_performance_latest").fetchone()[0]
+
+
+def refresh_fund_nav_latest(con: sqlite3.Connection) -> int:
+    """Incrementally update fund_nav_latest — only process new NAVs.
+
+    Finds the oldest 'latest date' across all funds already in the summary,
+    then only scans mutual_fund_nav rows >= that date.  This turns a 1.9M-row
+    scan into a tiny delta scan (typically a few thousand rows).
+    On first run (empty table), falls back to a full rebuild.
+    """
+    # Check if summary table already has data
+    row = con.execute(
+        "SELECT MIN(date) AS earliest, COUNT(*) AS cnt FROM fund_nav_latest"
+    ).fetchone()
+
+    if row and row[0] and row[1] > 0:
+        # Incremental: only look at NAVs on or after the earliest known latest date.
+        # This is conservative — covers funds whose latest might have changed.
+        cutoff = row[0]
+        con.execute("""
+            INSERT OR REPLACE INTO fund_nav_latest (fund_id, nav, date, refreshed_at)
+            SELECT n.fund_id, n.nav, n.date, datetime('now')
+            FROM mutual_fund_nav n
+            INNER JOIN (
+                SELECT fund_id, MAX(date) AS max_date
+                FROM mutual_fund_nav
+                WHERE date >= ?
+                GROUP BY fund_id
+            ) m ON n.fund_id = m.fund_id AND n.date = m.max_date
+            LEFT JOIN fund_nav_latest ex ON ex.fund_id = n.fund_id
+            WHERE ex.fund_id IS NULL OR n.date > ex.date
+        """, (cutoff,))
+    else:
+        # First run: full rebuild
+        con.execute("""
+            INSERT OR REPLACE INTO fund_nav_latest (fund_id, nav, date, refreshed_at)
+            SELECT n.fund_id, n.nav, n.date, datetime('now')
+            FROM mutual_fund_nav n
+            INNER JOIN (
+                SELECT fund_id, MAX(date) AS max_date
+                FROM mutual_fund_nav GROUP BY fund_id
+            ) m ON n.fund_id = m.fund_id AND n.date = m.max_date
+        """)
+
+    con.commit()
+    return con.execute("SELECT COUNT(*) FROM fund_nav_latest").fetchone()[0]
+
+
+def refresh_fund_summary_tables(con: sqlite3.Connection) -> dict:
+    """Refresh both pre-computed summary tables. Call after sync operations."""
+    perf_count = refresh_fund_performance_latest(con)
+    nav_count = refresh_fund_nav_latest(con)
+    return {"perf_latest": perf_count, "nav_latest": nav_count}
 
 
 def upsert_fund_performance(con: sqlite3.Connection, records: list[dict]) -> int:

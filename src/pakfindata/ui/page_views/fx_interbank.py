@@ -53,12 +53,12 @@ def render_fx_interbank():
                     except Exception as e:
                         st.error(f"Sync failed: {e}")
         with col2:
-            if st.button("Sync Kerb (forex.pk)", key="fxib_kerb"):
+            if st.button("Sync Open Market + Kerb (forex.pk)", key="fxib_kerb"):
                 with st.spinner("Syncing..."):
                     try:
                         from pakfindata.sources.forex_scraper import ForexPKScraper
                         result = ForexPKScraper().sync_kerb(con)
-                        st.success(f"Kerb: {result.get('ok', 0)} rates synced")
+                        st.success(f"Open Market + Kerb: {result.get('ok', 0)} rates synced")
                     except Exception as e:
                         st.error(f"Sync failed: {e}")
 

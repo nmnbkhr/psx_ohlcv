@@ -1,10 +1,18 @@
 """Symbol/ticker repository — CRUD operations for stock symbols."""
 
+import re
 import sqlite3
 
 import pandas as pd
 
 from pakfindata.models import now_iso
+
+# PSX status suffixes that get concatenated to symbols on market watch pages.
+# XD=ex-dividend, XB=ex-bonus, XR=ex-rights, XA=ex-AGM, XI=ex-interim,
+# XW=ex-warrant, NC=non-clearing/new counter, O=odd lot
+_STATUS_SUFFIXES = ("XD", "XB", "XR", "XA", "XI", "XW", "NC")
+# Longest first so "XD" is checked before just "D"
+_SUFFIX_RE = re.compile(r"^(.+?)(" + "|".join(_STATUS_SUFFIXES) + r")$")
 
 
 def upsert_symbols(con: sqlite3.Connection, symbols: list[dict]) -> int:
@@ -84,6 +92,78 @@ def get_symbols_string(con: sqlite3.Connection, limit: int | None = None) -> str
     """
     symbols = get_symbols_list(con, limit)
     return ",".join(symbols)
+
+
+def normalize_symbol(
+    symbol: str,
+    master_symbols: set[str] | None = None,
+) -> tuple[str, str | None]:
+    """Strip PSX status suffixes from a symbol.
+
+    Handles concatenated suffixes like AMTEXNC → AMTEX, HBLXD → HBL.
+    Only strips if the resulting base symbol is in the master set (when
+    provided), preventing false positives like TEXNC being wrongly
+    stripped to TEX.
+
+    Args:
+        symbol: Raw symbol string (e.g. "NBPXD", "AMTEXNC").
+        master_symbols: Set of known canonical symbols for validation.
+            If None, strips the suffix unconditionally.
+
+    Returns:
+        (base_symbol, suffix) — suffix is None if no suffix found.
+    """
+    symbol = symbol.strip().upper()
+
+    m = _SUFFIX_RE.match(symbol)
+    if not m:
+        return symbol, None
+
+    base, suffix = m.group(1), m.group(2)
+
+    if master_symbols is None:
+        # No master list → strip unconditionally
+        return base, suffix
+
+    if base in master_symbols:
+        return base, suffix
+
+    # Base not in master — keep the original symbol as-is
+    return symbol, None
+
+
+def get_scrapable_symbols(con: sqlite3.Connection) -> list[str]:
+    """Get deduplicated list of base symbols suitable for scraping.
+
+    Reads all active symbols, normalises suffixed variants (XD, XB, NC …)
+    back to their base symbol using the master list as a reference, and
+    returns a sorted, deduplicated list.
+
+    Returns:
+        Sorted list of unique base symbols.
+    """
+    all_active = get_symbols_list(con)
+    # Build master set from the listed companies source (canonical names)
+    master_rows = con.execute(
+        "SELECT symbol FROM symbols WHERE source = 'LISTED_CMP' AND is_active = 1"
+    ).fetchall()
+    master_set = {r["symbol"] for r in master_rows}
+
+    # Fall back to all active if no LISTED_CMP entries yet
+    if not master_set:
+        master_set = set(all_active)
+
+    seen: set[str] = set()
+    result: list[str] = []
+
+    for sym in all_active:
+        base, _ = normalize_symbol(sym, master_set)
+        if base not in seen:
+            seen.add(base)
+            result.append(base)
+
+    result.sort()
+    return result
 
 
 def get_unified_symbols_list(con: sqlite3.Connection) -> list[str]:

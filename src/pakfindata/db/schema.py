@@ -1154,6 +1154,8 @@ CREATE INDEX IF NOT EXISTS idx_mf_nav_date
     ON mutual_fund_nav(date);
 CREATE INDEX IF NOT EXISTS idx_mf_nav_fund
     ON mutual_fund_nav(fund_id);
+CREATE INDEX IF NOT EXISTS idx_mf_nav_fund_date
+    ON mutual_fund_nav(fund_id, date DESC);
 
 -- Mutual fund sync tracking
 CREATE TABLE IF NOT EXISTS mutual_fund_sync_runs (

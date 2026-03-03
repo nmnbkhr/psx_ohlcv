@@ -590,27 +590,109 @@ def _render_sync(con, stats, migrate_from_eod_ohlcv):
 
     st.divider()
 
-    # Check eod_ohlcv pollution
-    eod_pollution = con.execute(
-        "SELECT COUNT(*) FROM eod_ohlcv WHERE sector_code IN ('40', '41', '36')"
-    ).fetchone()[0]
+    # ── Read futures from eod_ohlcv → update futures_eod ─────────
+    st.markdown("### Update Futures from EOD Data")
+    st.caption(
+        "Scan eod_ohlcv for FUT/CONT/IDX_FUT/ODL rows (sector_code 40, 41, 36), "
+        "classify them, and upsert into futures_eod. "
+        "Rows are **copied** (not deleted) so eod_ohlcv stays intact."
+    )
 
-    st.markdown("### Migration from eod_ohlcv")
-    st.metric("FUT/CONT/ODL rows still in eod_ohlcv", f"{eod_pollution:,}")
+    # Date range available in eod_ohlcv for derivatives
+    from datetime import date as _dt_date, datetime as _dt_datetime
 
-    if eod_pollution == 0:
-        st.success("No derivative rows in eod_ohlcv — clean!")
-    else:
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Dry Run (preview)", key="fut_migrate_dry"):
-                result = migrate_from_eod_ohlcv(con, dry_run=True)
-                st.info(
-                    f"Would migrate **{result['total_eligible']:,}** rows "
-                    f"from eod_ohlcv → futures_eod"
-                )
-        with col2:
-            if st.button("Execute Migration", key="fut_migrate_exec", type="primary"):
+    eod_deriv_range = con.execute(
+        "SELECT MIN(date), MAX(date), COUNT(*) "
+        "FROM eod_ohlcv WHERE sector_code IN ('40', '41', '36')"
+    ).fetchone()
+    eod_min_date = eod_deriv_range[0]
+    eod_max_date = eod_deriv_range[1]
+    eod_pollution = eod_deriv_range[2]
+
+    st.metric("Derivative rows in eod_ohlcv", f"{eod_pollution:,}")
+
+    if eod_pollution > 0 and eod_min_date and eod_max_date:
+        st.caption(f"Date range in eod_ohlcv: **{eod_min_date}** → **{eod_max_date}**")
+
+        col_from, col_to = st.columns(2)
+        with col_from:
+            eod_start = st.date_input(
+                "From date",
+                value=_dt_datetime.strptime(eod_max_date, "%Y-%m-%d").date(),
+                min_value=_dt_datetime.strptime(eod_min_date, "%Y-%m-%d").date(),
+                max_value=_dt_datetime.strptime(eod_max_date, "%Y-%m-%d").date(),
+                key="fut_eod_start",
+            )
+        with col_to:
+            eod_end = st.date_input(
+                "To date",
+                value=_dt_datetime.strptime(eod_max_date, "%Y-%m-%d").date(),
+                min_value=_dt_datetime.strptime(eod_min_date, "%Y-%m-%d").date(),
+                max_value=_dt_datetime.strptime(eod_max_date, "%Y-%m-%d").date(),
+                key="fut_eod_end",
+            )
+
+        # Count rows in selected range
+        sel_count = con.execute(
+            "SELECT COUNT(*) FROM eod_ohlcv "
+            "WHERE sector_code IN ('40', '41', '36') AND date BETWEEN ? AND ?",
+            (eod_start.isoformat(), eod_end.isoformat()),
+        ).fetchone()[0]
+
+        col_upd1, col_upd2 = st.columns(2)
+        with col_upd1:
+            if st.button(
+                f"Read & Update Futures ({sel_count:,} rows)",
+                key="fut_read_eod_update",
+                type="primary",
+                disabled=sel_count == 0,
+                help="Copy FUT/CONT/IDX_FUT/ODL rows from eod_ohlcv into futures_eod (non-destructive)",
+            ):
+                with st.spinner(f"Reading {sel_count:,} derivative rows ({eod_start} → {eod_end})..."):
+                    from pakfindata.sources.market_summary import (
+                        classify_market_type,
+                        parse_futures_symbol,
+                    )
+
+                    df = pd.read_sql_query(
+                        "SELECT * FROM eod_ohlcv "
+                        "WHERE sector_code IN ('40', '41', '36') AND date BETWEEN ? AND ?",
+                        con,
+                        params=(eod_start.isoformat(), eod_end.isoformat()),
+                    )
+                    if not df.empty:
+                        df["market_type"] = df.apply(
+                            lambda r: classify_market_type(
+                                str(r.get("sector_code", "")), r["symbol"]
+                            ),
+                            axis=1,
+                        )
+                        parsed = df.apply(
+                            lambda r: parse_futures_symbol(r["symbol"], r["market_type"]),
+                            axis=1,
+                            result_type="expand",
+                        )
+                        df["base_symbol"] = parsed[0]
+                        df["contract_month"] = parsed[1]
+
+                        from pakfindata.db.repositories.futures import upsert_futures_eod
+                        upserted = upsert_futures_eod(con, df, source="eod_ohlcv_sync")
+                        _clear_futures_cache()
+                        st.success(
+                            f"Upserted **{upserted:,}** rows into futures_eod "
+                            f"({eod_start} → {eod_end})"
+                        )
+                        st.rerun()
+                    else:
+                        st.info("No derivative rows found for selected dates.")
+
+        with col_upd2:
+            if st.button(
+                "Migrate & Clean eod_ohlcv (all dates)",
+                key="fut_migrate_exec",
+                disabled=eod_pollution == 0,
+                help="Move ALL derivative rows from eod_ohlcv → futures_eod and DELETE from eod_ohlcv",
+            ):
                 with st.spinner("Migrating..."):
                     result = migrate_from_eod_ohlcv(con, dry_run=False)
                 _clear_futures_cache()
@@ -619,6 +701,8 @@ def _render_sync(con, stats, migrate_from_eod_ohlcv):
                     f"deleted {result['deleted_from_eod']:,} from eod_ohlcv"
                 )
                 st.rerun()
+    else:
+        st.success("No derivative rows in eod_ohlcv — clean!")
 
     # Incremental load — only new CSVs since last loaded date
     from pathlib import Path
