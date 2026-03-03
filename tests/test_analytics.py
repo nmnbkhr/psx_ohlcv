@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from psx_ohlcv.analytics import (
+from pakfindata.analytics import (
     compute_all_analytics,
     compute_market_analytics,
     compute_sector_rollups,
@@ -17,8 +17,8 @@ from psx_ohlcv.analytics import (
     store_market_analytics,
     store_top_lists,
 )
-from psx_ohlcv.db import init_schema
-from psx_ohlcv.sources.regular_market import init_regular_market_schema
+from pakfindata.db import init_schema
+from pakfindata.sources.regular_market import init_regular_market_schema
 
 
 @pytest.fixture

@@ -2,7 +2,7 @@
 
 import pandas as pd
 
-from psx_ohlcv.sources.intraday import (
+from pakfindata.sources.intraday import (
     _empty_intraday_df,
     _extract_data_list,
     _parse_array_item,

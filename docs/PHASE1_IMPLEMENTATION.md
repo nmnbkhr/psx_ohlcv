@@ -10,16 +10,16 @@ Phase 1 extends the PSX OHLCV Explorer beyond equities to cover ETFs, REITs, and
 
 ```bash
 # 1. Seed the instrument universe
-psxsync universe seed-phase1
+pfsync universe seed-phase1
 
 # 2. Sync EOD data for instruments
-psxsync instruments sync-eod --types ETF,REIT,INDEX
+pfsync instruments sync-eod --types ETF,REIT,INDEX
 
 # 3. Compute rankings
-psxsync instruments rankings --compute
+pfsync instruments rankings --compute
 
 # 4. View in UI
-streamlit run src/psx_ohlcv/ui/app.py
+streamlit run src/pakfindata/ui/app.py
 # Navigate to "Instruments" or "Rankings" pages
 ```
 
@@ -64,39 +64,39 @@ Four new tables were added to support the instrument universe:
 
 ```bash
 # Seed instruments from config file
-psxsync universe seed-phase1
-psxsync universe seed-phase1 --config /path/to/custom.json
-psxsync universe seed-phase1 --include-equities
+pfsync universe seed-phase1
+pfsync universe seed-phase1 --config /path/to/custom.json
+pfsync universe seed-phase1 --include-equities
 
 # List instruments
-psxsync universe list
-psxsync universe list --type ETF
-psxsync universe list --type REIT --active-only
+pfsync universe list
+pfsync universe list --type ETF
+pfsync universe list --type REIT --active-only
 
 # Add new instrument manually
-psxsync universe add --type ETF --symbol NEWETF --name "New ETF Name"
+pfsync universe add --type ETF --symbol NEWETF --name "New ETF Name"
 ```
 
 #### Instrument Data Operations
 
 ```bash
 # Sync EOD data for all non-equity types
-psxsync instruments sync-eod
+pfsync instruments sync-eod
 
 # Sync specific types
-psxsync instruments sync-eod --types ETF,REIT
+pfsync instruments sync-eod --types ETF,REIT
 
 # Sync single instrument
-psxsync instruments sync-eod --symbol NIUETF
+pfsync instruments sync-eod --symbol NIUETF
 
 # Full refresh (ignore existing data)
-psxsync instruments sync-eod --full
+pfsync instruments sync-eod --full
 
 # View sync status
-psxsync instruments sync-status
+pfsync instruments sync-status
 
 # Compute and display rankings
-psxsync instruments rankings --compute --top 10
+pfsync instruments rankings --compute --top 10
 ```
 
 ### UI Pages
@@ -138,7 +138,7 @@ Location: `{DATA_ROOT}/universe_phase1.json`
 }
 ```
 
-To add new instruments, edit this file and re-run `psxsync universe seed-phase1`.
+To add new instruments, edit this file and re-run `pfsync universe seed-phase1`.
 
 ## Analytics
 
@@ -181,7 +181,7 @@ Test coverage includes:
 ### Instrument Management
 
 ```python
-from psx_ohlcv.db import get_instruments, upsert_instrument
+from pakfindata.db import get_instruments, upsert_instrument
 
 # Get all ETFs
 etfs = get_instruments(con, instrument_type="ETF", active_only=True)
@@ -203,7 +203,7 @@ upsert_instrument(con, instrument)
 ### EOD Sync
 
 ```python
-from psx_ohlcv.sync_instruments import sync_instruments_eod
+from pakfindata.sync_instruments import sync_instruments_eod
 
 summary = sync_instruments_eod(
     db_path=None,  # Use default
@@ -217,7 +217,7 @@ print(f"OK: {summary.ok}, Failed: {summary.failed}")
 ### Analytics
 
 ```python
-from psx_ohlcv.analytics_phase1 import (
+from pakfindata.analytics_phase1 import (
     compute_rankings,
     get_rankings,
     get_normalized_performance,

@@ -14,8 +14,8 @@ pytest.importorskip("httpx")
 
 from fastapi.testclient import TestClient
 
-from psx_ohlcv.api.main import app
-from psx_ohlcv.api.client import APIClient, APIError, APIConnectionError
+from pakfindata.api.main import app
+from pakfindata.api.client import APIClient, APIError, APIConnectionError
 
 
 # =============================================================================
@@ -110,7 +110,7 @@ class TestEODStatsEndpoint:
 
     def test_get_stats(self, client, temp_db):
         """Get EOD stats should return statistics."""
-        with patch("psx_ohlcv.api.routers.eod.get_db_path", return_value=temp_db):
+        with patch("pakfindata.api.routers.eod.get_db_path", return_value=temp_db):
             response = client.get("/api/eod/stats")
             assert response.status_code == 200
             data = response.json()
@@ -124,8 +124,8 @@ class TestEODFilesEndpoint:
 
     def test_list_files(self, client, temp_db):
         """List files endpoint should return file info."""
-        with patch("psx_ohlcv.api.routers.eod.get_db_path", return_value=temp_db):
-            with patch("psx_ohlcv.api.routers.eod.DATA_ROOT", Path("/tmp/test_data")):
+        with patch("pakfindata.api.routers.eod.get_db_path", return_value=temp_db):
+            with patch("pakfindata.api.routers.eod.DATA_ROOT", Path("/tmp/test_data")):
                 response = client.get("/api/eod/files")
                 assert response.status_code == 200
                 data = response.json()
@@ -334,7 +334,7 @@ class TestAPIClientErrors:
     def test_timeout_error(self):
         """Timeout should raise APITimeoutError."""
         import requests
-        from psx_ohlcv.api.client import APITimeoutError
+        from pakfindata.api.client import APITimeoutError
 
         client = APIClient(timeout=1)
 
@@ -349,7 +349,7 @@ class TestAPIClientErrors:
     def test_http_error(self):
         """HTTP error should raise APIHTTPError."""
         import requests
-        from psx_ohlcv.api.client import APIHTTPError
+        from pakfindata.api.client import APIHTTPError
 
         client = APIClient()
 
@@ -381,15 +381,16 @@ class TestAPIIntegration:
     @pytest.fixture(autouse=True)
     def check_api_available(self):
         """Skip test if API is not available."""
-        from psx_ohlcv.api.client import is_api_available
+        from pakfindata.api.client import is_api_available
         if not is_api_available():
             pytest.skip("API server not running at localhost:8000")
 
     def test_full_workflow(self):
         """Test complete workflow: stats -> load -> verify."""
-        from psx_ohlcv.api.client import get_client
+        from pakfindata.api.client import get_client
 
         client = get_client()
+        client.timeout = 120  # EOD stats query is slow on large databases
 
         # Get initial stats
         stats = client.get_eod_stats()

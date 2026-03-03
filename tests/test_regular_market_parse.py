@@ -1,6 +1,6 @@
 """Tests for regular market HTML parsing."""
 
-from psx_ohlcv.sources.regular_market import (
+from pakfindata.sources.regular_market import (
     _compute_row_hash,
     _empty_regular_market_df,
     _extract_symbol_and_status,

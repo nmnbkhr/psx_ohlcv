@@ -9,7 +9,7 @@ import pytest
 @pytest.fixture
 def con():
     """In-memory SQLite with IPO schema."""
-    from psx_ohlcv.db.repositories.ipo import init_ipo_schema
+    from pakfindata.db.repositories.ipo import init_ipo_schema
 
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -29,7 +29,7 @@ class TestInitIpoSchema:
         assert "ipo_listings" in names
 
     def test_idempotent(self, con):
-        from psx_ohlcv.db.repositories.ipo import init_ipo_schema
+        from pakfindata.db.repositories.ipo import init_ipo_schema
         init_ipo_schema(con)
         init_ipo_schema(con)
 
@@ -38,7 +38,7 @@ class TestInitIpoSchema:
 
 class TestUpsertIpoListing:
     def test_insert(self, con):
-        from psx_ohlcv.db.repositories.ipo import upsert_ipo_listing
+        from pakfindata.db.repositories.ipo import upsert_ipo_listing
         ok = upsert_ipo_listing(con, {
             "symbol": "NEWCO",
             "company_name": "New Company Ltd",
@@ -56,7 +56,7 @@ class TestUpsertIpoListing:
         assert row["offer_price"] == 25.0
 
     def test_upsert_updates(self, con):
-        from psx_ohlcv.db.repositories.ipo import upsert_ipo_listing
+        from pakfindata.db.repositories.ipo import upsert_ipo_listing
         upsert_ipo_listing(con, {
             "symbol": "NEWCO", "listing_date": "2026-03-15",
             "status": "upcoming", "offer_price": 25.0,
@@ -75,12 +75,12 @@ class TestUpsertIpoListing:
 
 class TestGetIpoListings:
     def test_empty(self, con):
-        from psx_ohlcv.db.repositories.ipo import get_ipo_listings
+        from pakfindata.db.repositories.ipo import get_ipo_listings
         df = get_ipo_listings(con)
         assert df.empty
 
     def test_filter_by_status(self, con):
-        from psx_ohlcv.db.repositories.ipo import get_ipo_listings, upsert_ipo_listing
+        from pakfindata.db.repositories.ipo import get_ipo_listings, upsert_ipo_listing
         upsert_ipo_listing(con, {
             "symbol": "A", "status": "listed", "listing_date": "2026-01-01",
         })
@@ -92,7 +92,7 @@ class TestGetIpoListings:
         assert df.iloc[0]["symbol"] == "B"
 
     def test_filter_by_board(self, con):
-        from psx_ohlcv.db.repositories.ipo import get_ipo_listings, upsert_ipo_listing
+        from pakfindata.db.repositories.ipo import get_ipo_listings, upsert_ipo_listing
         upsert_ipo_listing(con, {
             "symbol": "A", "board": "main", "listing_date": "2026-01-01",
         })
@@ -106,12 +106,12 @@ class TestGetIpoListings:
 
 class TestGetUpcomingIpos:
     def test_empty(self, con):
-        from psx_ohlcv.db.repositories.ipo import get_upcoming_ipos
+        from pakfindata.db.repositories.ipo import get_upcoming_ipos
         df = get_upcoming_ipos(con)
         assert df.empty
 
     def test_returns_upcoming(self, con):
-        from psx_ohlcv.db.repositories.ipo import get_upcoming_ipos, upsert_ipo_listing
+        from pakfindata.db.repositories.ipo import get_upcoming_ipos, upsert_ipo_listing
         upsert_ipo_listing(con, {
             "symbol": "NEWCO", "status": "upcoming",
             "subscription_close": "2030-12-31", "listing_date": "2031-01-15",
@@ -122,7 +122,7 @@ class TestGetUpcomingIpos:
 
 class TestGetRecentListings:
     def test_returns_recent(self, con):
-        from psx_ohlcv.db.repositories.ipo import get_recent_listings, upsert_ipo_listing
+        from pakfindata.db.repositories.ipo import get_recent_listings, upsert_ipo_listing
         upsert_ipo_listing(con, {
             "symbol": "A", "listing_date": "2026-01-01",
         })
@@ -136,12 +136,12 @@ class TestGetRecentListings:
 
 class TestGetIpoBySymbol:
     def test_not_found(self, con):
-        from psx_ohlcv.db.repositories.ipo import get_ipo_by_symbol
+        from pakfindata.db.repositories.ipo import get_ipo_by_symbol
         result = get_ipo_by_symbol(con, "XYZ")
         assert result is None
 
     def test_found(self, con):
-        from psx_ohlcv.db.repositories.ipo import get_ipo_by_symbol, upsert_ipo_listing
+        from pakfindata.db.repositories.ipo import get_ipo_by_symbol, upsert_ipo_listing
         upsert_ipo_listing(con, {
             "symbol": "NEWCO", "company_name": "New Co",
             "board": "main", "listing_date": "2026-03-15",
@@ -156,7 +156,7 @@ class TestGetIpoBySymbol:
 class TestIPOScraper:
     def test_sync_with_mock(self, con):
         from unittest.mock import patch
-        from psx_ohlcv.sources.ipo_scraper import IPOScraper
+        from pakfindata.sources.ipo_scraper import IPOScraper
 
         scraper = IPOScraper()
         mock_data = [
@@ -168,7 +168,7 @@ class TestIPOScraper:
         assert result["ok"] >= 1
 
     def test_parse_table(self, con):
-        from psx_ohlcv.sources.ipo_scraper import IPOScraper
+        from pakfindata.sources.ipo_scraper import IPOScraper
         html = """
         <table>
             <tr><th>Symbol</th><th>Company</th><th>Sector</th></tr>

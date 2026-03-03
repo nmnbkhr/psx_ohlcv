@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"name": "pakfindata",
+			"path": "."
+		},
+		{
+			"name": "psx-live",
+			"path": "../projects/psx-live"
+		}
+	],
+	"settings": {}
+}

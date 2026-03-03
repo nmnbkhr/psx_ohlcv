@@ -77,7 +77,7 @@ Transform PSX OHLCV Explorer from a button-driven dashboard into an intelligent,
 
 #### 1.1 Project Structure
 ```
-src/psx_ohlcv/
+src/pakfindata/
 ├── agents/                     # NEW: Agent layer
 │   ├── __init__.py
 │   ├── base.py                 # BaseAgent class
@@ -207,8 +207,8 @@ class ToolRegistry:
 ```python
 # tools/market_tools.py
 from tools.registry import Tool, ToolCategory, ToolRegistry
-from psx_ohlcv.query import get_eod_df, get_symbols, get_sectors
-from psx_ohlcv.analytics import compute_market_breadth, get_top_movers
+from pakfindata.query import get_eod_df, get_symbols, get_sectors
+from pakfindata.analytics import compute_market_breadth, get_top_movers
 
 @ToolRegistry.register
 def get_stock_price(symbol: str, days: int = 30) -> dict:
@@ -322,7 +322,7 @@ def sync_market_data(
     Returns:
         Sync result with counts and any errors
     """
-    from psx_ohlcv.sync import sync_all
+    from pakfindata.sync import sync_all
     result = sync_all(
         symbols=symbols,
         incremental=incremental,
@@ -348,7 +348,7 @@ TOOL_SYNC_MARKET_DATA = Tool(
 @ToolRegistry.register
 def check_data_freshness() -> dict:
     """Check when market data was last updated."""
-    from psx_ohlcv.db import get_connection
+    from pakfindata.db import get_connection
 
     conn = get_connection()
     result = conn.execute("""
@@ -382,13 +382,13 @@ def compute_returns(
         symbol: Stock symbol
         periods: List of periods (1D, 1W, 1M, 3M, 6M, 1Y, YTD)
     """
-    from psx_ohlcv.analytics_phase1 import compute_returns_for_symbol
+    from pakfindata.analytics_phase1 import compute_returns_for_symbol
     return compute_returns_for_symbol(symbol, periods)
 
 @ToolRegistry.register
 def compute_volatility(symbol: str, window: int = 30) -> dict:
     """Compute annualized volatility for a symbol."""
-    from psx_ohlcv.analytics_phase1 import compute_volatility
+    from pakfindata.analytics_phase1 import compute_volatility
     return compute_volatility(symbol, window)
 
 @ToolRegistry.register
@@ -411,13 +411,13 @@ def compare_stocks(symbols: list[str], metric: str = "return_1m") -> list[dict]:
 @ToolRegistry.register
 def get_sukuk_analytics(instrument_id: str = None) -> dict:
     """Get sukuk analytics including YTM, duration, convexity."""
-    from psx_ohlcv.analytics_sukuk import get_sukuk_analytics
+    from pakfindata.analytics_sukuk import get_sukuk_analytics
     return get_sukuk_analytics(instrument_id)
 
 @ToolRegistry.register
 def get_yield_curve(curve_type: str = "PIB", date: str = None) -> dict:
     """Get yield curve data for government securities."""
-    from psx_ohlcv.analytics_fixed_income import get_yield_curve
+    from pakfindata.analytics_fixed_income import get_yield_curve
     return get_yield_curve(curve_type, date)
 
 @ToolRegistry.register
@@ -429,7 +429,7 @@ def compute_bond_metrics(
     frequency: int = 2
 ) -> dict:
     """Compute YTM, duration, and convexity for a bond."""
-    from psx_ohlcv.analytics_sukuk import compute_ytm, compute_duration
+    from pakfindata.analytics_sukuk import compute_ytm, compute_duration
 
     ytm = compute_ytm(face_value, coupon_rate, maturity_years, market_price, frequency)
     duration = compute_duration(face_value, coupon_rate, maturity_years, ytm, frequency)
@@ -817,7 +817,7 @@ if selected_page == "AI Assistant":
 from dataclasses import dataclass, field
 from typing import Optional
 import json
-from psx_ohlcv.db import get_connection
+from pakfindata.db import get_connection
 
 @dataclass
 class UserContext:

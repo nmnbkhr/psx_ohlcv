@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from psx_ohlcv.llm.client import (
+from pakfindata.llm.client import (
     OpenAIClient,
     LLMResponse,
     LLMError,
@@ -250,7 +250,7 @@ class TestGetClient:
         """Should create client instance."""
         with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-key-1234567890"}):
             # Clear any existing client
-            import psx_ohlcv.llm.client as client_module
+            import pakfindata.llm.client as client_module
             client_module._client = None
 
             client = get_client()
@@ -259,7 +259,7 @@ class TestGetClient:
     def test_get_client_reuses_instance(self):
         """Should reuse existing client instance."""
         with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-key-1234567890"}):
-            import psx_ohlcv.llm.client as client_module
+            import pakfindata.llm.client as client_module
             client_module._client = None
 
             client1 = get_client()
@@ -270,7 +270,7 @@ class TestGetClient:
     def test_get_client_recreates_with_kwargs(self):
         """Should create new client when kwargs provided."""
         with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-key-1234567890"}):
-            import psx_ohlcv.llm.client as client_module
+            import pakfindata.llm.client as client_module
             client_module._client = None
 
             client1 = get_client()

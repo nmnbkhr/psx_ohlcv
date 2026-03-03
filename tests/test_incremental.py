@@ -3,8 +3,8 @@
 import pandas as pd
 import pytest
 
-from psx_ohlcv.db import connect, get_max_date_for_symbol, init_schema, upsert_eod
-from psx_ohlcv.sources.eod import filter_incremental
+from pakfindata.db import connect, get_max_date_for_symbol, init_schema, upsert_eod
+from pakfindata.sources.eod import filter_incremental
 
 
 class TestFilterIncremental:

@@ -584,13 +584,13 @@ This guide explains what to do on each page to view and refresh data.
 
 ```bash
 # Daily EOD sync (can be scheduled via cron)
-psxsync sync --all
+pfsync sync --all
 
 # Single symbol update
-psxsync sync HBLPSX
+pfsync sync HBLPSX
 
 # Intraday sync
-psxsync intraday HBLPSX
+pfsync intraday HBLPSX
 ```
 
 ---

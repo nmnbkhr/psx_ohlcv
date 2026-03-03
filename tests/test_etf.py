@@ -5,7 +5,7 @@ import sqlite3
 import pandas as pd
 import pytest
 
-from psx_ohlcv.db.repositories.etf import (
+from pakfindata.db.repositories.etf import (
     get_all_etf_latest_nav,
     get_etf_detail,
     get_etf_list,

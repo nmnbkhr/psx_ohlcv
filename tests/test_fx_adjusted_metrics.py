@@ -3,15 +3,15 @@
 import pandas as pd
 import pytest
 
-from psx_ohlcv import connect, init_schema
-from psx_ohlcv.analytics_fx import (
+from pakfindata import connect, init_schema
+from pakfindata.analytics_fx import (
     compute_and_store_fx_adjusted_metrics,
     compute_equity_fx_adjusted_metrics,
     compute_fx_adjusted_return,
     get_fx_impact_summary,
     get_normalized_fx_performance,
 )
-from psx_ohlcv.db import (
+from pakfindata.db import (
     get_fx_adjusted_metrics,
     upsert_fx_adjusted_metric,
     upsert_fx_ohlcv,

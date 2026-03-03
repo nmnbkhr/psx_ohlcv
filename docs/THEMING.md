@@ -14,7 +14,7 @@ The PSX OHLCV Explorer supports multiple UI themes with a centralized token-base
 ## Theme Architecture
 
 ```
-src/psx_ohlcv/ui/
+src/pakfindata/ui/
 ├── themes.py          # Theme tokens, CSS generation, chart colors
 ├── charts.py          # Plotly charts (uses theme colors)
 └── app.py             # Main app (theme toggle, CSS injection)
@@ -83,7 +83,7 @@ ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
 ### Accessing Theme in Python
 
 ```python
-from psx_ohlcv.ui.themes import (
+from pakfindata.ui.themes import (
     get_theme,
     get_theme_css,
     get_chart_colors,
@@ -207,7 +207,7 @@ For reusable components, add styles to `get_theme_css()` in `themes.py`:
 ### Step 3: Use Theme Colors in Charts
 
 ```python
-from psx_ohlcv.ui.themes import get_chart_colors
+from pakfindata.ui.themes import get_chart_colors
 
 colors = get_chart_colors("bloomberg")
 
@@ -299,7 +299,7 @@ font = "monospace"
 
 ```bash
 # Start the Streamlit app
-streamlit run src/psx_ohlcv/ui/app.py
+streamlit run src/pakfindata/ui/app.py
 
 # Or use the Makefile
 make ui
@@ -321,7 +321,7 @@ The theme toggle is in the sidebar dropdown below the app title.
 Ensure charts call `get_chart_colors()`:
 
 ```python
-from psx_ohlcv.ui.themes import get_chart_colors
+from pakfindata.ui.themes import get_chart_colors
 colors = get_chart_colors("bloomberg")
 ```
 

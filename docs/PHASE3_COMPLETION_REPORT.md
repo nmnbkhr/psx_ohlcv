@@ -35,7 +35,7 @@ Phase 3 adds comprehensive Sukuk/Debt Market analytics to the PSX OHLCV Explorer
 - **Current Yield** - Annual coupon / price
 - **Yield Curve Interpolation** - Linear interpolation between points
 
-### 4. CLI Commands (`psxsync sukuk`)
+### 4. CLI Commands (`pfsync sukuk`)
 | Command | Description |
 |---------|-------------|
 | `seed` | Initialize with default sukuk instruments |
@@ -61,10 +61,10 @@ Phase 3 adds comprehensive Sukuk/Debt Market analytics to the PSX OHLCV Explorer
 ### New Modules
 | File | Description |
 |------|-------------|
-| `src/psx_ohlcv/sources/sukuk_manual.py` | CSV loaders, sample data |
-| `src/psx_ohlcv/sources/sbp_primary_market.py` | SBP document handling |
-| `src/psx_ohlcv/sync_sukuk.py` | Sync operations |
-| `src/psx_ohlcv/analytics_sukuk.py` | Fixed income analytics |
+| `src/pakfindata/sources/sukuk_manual.py` | CSV loaders, sample data |
+| `src/pakfindata/sources/sbp_primary_market.py` | SBP document handling |
+| `src/pakfindata/sync_sukuk.py` | Sync operations |
+| `src/pakfindata/analytics_sukuk.py` | Fixed income analytics |
 
 ### Data Templates
 | File | Description |
@@ -86,9 +86,9 @@ Phase 3 adds comprehensive Sukuk/Debt Market analytics to the PSX OHLCV Explorer
 
 | File | Changes |
 |------|---------|
-| `src/psx_ohlcv/db.py` | Added 6 sukuk tables + CRUD functions |
-| `src/psx_ohlcv/cli.py` | Added `sukuk` command group (10 subcommands) |
-| `src/psx_ohlcv/ui/app.py` | Added 3 new UI pages |
+| `src/pakfindata/db.py` | Added 6 sukuk tables + CRUD functions |
+| `src/pakfindata/cli.py` | Added `sukuk` command group (10 subcommands) |
+| `src/pakfindata/ui/app.py` | Added 3 new UI pages |
 
 ---
 
@@ -117,14 +117,14 @@ Phase 3 adds comprehensive Sukuk/Debt Market analytics to the PSX OHLCV Explorer
 
 ```bash
 # Initialize sukuk data
-psxsync sukuk seed
-psxsync sukuk sync --include-curves
+pfsync sukuk seed
+pfsync sukuk sync --include-curves
 
 # View status
-psxsync sukuk status
+pfsync sukuk status
 
 # Launch UI
-streamlit run src/psx_ohlcv/ui/app.py
+streamlit run src/pakfindata/ui/app.py
 # Navigate to "Sukuk Screener" or "Sukuk Yield Curve"
 ```
 

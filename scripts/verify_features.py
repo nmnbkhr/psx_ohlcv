@@ -20,10 +20,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 def create_test_db() -> sqlite3.Connection:
     """Create an in-memory test database with all schemas."""
-    from psx_ohlcv.analytics import init_analytics_schema
-    from psx_ohlcv.db import connect, init_schema
-    from psx_ohlcv.sources.market_summary import init_market_summary_tracking
-    from psx_ohlcv.sources.regular_market import init_regular_market_schema
+    from pakfindata.analytics import init_analytics_schema
+    from pakfindata.db import connect, init_schema
+    from pakfindata.sources.market_summary import init_market_summary_tracking
+    from pakfindata.sources.regular_market import init_regular_market_schema
 
     con = connect(":memory:")
     init_schema(con)
@@ -100,7 +100,7 @@ def test_c_sector_name_display() -> bool:
     print("\n[C] Testing sector_name display functions...")
 
     # Check that UI app has sector_name helper
-    ui_app_path = Path(__file__).parent.parent / "src/psx_ohlcv/ui/app.py"
+    ui_app_path = Path(__file__).parent.parent / "src/pakfindata/ui/app.py"
     if not ui_app_path.exists():
         print("  WARN: UI app.py not found, skipping UI check")
         return True
@@ -142,7 +142,7 @@ def test_d_market_summary_tracking() -> bool:
     print("  OK: downloaded_market_summary_dates table has required columns")
 
     # Test tracking functions
-    from psx_ohlcv.sources.market_summary import (
+    from pakfindata.sources.market_summary import (
         get_failed_dates,
         get_missing_dates,
         upsert_download_record,
@@ -197,7 +197,7 @@ def test_e_intraday_module() -> bool:
     print("  OK: intraday_sync_state table has required columns")
 
     # Check intraday source module exists
-    intraday_path = Path(__file__).parent.parent / "src/psx_ohlcv/sources/intraday.py"
+    intraday_path = Path(__file__).parent.parent / "src/pakfindata/sources/intraday.py"
     if not intraday_path.exists():
         print("  FAIL: sources/intraday.py not found")
         return False
@@ -292,7 +292,7 @@ def test_h_candlestick_clarity() -> bool:
     print("\n[H] Testing Candlestick clarity...")
 
     # Check charts.py for minimum height
-    charts_path = Path(__file__).parent.parent / "src/psx_ohlcv/ui/charts.py"
+    charts_path = Path(__file__).parent.parent / "src/pakfindata/ui/charts.py"
     if not charts_path.exists():
         print("  WARN: UI charts.py not found, skipping chart check")
         return True

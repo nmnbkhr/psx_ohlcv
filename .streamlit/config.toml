@@ -18,6 +18,11 @@ font = "monospace"
 # Performance settings
 enableStaticServing = true
 
+[client]
+# Disable auto-generated multipage sidebar navigation
+# (our pages/ dir is a Python package, not Streamlit multipage pages)
+showSidebarNavigation = false
+
 [browser]
 # Hide Streamlit branding
 gatherUsageStats = false

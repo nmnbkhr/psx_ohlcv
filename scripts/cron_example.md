@@ -20,13 +20,13 @@ crontab -e
 
 ```cron
 # PSX OHLCV daily sync at 18:00 PKT (after market close)
-0 18 * * 1-5 cd /home/adnoman/psx_ohlcv && /opt/miniconda/bin/conda run -n psx python -m psx_ohlcv.cli sync --all --refresh-symbols >> /mnt/e/psxdata/logs/cron.log 2>&1
+0 18 * * 1-5 cd /home/adnoman/pakfindata && /opt/miniconda/bin/conda run -n psx python -m pakfindata.cli sync --all --refresh-symbols >> /mnt/e/psxdata/logs/cron.log 2>&1
 ```
 
 **Breakdown:**
 
 - `0 18 * * 1-5` - Run at 18:00, Monday through Friday
-- `cd /home/adnoman/psx_ohlcv` - Change to project directory
+- `cd /home/adnoman/pakfindata` - Change to project directory
 - `conda run -n psx` - Run in the `psx` conda environment
 - `--refresh-symbols` - Update symbol list before syncing
 - `>> /mnt/e/psxdata/logs/cron.log 2>&1` - Append output to cron log
@@ -42,7 +42,7 @@ crontab -l
 For daily runs after initial full sync:
 
 ```cron
-0 18 * * 1-5 cd /home/adnoman/psx_ohlcv && /opt/miniconda/bin/conda run -n psx python -m psx_ohlcv.cli sync --all --incremental >> /mnt/e/psxdata/logs/cron.log 2>&1
+0 18 * * 1-5 cd /home/adnoman/pakfindata && /opt/miniconda/bin/conda run -n psx python -m pakfindata.cli sync --all --incremental >> /mnt/e/psxdata/logs/cron.log 2>&1
 ```
 
 ### Weekly Full Refresh
@@ -50,7 +50,7 @@ For daily runs after initial full sync:
 Run a full refresh on Saturdays to catch any corrections:
 
 ```cron
-0 10 * * 6 cd /home/adnoman/psx_ohlcv && /opt/miniconda/bin/conda run -n psx python -m psx_ohlcv.cli sync --all --refresh-symbols >> /mnt/e/psxdata/logs/cron.log 2>&1
+0 10 * * 6 cd /home/adnoman/pakfindata && /opt/miniconda/bin/conda run -n psx python -m pakfindata.cli sync --all --refresh-symbols >> /mnt/e/psxdata/logs/cron.log 2>&1
 ```
 
 ---
@@ -65,7 +65,7 @@ For WSL2, systemd user services provide better control than cron.
 mkdir -p ~/.config/systemd/user
 ```
 
-Create `~/.config/systemd/user/psxsync.service`:
+Create `~/.config/systemd/user/pfsync.service`:
 
 ```ini
 [Unit]
@@ -75,8 +75,8 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/adnoman/psx_ohlcv
-ExecStart=/opt/miniconda/bin/conda run -n psx python -m psx_ohlcv.cli sync --all --refresh-symbols
+WorkingDirectory=/home/adnoman/pakfindata
+ExecStart=/opt/miniconda/bin/conda run -n psx python -m pakfindata.cli sync --all --refresh-symbols
 StandardOutput=append:/mnt/e/psxdata/logs/systemd.log
 StandardError=append:/mnt/e/psxdata/logs/systemd.log
 
@@ -86,7 +86,7 @@ WantedBy=default.target
 
 ### 2. Create timer file
 
-Create `~/.config/systemd/user/psxsync.timer`:
+Create `~/.config/systemd/user/pfsync.timer`:
 
 ```ini
 [Unit]
@@ -107,21 +107,21 @@ WantedBy=timers.target
 systemctl --user daemon-reload
 
 # Enable timer to start on boot
-systemctl --user enable psxsync.timer
+systemctl --user enable pfsync.timer
 
 # Start timer now
-systemctl --user start psxsync.timer
+systemctl --user start pfsync.timer
 
 # Check status
-systemctl --user status psxsync.timer
+systemctl --user status pfsync.timer
 systemctl --user list-timers
 ```
 
 ### 4. Manual run (testing)
 
 ```bash
-systemctl --user start psxsync.service
-journalctl --user -u psxsync.service -f
+systemctl --user start pfsync.service
+journalctl --user -u pfsync.service -f
 ```
 
 ### WSL2 Notes
@@ -143,9 +143,9 @@ wsl --shutdown
 
 ## Log Rotation
 
-The application logs (`/mnt/e/psxdata/logs/psxsync.log`) rotate automatically (5MB, 3 backups).
+The application logs (`/mnt/e/psxdata/logs/pfsync.log`) rotate automatically (5MB, 3 backups).
 
-For cron/systemd logs, add logrotate config at `/etc/logrotate.d/psxsync`:
+For cron/systemd logs, add logrotate config at `/etc/logrotate.d/pfsync`:
 
 ```text
 /mnt/e/psxdata/logs/cron.log

@@ -1,7 +1,7 @@
 #!/bin/bash
 # PSX OHLCV — Full Git Push Script
 # Consolidates everything to dev branch, pushes with all tags
-# Run from: ~/psx_ohlcv
+# Run from: ~/pakfindata
 set -e
 
 echo "════════════════════════════════════════════"
@@ -9,7 +9,7 @@ echo "  PSX OHLCV — Git Push (Full Consolidation)"
 echo "════════════════════════════════════════════"
 echo ""
 
-cd ~/psx_ohlcv || { echo "❌ Cannot cd to ~/psx_ohlcv"; exit 1; }
+cd ~/pakfindata || { echo "❌ Cannot cd to ~/pakfindata"; exit 1; }
 
 # ─── Step 1: Check current state ────────────────────
 echo "📋 Step 1: Current state"

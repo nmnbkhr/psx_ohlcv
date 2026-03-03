@@ -26,7 +26,7 @@
 
 ## SESSION RECOVERY
 
-Same system as v2.0.0. State file at `~/psx_ohlcv/.claude_session_state.md`.
+Same system as v2.0.0. State file at `~/pakfindata/.claude_session_state.md`.
 Use the Session Recovery Prompt from the v2.0.0 playbook when starting a new session.
 
 ---
@@ -35,9 +35,9 @@ Use the Session Recovery Prompt from the v2.0.0 playbook when starting a new ses
 
 ### Prompt T1.1 — Diagnose and Fix
 ```
-I'm working on psx_ohlcv, v2.0.0 just shipped. There's 1 pre-existing test failure.
+I'm working on pakfindata, v2.0.0 just shipped. There's 1 pre-existing test failure.
 
-1. Run: cd ~/psx_ohlcv && git checkout dev
+1. Run: cd ~/pakfindata && git checkout dev
 2. Run: pytest tests/ --tb=long -q 2>&1 | grep -A 20 "FAILED"
 3. Show me the FULL traceback of the failing test
 4. Identify the root cause — is it:
@@ -66,12 +66,12 @@ If the test depends on external network:
 
 ### Prompt T2.1 — Full Symbol Benchmark
 ```
-The async fetcher (src/psx_ohlcv/sources/async_fetcher.py) was built in Phase 4 
+The async fetcher (src/pakfindata/sources/async_fetcher.py) was built in Phase 4 
 but never tested on the full symbol set.
 
 Step 1 — Get the full symbol count:
   python -c "
-  from psx_ohlcv.db import connect, get_symbols_list
+  from pakfindata.db import connect, get_symbols_list
   con = connect()
   symbols = get_symbols_list(con)
   print(f'Total symbols: {len(symbols)}')
@@ -82,8 +82,8 @@ Step 1 — Get the full symbol count:
 Step 2 — Run the async fetcher on ALL symbols with timing:
   python -c "
   import asyncio, time, json
-  from psx_ohlcv.db import connect, get_symbols_list
-  from psx_ohlcv.sources.async_fetcher import AsyncPSXFetcher
+  from pakfindata.db import connect, get_symbols_list
+  from pakfindata.sources.async_fetcher import AsyncPSXFetcher
 
   async def benchmark():
       con = connect()
@@ -115,9 +115,9 @@ Step 2 — Run the async fetcher on ALL symbols with timing:
 Step 3 — Compare with synchronous baseline:
   python -c "
   import time
-  from psx_ohlcv.db import connect, get_symbols_list
-  from psx_ohlcv.sources.eod import fetch_eod_json
-  from psx_ohlcv.http import create_session
+  from pakfindata.db import connect, get_symbols_list
+  from pakfindata.sources.eod import fetch_eod_json
+  from pakfindata.http import create_session
   
   con = connect()
   symbols = get_symbols_list(con)[:20]  # Only 20 for sync test
@@ -197,7 +197,7 @@ We need to create an async version that:
 3. Records sync run in the same format as current sync.py
 4. Reports same SyncSummary output
 
-Create src/psx_ohlcv/sync_async.py:
+Create src/pakfindata/sync_async.py:
 
   async def sync_all_async(
       db_path: str,
@@ -216,12 +216,12 @@ The function should:
   5. Return SyncSummary
 
 Also add CLI integration:
-  In __main__.py or cli.py, add: psxsync async-sync --all
+  In __main__.py or cli.py, add: pfsync async-sync --all
   This calls sync_all_async via asyncio.run()
 
 VERIFY:
   # Test on 20 symbols first
-  python -m psx_ohlcv sync async-sync --symbols OGDC,HBL,MCB,LUCK,PSO --db /mnt/e/psxdata/psx.sqlite
+  python -m pakfindata sync async-sync --symbols OGDC,HBL,MCB,LUCK,PSO --db /mnt/e/psxdata/psx.sqlite
   
   # Check data was upserted
   sqlite3 /mnt/e/psxdata/psx.sqlite "SELECT symbol, MAX(date) FROM eod_ohlcv WHERE symbol IN ('OGDC','HBL','MCB','LUCK','PSO') GROUP BY symbol;"
@@ -233,7 +233,7 @@ VERIFY:
 ```
 Now run async sync on ALL symbols:
 
-  time python -m psx_ohlcv sync async-sync --all --db /mnt/e/psxdata/psx.sqlite
+  time python -m pakfindata sync async-sync --all --db /mnt/e/psxdata/psx.sqlite
 
 Record:
 - Total time
@@ -247,7 +247,7 @@ Commit:
   git commit -m "feat: async sync pipeline — [X]x faster than sequential
 
   - sync_async.py: async orchestrator using AsyncPSXFetcher
-  - CLI: psxsync async-sync --all
+  - CLI: pfsync async-sync --all
   - Benchmark: [X] symbols in [Y]s (was [Z]s sequential)
   - [N] symbols OK, [M] failed
   - SQLite upserts still synchronous (batched after fetch)"
@@ -260,16 +260,16 @@ Commit:
 ### Prompt T4.1 — Create API Client Module
 ```
 Currently every Streamlit page does:
-  from psx_ohlcv.db import connect, get_eod_ohlcv, get_symbols_list
+  from pakfindata.db import connect, get_eod_ohlcv, get_symbols_list
   con = connect()
   data = get_eod_ohlcv(con, symbol, ...)
 
 This should go through FastAPI instead:
-  from psx_ohlcv.api_client import PSXClient
+  from pakfindata.api_client import PSXClient
   client = PSXClient("http://localhost:8000")
   data = client.get_eod(symbol, ...)
 
-Create src/psx_ohlcv/api_client.py:
+Create src/pakfindata/api_client.py:
 
   import httpx
   
@@ -311,12 +311,12 @@ This way the UI works with OR without the API running.
 
 VERIFY:
   # Start API
-  uvicorn psx_ohlcv.api.main:app --port 8000 &
+  uvicorn pakfindata.api.main:app --port 8000 &
   sleep 2
   
   # Test client in API mode
   python -c "
-  from psx_ohlcv.api_client import PSXClient
+  from pakfindata.api_client import PSXClient
   client = PSXClient('http://localhost:8000')
   symbols = client.get_symbols()
   print(f'API mode: {len(symbols)} symbols')
@@ -324,7 +324,7 @@ VERIFY:
   
   # Test client in direct mode
   python -c "
-  from psx_ohlcv.api_client import PSXClient
+  from pakfindata.api_client import PSXClient
   client = PSXClient()  # No URL = direct DB
   symbols = client.get_symbols()
   print(f'Direct mode: {len(symbols)} symbols')
@@ -339,17 +339,17 @@ pip install httpx  # if not already installed
 ```
 Update the Dashboard page (the most visible page) to use PSXClient.
 
-Read src/psx_ohlcv/ui/pages/dashboard.py and:
+Read src/pakfindata/ui/page_views/dashboard.py and:
 1. Replace all direct db.connect() + db.get_xxx() calls with PSXClient calls
 2. Add at the top of the page:
-   from psx_ohlcv.api_client import PSXClient
+   from pakfindata.api_client import PSXClient
    client = PSXClient()  # Direct mode by default, API mode if env var set
 3. Keep the page looking and functioning exactly the same
 
 Only change the Dashboard page in this prompt. Other pages later.
 
 VERIFY:
-  streamlit run src/psx_ohlcv/ui/app.py --server.headless true 2>&1 | head -5
+  streamlit run src/pakfindata/ui/app.py --server.headless true 2>&1 | head -5
   (must start without errors)
 ```
 
@@ -368,7 +368,7 @@ VERIFY after each page that Streamlit still starts.
 ### Prompt T4.7 — Commit
 ```
 pytest tests/ -x -q
-streamlit run src/psx_ohlcv/ui/app.py --server.headless true 2>&1 | head -5
+streamlit run src/pakfindata/ui/app.py --server.headless true 2>&1 | head -5
 
 git add -A
 git commit -m "feat: Streamlit UI wired through PSXClient
@@ -385,7 +385,7 @@ git commit -m "feat: Streamlit UI wired through PSXClient
 
 ### Prompt T5.1 — Live Market Page
 ```
-Create a new Streamlit page: src/psx_ohlcv/ui/pages/live_market.py
+Create a new Streamlit page: src/pakfindata/ui/page_views/live_market.py
 
 This page shows:
 1. KSE-100 index with live value + change + sparkline
@@ -405,7 +405,7 @@ Use Plotly for charts. Streamlit's st.metric for KPIs.
 Add to app.py navigation.
 
 VERIFY:
-  streamlit run src/psx_ohlcv/ui/app.py --server.headless true 2>&1 | head -5
+  streamlit run src/pakfindata/ui/app.py --server.headless true 2>&1 | head -5
 ```
 
 ---
@@ -414,7 +414,7 @@ VERIFY:
 
 ### Prompt T6.1 — Data Quality Page
 ```
-Create src/psx_ohlcv/ui/pages/data_quality.py
+Create src/pakfindata/ui/page_views/data_quality.py
 
 This page answers: "What data do I have, what's missing, what's stale?"
 
@@ -451,7 +451,7 @@ Sections:
 All queries run against SQLite directly (this is an admin page).
 
 VERIFY:
-  streamlit run src/psx_ohlcv/ui/app.py --server.headless true 2>&1 | head -5
+  streamlit run src/pakfindata/ui/app.py --server.headless true 2>&1 | head -5
 ```
 
 ---
@@ -469,7 +469,7 @@ Step 1 — Create a sync wrapper script:
   # PSX OHLCV Daily Sync
   # Runs async sync at 18:30 PKT (market closes 15:30, data available by ~17:00)
   
-  cd ~/psx_ohlcv
+  cd ~/pakfindata
   source ~/.bashrc  # or conda activate psx
   
   LOG_DIR="/mnt/e/psxdata/logs"
@@ -477,13 +477,13 @@ Step 1 — Create a sync wrapper script:
   LOG_FILE="$LOG_DIR/sync_$(date +%Y%m%d).log"
   
   echo "=== PSX Daily Sync: $(date) ===" >> "$LOG_FILE"
-  python -m psx_ohlcv sync async-sync --all --db /mnt/e/psxdata/psx.sqlite >> "$LOG_FILE" 2>&1
+  python -m pakfindata sync async-sync --all --db /mnt/e/psxdata/psx.sqlite >> "$LOG_FILE" 2>&1
   echo "=== Completed: $(date) ===" >> "$LOG_FILE"
   
   # Run maintenance weekly (on Fridays)
   if [ "$(date +%u)" = "5" ]; then
       echo "=== Weekly Maintenance ===" >> "$LOG_FILE"
-      python -m psx_ohlcv.db.maintenance --analyze --stats >> "$LOG_FILE" 2>&1
+      python -m pakfindata.db.maintenance --analyze --stats >> "$LOG_FILE" 2>&1
   fi
 
   chmod +x scripts/daily_sync.sh
@@ -492,7 +492,7 @@ Step 2 — Add to crontab:
   crontab -e
   
   Add this line:
-  30 13 * * 1-5 ~/psx_ohlcv/scripts/daily_sync.sh
+  30 13 * * 1-5 ~/pakfindata/scripts/daily_sync.sh
   # 13:30 UTC = 18:30 PKT, Monday-Friday only
 
 Step 3 — Verify cron is working:
@@ -525,7 +525,7 @@ Commit:
 ```
 Final verification:
   pytest tests/ -x -q  # All green
-  python -m psx_ohlcv.db.maintenance --stats  # DB healthy
+  python -m pakfindata.db.maintenance --stats  # DB healthy
   
   git log --oneline dev..HEAD  # Show all v2.1 commits
 

@@ -1,4 +1,4 @@
-# psx_ohlcv
+# pakfindata
 
 PSX OHLCV data fetcher and sync tool for Pakistan Stock Exchange.
 
@@ -17,30 +17,30 @@ pip install -e ".[dev]"
 
 ```bash
 # Refresh symbols from PSX market-watch
-psxsync symbols refresh
+pfsync symbols refresh
 
 # Show all symbols as CSV
-psxsync symbols show --as csv
+pfsync symbols show --as csv
 
 # Get symbols as comma-separated string (useful for scripting)
-psxsync symbols string
-psxsync symbols string --limit 200
+pfsync symbols string
+pfsync symbols string --limit 200
 ```
 
 ### Data Synchronization
 
 ```bash
 # Sync EOD data for all active symbols
-psxsync sync --all
+pfsync sync --all
 
 # Sync with symbol refresh first
-psxsync sync --all --refresh-symbols
+pfsync sync --all --refresh-symbols
 
 # Incremental sync (only fetch data newer than existing)
-psxsync sync --all --incremental
+pfsync sync --all --incremental
 
 # Custom HTTP settings
-psxsync sync --all --max-retries 5 --timeout 60 --delay-min 0.5 --delay-max 1.0
+pfsync sync --all --max-retries 5 --timeout 60 --delay-min 0.5 --delay-max 1.0
 ```
 
 ### Sync Options
@@ -57,19 +57,19 @@ psxsync sync --all --max-retries 5 --timeout 60 --delay-min 0.5 --delay-max 1.0
 
 ```bash
 # Sync intraday data for a symbol
-psxsync intraday sync --symbol OGDC
+pfsync intraday sync --symbol OGDC
 
 # Sync with full refresh (non-incremental)
-psxsync intraday sync --symbol HBL --no-incremental
+pfsync intraday sync --symbol HBL --no-incremental
 
 # Limit rows fetched
-psxsync intraday sync --symbol MCB --max-rows 1000
+pfsync intraday sync --symbol MCB --max-rows 1000
 
 # Show intraday data for a symbol
-psxsync intraday show --symbol OGDC
+pfsync intraday show --symbol OGDC
 
 # Show with custom limit
-psxsync intraday show --symbol HBL --limit 500
+pfsync intraday show --symbol HBL --limit 500
 ```
 
 **Intraday Sync Options:**
@@ -88,25 +88,25 @@ Download and parse historical market summary files from PSX DPS:
 
 ```bash
 # Download a single day
-psxsync market-summary day --date 2025-01-15
+pfsync market-summary day --date 2025-01-15
 
 # Download a date range
-psxsync market-summary range --start 2025-01-01 --end 2025-01-15
+pfsync market-summary range --start 2025-01-01 --end 2025-01-15
 
 # Download last N days (relative to today)
-psxsync market-summary last --days 30
+pfsync market-summary last --days 30
 
 # Force re-download (overwrite existing)
-psxsync market-summary range --start 2025-01-01 --end 2025-01-15 --force
+pfsync market-summary range --start 2025-01-01 --end 2025-01-15 --force
 
 # Include weekends (default: skip Sat/Sun)
-psxsync market-summary last --days 30 --include-weekends
+pfsync market-summary last --days 30 --include-weekends
 
 # Retry failed downloads (dates that had errors)
-psxsync market-summary retry-failed
+pfsync market-summary retry-failed
 
 # Retry missing downloads (dates that returned 404)
-psxsync market-summary retry-missing
+pfsync market-summary retry-missing
 ```
 
 **Market Summary Options:**
@@ -140,25 +140,25 @@ Fetch company profiles and quote snapshots from DPS company pages:
 
 ```bash
 # Refresh company profile and key people
-psxsync company refresh --symbol OGDC
+pfsync company refresh --symbol OGDC
 
 # Take a quote snapshot (price, change, OHLCV, ranges)
-psxsync company snapshot --symbol OGDC
+pfsync company snapshot --symbol OGDC
 
 # Snapshot multiple symbols
-psxsync company snapshot --symbols "OGDC,HBL,PSO"
+pfsync company snapshot --symbols "OGDC,HBL,PSO"
 
 # Continuous monitoring (quotes every 60 seconds)
-psxsync company listen --symbol OGDC --interval 60
+pfsync company listen --symbol OGDC --interval 60
 
 # Monitor multiple symbols
-psxsync company listen --symbols "OGDC,HBL,PSO" --interval 30
+pfsync company listen --symbols "OGDC,HBL,PSO" --interval 30
 
 # Show stored company data
-psxsync company show --symbol OGDC
-psxsync company show --symbol OGDC --what profile
-psxsync company show --symbol OGDC --what people
-psxsync company show --symbol OGDC --what quotes
+pfsync company show --symbol OGDC
+pfsync company show --symbol OGDC --what profile
+pfsync company show --symbol OGDC --what people
+pfsync company show --symbol OGDC --what quotes
 ```
 
 **Company Data Stored:**
@@ -180,17 +180,17 @@ Refresh symbols from the authoritative PSX listed companies file:
 
 ```bash
 # Refresh symbols from official listed_cmp.lst.Z file
-psxsync master refresh
+pfsync master refresh
 
 # Mark symbols not in master file as inactive
-psxsync master refresh --deactivate-missing
+pfsync master refresh --deactivate-missing
 
 # List all symbols
-psxsync master list
-psxsync master list --active-only
+pfsync master list
+pfsync master list --active-only
 
 # Export to CSV
-psxsync master export --out symbols.csv
+pfsync master export --out symbols.csv
 ```
 
 ### Exit Codes
@@ -212,7 +212,7 @@ For automated daily syncs, see [scripts/cron_example.md](scripts/cron_example.md
 
 ```cron
 # Daily sync at 18:00 PKT (Monday-Friday)
-0 18 * * 1-5 cd /path/to/psx_ohlcv && conda run -n psx python -m psx_ohlcv.cli sync --all --incremental
+0 18 * * 1-5 cd /path/to/pakfindata && conda run -n psx python -m pakfindata.cli sync --all --incremental
 ```
 
 ## Data Storage
@@ -223,7 +223,7 @@ All data is stored in `/mnt/e/psxdata/` (E: drive in WSL):
 /mnt/e/psxdata/
 ├── psx.sqlite       # SQLite database
 ├── logs/
-│   └── psxsync.log  # Application logs
+│   └── pfsync.log  # Application logs
 └── docs/
     ├── DESIGN.md    # Architecture documentation
     └── SESSION_LOG.md  # Development session log
@@ -233,7 +233,7 @@ Override with `--db /path/to/custom.sqlite` if needed.
 
 ## Logging
 
-Logs are written to `/mnt/e/psxdata/logs/psxsync.log` with automatic rotation:
+Logs are written to `/mnt/e/psxdata/logs/pfsync.log` with automatic rotation:
 
 - Max file size: 5 MB
 - Backup count: 3 files
@@ -247,9 +247,9 @@ A lightweight Streamlit dashboard for exploring data and running syncs:
 pip install -e ".[ui]"
 
 # Run the dashboard (from project directory)
-cd /home/adnoman/psx_ohlcv
+cd /home/adnoman/pakfindata
 conda activate psx
-streamlit run src/psx_ohlcv/ui/app.py
+streamlit run src/pakfindata/ui/app.py
 
 # Or use make
 make ui
@@ -300,7 +300,7 @@ History data comes from stored snapshots. To populate:
 
 ```bash
 # Run continuous market monitoring (recommended)
-psxsync regular-market listen --interval 60
+pfsync regular-market listen --interval 60
 
 # Or fetch snapshots periodically via UI "Fetch Market Data" button
 ```
@@ -354,7 +354,7 @@ echo 'export OPENAI_API_KEY="sk-your-api-key-here"' >> ~/.bashrc
 
 ### Accessing AI Insights
 
-1. Start the Streamlit UI: `streamlit run src/psx_ohlcv/ui/app.py`
+1. Start the Streamlit UI: `streamlit run src/pakfindata/ui/app.py`
 2. Navigate to "🤖 AI Insights" in the sidebar
 3. Select an analysis mode and configure parameters
 4. Click "Generate Insight"

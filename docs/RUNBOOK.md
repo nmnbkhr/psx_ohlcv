@@ -21,7 +21,7 @@
         │                       │                       │
         │                       │                       │
         ▼                       ▼                       ▼
-   Port 8501              CLI: psxsync           /mnt/e/psxdata/
+   Port 8501              CLI: pfsync           /mnt/e/psxdata/
                                                   psx.sqlite
 ```
 
@@ -31,7 +31,7 @@
 | Database | `/mnt/e/psxdata/psx.sqlite` |
 | Logs | `/mnt/e/psxdata/logs/` |
 | Services | `/mnt/e/psxdata/services/` |
-| Code | `/home/adnoman/psx_ohlcv/` |
+| Code | `/home/adnoman/pakfindata/` |
 | Backups | `/mnt/e/psxdata/backups/` |
 
 ### Services
@@ -63,7 +63,7 @@
 **Resolution Steps:**
 ```bash
 # 1. Stop all services
-pkill -f "psxsync"
+pkill -f "pfsync"
 pkill -f "streamlit"
 
 # 2. Navigate to database directory
@@ -129,15 +129,15 @@ SELECT 'psx_indices', MAX(index_date) FROM psx_indices
 # The issue may be caching - clear browser cache or restart Streamlit
 
 # 3. If EOD data is stale, run sync
-psxsync sync --incremental
+pfsync sync --incremental
 
 # 4. For index data
-psxsync market-summary sync
+pfsync market-summary sync
 
 # 5. Restart UI if needed
 pkill -f streamlit
-cd /home/adnoman/psx_ohlcv
-streamlit run src/psx_ohlcv/ui/app.py &
+cd /home/adnoman/pakfindata
+streamlit run src/pakfindata/ui/app.py &
 ```
 
 ---
@@ -154,7 +154,7 @@ streamlit run src/psx_ohlcv/ui/app.py &
 **Resolution Steps:**
 ```bash
 # 1. Check if process actually running
-ps aux | grep -E "psxsync|intraday|eod_sync"
+ps aux | grep -E "pfsync|intraday|eod_sync"
 
 # 2. Remove stale PID files
 rm -f /mnt/e/psxdata/services/*.pid
@@ -165,7 +165,7 @@ for f in /mnt/e/psxdata/services/*_status.json; do
 done
 
 # 4. Try starting again via CLI
-psxsync fixed-income service start
+pfsync fixed-income service start
 ```
 
 ---
@@ -188,14 +188,14 @@ ps aux | grep streamlit
 tail -50 ~/.streamlit/logs/*.log 2>/dev/null
 
 # 3. Verify dependencies
-cd /home/adnoman/psx_ohlcv
+cd /home/adnoman/pakfindata
 pip install -e ".[ui]"
 
 # 4. Check for syntax errors
-python -c "from psx_ohlcv.ui.app import main; print('OK')"
+python -c "from pakfindata.ui.app import main; print('OK')"
 
 # 5. Restart with verbose output
-streamlit run src/psx_ohlcv/ui/app.py --logger.level=debug
+streamlit run src/pakfindata/ui/app.py --logger.level=debug
 ```
 
 ---
@@ -212,15 +212,15 @@ streamlit run src/psx_ohlcv/ui/app.py --logger.level=debug
 **Resolution Steps:**
 ```bash
 # 1. Check recent sync errors
-psxsync status
+pfsync status
 
 # 2. Wait 5-10 minutes before retrying
 
 # 3. Run with increased delays
-psxsync sync --delay 3
+pfsync sync --delay 3
 
 # 4. For specific symbols only
-psxsync sync --symbols "OGDC,PPL,HBL"
+pfsync sync --symbols "OGDC,PPL,HBL"
 ```
 
 ---
@@ -237,7 +237,7 @@ psxsync sync --symbols "OGDC,PPL,HBL"
 ```bash
 # 1. Reinitialize schema
 python -c "
-from psx_ohlcv.db import connect, init_schema
+from pakfindata.db import connect, init_schema
 con = connect('/mnt/e/psxdata/psx.sqlite')
 init_schema(con)
 print('Schema initialized')
@@ -260,7 +260,7 @@ sqlite3 /mnt/e/psxdata/psx.sqlite ".tables"
 
 **Resolution Steps:**
 ```bash
-cd /home/adnoman/psx_ohlcv
+cd /home/adnoman/pakfindata
 
 # 1. Stash local changes
 git stash
@@ -295,7 +295,7 @@ ps aux --sort=-%mem | head -10
 
 # 2. Restart Streamlit (clears cache)
 pkill -f streamlit
-streamlit run src/psx_ohlcv/ui/app.py &
+streamlit run src/pakfindata/ui/app.py &
 
 # 3. Clear Streamlit cache
 rm -rf ~/.streamlit/cache/*
@@ -310,18 +310,18 @@ rm -rf ~/.streamlit/cache/*
 
 ### Automated Daily Backup Script
 
-Create `/home/adnoman/psx_ohlcv/scripts/backup.sh`:
+Create `/home/adnoman/pakfindata/scripts/backup.sh`:
 ```bash
 #!/bin/bash
 # PSX OHLCV Backup Script
-# Run daily via cron: 0 2 * * * /home/adnoman/psx_ohlcv/scripts/backup.sh
+# Run daily via cron: 0 2 * * * /home/adnoman/pakfindata/scripts/backup.sh
 
 set -e
 
 # Configuration
 DB_PATH="/mnt/e/psxdata/psx.sqlite"
 BACKUP_DIR="/mnt/e/psxdata/backups"
-CODE_DIR="/home/adnoman/psx_ohlcv"
+CODE_DIR="/home/adnoman/pakfindata"
 RETENTION_DAYS=30
 DATE=$(date +%Y%m%d_%H%M%S)
 
@@ -390,7 +390,7 @@ sqlite3 /mnt/e/psxdata/psx.sqlite ".dump" > /mnt/e/psxdata/backups/full_dump.sql
 sqlite3 /mnt/e/psxdata/psx.sqlite ".dump eod_ohlcv" > /mnt/e/psxdata/backups/eod_ohlcv.sql
 
 # Code backup
-cd /home/adnoman/psx_ohlcv
+cd /home/adnoman/pakfindata
 git bundle create ~/psx_backup.bundle --all
 ```
 
@@ -412,7 +412,7 @@ git bundle create ~/psx_backup.bundle --all
 #### From SQLite Backup File
 ```bash
 # 1. Stop all services
-pkill -f "psxsync"
+pkill -f "pfsync"
 pkill -f "streamlit"
 
 # 2. Backup current (even if corrupted)
@@ -431,13 +431,13 @@ sqlite3 /mnt/e/psxdata/psx.sqlite "PRAGMA integrity_check"
 sqlite3 /mnt/e/psxdata/psx.sqlite "SELECT COUNT(*) FROM eod_ohlcv"
 
 # 7. Restart services
-streamlit run /home/adnoman/psx_ohlcv/src/psx_ohlcv/ui/app.py &
+streamlit run /home/adnoman/pakfindata/src/pakfindata/ui/app.py &
 ```
 
 #### From SQL Dump
 ```bash
 # 1. Stop services
-pkill -f "psxsync"
+pkill -f "pfsync"
 
 # 2. Create new database from dump
 sqlite3 /mnt/e/psxdata/psx_new.sqlite < /mnt/e/psxdata/backups/full_dump.sql
@@ -467,29 +467,29 @@ mv /mnt/e/psxdata/psx_recovered.sqlite /mnt/e/psxdata/psx.sqlite
 #### From Git Bundle
 ```bash
 # 1. Backup current code
-mv /home/adnoman/psx_ohlcv /home/adnoman/psx_ohlcv.old
+mv /home/adnoman/pakfindata /home/adnoman/pakfindata.old
 
 # 2. Clone from bundle
-git clone /mnt/e/psxdata/backups/code/psx_code_YYYYMMDD.bundle /home/adnoman/psx_ohlcv
+git clone /mnt/e/psxdata/backups/code/psx_code_YYYYMMDD.bundle /home/adnoman/pakfindata
 
 # 3. Install dependencies
-cd /home/adnoman/psx_ohlcv
+cd /home/adnoman/pakfindata
 pip install -e ".[dev,ui]"
 ```
 
 #### From Git Remote
 ```bash
 # 1. Clone fresh
-git clone https://github.com/nmnbkhr/psx_ohlcv.git /home/adnoman/psx_ohlcv_new
-cd /home/adnoman/psx_ohlcv_new
+git clone https://github.com/nmnbkhr/pakfindata.git /home/adnoman/pakfindata_new
+cd /home/adnoman/pakfindata_new
 git checkout enhanced-other-funds
 
 # 2. Install
 pip install -e ".[dev,ui]"
 
 # 3. Replace
-mv /home/adnoman/psx_ohlcv /home/adnoman/psx_ohlcv.old
-mv /home/adnoman/psx_ohlcv_new /home/adnoman/psx_ohlcv
+mv /home/adnoman/pakfindata /home/adnoman/pakfindata.old
+mv /home/adnoman/pakfindata_new /home/adnoman/pakfindata
 ```
 
 ---
@@ -526,7 +526,7 @@ sqlite3 /mnt/e/psxdata/psx.sqlite "ANALYZE"
 gunzip -t /mnt/e/psxdata/backups/db/*.gz 2>&1 | grep -v "OK"
 
 # 4. Update code
-cd /home/adnoman/psx_ohlcv
+cd /home/adnoman/pakfindata
 git pull origin enhanced-other-funds
 pip install -e ".[dev,ui]"
 ```
@@ -570,17 +570,17 @@ cp /mnt/e/psxdata/backups/db/psx_LATEST.sqlite /mnt/e/psxdata/psx.sqlite
 
 # 4. Restore code
 cd /home/adnoman
-rm -rf psx_ohlcv
-git clone https://github.com/nmnbkhr/psx_ohlcv.git
-cd psx_ohlcv
+rm -rf pakfindata
+git clone https://github.com/nmnbkhr/pakfindata.git
+cd pakfindata
 git checkout enhanced-other-funds
 pip install -e ".[dev,ui]"
 
 # 5. Reinitialize
-python -c "from psx_ohlcv.db import connect, init_schema; c=connect(); init_schema(c)"
+python -c "from pakfindata.db import connect, init_schema; c=connect(); init_schema(c)"
 
 # 6. Start UI
-streamlit run src/psx_ohlcv/ui/app.py &
+streamlit run src/pakfindata/ui/app.py &
 
 # 7. Verify
 curl http://localhost:8501 2>/dev/null && echo "UI OK" || echo "UI FAILED"
@@ -601,13 +601,13 @@ curl http://localhost:8501 2>/dev/null && echo "UI OK" || echo "UI FAILED"
 
 ```bash
 # Start UI
-streamlit run /home/adnoman/psx_ohlcv/src/psx_ohlcv/ui/app.py
+streamlit run /home/adnoman/pakfindata/src/pakfindata/ui/app.py
 
 # Sync all EOD data
-psxsync sync --incremental
+pfsync sync --incremental
 
 # Check service status
-psxsync fixed-income service status
+pfsync fixed-income service status
 
 # Quick backup
 sqlite3 /mnt/e/psxdata/psx.sqlite ".backup '/mnt/e/psxdata/quick_backup.sqlite'"

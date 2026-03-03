@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from psx_ohlcv import (
+from pakfindata import (
     connect,
     get_symbols_list,
     get_symbols_string,

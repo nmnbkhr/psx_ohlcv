@@ -61,12 +61,12 @@ def _seed_price(con, symbol, date, close):
 
 class TestGetDividendHistory:
     def test_empty(self, con):
-        from psx_ohlcv.db.repositories.dividends import get_dividend_history
+        from pakfindata.db.repositories.dividends import get_dividend_history
         df = get_dividend_history(con, "OGDC")
         assert df.empty
 
     def test_returns_history(self, con):
-        from psx_ohlcv.db.repositories.dividends import get_dividend_history
+        from pakfindata.db.repositories.dividends import get_dividend_history
         _seed_dividends(con, "OGDC", [
             {"date": "2025-06-01", "amount": 5.0, "fy": "2025"},
             {"date": "2025-12-01", "amount": 6.0, "fy": "2025"},
@@ -76,7 +76,7 @@ class TestGetDividendHistory:
         assert df.iloc[0]["ex_date"] == "2025-12-01"  # newest first
 
     def test_filter_by_years(self, con):
-        from psx_ohlcv.db.repositories.dividends import get_dividend_history
+        from pakfindata.db.repositories.dividends import get_dividend_history
         _seed_dividends(con, "OGDC", [
             {"date": "2020-06-01", "amount": 3.0},
             {"date": "2025-06-01", "amount": 5.0},
@@ -90,12 +90,12 @@ class TestGetDividendHistory:
 
 class TestGetDividendYield:
     def test_no_data(self, con):
-        from psx_ohlcv.db.repositories.dividends import get_dividend_yield
+        from pakfindata.db.repositories.dividends import get_dividend_yield
         result = get_dividend_yield(con, "OGDC")
         assert result is None
 
     def test_no_price(self, con):
-        from psx_ohlcv.db.repositories.dividends import get_dividend_yield
+        from pakfindata.db.repositories.dividends import get_dividend_yield
         _seed_dividends(con, "OGDC", [
             {"date": "2025-12-01", "amount": 10.0},
         ])
@@ -103,7 +103,7 @@ class TestGetDividendYield:
         assert result is None
 
     def test_computes_yield(self, con):
-        from psx_ohlcv.db.repositories.dividends import get_dividend_yield
+        from pakfindata.db.repositories.dividends import get_dividend_yield
         _seed_dividends(con, "OGDC", [
             {"date": "2025-12-01", "amount": 5.0},
             {"date": "2026-01-15", "amount": 5.0},
@@ -117,12 +117,12 @@ class TestGetDividendYield:
 
 class TestGetExDividendDates:
     def test_empty(self, con):
-        from psx_ohlcv.db.repositories.dividends import get_ex_dividend_dates
+        from pakfindata.db.repositories.dividends import get_ex_dividend_dates
         dates = get_ex_dividend_dates(con, "OGDC")
         assert dates == []
 
     def test_returns_dates(self, con):
-        from psx_ohlcv.db.repositories.dividends import get_ex_dividend_dates
+        from pakfindata.db.repositories.dividends import get_ex_dividend_dates
         _seed_dividends(con, "OGDC", [
             {"date": "2025-06-01", "amount": 5.0},
             {"date": "2025-12-01", "amount": 6.0},
@@ -136,12 +136,12 @@ class TestGetExDividendDates:
 
 class TestGetHighestDividendStocks:
     def test_empty(self, con):
-        from psx_ohlcv.db.repositories.dividends import get_highest_dividend_stocks
+        from pakfindata.db.repositories.dividends import get_highest_dividend_stocks
         df = get_highest_dividend_stocks(con)
         assert df.empty
 
     def test_ranks_by_yield(self, con):
-        from psx_ohlcv.db.repositories.dividends import get_highest_dividend_stocks
+        from pakfindata.db.repositories.dividends import get_highest_dividend_stocks
         # Stock A: DPS=10, Price=100 → yield 10%
         _seed_dividends(con, "STOCKA", [{"date": "2026-01-01", "amount": 10.0}])
         _seed_price(con, "STOCKA", "2026-02-08", 100.0)
@@ -159,13 +159,13 @@ class TestGetHighestDividendStocks:
 
 class TestGetUpcomingDividends:
     def test_empty(self, con):
-        from psx_ohlcv.db.repositories.dividends import get_upcoming_dividends
+        from pakfindata.db.repositories.dividends import get_upcoming_dividends
         df = get_upcoming_dividends(con)
         assert df.empty
 
     def test_filters_future(self, con):
         from datetime import datetime, timedelta
-        from psx_ohlcv.db.repositories.dividends import get_upcoming_dividends
+        from pakfindata.db.repositories.dividends import get_upcoming_dividends
         future = (datetime.now() + timedelta(days=5)).strftime("%Y-%m-%d")
         past = "2020-01-01"
         _seed_dividends(con, "OGDC", [

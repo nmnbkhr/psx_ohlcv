@@ -11,7 +11,7 @@ import sqlite3
 import pandas as pd
 import pytest
 
-from psx_ohlcv.sources.regular_market import (
+from pakfindata.sources.regular_market import (
     compute_row_hash,
     get_all_current_hashes,
     init_regular_market_schema,

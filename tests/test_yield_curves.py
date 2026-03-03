@@ -9,7 +9,7 @@ import pytest
 @pytest.fixture
 def con():
     """In-memory SQLite with yield curve schema."""
-    from psx_ohlcv.db.repositories.yield_curves import init_yield_curve_schema
+    from pakfindata.db.repositories.yield_curves import init_yield_curve_schema
 
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -31,7 +31,7 @@ class TestInitYieldCurveSchema:
         assert "kibor_daily" in names
 
     def test_idempotent(self, con):
-        from psx_ohlcv.db.repositories.yield_curves import init_yield_curve_schema
+        from pakfindata.db.repositories.yield_curves import init_yield_curve_schema
         init_yield_curve_schema(con)
         init_yield_curve_schema(con)
 
@@ -40,7 +40,7 @@ class TestInitYieldCurveSchema:
 
 class TestUpsertPkrvPoint:
     def test_insert(self, con):
-        from psx_ohlcv.db.repositories.yield_curves import upsert_pkrv_point
+        from pakfindata.db.repositories.yield_curves import upsert_pkrv_point
         ok = upsert_pkrv_point(con, {
             "date": "2026-02-08",
             "tenor_months": 3,
@@ -56,7 +56,7 @@ class TestUpsertPkrvPoint:
         assert row["yield_pct"] == 10.2
 
     def test_upsert_updates(self, con):
-        from psx_ohlcv.db.repositories.yield_curves import upsert_pkrv_point
+        from pakfindata.db.repositories.yield_curves import upsert_pkrv_point
         upsert_pkrv_point(con, {
             "date": "2026-02-08", "tenor_months": 3, "yield_pct": 10.0,
         })
@@ -72,12 +72,12 @@ class TestUpsertPkrvPoint:
 
 class TestGetPkrvCurve:
     def test_empty(self, con):
-        from psx_ohlcv.db.repositories.yield_curves import get_pkrv_curve
+        from pakfindata.db.repositories.yield_curves import get_pkrv_curve
         df = get_pkrv_curve(con)
         assert df.empty
 
     def test_returns_curve(self, con):
-        from psx_ohlcv.db.repositories.yield_curves import (
+        from pakfindata.db.repositories.yield_curves import (
             get_pkrv_curve,
             upsert_pkrv_point,
         )
@@ -90,7 +90,7 @@ class TestGetPkrvCurve:
         assert df.iloc[0]["tenor_months"] == 1  # sorted
 
     def test_latest_date(self, con):
-        from psx_ohlcv.db.repositories.yield_curves import (
+        from pakfindata.db.repositories.yield_curves import (
             get_pkrv_curve,
             upsert_pkrv_point,
         )
@@ -107,7 +107,7 @@ class TestGetPkrvCurve:
 
 class TestCompareCurves:
     def test_compare(self, con):
-        from psx_ohlcv.db.repositories.yield_curves import (
+        from pakfindata.db.repositories.yield_curves import (
             compare_curves,
             upsert_pkrv_point,
         )
@@ -128,14 +128,14 @@ class TestCompareCurves:
 
 class TestUpsertKoniaRate:
     def test_insert(self, con):
-        from psx_ohlcv.db.repositories.yield_curves import upsert_konia_rate
+        from pakfindata.db.repositories.yield_curves import upsert_konia_rate
         ok = upsert_konia_rate(con, {
             "date": "2026-02-08", "rate_pct": 11.16,
         })
         assert ok is True
 
     def test_get_latest(self, con):
-        from psx_ohlcv.db.repositories.yield_curves import (
+        from pakfindata.db.repositories.yield_curves import (
             get_latest_konia,
             upsert_konia_rate,
         )
@@ -148,12 +148,12 @@ class TestUpsertKoniaRate:
 
 class TestGetKoniaHistory:
     def test_empty(self, con):
-        from psx_ohlcv.db.repositories.yield_curves import get_konia_history
+        from pakfindata.db.repositories.yield_curves import get_konia_history
         df = get_konia_history(con)
         assert df.empty
 
     def test_with_data(self, con):
-        from psx_ohlcv.db.repositories.yield_curves import (
+        from pakfindata.db.repositories.yield_curves import (
             get_konia_history,
             upsert_konia_rate,
         )
@@ -167,7 +167,7 @@ class TestGetKoniaHistory:
 
 class TestUpsertKiborRate:
     def test_insert(self, con):
-        from psx_ohlcv.db.repositories.yield_curves import upsert_kibor_rate
+        from pakfindata.db.repositories.yield_curves import upsert_kibor_rate
         ok = upsert_kibor_rate(con, {
             "date": "2026-02-06", "tenor": "3M", "bid": 10.26, "offer": 10.51,
         })
@@ -176,7 +176,7 @@ class TestUpsertKiborRate:
 
 class TestGetKiborHistory:
     def test_filter_by_tenor(self, con):
-        from psx_ohlcv.db.repositories.yield_curves import (
+        from pakfindata.db.repositories.yield_curves import (
             get_kibor_history,
             upsert_kibor_rate,
         )
@@ -196,7 +196,7 @@ class TestSBPRatesScraper:
     def test_sync_rates_to_db(self, con):
         """Test sync with mocked data."""
         from unittest.mock import patch
-        from psx_ohlcv.sources.sbp_rates import SBPRatesScraper
+        from pakfindata.sources.sbp_rates import SBPRatesScraper
 
         mock_rates = {
             "overnight_rate": 11.16,
@@ -222,7 +222,7 @@ class TestSBPRatesScraper:
 
     def test_build_yield_curve_with_data(self):
         """Test yield curve construction from page text."""
-        from psx_ohlcv.sources.sbp_rates import SBPRatesScraper
+        from pakfindata.sources.sbp_rates import SBPRatesScraper
 
         text = (
             "MTBs Tenor Cut-off Yield "

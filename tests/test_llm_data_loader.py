@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import pytest
 
-from psx_ohlcv.agents.data_loader import (
+from pakfindata.agents.data_loader import (
     DataLoader,
     CompanyData,
     IntradayData,
