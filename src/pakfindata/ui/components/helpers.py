@@ -529,13 +529,13 @@ def render_ai_commentary(con, mode: str, context_data: dict | None = None):
         if st.button(f"Generate {mode.title()} Analysis", key=f"ai_gen_{mode}", type="primary"):
             with st.spinner("Generating AI analysis..."):
                 try:
-                    from pakfindata.agents.data_loader import load_insight_data
-                    from pakfindata.agents.prompts import InsightMode, get_prompt
+                    from pakfindata.agents.prompts import InsightMode, PromptBuilder
                     from pakfindata.agents.llm_client import get_completion
 
                     insight_mode = InsightMode[mode.upper()]
-                    data = context_data or load_insight_data(con, insight_mode)
-                    prompt = get_prompt(insight_mode, data)
+                    builder = PromptBuilder(insight_mode)
+                    data = context_data or _load_commentary_context(con, mode)
+                    prompt = builder.build(**data)
                     response = get_completion(prompt)
 
                     st.session_state[cache_key] = response
@@ -544,6 +544,108 @@ def render_ai_commentary(con, mode: str, context_data: dict | None = None):
                     st.warning("AI agents module not configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY.")
                 except Exception as e:
                     st.error(f"AI generation failed: {str(e)[:200]}")
+
+
+def _load_commentary_context(con, mode: str) -> dict:
+    """Build context data for AI commentary based on mode."""
+    data: dict = {"market_date": datetime.now().strftime("%Y-%m-%d")}
+
+    if mode.upper() == "TREASURY":
+        # Policy rate
+        try:
+            row = con.execute("SELECT policy_rate FROM sbp_policy_rates ORDER BY rate_date DESC LIMIT 1").fetchone()
+            data["policy_rate"] = row["policy_rate"] if row else "N/A"
+        except Exception:
+            data["policy_rate"] = "N/A"
+        # KIBOR 6M
+        try:
+            row = con.execute("SELECT offer FROM kibor_daily WHERE tenor='6M' ORDER BY date DESC LIMIT 1").fetchone()
+            data["kibor_6m"] = f"{row['offer']:.2f}" if row else "N/A"
+        except Exception:
+            data["kibor_6m"] = "N/A"
+        # Yield curve
+        try:
+            df = pd.read_sql_query(
+                "SELECT tenor_months, yield_pct FROM pkrv_daily WHERE date=(SELECT MAX(date) FROM pkrv_daily) ORDER BY tenor_months", con
+            )
+            data["yield_curve_data"] = df.to_string(index=False) if not df.empty else "No data"
+        except Exception:
+            data["yield_curve_data"] = "No data"
+        # T-Bill auctions
+        try:
+            df = pd.read_sql_query("SELECT auction_date, tenor, cutoff_yield FROM tbill_auctions ORDER BY auction_date DESC LIMIT 10", con)
+            data["tbill_auction_data"] = df.to_string(index=False) if not df.empty else "No data"
+        except Exception:
+            data["tbill_auction_data"] = "No data"
+        # PIB auctions
+        try:
+            df = pd.read_sql_query("SELECT auction_date, tenor, cutoff_yield FROM pib_auctions ORDER BY auction_date DESC LIMIT 10", con)
+            data["pib_auction_data"] = df.to_string(index=False) if not df.empty else "No data"
+        except Exception:
+            data["pib_auction_data"] = "No data"
+        data["secondary_rates_data"] = "See KIBOR and yield curve above"
+
+    elif mode.upper() == "FX":
+        # Interbank
+        try:
+            df = pd.read_sql_query(
+                "SELECT currency, date, buying, selling FROM sbp_fx_interbank WHERE currency IN ('USD','EUR','GBP','SAR','AED') ORDER BY date DESC LIMIT 25", con
+            )
+            data["interbank_rates"] = df.to_string(index=False) if not df.empty else "No data"
+        except Exception:
+            data["interbank_rates"] = "No data"
+        # Open market
+        try:
+            df = pd.read_sql_query(
+                "SELECT currency, date, buying, selling FROM sbp_fx_open_market WHERE currency IN ('USD','EUR','GBP') ORDER BY date DESC LIMIT 15", con
+            )
+            data["open_market_rates"] = df.to_string(index=False) if not df.empty else "No data"
+        except Exception:
+            data["open_market_rates"] = "No data"
+        # Kerb
+        try:
+            df = pd.read_sql_query(
+                "SELECT currency, date, buying, selling FROM forex_kerb WHERE currency IN ('USD','EUR','GBP') ORDER BY date DESC LIMIT 15", con
+            )
+            data["kerb_rates"] = df.to_string(index=False) if not df.empty else "No data"
+        except Exception:
+            data["kerb_rates"] = "No data"
+        # Trend
+        try:
+            df = pd.read_sql_query(
+                "SELECT date, selling FROM sbp_fx_interbank WHERE UPPER(currency)='USD' ORDER BY date DESC LIMIT 30", con
+            )
+            data["fx_trend_data"] = df.to_string(index=False) if not df.empty else "No data"
+        except Exception:
+            data["fx_trend_data"] = "No data"
+
+    elif mode.upper() == "FUNDS":
+        # Top performers summary
+        try:
+            df = pd.read_sql_query(
+                "SELECT fund_name, category, return_ytd, return_30d, return_365d FROM fund_performance_latest ORDER BY return_ytd DESC LIMIT 15", con
+            )
+            data["fund_name"] = "Market Overview"
+            data["fund_category"] = "All Categories"
+            data["amc_name"] = "All AMCs"
+            data["fund_profile"] = f"Top 15 funds by YTD return:\n{df.to_string(index=False)}" if not df.empty else "No data"
+            data["fund_performance"] = "See profile above"
+        except Exception:
+            data["fund_name"] = "Market Overview"
+            data["fund_category"] = "All"
+            data["amc_name"] = "All"
+            data["fund_profile"] = "No data"
+            data["fund_performance"] = "No data"
+        # Peer comparison
+        try:
+            df = pd.read_sql_query(
+                "SELECT category, COUNT(*) as funds, ROUND(AVG(return_ytd),2) as avg_ytd FROM fund_performance_latest GROUP BY category ORDER BY avg_ytd DESC", con
+            )
+            data["peer_comparison"] = df.to_string(index=False) if not df.empty else "No data"
+        except Exception:
+            data["peer_comparison"] = "No data"
+
+    return data
 
 
 def is_market_closed() -> bool:

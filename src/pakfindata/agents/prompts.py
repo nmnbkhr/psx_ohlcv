@@ -24,6 +24,9 @@ class InsightMode(Enum):
     INTRADAY = "intraday"
     MARKET = "market"
     HISTORY = "history"
+    TREASURY = "treasury"
+    FX = "fx"
+    FUNDS = "funds"
 
 
 # System prompt with safety rules and context
@@ -128,6 +131,9 @@ COMPANY_SUMMARY_TEMPLATE = """## Analysis Request: Company Summary
 ### 9. Upcoming Corporate Events
 {corporate_events_data}
 
+### 10. Quantitative Signals (Derived)
+{quant_signals}
+
 ---
 
 ## DATA USED SECTION
@@ -151,6 +157,7 @@ Use the format from system prompt - BULLISH/BEARISH/NEUTRAL/MIXED with confidenc
 | Volume | XXX | Above/Below avg |
 | P/E Ratio | XXX | - |
 | VWAP | XXX | Above/Below price |
+| RSI (14) | XXX | Neutral/OB/OS |
 
 ### Detailed Analysis Sections:
 1. **Company Overview** - Business description and sector positioning
@@ -160,6 +167,8 @@ Use the format from system prompt - BULLISH/BEARISH/NEUTRAL/MIXED with confidenc
 5. **Intraday Patterns** - VWAP positioning, session high/low (if available)
 6. **Corporate Activity** - Recent announcements, upcoming AGM/EOGM, dividends
 7. **Risk Factors** - Thin trading, circuit limit proximity, data gaps
+7. **Quantitative Risk** - Volatility, Trend Structure, Momentum
+8. **Risk Factors** - Thin trading, circuit limit proximity, data gaps
 
 ### REQUIRED: End with Action Items
 Specific actionable items using checkbox format.
@@ -333,6 +342,9 @@ HISTORY_TEMPLATE = """## Analysis Request: Historical OHLCV Analysis
 ### 3. Price Range Summary
 {range_summary}
 
+### 4. Quantitative Trend Analysis
+{quant_signals}
+
 ---
 
 ## DATA USED SECTION
@@ -361,6 +373,110 @@ Please analyze the historical data covering:
 - **Historical Gaps**: Missing dates indicate non-trading days (weekends, holidays)
 - **Corporate Actions**: Stock splits or dividends may affect historical comparisons
 - **Data Quality**: Historical data accuracy depends on source reliability
+"""
+
+
+# Template for Treasury/Fixed Income Analysis
+TREASURY_TEMPLATE = """## Analysis Request: Treasury Market Analysis
+
+### DATE: {market_date}
+### KEY RATES: Policy: {policy_rate}%, KIBOR 6M: {kibor_6m}%
+
+---
+
+## DATA PROVIDED
+
+### 1. Yield Curve (PKRV)
+{yield_curve_data}
+
+### 2. Recent T-Bill Auctions
+{tbill_auction_data}
+
+### 3. Recent PIB Auctions
+{pib_auction_data}
+
+### 4. Secondary Market Rates
+{secondary_rates_data}
+
+---
+
+## ANALYSIS REQUEST
+Analyze the fixed income market conditions:
+1. **Yield Curve Shape** - Normal, inverted, or flat? What does it signal about future expectations?
+2. **Auction Trends** - Are yields rising or falling? How is participation/bid cover?
+3. **Spread Analysis** - Spread between Policy Rate and Cutoff Yields.
+4. **Monetary Policy Outlook** - Based on market rates, what is the market pricing in?
+
+## HARD RULES
+- Cite specific yields and basis points (bps)
+- Compare current auction results to previous ones
+"""
+
+
+# Template for FX Market Analysis
+FX_TEMPLATE = """## Analysis Request: FX Market Analysis
+
+### DATE: {market_date}
+### BASE CURRENCY: PKR
+
+---
+
+## DATA PROVIDED
+
+### 1. Interbank Rates (SBP)
+{interbank_rates}
+
+### 2. Open Market Rates
+{open_market_rates}
+
+### 3. Kerb/Retail Rates
+{kerb_rates}
+
+### 4. Historical Trend (30 Days)
+{fx_trend_data}
+
+---
+
+## ANALYSIS REQUEST
+Analyze the currency market:
+1. **USD/PKR Trend** - Direction and volatility in interbank market.
+2. **Spread Analysis** - Gap between Interbank and Open Market/Kerb rates (Premium/Discount).
+3. **Major Cross Rates** - Performance against EUR, GBP, AED.
+4. **Outlook** - Key pressures on the currency (reserves, imports, etc. if known).
+
+## HARD RULES
+- Calculate the spread in PKR and % terms
+- Highlight any significant divergence between markets
+"""
+
+
+# Template for Mutual Fund Analysis
+FUNDS_TEMPLATE = """## Analysis Request: Mutual Fund Analysis
+
+### FUND: {fund_name}
+### CATEGORY: {fund_category}
+### AMC: {amc_name}
+
+---
+
+## DATA PROVIDED
+
+### 1. Fund Profile & NAV
+{fund_profile}
+
+### 2. Performance History
+{fund_performance}
+
+### 3. Peer Comparison (Category Average)
+{peer_comparison}
+
+---
+
+## ANALYSIS REQUEST
+Analyze the fund's performance:
+1. **Return Analysis** - Performance vs Benchmark and Category peers (1M, 1Y, YTD).
+2. **Risk Assessment** - Volatility and consistency of returns.
+3. **Suitability** - Who is this fund for? (Conservative/Aggressive investors).
 """
 
 
@@ -411,6 +527,9 @@ class PromptBuilder:
             InsightMode.INTRADAY: INTRADAY_TEMPLATE,
             InsightMode.MARKET: MARKET_SUMMARY_TEMPLATE,
             InsightMode.HISTORY: HISTORY_TEMPLATE,
+            InsightMode.TREASURY: TREASURY_TEMPLATE,
+            InsightMode.FX: FX_TEMPLATE,
+            InsightMode.FUNDS: FUNDS_TEMPLATE,
         }
 
     @property
@@ -489,6 +608,7 @@ class PromptBuilder:
             "trading_days": "0",
             "corporate_announcements_data": "No recent corporate announcements",
             "corporate_events_data": "No upcoming corporate events",
+            "quant_signals": "No quantitative signals calculated",
         }
 
     def _format_data_fields(self, kwargs: dict) -> dict:

@@ -556,3 +556,44 @@ class MultiProviderClient:
     def get_active_client(self) -> BaseLLMClient:
         """Get the currently active client (primary)."""
         return self.primary
+
+
+# =============================================================================
+# Convenience Function
+# =============================================================================
+
+def get_completion(prompt: str, system: str | None = None) -> str:
+    """Simple convenience function for one-shot completions.
+
+    Auto-detects available API key and uses the appropriate provider.
+
+    Args:
+        prompt: User prompt text
+        system: Optional system prompt
+
+    Returns:
+        Model response text
+
+    Raises:
+        LLMAuthError: If no API key is configured
+    """
+    from .config import get_api_key, LLMProvider, ModelConfig
+
+    # Auto-detect provider
+    if get_api_key(LLMProvider.ANTHROPIC):
+        config = ModelConfig(
+            provider=LLMProvider.ANTHROPIC,
+            model_id="claude-sonnet-4-20250514",
+        )
+    elif get_api_key(LLMProvider.OPENAI):
+        config = ModelConfig(
+            provider=LLMProvider.OPENAI,
+            model_id="gpt-4o-mini",
+        )
+    else:
+        raise LLMAuthError("No API key configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY.")
+
+    client = create_client(config)
+    messages = [{"role": "user", "content": prompt}]
+    response = client.create_message(messages, system=system)
+    return response.text
