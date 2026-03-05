@@ -4,7 +4,7 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 
-from pakfindata.ui.components.helpers import get_connection, render_footer
+from pakfindata.ui.components.helpers import get_connection, render_ai_commentary, render_footer
 from pakfindata.sync_mufap import (
     seed_mutual_funds,
     sync_daily_nav,
@@ -33,195 +33,280 @@ def render_fund_explorer():
     except Exception:
         pass
 
-    try:
-        tab_mf, tab_etf, tab_vps, tab_top, tab_compare, tab_risk = st.tabs([
-            "Mutual Funds", "ETFs", "VPS Pension", "Top Performers",
-            "Compare Funds", "Risk Metrics",
-        ])
+    tab_mf, tab_etf, tab_vps, tab_top, tab_compare, tab_risk, tab_sync = st.tabs([
+        "Mutual Funds", "ETFs", "VPS Pension", "Top Performers",
+        "Compare Funds", "Risk Metrics", "Sync & Tools",
+    ])
 
-        with tab_mf:
+    with tab_mf:
+        try:
             _render_category_summary(con)
             _render_fund_directory(con)
-        with tab_etf:
-            _render_etf_section(con)
-        with tab_vps:
-            _render_vps_section(con)
-        with tab_top:
-            _render_top_performers(con)
-        with tab_compare:
-            _render_fund_comparison(con)
-        with tab_risk:
-            _render_risk_metrics(con)
+        except Exception as e:
+            st.error(f"Error loading mutual funds: {e}")
 
-    except Exception as e:
-        st.error(f"Error loading fund data: {e}")
-
-    # Sync section
-    st.markdown("---")
-    with st.expander("Sync Fund Data"):
-        # Show latest NAV date so user knows how fresh the data is
+    with tab_etf:
         try:
-            latest_nav = con.execute(
-                "SELECT MAX(date) FROM fund_nav_latest"
-            ).fetchone()[0]
-            if latest_nav:
-                st.caption(f"Latest NAV date in DB: **{latest_nav}**")
-        except Exception:
-            pass
+            _render_etf_section(con)
+        except Exception as e:
+            st.error(f"Error loading ETFs: {e}")
 
-        c1, c2, c3, c4, c5, c6 = st.columns(6)
+    with tab_vps:
+        try:
+            _render_vps_section(con)
+        except Exception as e:
+            st.error(f"Error loading VPS data: {e}")
 
-        with c1:
-            if st.button("Seed Funds", type="primary", key="fexp_seed_funds"):
-                with st.spinner("Seeding mutual funds from MUFAP..."):
-                    try:
-                        result = seed_mutual_funds()
-                        st.success(
-                            f"Seeded {result.get('inserted', 0)} funds "
-                            f"(Failed: {result.get('failed', 0)})"
-                        )
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Sync failed: {e}")
+    with tab_top:
+        try:
+            _render_top_performers(con)
+        except Exception as e:
+            st.error(f"Error loading top performers: {e}")
 
-        with c2:
-            if st.button("Daily NAV", type="primary", key="fexp_daily_nav"):
-                with st.spinner("Fetching today's NAV for all funds (single request)..."):
-                    try:
-                        summary = sync_daily_nav()
-                        from pakfindata.db.repositories.fixed_income import refresh_fund_nav_latest
-                        refresh_fund_nav_latest(con)
-                        _load_fund_directory.clear()
-                        st.success(
-                            f"Daily sync: {summary.ok} funds updated, "
-                            f"{summary.rows_upserted} NAV rows "
-                            f"({summary.no_data} unmatched)"
-                        )
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Daily sync failed: {e}")
+    with tab_compare:
+        try:
+            _render_fund_comparison(con)
+        except Exception as e:
+            st.error(f"Error loading comparison: {e}")
 
-        with c3:
-            if st.button("Sync NAV History", key="fexp_sync_nav"):
+    with tab_risk:
+        try:
+            _render_risk_metrics(con)
+        except Exception as e:
+            st.error(f"Error loading risk metrics: {e}")
+
+    with tab_sync:
+        try:
+            _render_sync_tools(con)
+        except Exception as e:
+            st.error(f"Error loading sync tools: {e}")
+
+    # AI Commentary (after sync buttons so buttons always render)
+    try:
+        st.divider()
+        render_ai_commentary(con, "FUNDS")
+    except Exception:
+        pass
+
+    render_footer()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sync & Tools Tab
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _render_sync_tools(con):
+    """Render sync buttons and scraper tools inside the Sync & Tools tab."""
+    st.markdown("### Sync Fund Data")
+
+    # Show latest NAV date so user knows how fresh the data is
+    try:
+        latest_nav = con.execute(
+            "SELECT MAX(date) FROM fund_nav_latest"
+        ).fetchone()[0]
+        if latest_nav:
+            st.caption(f"Latest NAV date in DB: **{latest_nav}**")
+    except Exception:
+        pass
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+
+    with c1:
+        if st.button("Seed Funds", type="primary", key="fexp_seed_funds"):
+            with st.spinner("Seeding mutual funds from MUFAP..."):
                 try:
-                    progress_bar = st.progress(0, text="Starting parallel NAV sync (10 workers)...")
-                    def _nav_progress(current, total, fund_id):
-                        pct = current / total if total else 0
-                        progress_bar.progress(pct, text=f"Synced {current}/{total}: {fund_id}")
-                    summary = sync_mutual_funds_parallel(
-                        source="AUTO", max_workers=10,
-                        progress_callback=_nav_progress,
-                    )
-                    progress_bar.progress(1.0, text="Refreshing summary tables...")
-                    from pakfindata.db.repositories.fixed_income import refresh_fund_nav_latest
-                    refresh_fund_nav_latest(con)
-                    _load_fund_directory.clear()
-                    progress_bar.empty()
+                    result = seed_mutual_funds()
                     st.success(
-                        f"Synced {summary.ok} funds, "
-                        f"{summary.rows_upserted} NAV records "
-                        f"(skipped {summary.no_data} up-to-date)"
+                        f"Seeded {result.get('inserted', 0)} funds "
+                        f"(Failed: {result.get('failed', 0)})"
                     )
                     st.rerun()
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
 
-        with c4:
-            if st.button("Sync Performance", key="fexp_sync_perf"):
-                with st.spinner("Fetching MUFAP performance data (tab=1)..."):
-                    try:
-                        result = sync_performance()
-                        if result.get("status") == "ok":
-                            from pakfindata.db.repositories.fixed_income import refresh_fund_performance_latest
-                            refresh_fund_performance_latest(con)
-                            _load_fund_directory.clear()
-                            st.success(
-                                f"Stored {result['funds_synced']} fund returns "
-                                f"({result['categories']} categories, {result['date']})"
-                            )
-                        else:
-                            st.error(result.get("error", "Unknown error"))
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Sync failed: {e}")
-
-        with c5:
-            if st.button("Sync Expense", key="fexp_sync_expense"):
-                with st.spinner("Fetching expense ratios (tab=5)..."):
-                    try:
-                        result = sync_expense_ratios()
-                        if result.get("status") == "ok":
-                            st.success(f"Updated {result['updated']} funds")
-                        else:
-                            st.error(result.get("error", "Unknown error"))
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Sync failed: {e}")
-
-        with c6:
-            if st.button("Sync ETFs", key="fexp_sync_etfs"):
-                with st.spinner("Syncing ETF data..."):
-                    try:
-                        result = ETFScraper().sync_all_etfs(con)
-                        st.success(
-                            f"ETFs: {result.get('ok', 0)} synced, "
-                            f"{result.get('failed', 0)} failed"
-                        )
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Sync failed: {e}")
-
-        # NAV CSV Export via browser (Highcharts scraper)
-        st.markdown("---")
-        st.caption("**NAV CSV Export** — Browser-based Highcharts scraper (undetected-chromedriver + Xvfb)")
-        nav_c1, nav_c2, nav_c3 = st.columns([2, 1, 1])
-        with nav_c1:
-            nav_fund_id = st.text_input(
-                "Fund ID (blank = all funds)",
-                value="", key="fexp_nav_csv_fund_id",
-                placeholder="e.g. 12768",
-            )
-        with nav_c2:
-            nav_no_xvfb = st.checkbox("No Xvfb", key="fexp_nav_no_xvfb",
-                                       help="Skip Xvfb if WSLg/X11 display available")
-        with nav_c3:
-            if st.button("Export NAV CSV", type="primary", key="fexp_nav_csv_export"):
+    with c2:
+        if st.button("Daily NAV", type="primary", key="fexp_daily_nav"):
+            with st.spinner("Fetching today's NAV for all funds (single request)..."):
                 try:
-                    from mufap_nav_downloader import run_download
-
-                    fid = int(nav_fund_id.strip()) if nav_fund_id.strip() else None
-                    label = f"fund {fid}" if fid else "all funds"
-
-                    progress_bar = st.progress(0, text=f"Starting NAV CSV export ({label})...")
-
-                    def _nav_csv_progress(current, total, info):
-                        pct = current / total if total else 0
-                        progress_bar.progress(pct, text=f"[{current}/{total}] {info}")
-
-                    summary = run_download(
-                        fund_id=fid,
-                        no_xvfb=nav_no_xvfb,
-                        progress_callback=_nav_csv_progress,
-                    )
-                    progress_bar.progress(1.0, text="Done!")
+                    summary = sync_daily_nav()
+                    from pakfindata.db.repositories.fixed_income import refresh_fund_nav_latest
+                    refresh_fund_nav_latest(con)
+                    _load_fund_directory.clear()
                     st.success(
-                        f"NAV CSV Export: {summary['saved']} saved, "
-                        f"{summary['skipped']} skipped, "
-                        f"{summary['errors']} errors"
+                        f"Daily sync: {summary.ok} funds updated, "
+                        f"{summary.rows_upserted} NAV rows "
+                        f"({summary.no_data} unmatched)"
                     )
-                    if summary.get("api_endpoints"):
-                        with st.expander("Discovered API Endpoints"):
-                            for ep in summary["api_endpoints"]:
-                                st.code(f"{ep['method']} {ep['url']}", language=None)
-                except ImportError:
-                    st.error(
-                        "mufap_nav_downloader.py not found in project root. "
-                        "Ensure it exists and undetected-chromedriver is installed."
-                    )
+                    st.rerun()
                 except Exception as e:
-                    st.error(f"NAV CSV export failed: {e}")
+                    st.error(f"Daily sync failed: {e}")
 
-    render_footer()
+    with c3:
+        if st.button("Sync NAV History", key="fexp_sync_nav"):
+            try:
+                progress_bar = st.progress(0, text="Starting parallel NAV sync (10 workers)...")
+                def _nav_progress(current, total, fund_id):
+                    pct = current / total if total else 0
+                    progress_bar.progress(pct, text=f"Synced {current}/{total}: {fund_id}")
+                summary = sync_mutual_funds_parallel(
+                    source="AUTO", max_workers=10,
+                    progress_callback=_nav_progress,
+                )
+                progress_bar.progress(1.0, text="Refreshing summary tables...")
+                from pakfindata.db.repositories.fixed_income import refresh_fund_nav_latest
+                refresh_fund_nav_latest(con)
+                _load_fund_directory.clear()
+                progress_bar.empty()
+                st.success(
+                    f"Synced {summary.ok} funds, "
+                    f"{summary.rows_upserted} NAV records "
+                    f"(skipped {summary.no_data} up-to-date)"
+                )
+                st.rerun()
+            except Exception as e:
+                st.error(f"Sync failed: {e}")
+
+    with c4:
+        if st.button("Sync Performance", key="fexp_sync_perf"):
+            with st.spinner("Fetching MUFAP performance data (tab=1)..."):
+                try:
+                    result = sync_performance()
+                    if result.get("status") == "ok":
+                        from pakfindata.db.repositories.fixed_income import refresh_fund_performance_latest
+                        refresh_fund_performance_latest(con)
+                        _load_fund_directory.clear()
+                        st.success(
+                            f"Stored {result['funds_synced']} fund returns "
+                            f"({result['categories']} categories, {result['date']})"
+                        )
+                    else:
+                        st.error(result.get("error", "Unknown error"))
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Sync failed: {e}")
+
+    with c5:
+        if st.button("Sync Expense", key="fexp_sync_expense"):
+            with st.spinner("Fetching expense ratios (tab=5)..."):
+                try:
+                    result = sync_expense_ratios()
+                    if result.get("status") == "ok":
+                        st.success(f"Updated {result['updated']} funds")
+                    else:
+                        st.error(result.get("error", "Unknown error"))
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Sync failed: {e}")
+
+    with c6:
+        if st.button("Sync ETFs", key="fexp_sync_etfs"):
+            with st.spinner("Syncing ETF data..."):
+                try:
+                    result = ETFScraper().sync_all_etfs(con)
+                    st.success(
+                        f"ETFs: {result.get('ok', 0)} synced, "
+                        f"{result.get('failed', 0)} failed"
+                    )
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Sync failed: {e}")
+
+    # NAV CSV Export via browser (Highcharts scraper)
+    st.markdown("---")
+    st.caption("**NAV CSV Export** — Browser-based Highcharts scraper (undetected-chromedriver + Xvfb)")
+    nav_c1, nav_c2, nav_c3 = st.columns([2, 1, 1])
+    with nav_c1:
+        nav_fund_id = st.text_input(
+            "Fund ID (blank = all funds)",
+            value="", key="fexp_nav_csv_fund_id",
+            placeholder="e.g. 12768",
+        )
+    with nav_c2:
+        nav_no_xvfb = st.checkbox("No Xvfb", key="fexp_nav_no_xvfb",
+                                   help="Skip Xvfb if WSLg/X11 display available")
+    with nav_c3:
+        if st.button("Export NAV CSV", type="primary", key="fexp_nav_csv_export"):
+            try:
+                from mufap_nav_downloader import run_download
+
+                fid = int(nav_fund_id.strip()) if nav_fund_id.strip() else None
+                label = f"fund {fid}" if fid else "all funds"
+
+                progress_bar = st.progress(0, text=f"Starting NAV CSV export ({label})...")
+
+                def _nav_csv_progress(current, total, info):
+                    pct = current / total if total else 0
+                    progress_bar.progress(pct, text=f"[{current}/{total}] {info}")
+
+                summary = run_download(
+                    fund_id=fid,
+                    no_xvfb=nav_no_xvfb,
+                    progress_callback=_nav_csv_progress,
+                )
+                progress_bar.progress(1.0, text="Done!")
+                st.success(
+                    f"NAV CSV Export: {summary['saved']} saved, "
+                    f"{summary['skipped']} skipped, "
+                    f"{summary['errors']} errors"
+                )
+                if summary.get("api_endpoints"):
+                    with st.expander("Discovered API Endpoints"):
+                        for ep in summary["api_endpoints"]:
+                            st.code(f"{ep['method']} {ep['url']}", language=None)
+            except ImportError:
+                st.error(
+                    "mufap_nav_downloader.py not found in project root. "
+                    "Ensure it exists and undetected-chromedriver is installed."
+                )
+            except Exception as e:
+                st.error(f"NAV CSV export failed: {e}")
+
+    # MUFAP NAV History Scraper (DrissionPage)
+    st.markdown("---")
+    st.caption(
+        "**NAV History Scraper** — DrissionPage bulk scraper "
+        "(reads fund_masters.csv, saves per-fund CSVs to nav_history/)"
+    )
+    scraper_c1, scraper_c2 = st.columns([3, 1])
+    with scraper_c1:
+        st.markdown(
+            "`/mnt/e/psxdata/mufapnav/nav_history/` — "
+            "Skips funds already scraped (CSV exists)"
+        )
+    with scraper_c2:
+        if st.button("Scrape NAV History", type="primary", key="fexp_nav_history_scrape"):
+            try:
+                import importlib
+                import sys as _sys
+                scraper_dir = "/mnt/e/psxdata/mufapnav"
+                if scraper_dir not in _sys.path:
+                    _sys.path.insert(0, scraper_dir)
+
+                import mufap_nav_scraper
+                importlib.reload(mufap_nav_scraper)
+
+                progress_bar = st.progress(0, text="Starting NAV history scraper...")
+
+                def _scraper_progress(current, total, info):
+                    pct = current / total if total else 0
+                    progress_bar.progress(pct, text=info)
+
+                summary = mufap_nav_scraper.main(progress_callback=_scraper_progress)
+                progress_bar.progress(1.0, text="Done!")
+                st.success(
+                    f"NAV History Scraper: {summary['scraped']} scraped, "
+                    f"{summary['skipped']} skipped, "
+                    f"{summary['failed']} failed "
+                    f"(total: {summary['total']})"
+                )
+            except ImportError as e:
+                st.error(
+                    f"mufap_nav_scraper.py not found at /mnt/e/psxdata/mufapnav/. "
+                    f"Ensure DrissionPage is installed. ({e})"
+                )
+            except Exception as e:
+                st.error(f"NAV history scraper failed: {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
