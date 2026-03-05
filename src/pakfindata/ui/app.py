@@ -4,6 +4,9 @@ PakFinData Explorer - Streamlit Dashboard.
 Run with: streamlit run src/pakfindata/ui/app.py
 """
 
+from dotenv import load_dotenv
+load_dotenv()  # Load .env file (OPENAI_API_KEY, etc.)
+
 from datetime import datetime, timedelta
 import sys
 import time
@@ -1021,6 +1024,11 @@ def benchmark_monitor_page():
     render_benchmark_monitor()
 
 
+def debt_terminal_page():
+    from pakfindata.ui.page_views.debt_terminal import render_debt_terminal
+    render_debt_terminal()
+
+
 def vps_pension_page():
     from pakfindata.ui.page_views.fund_explorer import render_vps_standalone
     render_vps_standalone()
@@ -1120,6 +1128,8 @@ def main():
         "Treasury Auctions":  st.Page(treasury_auctions_page, title="Treasury Auctions",  url_path="treasury-auctions"),
         "Bond Market":        st.Page(bond_market_otc_page,   title="Bond Market",        url_path="bond-market"),
         "Benchmark Monitor":  st.Page(benchmark_monitor_page, title="Benchmark Monitor",  url_path="benchmark"),
+        "Debt Terminal":      st.Page(debt_terminal_page,    title="Debt Terminal",      url_path="debt-terminal"),
+        "Treasury":           st.Page(treasury_dashboard_page,  title="Treasury",         url_path="treasury"),
         # FUNDS
         "Fund Explorer":      st.Page(fund_explorer_page,     title="Fund Explorer",      url_path="fund-explorer"),
         "VPS Pension":        st.Page(vps_pension_page,       title="VPS Pension",        url_path="vps-pension"),
@@ -1128,11 +1138,14 @@ def main():
         "ETFs":               st.Page(etfs_page,              title="ETFs",               url_path="etfs"),
         # FX & RATES
         "Currency Dashboard": st.Page(currency_dashboard_page, title="Currency Dashboard", url_path="currency-dashboard"),
+        "FX Dashboard":       st.Page(fx_dashboard_page,        title="FX Dashboard",     url_path="fx-dashboard"),
         "Interbank vs Open":  st.Page(fx_interbank_page,      title="Interbank vs Open",  url_path="fx-interbank"),
         "Rate History":       st.Page(fx_history_page,        title="Rate History",       url_path="fx-history"),
         # COMMODITIES
         "Commodities":        st.Page(commodities_page,        title="Commodities",        url_path="commodities"),
         "PMEX":               st.Page(pmex_page,               title="PMEX",               url_path="pmex"),
+        # RESEARCH
+        "Research":           st.Page(research_terminal_page,   title="Research",          url_path="research"),
         # ADMIN
         "Data Status":        st.Page(data_status_page,       title="Data Status",        url_path="data-status"),
         "Sync Center":        st.Page(sync_center_page,       title="Sync Center",        url_path="sync-center"),
@@ -1147,11 +1160,13 @@ def main():
                             "Intraday", "Live Ticker",
                             "Futures & Odd Lot", "Post Close"],
         "FIXED INCOME":    ["Rates Overview", "Yield Curves", "Treasury Auctions",
-                            "Bond Market", "Benchmark Monitor"],
+                            "Bond Market", "Benchmark Monitor", "Debt Terminal",
+                            "Treasury"],
         "FUNDS":           ["Fund Explorer", "VPS Pension", "Top Performers",
                             "Fund Analytics", "ETFs"],
-        "FX & RATES":      ["Currency Dashboard", "Interbank vs Open", "Rate History"],
+        "FX & RATES":      ["Currency Dashboard", "FX Dashboard", "Interbank vs Open", "Rate History"],
         "COMMODITIES":     ["Commodities", "PMEX"],
+        "RESEARCH":        ["Research"],
         "ADMIN":           ["Data Status", "Sync Center", "Schema Explorer"],
     }
 
@@ -1172,12 +1187,10 @@ def main():
         "Yield Curve":      st.Page(yield_curve_page,         title="Yield Curve",      url_path="yield-curve"),
         "Sukuk":            st.Page(sukuk_screener_page,      title="Sukuk",            url_path="sukuk"),
         "SBP Auctions":     st.Page(sbp_auction_archive_page, title="SBP Auctions",    url_path="sbp-auctions"),
-        "Treasury":         st.Page(treasury_dashboard_page,  title="Treasury",         url_path="treasury"),
         "Global Rates":     st.Page(global_rates_page,        title="Global Rates",     url_path="global-rates"),
         "NPC Rates":        st.Page(npc_rates_page,           title="NPC Rates",        url_path="npc-rates"),
         "FX Monitor":       st.Page(fx_overview_page,         title="FX Monitor",       url_path="fx-monitor"),
         "FX Analytics":     st.Page(fx_impact_page,           title="FX Analytics",     url_path="fx-analytics"),
-        "FX Dashboard":     st.Page(fx_dashboard_page,        title="FX Dashboard",     url_path="fx-dashboard"),
         "Fund Directory":   st.Page(mutual_funds_page,        title="Fund Directory",   url_path="fund-directory"),
         "Data Sync":        st.Page(data_acquisition_page,    title="Data Sync",        url_path="data-sync"),
         "EOD Loader":       st.Page(eod_data_loader_page,     title="EOD Loader",       url_path="eod-loader"),
@@ -1187,7 +1200,6 @@ def main():
         "Website Scan":     st.Page(website_scan_page,        title="Website Scan",     url_path="website-scan"),
         "AI Chat":          st.Page(chat_page,                title="AI Chat",          url_path="ai-chat"),
         "AI Insights":      st.Page(ai_insights_page,         title="AI Insights",      url_path="ai-insights"),
-        "Research":         st.Page(research_terminal_page,   title="Research",          url_path="research"),
         "Settings":         st.Page(settings_page,            title="Settings",          url_path="settings"),
     }
 

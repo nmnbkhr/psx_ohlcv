@@ -40,6 +40,7 @@ from pakfindata.ui.components.helpers import (
     get_freshness_badge,
     render_data_info,
     render_data_warning,
+    render_domain_freshness_bar,
     render_footer,
     render_market_status_badge,
 )
@@ -288,6 +289,9 @@ def render_dashboard():
                     f'{sync_indicator} Auto-Sync: {"ON" if service_running else "OFF"}</div>',
                     unsafe_allow_html=True
                 )
+
+        # ── Data Freshness Bar ──────────────────────────────────────
+        render_domain_freshness_bar(con)
 
         # ── Refresh All logic ────────────────────────────────────────
         if refresh_all:
