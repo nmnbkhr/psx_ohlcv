@@ -8,7 +8,7 @@ Max:      3 months per request
 
 Column Mapping (confirmed):
   Trader_Id     → symbol
-  Post_Date     → trading_date (MM/DD/YYYY)
+  Post_Date     → trading_date (DD/MM/YYYY)
   Trader_Name   → open
   Trans_Id      → high
   Amount        → low
@@ -78,7 +78,7 @@ def _parse_response(data: list) -> pd.DataFrame:
 
     # Parse date
     df["trading_date"] = pd.to_datetime(
-        df["trading_date"], format="%m/%d/%Y", errors="coerce"
+        df["trading_date"], format="%d/%m/%Y", errors="coerce"
     )
     # Drop rows with unparseable dates
     df = df.dropna(subset=["trading_date"])

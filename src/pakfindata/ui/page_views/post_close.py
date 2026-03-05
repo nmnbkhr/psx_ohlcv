@@ -1,8 +1,12 @@
 """Post-close turnover page — download and manage turnover data."""
 
+from pathlib import Path
+
 import streamlit as st
 
+from pakfindata.config import DATA_ROOT
 from pakfindata.ui.components.helpers import (
+    EXPORTS_DIR,
     get_connection,
     render_footer,
     render_market_status_badge,
@@ -307,6 +311,27 @@ def render_post_close():
                 with col3:
                     st.metric("Total Volume", f"{df['volume'].sum():,.0f}")
 
+                # Export buttons
+                exp_col1, exp_col2 = st.columns(2)
+                with exp_col1:
+                    csv_data = df[["symbol", "company_name", "volume", "turnover"]].to_csv(index=False)
+                    st.download_button(
+                        "Download CSV",
+                        data=csv_data,
+                        file_name=f"post_close_turnover_{selected_date}.csv",
+                        mime="text/csv",
+                        key="pc_csv_download",
+                    )
+                with exp_col2:
+                    if st.button("Save to Disk", key="pc_save_disk"):
+                        save_dir = EXPORTS_DIR / "post_close"
+                        save_dir.mkdir(parents=True, exist_ok=True)
+                        save_path = save_dir / f"turnover_{selected_date}.csv"
+                        df[["symbol", "company_name", "volume", "turnover"]].to_csv(
+                            save_path, index=False
+                        )
+                        st.success(f"Saved to {save_path}")
+
                 # Display table sorted by turnover descending
                 display_cols = ["symbol", "company_name", "volume", "turnover"]
                 df_display = df[display_cols].copy()
@@ -320,6 +345,28 @@ def render_post_close():
                 st.dataframe(df_display, use_container_width=True, height=400)
             else:
                 st.info("No data for selected date.")
+
+        # Bulk export all dates
+        st.markdown("---")
+        if st.button("Export All Dates to Disk", key="pc_export_all"):
+            save_dir = EXPORTS_DIR / "post_close"
+            save_dir.mkdir(parents=True, exist_ok=True)
+            all_dates = get_post_close_dates(con)
+            for d in all_dates:
+                d_df = get_post_close(con, date=d, limit=5000)
+                if not d_df.empty:
+                    d_df[["symbol", "company_name", "volume", "turnover"]].to_csv(
+                        save_dir / f"turnover_{d}.csv", index=False
+                    )
+            st.success(f"Exported {len(all_dates)} files to {save_dir}")
+
+        # Show raw ZIP file location
+        raw_dir = DATA_ROOT / "market_summary" / "post_close"
+        if raw_dir.exists():
+            zips = sorted(raw_dir.glob("*.zip"), reverse=True)
+            if zips:
+                st.caption(f"Raw ZIP files: {raw_dir} ({len(zips)} files)")
+
         else:
             st.info("No turnover data loaded yet. Use the tabs above to download.")
 

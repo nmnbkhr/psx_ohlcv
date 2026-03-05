@@ -30,10 +30,34 @@ INT_URL = f"{PSX_BASE}/timeseries/int/{{symbol}}"
 PROGRESS_FILE = DATA_ROOT / "intraday_sync_progress.json"
 
 
+def _get_futures_odl_symbols(con: sqlite3.Connection) -> list[str]:
+    """Get distinct active futures & ODL symbols from futures_eod.
+
+    Returns only current-month and next-month contracts (active ones),
+    plus all ODL symbols that have recent data.
+    """
+    # Get futures symbols with data in last 60 days (active contracts)
+    rows = con.execute(
+        """SELECT DISTINCT symbol FROM futures_eod
+           WHERE date >= date('now', '-60 days')
+             AND market_type IN ('FUT', 'IDX_FUT', 'ODL', 'CONT')
+           ORDER BY symbol"""
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
 def _write_progress(data: dict) -> None:
-    tmp = PROGRESS_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data))
-    tmp.replace(PROGRESS_FILE)
+    try:
+        PROGRESS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = PROGRESS_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data))
+        tmp.replace(PROGRESS_FILE)
+    except OSError:
+        # Fallback: write directly if atomic replace fails
+        try:
+            PROGRESS_FILE.write_text(json.dumps(data))
+        except OSError:
+            pass
 
 
 def read_intraday_sync_progress() -> dict | None:
@@ -117,6 +141,7 @@ def sync_intraday_all(
     symbols: list[str] | None = None,
     delay: float = 0.3,
     save_json: bool = False,
+    include_futures_odl: bool = False,
 ) -> dict:
     """Sync today's intraday ticks for all symbols into intraday_bars.
 
@@ -125,12 +150,20 @@ def sync_intraday_all(
         symbols: List of symbols to sync (default: all)
         delay: Delay between requests in seconds
         save_json: If True, save raw JSON responses to DATA_ROOT/intraday/{date}/{SYMBOL}.json
+        include_futures_odl: If True, also sync futures, index futures, ODL, and continuous symbols
     """
     con = connect(db_path)
     init_schema(con)
 
     if symbols is None:
         symbols = get_symbols_list(con)
+        if include_futures_odl:
+            existing = set(symbols)
+            extra = _get_futures_odl_symbols(con)
+            new_syms = [s for s in extra if s not in existing]
+            if new_syms:
+                log.info("Adding %d futures/ODL symbols to intraday sync", len(new_syms))
+                symbols = symbols + new_syms
 
     total = len(symbols)
     session = create_session()
@@ -235,14 +268,20 @@ def sync_intraday_all(
 _int_thread: threading.Thread | None = None
 
 
-def start_intraday_sync(db_path=None, save_json: bool = False) -> bool:
+def start_intraday_sync(
+    db_path=None, save_json: bool = False, include_futures_odl: bool = False,
+) -> bool:
     """Launch intraday sync in a background thread. Returns False if already running."""
     global _int_thread
     if _int_thread is not None and _int_thread.is_alive():
         return False
     _int_thread = threading.Thread(
         target=sync_intraday_all,
-        kwargs={"db_path": db_path, "save_json": save_json},
+        kwargs={
+            "db_path": db_path,
+            "save_json": save_json,
+            "include_futures_odl": include_futures_odl,
+        },
         daemon=True, name="intraday-sync",
     )
     _int_thread.start()
