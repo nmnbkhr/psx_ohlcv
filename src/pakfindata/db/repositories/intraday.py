@@ -309,6 +309,8 @@ def promote_intraday_to_eod(
     con.row_factory = sqlite3.Row
 
     # Step 1: aggregate intraday_bars into OHLCV per symbol
+    ts_start = f"{date} 00:00:00"
+    ts_end = f"{date} 23:59:59"
     rows = con.execute(
         """
         WITH ranked AS (
@@ -323,7 +325,7 @@ def promote_intraday_to_eod(
                     PARTITION BY symbol ORDER BY ts_epoch DESC
                 ) AS rn_last
             FROM intraday_bars
-            WHERE DATE(ts) = ?
+            WHERE ts BETWEEN ? AND ?
         )
         SELECT
             symbol,
@@ -336,7 +338,7 @@ def promote_intraday_to_eod(
         GROUP BY symbol
         HAVING COUNT(*) >= 2
         """,
-        (date,),
+        (ts_start, ts_end),
     ).fetchall()
 
     if not rows:
@@ -402,6 +404,7 @@ def promote_intraday_to_eod(
                 prev_close   = excluded.prev_close,
                 sector_code  = COALESCE(excluded.sector_code, eod_ohlcv.sector_code),
                 company_name = COALESCE(excluded.company_name, eod_ohlcv.company_name),
+                turnover     = COALESCE(eod_ohlcv.turnover, excluded.turnover),
                 ingested_at  = excluded.ingested_at,
                 source       = excluded.source,
                 processname  = excluded.processname

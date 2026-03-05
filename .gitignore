@@ -48,3 +48,4 @@ htmlcov/
 
 # Claude Code session state
 .claude_session_state.md
+.env
