@@ -900,11 +900,11 @@ def _render_auction_calendar(con):
 
     df = pd.read_sql_query(
         """SELECT 'T-Bill' as type, tenor, auction_date, cutoff_yield,
-                  amount_offered_billions, amount_accepted_billions
+                  target_amount_billions, amount_accepted_billions
            FROM tbill_auctions
            UNION ALL
            SELECT 'PIB' as type, tenor, auction_date, cutoff_yield,
-                  amount_offered_billions, amount_accepted_billions
+                  target_amount_billions, amount_accepted_billions
            FROM pib_auctions
            ORDER BY auction_date DESC
            LIMIT 30""",
@@ -951,7 +951,7 @@ def _render_auction_calendar(con):
             display.rename(columns={
                 "type": "Type", "tenor": "Tenor",
                 "auction_date": "Date", "cutoff_yield": "Yield (%)",
-                "amount_offered_billions": "Offered (B)",
+                "target_amount_billions": "Target (B)",
                 "amount_accepted_billions": "Accepted (B)",
             }),
             use_container_width=True, hide_index=True,
