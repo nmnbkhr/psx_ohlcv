@@ -446,10 +446,9 @@ def get_domain_freshness(_con) -> pd.DataFrame:
         date_col = d["date_column"]
         try:
             result = _con.execute(
-                f"SELECT MAX({date_col}) as last_date, COUNT(*) as cnt FROM [{table}]"
+                f"SELECT MAX({date_col}) as last_date FROM [{table}]"
             ).fetchone()
             last_date = str(result["last_date"])[:10] if result["last_date"] else None
-            cnt = result["cnt"] or 0
             if last_date:
                 days_old = (datetime.now() - datetime.strptime(last_date, "%Y-%m-%d")).days
                 status = "fresh" if days_old <= 1 else "stale" if days_old <= 3 else "old"
@@ -459,7 +458,6 @@ def get_domain_freshness(_con) -> pd.DataFrame:
         except Exception:
             last_date = None
             days_old = None
-            cnt = 0
             status = "error"
 
         rows.append({
@@ -467,7 +465,6 @@ def get_domain_freshness(_con) -> pd.DataFrame:
             "display_name": d["display_name"],
             "last_date": last_date,
             "days_old": days_old,
-            "row_count": cnt,
             "status": status,
         })
 
