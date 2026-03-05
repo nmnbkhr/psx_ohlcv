@@ -48,4 +48,22 @@ htmlcov/
 
 # Claude Code session state
 .claude_session_state.md
-.env
+
+# Data files
+*.db
+*.sqlite
+*.pkl
+*.parquet
+*.xlsx
+*.csv
+
+# Logs & scratch
+flog.txt
+downloaded_output.txt
+
+# Windows WSL Zone.Identifier artifacts
+*:Zone.Identifier
+
+# Scratch/prompt files
+*claude_code_prompt*.md
+claude-code-prompt-*.md
