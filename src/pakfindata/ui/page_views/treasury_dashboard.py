@@ -83,6 +83,15 @@ def render_treasury_dashboard():
         with col2:
             _render_pkfrv_bonds(con)
 
+        st.divider()
+        _render_policy_rate_timeline(con)
+
+        st.divider()
+        _render_spread_charts(con)
+
+        st.divider()
+        _render_auction_calendar(con)
+
     except Exception as e:
         st.error(f"Error loading treasury data: {e}")
 
@@ -768,3 +777,182 @@ def _render_pkfrv_bonds(con):
                     height=300, margin=dict(l=20, r=20, t=30, b=20),
                 )
                 st.plotly_chart(fig2, use_container_width=True)
+
+
+def _render_policy_rate_timeline(con):
+    """SBP Policy Rate timeline with key decision annotations."""
+    st.markdown("### SBP Policy Rate Timeline")
+
+    df = pd.read_sql_query(
+        "SELECT rate_date, policy_rate FROM sbp_policy_rates ORDER BY rate_date",
+        con,
+    )
+    if df.empty:
+        st.info("No policy rate data available")
+        return
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df["rate_date"], y=df["policy_rate"],
+        mode="lines+markers", name="Policy Rate",
+        line=dict(width=3, color="#E74C3C", shape="hv"),
+        marker=dict(size=6),
+        hovertemplate="Date: %{x}<br>Rate: %{y:.1f}%<extra></extra>",
+    ))
+
+    # Annotate rate changes
+    for i in range(1, len(df)):
+        prev = df.iloc[i - 1]["policy_rate"]
+        curr = df.iloc[i]["policy_rate"]
+        if prev != curr:
+            change = curr - prev
+            color = "#FF1744" if change > 0 else "#00C853"
+            sign = "+" if change > 0 else ""
+            fig.add_annotation(
+                x=df.iloc[i]["rate_date"], y=curr,
+                text=f"{sign}{change:.0f}bps",
+                showarrow=True, arrowhead=2,
+                font=dict(size=10, color=color),
+                arrowcolor=color,
+            )
+
+    fig.update_layout(
+        xaxis_title="Date", yaxis_title="Rate (%)",
+        height=350, margin=dict(l=20, r=20, t=30, b=20),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_spread_charts(con):
+    """T-Bill and KIBOR spread analysis charts."""
+    st.markdown("### Rate Spreads")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        # T-Bill 6M vs 12M spread
+        df = pd.read_sql_query(
+            """SELECT a.auction_date as date,
+                      a.cutoff_yield as yield_6m,
+                      b.cutoff_yield as yield_12m,
+                      ROUND(b.cutoff_yield - a.cutoff_yield, 4) as spread
+               FROM tbill_auctions a
+               INNER JOIN tbill_auctions b
+                 ON a.auction_date = b.auction_date
+               WHERE a.tenor = '6M' AND b.tenor = '12M'
+               ORDER BY a.auction_date""",
+            con,
+        )
+        if not df.empty:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=df["date"], y=df["spread"],
+                mode="lines+markers", name="6M-12M Spread",
+                line=dict(width=2, color="#9B59B6"),
+                fill="tozeroy", fillcolor="rgba(155,89,182,0.1)",
+            ))
+            fig.add_hline(y=0, line_dash="dash", line_color="gray")
+            fig.update_layout(
+                title="T-Bill Spread (12M - 6M)",
+                yaxis_title="Spread (%)", height=300,
+                margin=dict(l=20, r=20, t=40, b=20),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No T-Bill spread data (need both 6M and 12M auctions)")
+
+    with col2:
+        # KIBOR 3M vs Policy Rate spread
+        df = pd.read_sql_query(
+            """SELECT k.date,
+                      k.offer as kibor_3m,
+                      (SELECT p.policy_rate FROM sbp_policy_rates p
+                       WHERE p.rate_date <= k.date ORDER BY p.rate_date DESC LIMIT 1
+                      ) as policy_rate
+               FROM kibor_daily k
+               WHERE k.tenor = '3M' AND k.offer IS NOT NULL
+               ORDER BY k.date""",
+            con,
+        )
+        if not df.empty and df["policy_rate"].notna().any():
+            df["spread"] = df["kibor_3m"] - df["policy_rate"]
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=df["date"], y=df["spread"],
+                mode="lines", name="KIBOR 3M - Policy",
+                line=dict(width=2, color="#E67E22"),
+                fill="tozeroy", fillcolor="rgba(230,126,34,0.1)",
+            ))
+            fig.add_hline(y=0, line_dash="dash", line_color="gray")
+            fig.update_layout(
+                title="KIBOR 3M vs Policy Rate Spread",
+                yaxis_title="Spread (%)", height=300,
+                margin=dict(l=20, r=20, t=40, b=20),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No KIBOR-Policy spread data")
+
+
+def _render_auction_calendar(con):
+    """Recent and upcoming auction timeline."""
+    st.markdown("### Auction Calendar")
+
+    df = pd.read_sql_query(
+        """SELECT 'T-Bill' as type, tenor, auction_date, cutoff_yield,
+                  amount_offered_billions, amount_accepted_billions
+           FROM tbill_auctions
+           UNION ALL
+           SELECT 'PIB' as type, tenor, auction_date, cutoff_yield,
+                  amount_offered_billions, amount_accepted_billions
+           FROM pib_auctions
+           ORDER BY auction_date DESC
+           LIMIT 30""",
+        con,
+    )
+
+    if df.empty:
+        st.info("No auction data available")
+        return
+
+    # Color by type
+    df["color"] = df["type"].map({"T-Bill": "#3498DB", "PIB": "#E74C3C"})
+
+    fig = go.Figure()
+    for atype, color in [("T-Bill", "#3498DB"), ("PIB", "#E74C3C")]:
+        sub = df[df["type"] == atype]
+        if not sub.empty:
+            fig.add_trace(go.Scatter(
+                x=sub["auction_date"], y=sub["cutoff_yield"],
+                mode="markers+text",
+                name=atype,
+                marker=dict(size=12, color=color, symbol="diamond"),
+                text=sub["tenor"],
+                textposition="top center",
+                textfont=dict(size=9),
+                hovertemplate=(
+                    "<b>%{text}</b> %{x}<br>"
+                    "Yield: %{y:.2f}%<br>"
+                    "<extra>%{fullData.name}</extra>"
+                ),
+            ))
+
+    fig.update_layout(
+        xaxis_title="Auction Date", yaxis_title="Cutoff Yield (%)",
+        height=350, margin=dict(l=20, r=20, t=30, b=20),
+        legend=dict(orientation="h", y=-0.15),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Table view
+    with st.expander("Auction Details"):
+        display = df.drop(columns=["color"], errors="ignore")
+        st.dataframe(
+            display.rename(columns={
+                "type": "Type", "tenor": "Tenor",
+                "auction_date": "Date", "cutoff_yield": "Yield (%)",
+                "amount_offered_billions": "Offered (B)",
+                "amount_accepted_billions": "Accepted (B)",
+            }),
+            use_container_width=True, hide_index=True,
+        )

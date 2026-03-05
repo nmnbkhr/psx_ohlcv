@@ -34,8 +34,9 @@ def render_fund_explorer():
         pass
 
     try:
-        tab_mf, tab_etf, tab_vps, tab_top = st.tabs([
+        tab_mf, tab_etf, tab_vps, tab_top, tab_compare, tab_risk = st.tabs([
             "Mutual Funds", "ETFs", "VPS Pension", "Top Performers",
+            "Compare Funds", "Risk Metrics",
         ])
 
         with tab_mf:
@@ -47,6 +48,10 @@ def render_fund_explorer():
             _render_vps_section(con)
         with tab_top:
             _render_top_performers(con)
+        with tab_compare:
+            _render_fund_comparison(con)
+        with tab_risk:
+            _render_risk_metrics(con)
 
     except Exception as e:
         st.error(f"Error loading fund data: {e}")
@@ -165,6 +170,56 @@ def render_fund_explorer():
                         st.rerun()
                     except Exception as e:
                         st.error(f"Sync failed: {e}")
+
+        # NAV CSV Export via browser (Highcharts scraper)
+        st.markdown("---")
+        st.caption("**NAV CSV Export** — Browser-based Highcharts scraper (undetected-chromedriver + Xvfb)")
+        nav_c1, nav_c2, nav_c3 = st.columns([2, 1, 1])
+        with nav_c1:
+            nav_fund_id = st.text_input(
+                "Fund ID (blank = all funds)",
+                value="", key="fexp_nav_csv_fund_id",
+                placeholder="e.g. 12768",
+            )
+        with nav_c2:
+            nav_no_xvfb = st.checkbox("No Xvfb", key="fexp_nav_no_xvfb",
+                                       help="Skip Xvfb if WSLg/X11 display available")
+        with nav_c3:
+            if st.button("Export NAV CSV", type="primary", key="fexp_nav_csv_export"):
+                try:
+                    from mufap_nav_downloader import run_download
+
+                    fid = int(nav_fund_id.strip()) if nav_fund_id.strip() else None
+                    label = f"fund {fid}" if fid else "all funds"
+
+                    progress_bar = st.progress(0, text=f"Starting NAV CSV export ({label})...")
+
+                    def _nav_csv_progress(current, total, info):
+                        pct = current / total if total else 0
+                        progress_bar.progress(pct, text=f"[{current}/{total}] {info}")
+
+                    summary = run_download(
+                        fund_id=fid,
+                        no_xvfb=nav_no_xvfb,
+                        progress_callback=_nav_csv_progress,
+                    )
+                    progress_bar.progress(1.0, text="Done!")
+                    st.success(
+                        f"NAV CSV Export: {summary['saved']} saved, "
+                        f"{summary['skipped']} skipped, "
+                        f"{summary['errors']} errors"
+                    )
+                    if summary.get("api_endpoints"):
+                        with st.expander("Discovered API Endpoints"):
+                            for ep in summary["api_endpoints"]:
+                                st.code(f"{ep['method']} {ep['url']}", language=None)
+                except ImportError:
+                    st.error(
+                        "mufap_nav_downloader.py not found in project root. "
+                        "Ensure it exists and undetected-chromedriver is installed."
+                    )
+                except Exception as e:
+                    st.error(f"NAV CSV export failed: {e}")
 
     render_footer()
 
@@ -413,6 +468,213 @@ def _render_fund_detail(con, fund_id):
         xaxis_title="Date", yaxis_title="NAV (PKR)",
         height=350, margin=dict(l=20, r=20, t=30, b=20),
         yaxis=dict(range=[nav_min - pad, nav_max + pad]),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Compare Funds Tab
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _render_fund_comparison(con):
+    """Compare up to 5 funds with normalized NAV overlay and benchmark."""
+    st.markdown("### Fund Comparison Tool")
+    st.caption("Select 2-5 funds to compare NAV performance (normalized to 100)")
+
+    funds = con.execute(
+        """SELECT fund_id, symbol, fund_name FROM mutual_funds
+           WHERE fund_id IN (SELECT DISTINCT fund_id FROM mutual_fund_nav)
+           ORDER BY fund_name"""
+    ).fetchall()
+
+    if not funds:
+        st.info("No funds with NAV history. Sync NAV data first.")
+        return
+
+    fund_options = {r["fund_id"]: f"{r['symbol']} \u2014 {r['fund_name']}" for r in funds}
+
+    selected = st.multiselect(
+        "Select funds to compare",
+        options=list(fund_options.keys()),
+        format_func=lambda x: fund_options.get(x, x),
+        max_selections=5,
+        key="compare_funds_select",
+    )
+
+    show_benchmark = st.checkbox("Overlay KSE-100 Index", value=True, key="compare_benchmark")
+
+    if len(selected) < 2:
+        st.info("Select at least 2 funds to compare")
+        return
+
+    fig = go.Figure()
+    colors = ["#FF6B35", "#4ECDC4", "#45B7D1", "#96CEB4", "#9B59B6"]
+
+    for i, fund_id in enumerate(selected):
+        df = pd.read_sql_query(
+            "SELECT date, nav FROM mutual_fund_nav WHERE fund_id = ? ORDER BY date",
+            con, params=(fund_id,),
+        )
+        if df.empty:
+            continue
+
+        base = df.iloc[0]["nav"]
+        if not base or base <= 0:
+            continue
+        df["normalized"] = (df["nav"] / base) * 100
+
+        label = fund_options.get(fund_id, str(fund_id))
+        if len(label) > 40:
+            label = label[:37] + "..."
+
+        fig.add_trace(go.Scatter(
+            x=df["date"], y=df["normalized"],
+            mode="lines", name=label,
+            line=dict(width=2, color=colors[i % len(colors)]),
+            hovertemplate=f"{label}<br>Date: %{{x}}<br>NAV (indexed): %{{y:.1f}}<extra></extra>",
+        ))
+
+    if show_benchmark:
+        idx_df = pd.read_sql_query(
+            "SELECT index_date as date, value FROM psx_indices WHERE index_code = 'KSE100' ORDER BY index_date",
+            con,
+        )
+        if not idx_df.empty:
+            base = idx_df.iloc[0]["value"]
+            if base and base > 0:
+                idx_df["normalized"] = (idx_df["value"] / base) * 100
+                fig.add_trace(go.Scatter(
+                    x=idx_df["date"], y=idx_df["normalized"],
+                    mode="lines", name="KSE-100",
+                    line=dict(width=2, color="#888888", dash="dash"),
+                ))
+
+    fig.add_hline(y=100, line_dash="dot", line_color="gray", opacity=0.5)
+    fig.update_layout(
+        yaxis_title="Indexed Performance (Base = 100)",
+        height=450, margin=dict(l=20, r=20, t=30, b=20),
+        legend=dict(orientation="h", y=-0.2),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Risk Metrics Tab
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _render_risk_metrics(con):
+    """Risk-adjusted performance metrics for funds with sufficient NAV history."""
+    st.markdown("### Risk Metrics")
+    st.caption("Sharpe ratio, max drawdown, and volatility for funds with 90+ NAV records")
+
+    import numpy as np
+
+    funds = con.execute(
+        """SELECT f.fund_id, f.symbol, f.fund_name, f.category,
+                  COUNT(n.date) as nav_count
+           FROM mutual_funds f
+           INNER JOIN mutual_fund_nav n ON f.fund_id = n.fund_id
+           GROUP BY f.fund_id
+           HAVING nav_count >= 90
+           ORDER BY f.fund_name"""
+    ).fetchall()
+
+    if not funds:
+        st.info("Need funds with at least 90 NAV records for risk analysis. Sync more NAV history.")
+        return
+
+    categories = sorted(set(r["category"] for r in funds if r["category"]))
+    sel_cat = st.selectbox("Category", ["All"] + categories, key="risk_cat_filter")
+
+    risk_data = []
+    for fund in funds:
+        if sel_cat != "All" and fund["category"] != sel_cat:
+            continue
+
+        navs = pd.read_sql_query(
+            "SELECT date, nav FROM mutual_fund_nav WHERE fund_id = ? ORDER BY date",
+            con, params=(fund["fund_id"],),
+        )
+
+        if len(navs) < 90:
+            continue
+
+        navs["nav"] = pd.to_numeric(navs["nav"], errors="coerce")
+        navs = navs.dropna(subset=["nav"])
+        navs["return"] = navs["nav"].pct_change()
+        returns = navs["return"].dropna()
+
+        if len(returns) < 30:
+            continue
+
+        total_return = (navs.iloc[-1]["nav"] / navs.iloc[0]["nav"]) - 1
+        n_years = len(navs) / 252
+        ann_return = ((1 + total_return) ** (1 / max(n_years, 0.1)) - 1) * 100
+
+        vol = returns.std() * (252 ** 0.5) * 100
+
+        rf = 12.0
+        try:
+            kb = con.execute(
+                "SELECT offer FROM kibor_daily WHERE tenor='3M' ORDER BY date DESC LIMIT 1"
+            ).fetchone()
+            if kb:
+                rf = kb["offer"]
+        except Exception:
+            pass
+        sharpe = (ann_return - rf) / vol if vol > 0 else 0
+
+        navs["cummax"] = navs["nav"].cummax()
+        navs["drawdown"] = (navs["nav"] / navs["cummax"] - 1) * 100
+        max_dd = navs["drawdown"].min()
+
+        risk_data.append({
+            "Fund": fund["fund_name"][:50],
+            "Category": fund["category"],
+            "NAV Count": fund["nav_count"],
+            "Ann. Return (%)": round(ann_return, 2),
+            "Volatility (%)": round(vol, 2),
+            "Sharpe Ratio": round(sharpe, 2),
+            "Max Drawdown (%)": round(max_dd, 2),
+        })
+
+    if not risk_data:
+        st.info("No funds match the filter criteria")
+        return
+
+    df = pd.DataFrame(risk_data)
+    st.caption(f"{len(df)} funds analyzed")
+
+    df = df.sort_values("Sharpe Ratio", ascending=False)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df["Volatility (%)"], y=df["Ann. Return (%)"],
+        mode="markers+text",
+        text=df["Fund"].str[:15],
+        textposition="top center",
+        textfont=dict(size=8),
+        marker=dict(
+            size=10,
+            color=df["Sharpe Ratio"],
+            colorscale="RdYlGn",
+            colorbar=dict(title="Sharpe"),
+            showscale=True,
+        ),
+        hovertemplate=(
+            "<b>%{text}</b><br>"
+            "Return: %{y:.1f}%<br>"
+            "Vol: %{x:.1f}%<br>"
+            "Sharpe: %{marker.color:.2f}<extra></extra>"
+        ),
+    ))
+    fig.update_layout(
+        xaxis_title="Volatility (%)", yaxis_title="Annualized Return (%)",
+        title="Risk-Return Scatter (color = Sharpe)",
+        height=450, margin=dict(l=20, r=20, t=50, b=20),
     )
     st.plotly_chart(fig, use_container_width=True)
 

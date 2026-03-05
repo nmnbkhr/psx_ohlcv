@@ -19,7 +19,7 @@ def _apply_pragmas(con: sqlite3.Connection) -> None:
     con.execute("PRAGMA journal_mode=WAL")         # Concurrent reads during writes
     con.execute("PRAGMA synchronous=NORMAL")        # Faster writes, still crash-safe with WAL
     con.execute("PRAGMA cache_size=-64000")          # 64MB cache (default is 2MB)
-    con.execute("PRAGMA busy_timeout=5000")          # Wait 5s on lock instead of failing
+    con.execute("PRAGMA busy_timeout=30000")         # Wait 30s on lock instead of failing
     con.execute("PRAGMA temp_store=MEMORY")          # Temp tables in RAM
     con.execute("PRAGMA mmap_size=268435456")        # Memory-map 256MB for faster reads
     con.execute("PRAGMA foreign_keys=ON")            # Enforce foreign key constraints
@@ -126,6 +126,71 @@ def init_schema(con: sqlite3.Connection) -> None:
 
     _migrate_intraday_operation_cols(con)
     _migrate_turnover_col(con)
+
+    # Schema versioning
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version    INTEGER PRIMARY KEY,
+            applied_at TEXT NOT NULL DEFAULT (datetime('now')),
+            description TEXT
+        )
+    """)
+
+    _run_migrations(con)
+
+
+def _run_migrations(con: sqlite3.Connection) -> None:
+    """Run pending schema migrations sequentially."""
+    current = con.execute(
+        "SELECT COALESCE(MAX(version), 0) FROM schema_version"
+    ).fetchone()[0]
+
+    migrations = _get_migrations()
+    for version, description, sql in migrations:
+        if version > current:
+            con.executescript(sql)
+            con.execute(
+                "INSERT INTO schema_version (version, description) VALUES (?, ?)",
+                (version, description),
+            )
+            con.commit()
+
+
+def _get_migrations() -> list[tuple[int, str, str]]:
+    """Return list of (version, description, sql) migrations."""
+    return [
+        (1, "Add data_freshness domain tracking", """
+            INSERT OR IGNORE INTO data_freshness (domain, display_name, source_table, date_column)
+            VALUES
+                ('equity_eod', 'Equity EOD', 'eod_ohlcv', 'date'),
+                ('intraday', 'Intraday Ticks', 'intraday_bars', 'ts'),
+                ('indices', 'PSX Indices', 'psx_indices', 'index_date'),
+                ('mutual_funds', 'Mutual Funds', 'mutual_fund_nav', 'date'),
+                ('treasury', 'Treasury Auctions', 'tbill_auctions', 'auction_date'),
+                ('pib', 'PIB Auctions', 'pib_auctions', 'auction_date'),
+                ('kibor', 'KIBOR Rates', 'kibor_daily', 'date'),
+                ('fx_interbank', 'FX Interbank', 'sbp_fx_interbank', 'date'),
+                ('fx_kerb', 'FX Kerb', 'forex_kerb', 'date'),
+                ('yield_curve', 'Yield Curves', 'pkrv_daily', 'date'),
+                ('sukuk', 'Sukuk', 'sukuk_quotes', 'date'),
+                ('etf', 'ETFs', 'etf_nav', 'date'),
+                ('commodities', 'Commodities', 'commodity_prices', 'date'),
+                ('company_profile', 'Company Profiles', 'company_profile', 'updated_at'),
+                ('announcements', 'Announcements', 'corporate_announcements', 'date');
+        """),
+        (2, "Add composite indexes for hot query paths", """
+            CREATE INDEX IF NOT EXISTS idx_mutual_fund_nav_fund_date
+                ON mutual_fund_nav(fund_id, date);
+            CREATE INDEX IF NOT EXISTS idx_kibor_daily_tenor_date
+                ON kibor_daily(tenor, date);
+            CREATE INDEX IF NOT EXISTS idx_fx_interbank_currency_date
+                ON sbp_fx_interbank(currency, date);
+            CREATE INDEX IF NOT EXISTS idx_pkrv_daily_date
+                ON pkrv_daily(date);
+            CREATE INDEX IF NOT EXISTS idx_fund_perf_latest_category
+                ON fund_performance_latest(category);
+        """),
+    ]
 
 
 def _migrate_symbols_table(con: sqlite3.Connection) -> None:

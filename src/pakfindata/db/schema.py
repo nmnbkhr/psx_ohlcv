@@ -58,6 +58,18 @@ CREATE TABLE IF NOT EXISTS sync_failures (
 
 CREATE INDEX IF NOT EXISTS idx_sync_failures_run ON sync_failures(run_id);
 
+-- Data freshness tracking per domain
+CREATE TABLE IF NOT EXISTS data_freshness (
+    domain         TEXT PRIMARY KEY,
+    display_name   TEXT NOT NULL,
+    source_table   TEXT NOT NULL,
+    date_column    TEXT NOT NULL DEFAULT 'date',
+    last_sync_at   TEXT,
+    last_row_date  TEXT,
+    row_count      INTEGER DEFAULT 0,
+    status         TEXT DEFAULT 'unknown'
+);
+
 -- Intraday bars table for storing intraday time series data
 CREATE TABLE IF NOT EXISTS intraday_bars (
     symbol      TEXT NOT NULL,

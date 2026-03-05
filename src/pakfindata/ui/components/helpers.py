@@ -424,6 +424,128 @@ def get_data_freshness(_con) -> tuple[int | None, str | None]:
     return None, None
 
 
+@st.cache_data(ttl=120)
+def get_domain_freshness(_con) -> pd.DataFrame:
+    """Get freshness info for all data domains.
+
+    Queries each domain's source table for latest date and row count,
+    then returns a DataFrame with domain, display_name, last_date,
+    days_old, row_count, and status.
+    """
+    try:
+        domains = _con.execute(
+            "SELECT domain, display_name, source_table, date_column FROM data_freshness"
+        ).fetchall()
+    except Exception:
+        return pd.DataFrame()
+
+    rows = []
+    for d in domains:
+        domain = d["domain"]
+        table = d["source_table"]
+        date_col = d["date_column"]
+        try:
+            result = _con.execute(
+                f"SELECT MAX({date_col}) as last_date, COUNT(*) as cnt FROM [{table}]"
+            ).fetchone()
+            last_date = str(result["last_date"])[:10] if result["last_date"] else None
+            cnt = result["cnt"] or 0
+            if last_date:
+                days_old = (datetime.now() - datetime.strptime(last_date, "%Y-%m-%d")).days
+                status = "fresh" if days_old <= 1 else "stale" if days_old <= 3 else "old"
+            else:
+                days_old = None
+                status = "empty"
+        except Exception:
+            last_date = None
+            days_old = None
+            cnt = 0
+            status = "error"
+
+        rows.append({
+            "domain": domain,
+            "display_name": d["display_name"],
+            "last_date": last_date,
+            "days_old": days_old,
+            "row_count": cnt,
+            "status": status,
+        })
+
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+def render_domain_freshness_bar(con):
+    """Render a compact freshness status bar for all domains."""
+    df = get_domain_freshness(con)
+    if df.empty:
+        return
+
+    status_colors = {
+        "fresh": "#00C853",
+        "stale": "#FF9800",
+        "old": "#FF1744",
+        "empty": "#9E9E9E",
+        "error": "#9E9E9E",
+    }
+
+    badges = []
+    for _, row in df.iterrows():
+        color = status_colors.get(row["status"], "#9E9E9E")
+        age = f"{row['days_old']}d" if row["days_old"] is not None else "\u2014"
+        badges.append(
+            f'<span style="display:inline-block;padding:2px 8px;margin:2px;'
+            f'border-radius:4px;font-size:11px;background:{color}20;'
+            f'border:1px solid {color}40;color:{color};">'
+            f'{row["display_name"]}: {age}</span>'
+        )
+
+    st.markdown(" ".join(badges), unsafe_allow_html=True)
+
+
+def render_ai_commentary(con, mode: str, context_data: dict | None = None):
+    """Render an inline AI commentary widget for any domain page.
+
+    Args:
+        con: Database connection
+        mode: One of 'TREASURY', 'FX', 'FUNDS', 'MARKET', 'COMPANY'
+        context_data: Optional pre-loaded data dict to pass to the prompt
+    """
+    import os
+
+    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return
+
+    with st.expander(f"AI Commentary ({mode.title()})", expanded=False):
+        cache_key = f"ai_commentary_{mode}"
+
+        if cache_key in st.session_state and st.session_state[cache_key]:
+            st.markdown(st.session_state[cache_key])
+            if st.button("Regenerate", key=f"ai_regen_{mode}"):
+                st.session_state[cache_key] = None
+                st.rerun()
+            return
+
+        if st.button(f"Generate {mode.title()} Analysis", key=f"ai_gen_{mode}", type="primary"):
+            with st.spinner("Generating AI analysis..."):
+                try:
+                    from pakfindata.agents.data_loader import load_insight_data
+                    from pakfindata.agents.prompts import InsightMode, get_prompt
+                    from pakfindata.agents.llm_client import get_completion
+
+                    insight_mode = InsightMode[mode.upper()]
+                    data = context_data or load_insight_data(con, insight_mode)
+                    prompt = get_prompt(insight_mode, data)
+                    response = get_completion(prompt)
+
+                    st.session_state[cache_key] = response
+                    st.markdown(response)
+                except ImportError:
+                    st.warning("AI agents module not configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY.")
+                except Exception as e:
+                    st.error(f"AI generation failed: {str(e)[:200]}")
+
+
 def is_market_closed() -> bool:
     """Check if PSX market is currently closed."""
     now = datetime.now()

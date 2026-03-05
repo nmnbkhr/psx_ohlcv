@@ -43,6 +43,16 @@ def render_fx_dashboard():
         st.divider()
         _render_all_currencies(con)
 
+        st.divider()
+        col3, col4 = st.columns(2)
+        with col3:
+            _render_spread_heatmap(con)
+        with col4:
+            _render_volatility_chart(con)
+
+        st.divider()
+        _render_carry_calculator(con)
+
     except Exception as e:
         st.error(f"Error loading FX data: {e}")
 
@@ -266,6 +276,165 @@ def _render_all_currencies(con):
         }),
         use_container_width=True, hide_index=True,
     )
+
+
+def _render_spread_heatmap(con):
+    """Interbank vs kerb spread heatmap over time."""
+    st.markdown("### Spread Heatmap")
+
+    df = pd.read_sql_query(
+        """SELECT i.currency, i.date,
+                  ROUND(k.selling - i.selling, 2) as spread
+           FROM sbp_fx_interbank i
+           INNER JOIN forex_kerb k
+             ON i.currency = k.currency AND i.date = k.date
+           WHERE i.currency IN ('USD', 'EUR', 'GBP', 'SAR', 'AED')
+           ORDER BY i.date DESC
+           LIMIT 150""",
+        con,
+    )
+
+    if df.empty:
+        st.info("No spread data — sync both interbank and kerb rates first")
+        return
+
+    pivot = df.pivot_table(index="date", columns="currency", values="spread")
+    if pivot.empty:
+        st.info("Insufficient overlap between interbank and kerb dates")
+        return
+
+    # Sort dates ascending for display
+    pivot = pivot.sort_index()
+
+    fig = go.Figure(data=go.Heatmap(
+        z=pivot.values,
+        x=pivot.columns.tolist(),
+        y=pivot.index.tolist(),
+        colorscale=[
+            [0, "#00C853"],
+            [0.5, "#FFEB3B"],
+            [1, "#FF1744"],
+        ],
+        colorbar=dict(title="Spread (PKR)"),
+        hovertemplate="Currency: %{x}<br>Date: %{y}<br>Spread: %{z:.2f}<extra></extra>",
+    ))
+    fig.update_layout(
+        height=400, margin=dict(l=20, r=20, t=30, b=20),
+        yaxis=dict(autorange="reversed"),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_volatility_chart(con):
+    """30-day rolling volatility of USD/PKR."""
+    st.markdown("### USD/PKR Volatility")
+
+    df = pd.read_sql_query(
+        """SELECT date, selling FROM sbp_fx_interbank
+           WHERE UPPER(currency) = 'USD'
+           ORDER BY date""",
+        con,
+    )
+
+    if len(df) < 10:
+        st.info("Need at least 10 data points for volatility chart")
+        return
+
+    df["selling"] = pd.to_numeric(df["selling"], errors="coerce")
+    df = df.dropna(subset=["selling"])
+    df["return"] = df["selling"].pct_change()
+    df["vol_30d"] = df["return"].rolling(window=30, min_periods=10).std() * (252 ** 0.5) * 100
+
+    df_plot = df.dropna(subset=["vol_30d"])
+    if df_plot.empty:
+        st.info("Insufficient data for rolling volatility")
+        return
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df_plot["date"], y=df_plot["vol_30d"],
+        mode="lines", name="30D Annualized Vol",
+        line=dict(width=2, color="#E74C3C"),
+        fill="tozeroy", fillcolor="rgba(231,76,60,0.1)",
+        hovertemplate="Date: %{x}<br>Vol: %{y:.1f}%<extra></extra>",
+    ))
+    fig.update_layout(
+        yaxis_title="Annualized Vol (%)", height=400,
+        margin=dict(l=20, r=20, t=30, b=20),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_carry_calculator(con):
+    """Carry trade calculator — PKR deposit rate vs foreign rates."""
+    st.markdown("### Carry Trade Calculator")
+
+    # Get PKR rate (KIBOR 3M as proxy)
+    kibor = con.execute(
+        "SELECT offer FROM kibor_daily WHERE tenor = '3M' ORDER BY date DESC LIMIT 1"
+    ).fetchone()
+
+    if not kibor:
+        st.info("No KIBOR data for carry calculation")
+        return
+
+    pkr_rate = kibor["offer"]
+
+    # Get global rates
+    global_rates = {}
+    try:
+        rows = con.execute(
+            """SELECT rate_name, rate_value FROM global_rates
+               WHERE rate_name IN ('SOFR', 'SONIA', 'EUSTR', 'SAIBOR')
+               ORDER BY date DESC"""
+        ).fetchall()
+        for r in rows:
+            if r["rate_name"] not in global_rates:
+                global_rates[r["rate_name"]] = r["rate_value"]
+    except Exception:
+        pass
+
+    # Fallback with common benchmarks
+    rate_map = {
+        "USD (SOFR)": global_rates.get("SOFR", 4.50),
+        "GBP (SONIA)": global_rates.get("SONIA", 4.25),
+        "EUR (EUSTR)": global_rates.get("EUSTR", 3.00),
+        "SAR (SAIBOR)": global_rates.get("SAIBOR", 5.50),
+    }
+
+    st.metric("PKR Deposit Rate (KIBOR 3M)", f"{pkr_rate:.2f}%")
+
+    carry_data = []
+    for label, foreign_rate in rate_map.items():
+        carry = pkr_rate - foreign_rate
+        carry_data.append({
+            "Currency": label,
+            "Foreign Rate (%)": f"{foreign_rate:.2f}",
+            "PKR Rate (%)": f"{pkr_rate:.2f}",
+            "Carry Differential (%)": f"{carry:+.2f}",
+            "Signal": "Positive Carry" if carry > 0 else "Negative Carry",
+        })
+
+    df = pd.DataFrame(carry_data)
+
+    fig = go.Figure()
+    colors = ["#00C853" if float(r["Carry Differential (%)"]) > 0 else "#FF1744"
+              for r in carry_data]
+    fig.add_trace(go.Bar(
+        x=[r["Currency"] for r in carry_data],
+        y=[float(r["Carry Differential (%)"]) for r in carry_data],
+        marker_color=colors,
+        text=[r["Carry Differential (%)"] + "%" for r in carry_data],
+        textposition="outside",
+    ))
+    fig.add_hline(y=0, line_dash="dash", line_color="gray")
+    fig.update_layout(
+        yaxis_title="Carry Spread (%)", height=300,
+        margin=dict(l=20, r=20, t=30, b=20),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.dataframe(df, use_container_width=True, hide_index=True)
 
 
 # ═══════════════════════════════════════════════════════════════════

@@ -57,6 +57,11 @@ EQUITY_TOOLS = [
                     "description": "Max rows (default 100)",
                     "default": 100,
                 },
+                "offset": {
+                    "type": "integer",
+                    "description": "Number of rows to skip (default 0)",
+                    "default": 0,
+                },
             },
             "required": ["symbol"],
         },
@@ -174,6 +179,12 @@ FIXED_INCOME_TOOLS = [
                 "start_date": {"type": "string", "description": "Start date YYYY-MM-DD"},
                 "end_date": {"type": "string", "description": "End date YYYY-MM-DD"},
                 "tenor": {"type": "string", "description": "Filter by tenor (e.g., 3M, 6M, 12M)"},
+                "limit": {"type": "integer", "description": "Max rows (default 50)", "default": 50},
+                "offset": {
+                    "type": "integer",
+                    "description": "Number of rows to skip (default 0)",
+                    "default": 0,
+                },
             },
         },
     ),
@@ -185,6 +196,12 @@ FIXED_INCOME_TOOLS = [
             "properties": {
                 "start_date": {"type": "string", "description": "Start date YYYY-MM-DD"},
                 "end_date": {"type": "string", "description": "End date YYYY-MM-DD"},
+                "limit": {"type": "integer", "description": "Max rows (default 50)", "default": 50},
+                "offset": {
+                    "type": "integer",
+                    "description": "Number of rows to skip (default 0)",
+                    "default": 0,
+                },
             },
         },
     ),
@@ -235,6 +252,11 @@ FUND_FX_TOOLS = [
                 "start_date": {"type": "string", "description": "Start date YYYY-MM-DD"},
                 "end_date": {"type": "string", "description": "End date YYYY-MM-DD"},
                 "limit": {"type": "integer", "default": 100},
+                "offset": {
+                    "type": "integer",
+                    "description": "Number of rows to skip (default 0)",
+                    "default": 0,
+                },
             },
             "required": ["fund_id"],
         },
@@ -297,6 +319,12 @@ FUND_FX_TOOLS = [
                 },
                 "start_date": {"type": "string"},
                 "end_date": {"type": "string"},
+                "limit": {"type": "integer", "description": "Max rows (default 100)", "default": 100},
+                "offset": {
+                    "type": "integer",
+                    "description": "Number of rows to skip (default 0)",
+                    "default": 0,
+                },
             },
             "required": ["currency"],
         },
@@ -340,6 +368,11 @@ FUND_FX_TOOLS = [
                 "start_date": {"type": "string"},
                 "end_date": {"type": "string"},
                 "limit": {"type": "integer", "default": 30},
+                "offset": {
+                    "type": "integer",
+                    "description": "Number of rows to skip (default 0)",
+                    "default": 0,
+                },
             },
         },
     ),
@@ -465,10 +498,12 @@ def _handle_get_eod(con: sqlite3.Connection, args: dict) -> list[types.TextConte
     if args.get("end_date"):
         query += " AND date <= ?"
         params.append(args["end_date"])
-    query += " ORDER BY date DESC LIMIT ?"
+    offset = int(args.get("offset", 0))
+    query += " ORDER BY date DESC LIMIT ? OFFSET ?"
     params.append(limit)
+    params.append(offset)
     rows = [dict(r) for r in con.execute(query, params).fetchall()]
-    return _json_response({"symbol": symbol, "count": len(rows), "data": rows})
+    return _json_response({"symbol": symbol, "count": len(rows), "offset": offset, "data": rows})
 
 
 def _handle_search_symbols(con: sqlite3.Connection, args: dict) -> list[types.TextContent]:
@@ -694,9 +729,13 @@ def _handle_get_tbill_auctions(con: sqlite3.Connection, args: dict) -> list[type
     if args.get("tenor"):
         sql += " AND UPPER(tenor) = ?"
         params.append(args["tenor"].upper())
-    sql += " ORDER BY auction_date DESC LIMIT 50"
+    limit = int(args.get("limit", 50))
+    offset = int(args.get("offset", 0))
+    sql += " ORDER BY auction_date DESC LIMIT ? OFFSET ?"
+    params.append(limit)
+    params.append(offset)
     rows = [dict(r) for r in con.execute(sql, params).fetchall()]
-    return _json_response({"count": len(rows), "data": rows})
+    return _json_response({"count": len(rows), "offset": offset, "data": rows})
 
 
 def _handle_get_pib_auctions(con: sqlite3.Connection, args: dict) -> list[types.TextContent]:
@@ -708,9 +747,13 @@ def _handle_get_pib_auctions(con: sqlite3.Connection, args: dict) -> list[types.
     if args.get("end_date"):
         sql += " AND auction_date <= ?"
         params.append(args["end_date"])
-    sql += " ORDER BY auction_date DESC LIMIT 50"
+    limit = int(args.get("limit", 50))
+    offset = int(args.get("offset", 0))
+    sql += " ORDER BY auction_date DESC LIMIT ? OFFSET ?"
+    params.append(limit)
+    params.append(offset)
     rows = [dict(r) for r in con.execute(sql, params).fetchall()]
-    return _json_response({"count": len(rows), "data": rows})
+    return _json_response({"count": len(rows), "offset": offset, "data": rows})
 
 
 def _handle_get_gis_auctions(con: sqlite3.Connection, args: dict) -> list[types.TextContent]:
@@ -814,10 +857,12 @@ def _handle_get_fund_nav_history(con: sqlite3.Connection, args: dict) -> list[ty
     if args.get("end_date"):
         sql += " AND date <= ?"
         params.append(args["end_date"])
-    sql += " ORDER BY date DESC LIMIT ?"
+    offset = int(args.get("offset", 0))
+    sql += " ORDER BY date DESC LIMIT ? OFFSET ?"
     params.append(limit)
+    params.append(offset)
     rows = [dict(r) for r in con.execute(sql, params).fetchall()]
-    return _json_response({"fund_id": fund_id, "count": len(rows), "data": rows})
+    return _json_response({"fund_id": fund_id, "count": len(rows), "offset": offset, "data": rows})
 
 
 def _handle_get_fund_rankings(con: sqlite3.Connection, args: dict) -> list[types.TextContent]:
@@ -931,9 +976,13 @@ def _handle_get_fx_history(con: sqlite3.Connection, args: dict) -> list[types.Te
     if args.get("end_date"):
         sql += " AND date <= ?"
         params.append(args["end_date"])
-    sql += " ORDER BY date DESC LIMIT 100"
+    limit = int(args.get("limit", 100))
+    offset = int(args.get("offset", 0))
+    sql += " ORDER BY date DESC LIMIT ? OFFSET ?"
+    params.append(limit)
+    params.append(offset)
     rows = [dict(r) for r in con.execute(sql, params).fetchall()]
-    return _json_response({"currency": currency, "source": source, "count": len(rows), "data": rows})
+    return _json_response({"currency": currency, "source": source, "count": len(rows), "offset": offset, "data": rows})
 
 
 def _handle_get_fx_spread(con: sqlite3.Connection, args: dict) -> list[types.TextContent]:
@@ -994,10 +1043,12 @@ def _handle_get_konia(con: sqlite3.Connection, args: dict) -> list[types.TextCon
     if args.get("end_date"):
         sql += " AND date <= ?"
         params.append(args["end_date"])
-    sql += " ORDER BY date DESC LIMIT ?"
+    offset = int(args.get("offset", 0))
+    sql += " ORDER BY date DESC LIMIT ? OFFSET ?"
     params.append(limit)
+    params.append(offset)
     rows = [dict(r) for r in con.execute(sql, params).fetchall()]
-    return _json_response({"count": len(rows), "data": rows})
+    return _json_response({"count": len(rows), "offset": offset, "data": rows})
 
 
 # ─── ANALYTICS + SYSTEM HANDLERS ───────────────────────────────────
