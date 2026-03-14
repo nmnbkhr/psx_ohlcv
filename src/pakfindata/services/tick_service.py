@@ -1,7 +1,7 @@
 """PSX Live Tick Service — connects to psxterminal.com WebSocket,
 builds 5-second OHLCV bars, writes live snapshot for Streamlit.
 
-MEMORY-ONLY during market hours. Single EOD flush to SQLite at 15:35 PKT.
+MEMORY-ONLY during market hours. Single EOD flush to SQLite at 17:00 PKT.
 Zero DB writes during trading.
 
 Usage:
@@ -14,9 +14,11 @@ import asyncio
 import json
 import logging
 import os
+import queue
 import signal
 import sqlite3
 import sys
+import threading
 import time
 from collections import deque
 from dataclasses import asdict, dataclass
@@ -55,6 +57,7 @@ SERVICE_DIR = DATA_ROOT / "services"
 PID_FILE = SERVICE_DIR / "tick_service.pid"
 STATUS_FILE = SERVICE_DIR / "tick_service_status.json"
 SNAPSHOT_PATH = DATA_ROOT / "live_snapshot.json"
+TICK_LOG_DIR = Path.home() / "psxdata" / "tick_logs"
 EOD_DB_PATH = DATA_ROOT / "tick_bars.db"
 
 
@@ -287,6 +290,71 @@ class TickService:
         self.index_sparklines: dict[str, list] = {}  # "KSE100" → 5-min downsampled
         self.index_ticks: list[dict] = []            # ALL raw index ticks for EOD
 
+        # Real-time tick log — separate writer thread with queue
+        self._tick_log_queue: queue.Queue[dict | None] = queue.Queue(maxsize=50000)
+        self._tick_log_thread = threading.Thread(
+            target=self._tick_log_writer, daemon=True, name="tick-logger"
+        )
+        self._tick_log_thread.start()
+
+    def _tick_log_writer(self):
+        """Writer thread: drains queue → appends to daily JSONL. Batches for efficiency."""
+        log_file = None
+        log_date: str | None = None
+        batch: list[str] = []
+
+        while True:
+            try:
+                # Block up to 0.5s for first item, then drain all available
+                item = self._tick_log_queue.get(timeout=0.5)
+                if item is None:  # shutdown sentinel
+                    break
+                batch.append(json.dumps(item, default=str))
+
+                # Drain remaining without blocking (batch write)
+                while len(batch) < 500:
+                    try:
+                        item = self._tick_log_queue.get_nowait()
+                        if item is None:
+                            break
+                        batch.append(json.dumps(item, default=str))
+                    except queue.Empty:
+                        break
+
+            except queue.Empty:
+                pass  # timeout — flush whatever we have
+
+            if not batch:
+                continue
+
+            try:
+                today = datetime.now(PKT).strftime("%Y-%m-%d")
+                if log_date != today or log_file is None:
+                    if log_file:
+                        log_file.close()
+                    TICK_LOG_DIR.mkdir(parents=True, exist_ok=True)
+                    log_file = open(
+                        str(TICK_LOG_DIR / f"ticks_{today}.jsonl"), "a"
+                    )
+                    log_date = today
+                log_file.write("\n".join(batch) + "\n")
+                log_file.flush()
+            except OSError as e:
+                logger.warning("Tick log write failed: %s", e)
+            batch.clear()
+
+        if log_file:
+            log_file.close()
+
+    def _log_tick(self, tick: dict):
+        """Enqueue tick for async file logging — non-blocking."""
+        tick_copy = dict(tick)
+        tick_copy["_ts"] = datetime.now(PKT).isoformat(timespec="milliseconds")
+        try:
+            self._tick_log_queue.put_nowait(tick_copy)
+        except queue.Full:
+            pass  # drop tick rather than block the hot path
+
     def process(self, tick: dict):
         """Process a single tick: route IDX to index handler, rest to stock handler."""
         price = tick.get("price")
@@ -308,8 +376,9 @@ class TickService:
         market = tick.get("market", "REG")
         self.last_tick_time = datetime.now(PKT).isoformat()
 
-        # Store raw tick in memory
+        # Store raw tick in memory + log to file
         self.raw_ticks.append(tick)
+        self._log_tick(tick)
 
         # Update live snapshot
         key = f"{market}:{symbol}"
@@ -363,8 +432,9 @@ class TickService:
             "timestamp": tick.get("timestamp", 0),
         }
 
-        # Store raw index tick for EOD flush
+        # Store raw index tick for EOD flush + log to file
         self.index_ticks.append(tick)
+        self._log_tick(tick)
 
         # Track for sparkline — append to history deque
         ts_now = tick.get("timestamp", 0) or time.time()
@@ -756,12 +826,12 @@ class TickService:
             time.sleep(sleep_seconds)
 
     def _is_market_hours(self) -> bool:
-        """True if current time is within PSX trading hours (Mon-Fri 9:00-15:35)."""
+        """True if current time is within PSX trading hours (Mon-Fri 9:00-17:00)."""
         now = datetime.now(PKT)
         return (
             now.weekday() < 5
             and now.hour >= 9
-            and (now.hour < 15 or (now.hour == 15 and now.minute <= 35))
+            and now.hour < 17
         )
 
     def get_status_line(self) -> str:
@@ -1031,7 +1101,7 @@ async def main(db_path: Path | None = None):
     print(f"  Snapshot: {SNAPSHOT_PATH}")
     print(f"  EOD target: {service.db_path}")
     print(f"  Bars: {BAR_INTERVAL}s | Markets: {', '.join(MARKETS)}")
-    print(f"  Zero DB writes during trading. Single EOD flush at 15:35 PKT.")
+    print(f"  Zero DB writes during trading. Single EOD flush at 17:00 PKT.")
 
     # Start WebSocket relay (same process, background thread)
     if HAS_RELAY:
@@ -1048,10 +1118,11 @@ async def main(db_path: Path | None = None):
         try:
             async with websockets.connect(
                 WSS_URL,
-                ping_interval=30,
+                ping_interval=20,
                 ping_timeout=10,
                 max_size=2**20,
-                additional_headers={"User-Agent": "pakfindata/3.4.0"},
+                close_timeout=5,
+                additional_headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
             ) as ws:
                 service.connected = True
                 status.connected = True
@@ -1076,27 +1147,27 @@ async def main(db_path: Path | None = None):
                         raw = await asyncio.wait_for(ws.recv(), timeout=15)
                     except asyncio.TimeoutError:
                         now = datetime.now(PKT)
-                        # Post-market: EOD flush
-                        if now.hour >= 15 and now.minute >= 35 and not post_market_done:
-                            print("🔔 Market closed")
+                        # Smart EOD: after 2 PM, if no ticks for 30 min → market closed
+                        silence = time.time() - service._last_tick_ts
+                        if (now.hour >= 14 and silence >= 1800
+                                and not post_market_done
+                                and service.tick_count > 0):
+                            print(f"🔔 Market closed (no ticks for {silence/60:.0f} min after 14:00)")
                             service.eod_flush()
                             service.connected = False
                             service.write_snapshot()
                             post_market_done = True
-                            # Sleep until 9:15 AM PKT next trading day
                             service._sleep_until_next_session()
                             continue
 
-                        # Heartbeat: no ticks for 60s during market hours → dead WS
-                        if service._is_market_hours():
-                            silence = time.time() - service._last_tick_ts
-                            if silence > 60:
-                                print(
-                                    f"💀 No ticks for {silence:.0f}s — "
-                                    f"WebSocket may be dead. Forcing reconnect..."
-                                )
-                                service._last_tick_ts = time.time()  # avoid rapid retries
-                                break  # exit inner loop → ws closes → outer loop reconnects
+                        # Heartbeat: no ticks for 60s during market hours → dead WS, reconnect
+                        if service._is_market_hours() and silence > 60:
+                            print(
+                                f"💀 No ticks for {silence:.0f}s — "
+                                f"WebSocket may be dead. Forcing reconnect..."
+                            )
+                            service._last_tick_ts = time.time()  # avoid rapid retries
+                            break  # exit inner loop → ws closes → outer loop reconnects
 
                         service.write_snapshot()
                         continue
@@ -1160,10 +1231,10 @@ async def main(db_path: Path | None = None):
             status.connected = False
             status.error_message = str(e)
             write_status(status)
-            print(f"⚠️ Disconnected: {e}. Reconnecting in 5s...")
+            print(f"⚠️ Disconnected: {e}. Reconnecting in 1s...")
             service.write_snapshot()
             try:
-                await asyncio.wait_for(shutdown.wait(), timeout=5)
+                await asyncio.wait_for(shutdown.wait(), timeout=1)
             except asyncio.TimeoutError:
                 pass
 

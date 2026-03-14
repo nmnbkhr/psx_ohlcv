@@ -142,18 +142,21 @@ def get_post_close_stats(con: sqlite3.Connection) -> dict:
 def get_dates_missing_turnover(
     con: sqlite3.Connection,
     since: str = "2024-01-01",
+    until: str | None = None,
 ) -> list[str]:
     """Find dates that have eod_ohlcv data but no post_close_turnover rows."""
-    rows = con.execute(
-        """
+    query = """
         SELECT DISTINCT e.date
         FROM eod_ohlcv e
         LEFT JOIN (
             SELECT DISTINCT date FROM post_close_turnover
         ) pc ON e.date = pc.date
         WHERE pc.date IS NULL AND e.date >= ?
-        ORDER BY e.date DESC
-        """,
-        (since,),
-    ).fetchall()
+    """
+    params: list = [since]
+    if until:
+        query += " AND e.date <= ?"
+        params.append(until)
+    query += " ORDER BY e.date DESC"
+    rows = con.execute(query, params).fetchall()
     return [r[0] for r in rows]

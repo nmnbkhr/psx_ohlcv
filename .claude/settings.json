@@ -2,5 +2,40 @@
   "env": {
     "CONDA_DEFAULT_ENV": "psx",
     "PATH": "/opt/miniconda/envs/psx/bin:${PATH}"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(/usr/bin/git log:*)",
+      "Bash(/bin/ls -la /home/adnoman/projects/psx-live/src/components/ /home/adnoman/projects/psx-live/src/pages/ /home/adnoman/projects/psx-live/src/hooks/ /home/adnoman/projects/psx-live/src/stores/)",
+      "Bash(export PATH=\"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/adnoman/.nvm/versions/node/v22.14.0/bin:/opt/miniconda/envs/psx/bin:$PATH\")",
+      "Read(//home/adnoman/**)",
+      "Bash(pip list:*)",
+      "Bash(PATH=/opt/miniconda/envs/psx/bin:$PATH python -c \"import duckdb; con=duckdb.connect\\(''pakfindata.db'',read_only=True\\); r=con.execute\\(''SELECT DISTINCT tenor FROM kibor_daily ORDER BY tenor''\\).fetchall\\(\\); print\\([x[0] for x in r]\\)\")",
+      "Bash(/opt/miniconda/bin/pip install:*)",
+      "Bash(/opt/miniconda/bin/python -c \"from dotenv import load_dotenv; load_dotenv\\(\\); import os; k=os.environ.get\\(''OPENAI_API_KEY'',''''\\); print\\(f''Key loaded: {k[:8]}...'' if k else ''Key NOT loaded''\\)\")",
+      "Bash(/usr/bin/pkill -9 -f \"tick_service\")",
+      "Bash(/usr/bin/pkill -9 -f \"vite\")",
+      "Bash(/usr/bin/pkill -9 -f \"esbuild\")",
+      "Bash(/usr/bin/wc -l /mnt/e/psxdata/tick_logs/ticks_2026-03-11.jsonl)",
+      "Bash(env -i HOME=/home/adnoman PATH=/usr/bin:/bin:/opt/miniconda/envs/psx/bin /bin/bash -c 'ls /mnt/e/psxdata/tick_logs/ticks_*.jsonl 2>/dev/null')",
+      "Bash(/usr/bin/ps aux:*)",
+      "Bash(/usr/bin/ps -p 82906,85913,85912 -o pid,state,comm)",
+      "Bash(/usr/bin/grep -E \"streamlit|python|intraday|websocket|psx\")",
+      "Bash(/usr/bin/ps -p 89243,89241 -o pid,state,comm)",
+      "Bash(/usr/bin/grep -E \"streamlit|python3.*psx|tick_logs|upsert\")",
+      "Bash(/usr/bin/grep -E \"streamlit|python3.*psx|tick_logs|upsert|psx.sqlite\")",
+      "Bash(/usr/bin/grep -E \"python3.*psx|tick_logs|psx.sqlite\")",
+      "Bash(/usr/bin/df -h)",
+      "Bash(/bin/df -h)",
+      "Bash(/usr/bin/ls -lh /mnt/e/psxdata/psx.sqlite)",
+      "Bash(/usr/bin/git -C /home/adnoman/pakfindata status -s)",
+      "Bash(/usr/bin/git -C /home/adnoman/pakfindata diff --stat)",
+      "Bash(/usr/bin/git -C /home/adnoman/pakfindata log --oneline -10)",
+      "Bash(/usr/bin/git -C /home/adnoman/pakfindata diff HEAD -- pyproject.toml)",
+      "Bash(/usr/bin/git add:*)"
+    ],
+    "additionalDirectories": [
+      "/home/adnoman/.claude/shell-snapshots"
+    ]
   }
 }

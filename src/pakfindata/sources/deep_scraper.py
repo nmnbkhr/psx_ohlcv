@@ -649,6 +649,190 @@ def parse_payouts_data(tree: html.HtmlElement) -> list[dict]:
     return payouts
 
 
+def check_symbol_filings(
+    symbol: str,
+    con: "sqlite3.Connection | None" = None,
+) -> dict[str, Any]:
+    """
+    Probe a PSX company page and report what financial data is available
+    for scraping, plus what's already stored in the DB.
+
+    Returns a dict with sections: quote, profile, financials, ratios,
+    announcements, payouts, equity — each with availability & counts.
+    """
+    symbol = symbol.upper()
+    report: dict[str, Any] = {
+        "symbol": symbol,
+        "url": DPS_COMPANY_URL.format(symbol=symbol),
+        "success": False,
+        "error": None,
+        "page": {},   # what's on the PSX page
+        "db": {},     # what's already in our DB
+    }
+
+    # --- Probe the PSX page ---
+    try:
+        html_content = fetch_company_html(symbol)
+        tree = html.fromstring(html_content)
+    except Exception as e:
+        report["error"] = str(e)
+        return report
+
+    # Quote / header
+    quote = parse_quote_data(tree)
+    report["page"]["company_name"] = quote.get("company_name", "N/A")
+    report["page"]["sector"] = quote.get("sector_name", "N/A")
+    report["page"]["price"] = quote.get("close")
+    report["page"]["change_pct"] = quote.get("change_percent")
+
+    # Trading stats (market types)
+    stats = parse_stats_section(tree)
+    report["page"]["market_types"] = list(stats.keys()) if stats else []
+
+    # Equity
+    equity = parse_equity_data(tree)
+    report["page"]["equity"] = {
+        "available": bool(equity),
+        "market_cap": equity.get("market_cap"),
+        "outstanding_shares": equity.get("outstanding_shares"),
+        "free_float_pct": equity.get("free_float_percent"),
+    }
+
+    # Profile
+    profile = parse_profile_data(tree)
+    report["page"]["profile"] = {
+        "available": bool(profile),
+        "has_description": bool(profile.get("business_description")),
+        "key_people_count": len(profile.get("key_people", [])),
+    }
+
+    # Financials
+    fins = parse_financials_data(tree)
+    ann_fins = fins.get("annual", [])
+    qtr_fins = fins.get("quarterly", [])
+    fin_metrics = set()
+    for row in ann_fins + qtr_fins:
+        fin_metrics.update(k for k in row if k not in ("period_end", "period_type"))
+    report["page"]["financials"] = {
+        "available": bool(ann_fins or qtr_fins),
+        "annual_periods": sorted([r["period_end"] for r in ann_fins]),
+        "quarterly_periods": sorted([r["period_end"] for r in qtr_fins]),
+        "metrics": sorted(fin_metrics),
+    }
+
+    # Ratios
+    rats = parse_ratios_data(tree)
+    ann_rats = rats.get("annual", [])
+    qtr_rats = rats.get("quarterly", [])
+    rat_metrics = set()
+    for row in ann_rats + qtr_rats:
+        rat_metrics.update(k for k in row if k not in ("period_end", "period_type"))
+    report["page"]["ratios"] = {
+        "available": bool(ann_rats or qtr_rats),
+        "annual_periods": sorted([r["period_end"] for r in ann_rats]),
+        "quarterly_periods": sorted([r["period_end"] for r in qtr_rats]),
+        "metrics": sorted(rat_metrics),
+    }
+
+    # Announcements
+    anns = parse_announcements_data(tree)
+    ann_types: dict[str, int] = {}
+    for a in anns:
+        t = a.get("type", "other")
+        ann_types[t] = ann_types.get(t, 0) + 1
+    report["page"]["announcements"] = {
+        "available": bool(anns),
+        "total": len(anns),
+        "by_type": ann_types,
+    }
+
+    # Payouts
+    pays = parse_payouts_data(tree)
+    pay_types: dict[str, int] = {}
+    for p in pays:
+        t = p.get("payout_type", "unknown")
+        pay_types[t] = pay_types.get(t, 0) + 1
+    report["page"]["payouts"] = {
+        "available": bool(pays),
+        "total": len(pays),
+        "by_type": pay_types,
+        "fiscal_years": sorted({p.get("fiscal_year", "?") for p in pays if p.get("fiscal_year")}),
+    }
+
+    report["success"] = True
+
+    # --- Check what's already in the DB ---
+    if con is not None:
+        try:
+            row = con.execute(
+                "SELECT COUNT(*) as cnt FROM company_financials WHERE symbol = ?",
+                (symbol,),
+            ).fetchone()
+            db_fins = row["cnt"] if row else 0
+
+            row = con.execute(
+                "SELECT COUNT(*) as cnt FROM company_ratios WHERE symbol = ?",
+                (symbol,),
+            ).fetchone()
+            db_rats = row["cnt"] if row else 0
+
+            row = con.execute(
+                "SELECT COUNT(*) as cnt FROM company_payouts WHERE symbol = ?",
+                (symbol,),
+            ).fetchone()
+            db_pays = row["cnt"] if row else 0
+
+            row = con.execute(
+                "SELECT COUNT(*) as cnt FROM corporate_announcements WHERE symbol = ?",
+                (symbol,),
+            ).fetchone()
+            db_anns = row["cnt"] if row else 0
+
+            row = con.execute(
+                "SELECT COUNT(*) as cnt FROM company_profile WHERE symbol = ?",
+                (symbol,),
+            ).fetchone()
+            db_profile = row["cnt"] if row else 0
+
+            row = con.execute(
+                "SELECT COUNT(*) as cnt FROM equity_structure WHERE symbol = ?",
+                (symbol,),
+            ).fetchone()
+            db_equity = row["cnt"] if row else 0
+
+            # Financial periods already stored
+            db_fin_periods = [
+                r["period_end"]
+                for r in con.execute(
+                    "SELECT DISTINCT period_end FROM company_financials WHERE symbol = ? ORDER BY period_end",
+                    (symbol,),
+                ).fetchall()
+            ]
+
+            db_rat_periods = [
+                r["period_end"]
+                for r in con.execute(
+                    "SELECT DISTINCT period_end FROM company_ratios WHERE symbol = ? ORDER BY period_end",
+                    (symbol,),
+                ).fetchall()
+            ]
+
+            report["db"] = {
+                "financials_rows": db_fins,
+                "financials_periods": db_fin_periods,
+                "ratios_rows": db_rats,
+                "ratios_periods": db_rat_periods,
+                "payouts_rows": db_pays,
+                "announcements_rows": db_anns,
+                "profile_exists": db_profile > 0,
+                "equity_snapshots": db_equity,
+            }
+        except Exception:
+            report["db"] = {"error": "could not query DB"}
+
+    return report
+
+
 def scrape_company_deep(
     symbol: str,
     html_content: str | None = None,

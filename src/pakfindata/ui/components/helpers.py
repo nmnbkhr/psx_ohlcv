@@ -517,7 +517,10 @@ def render_ai_commentary(con, mode: str, context_data: dict | None = None):
         cache_key = f"ai_commentary_{mode}"
 
         if cache_key in st.session_state and st.session_state[cache_key]:
-            st.markdown(st.session_state[cache_key])
+            from pakfindata.ui.components.commentary_renderer import (
+                render_styled_commentary, render_download_button,
+            )
+            render_styled_commentary(st.session_state[cache_key], f"{mode.title()} Analysis")
             if st.button("Regenerate", key=f"ai_regen_{mode}"):
                 st.session_state[cache_key] = None
                 st.rerun()
@@ -528,6 +531,9 @@ def render_ai_commentary(con, mode: str, context_data: dict | None = None):
                 try:
                     from pakfindata.agents.prompts import InsightMode, PromptBuilder
                     from pakfindata.agents.llm_client import get_completion
+                    from pakfindata.ui.components.commentary_renderer import (
+                        render_styled_commentary, render_download_button,
+                    )
 
                     insight_mode = InsightMode[mode.upper()]
                     builder = PromptBuilder(insight_mode)
@@ -536,7 +542,7 @@ def render_ai_commentary(con, mode: str, context_data: dict | None = None):
                     response = get_completion(prompt)
 
                     st.session_state[cache_key] = response
-                    st.markdown(response)
+                    render_styled_commentary(response, f"{mode.title()} Analysis")
                 except ImportError:
                     st.warning("AI agents module not configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY.")
                 except Exception as e:

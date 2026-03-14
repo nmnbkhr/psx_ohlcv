@@ -114,6 +114,7 @@ from pakfindata.ui.session_tracker import (
     track_symbol_search,
 )
 from pakfindata.ui.chat import chat_page
+from pakfindata.ui.logo import render_logo, render_powered_by, render_disclaimer
 
 # Deep scraper imports for Bloomberg-style data
 from pakfindata.sources.deep_scraper import (
@@ -940,6 +941,36 @@ def research_terminal_page():
     render_research_terminal()
 
 
+def signal_dashboard_page():
+    from pakfindata.ui.page_views.signal_dashboard import render_signal_dashboard
+    render_signal_dashboard()
+
+
+def microstructure_page():
+    from pakfindata.ui.page_views.microstructure import render_microstructure
+    render_microstructure()
+
+
+def tick_analytics_page():
+    from pakfindata.ui.page_views.tick_analytics import render_tick_analytics
+    render_tick_analytics()
+
+
+def macro_cycles_page():
+    from pakfindata.ui.page_views.macro_cycles import render_macro_cycles
+    render_macro_cycles()
+
+
+def sector_breadth_page():
+    from pakfindata.ui.page_views.sector_breadth import render_sector_breadth
+    render_sector_breadth()
+
+
+def market_research_page():
+    from pakfindata.ui.page_views.market_research import render_market_research
+    render_market_research()
+
+
 def website_scan_page():
     from pakfindata.ui.page_views.website_scan import render_website_scan
     render_website_scan()
@@ -1027,6 +1058,21 @@ def benchmark_monitor_page():
 def debt_terminal_page():
     from pakfindata.ui.page_views.debt_terminal import render_debt_terminal
     render_debt_terminal()
+
+
+def alm_dashboard_page():
+    from pakfindata.ui.page_views.alm_dashboard import render_alm_dashboard
+    render_alm_dashboard()
+
+
+def ftp_monitor_page():
+    from pakfindata.ui.page_views.ftp_monitor import render_ftp_monitor
+    render_ftp_monitor()
+
+
+def symbol_financials_page():
+    from pakfindata.ui.page_views.symbol_financials import render
+    render()
 
 
 def vps_pension_page():
@@ -1130,6 +1176,9 @@ def main():
         "Benchmark Monitor":  st.Page(benchmark_monitor_page, title="Benchmark Monitor",  url_path="benchmark"),
         "Debt Terminal":      st.Page(debt_terminal_page,    title="Debt Terminal",      url_path="debt-terminal"),
         "Treasury":           st.Page(treasury_dashboard_page,  title="Treasury",         url_path="treasury"),
+        # ALM
+        "ALM Dashboard":      st.Page(alm_dashboard_page,      title="ALM Dashboard",    url_path="alm-dashboard"),
+        "FTP Monitor":        st.Page(ftp_monitor_page,         title="FTP Monitor",      url_path="ftp-monitor"),
         # FUNDS
         "Fund Explorer":      st.Page(fund_explorer_page,     title="Fund Explorer",      url_path="fund-explorer"),
         "VPS Pension":        st.Page(vps_pension_page,       title="VPS Pension",        url_path="vps-pension"),
@@ -1144,8 +1193,16 @@ def main():
         # COMMODITIES
         "Commodities":        st.Page(commodities_page,        title="Commodities",        url_path="commodities"),
         "PMEX":               st.Page(pmex_page,               title="PMEX",               url_path="pmex"),
-        # RESEARCH
+        # COMPANY FINANCIALS
+        "Symbol Financials":  st.Page(symbol_financials_page,   title="Symbol Financials", url_path="symbol-financials"),
+        # RESEARCH & QUANT
         "Research":           st.Page(research_terminal_page,   title="Research",          url_path="research"),
+        "Signal Analysis":   st.Page(signal_dashboard_page,    title="Signal Analysis",   url_path="signal-analysis"),
+        "Microstructure":     st.Page(microstructure_page,      title="Microstructure",    url_path="microstructure"),
+        "Tick Analytics":    st.Page(tick_analytics_page,      title="Tick Analytics",    url_path="tick-analytics"),
+        "Macro Cycles":       st.Page(macro_cycles_page,        title="Macro Cycles",      url_path="macro-cycles"),
+        "Sector Breadth":     st.Page(sector_breadth_page,      title="Sector Breadth",    url_path="sector-breadth"),
+        "Market Research":    st.Page(market_research_page,     title="Market Research",   url_path="market-research"),
         # ADMIN
         "Data Status":        st.Page(data_status_page,       title="Data Status",        url_path="data-status"),
         "Sync Center":        st.Page(sync_center_page,       title="Sync Center",        url_path="sync-center"),
@@ -1156,17 +1213,18 @@ def main():
     nav_groups = {
         "MARKET OVERVIEW": ["Dashboard", "Market Pulse", "Index Monitor"],
         "EQUITIES":        ["Market Summary", "Stock Screener", "Company Profile",
-                            "Sector Analysis", "Factors",
+                            "Sector Analysis", "Symbol Financials", "Factors",
                             "Intraday", "Live Ticker",
                             "Futures & Odd Lot", "Post Close"],
         "FIXED INCOME":    ["Rates Overview", "Yield Curves", "Treasury Auctions",
                             "Bond Market", "Benchmark Monitor", "Debt Terminal",
                             "Treasury"],
+        "ALM":             ["ALM Dashboard", "FTP Monitor"],
         "FUNDS":           ["Fund Explorer", "VPS Pension", "Top Performers",
                             "Fund Analytics", "ETFs"],
         "FX & RATES":      ["Currency Dashboard", "FX Dashboard", "Interbank vs Open", "Rate History"],
         "COMMODITIES":     ["Commodities", "PMEX"],
-        "RESEARCH":        ["Research"],
+        "RESEARCH":        ["Research", "Signal Analysis", "Microstructure", "Tick Analytics", "Macro Cycles", "Sector Breadth", "Market Research"],
         "ADMIN":           ["Data Status", "Sync Center", "Schema Explorer"],
     }
 
@@ -1294,7 +1352,8 @@ def main():
     # =================================================================
     # CUSTOM BLOOMBERG-STYLE SIDEBAR — 5-pillar navigation
     # =================================================================
-    st.sidebar.title("PakFinData")
+    with st.sidebar:
+        render_logo("sidebar")
 
     # Theme toggle
     theme_options = {
@@ -1360,11 +1419,17 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.caption("CLI: `pfsync --help`")
     st.sidebar.caption(f"DB: `{get_db_path()}`")
+    with st.sidebar:
+        render_powered_by()
 
     # =================================================================
     # EXECUTE SELECTED PAGE — framework guarantees isolation
     # =================================================================
     pg.run()
+
+    # Page footer — brand attribution + disclaimer
+    render_powered_by()
+    render_disclaimer()
 
 
 if __name__ == "__main__":

@@ -1,11 +1,12 @@
 """Treasury Market Terminal — yield curves, auctions, KIBOR, spreads, policy rate.
 
 Tabs:
-  Overview — KPI cards (policy rate, KIBOR, T-Bill, KONIA), rate history overlay
+  Overview — KPI cards (policy rate, KIBOR, T-Bill, KONIA, SOFR), rate history overlay
   Yield Curves — PKRV with comparison, PKISRV Islamic, curve evolution 3D
   Auctions — T-Bill/PIB results with charts, bid-cover, yield evolution
   KIBOR — Term structure, history, bid-offer spread
   Spreads — T-Bill 6-12M, KIBOR vs Policy, curve steepness
+  Global Rates — SOFR, EFFR, SONIA, EUSTR, TONA + SOFR-KIBOR spread
   Bonds — PKFRV floating rate bonds, FMA prices, maturity schedule
   Sync — All sync/backfill controls
 """
@@ -31,6 +32,8 @@ _COLORS = {
     "up": "#00E676", "down": "#FF5252", "neutral": "#78909C",
     "accent": "#00D4AA", "policy": "#E74C3C", "kibor": "#4ECDC4",
     "tbill": "#3498DB", "pib": "#9B59B6", "konia": "#45B7D1",
+    "sofr": "#2196F3", "effr": "#FF9800", "sonia": "#AB47BC",
+    "eustr": "#26A69A", "tona": "#EF5350",
     "pkrv": "#FF6B35", "pkisrv": "#2ECC71", "pkfrv": "#E67E22",
     "bg": "#0e1117", "card_bg": "#1a1a2e", "grid": "#2d2d3d",
     "text": "#e0e0e0", "text_dim": "#888888",
@@ -117,11 +120,13 @@ def render_treasury_dashboard():
         return
 
     tabs = st.tabs([
-        "Overview", "Yield Curves", "Auctions", "KIBOR", "Spreads", "Bonds", "Sync",
+        "Overview", "Yield Curves", "Auctions", "KIBOR", "Spreads",
+        "Global Rates", "Bonds", "Sync",
     ])
     renderers = [
         _render_overview, _render_yield_curves, _render_auctions,
-        _render_kibor, _render_spreads, _render_bonds, _render_sync,
+        _render_kibor, _render_spreads, _render_global_rates,
+        _render_bonds, _render_sync,
     ]
 
     for tab, renderer in zip(tabs, renderers):
@@ -140,7 +145,7 @@ def render_treasury_dashboard():
 
 def _render_overview(con):
     # ── KPI row ──
-    mc = st.columns(5)
+    mc = st.columns(6)
 
     policy = con.execute(
         "SELECT policy_rate, rate_date FROM sbp_policy_rates ORDER BY rate_date DESC LIMIT 1"
@@ -196,6 +201,23 @@ def _render_overview(con):
         else:
             _card("PKRV 10Y", "N/A", color=_COLORS["pkrv"])
 
+    # SOFR
+    try:
+        from pakfindata.db.repositories.global_rates import ensure_tables
+        ensure_tables(con)
+        sofr = con.execute(
+            "SELECT rate, date FROM global_rates WHERE rate_name='SOFR' AND tenor='ON'"
+            " ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+    except Exception:
+        sofr = None
+    with mc[5]:
+        if sofr:
+            _card("SOFR (O/N)", f"{sofr['rate']:.4f}%", color=_COLORS["sofr"])
+            st.caption(f"{sofr['date']}")
+        else:
+            _card("SOFR", "N/A", color=_COLORS["sofr"])
+
     # ── Rate history overlay ──
     st.markdown("### Rate History")
     fig = _styled_fig(height=420)
@@ -239,6 +261,13 @@ def _render_overview(con):
 
     # ── Policy rate timeline ──
     st.markdown("### SBP Policy Rate Timeline")
+
+    # Auto-seed historical rates if table is sparse
+    _pr_count = con.execute("SELECT COUNT(*) FROM sbp_policy_rates").fetchone()[0]
+    if _pr_count < 10:
+        from pakfindata.db.repositories.fixed_income import seed_sbp_policy_rates
+        seed_sbp_policy_rates(con)
+
     pdf = pd.read_sql_query(
         "SELECT rate_date, policy_rate FROM sbp_policy_rates ORDER BY rate_date", con,
     )
@@ -438,22 +467,41 @@ def _render_auctions(con):
             # Yield evolution chart
             if not df.empty:
                 chart_df = df.sort_values("auction_date")
-                fig = _styled_fig(height=280)
-                fig.add_trace(go.Scatter(
-                    x=chart_df["auction_date"], y=chart_df["cutoff_yield"],
-                    mode="lines+markers", name="Cutoff Yield",
-                    line=dict(width=2, color=_COLORS["tbill"]),
-                    marker=dict(size=6),
-                ))
-                if chart_df["weighted_avg_yield"].notna().any():
+                fig = _styled_fig(height=320)
+
+                if sel_tenor == "All":
+                    # Plot each tenor as a separate line to avoid zigzag
+                    tb_colors = ["#3498DB", "#2ECC71", "#E67E22", "#9B59B6", "#E74C3C", "#1ABC9C"]
+                    for idx, tenor in enumerate(sorted(chart_df["tenor"].unique())):
+                        sub = chart_df[chart_df["tenor"] == tenor]
+                        fig.add_trace(go.Scatter(
+                            x=sub["auction_date"], y=sub["cutoff_yield"],
+                            mode="lines+markers", name=tenor,
+                            line=dict(width=2, color=tb_colors[idx % len(tb_colors)]),
+                            marker=dict(size=5),
+                        ))
+                else:
                     fig.add_trace(go.Scatter(
-                        x=chart_df["auction_date"], y=chart_df["weighted_avg_yield"],
-                        mode="lines", name="WA Yield",
-                        line=dict(width=1.5, dash="dot", color=_COLORS["konia"]),
+                        x=chart_df["auction_date"], y=chart_df["cutoff_yield"],
+                        mode="lines+markers", name="Cutoff Yield",
+                        line=dict(width=2, color=_COLORS["tbill"]),
+                        marker=dict(size=5),
                     ))
+                    if chart_df["weighted_avg_yield"].notna().any():
+                        fig.add_trace(go.Scatter(
+                            x=chart_df["auction_date"], y=chart_df["weighted_avg_yield"],
+                            mode="lines", name="WA Yield",
+                            line=dict(width=1.5, dash="dot", color=_COLORS["konia"]),
+                        ))
+
+                ymin = chart_df["cutoff_yield"].min()
+                ymax = chart_df["cutoff_yield"].max()
+                pad = max((ymax - ymin) * 0.15, 0.1)
                 fig.update_layout(
-                    yaxis_title="Yield (%)",
-                    legend=dict(orientation="h", y=-0.15, bgcolor="rgba(0,0,0,0)"),
+                    yaxis=dict(title="Yield (%)", range=[ymin - pad, ymax + pad],
+                               gridcolor=_COLORS["grid"]),
+                    legend=dict(orientation="h", y=-0.18, bgcolor="rgba(0,0,0,0)",
+                                font=dict(size=10)),
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
@@ -487,16 +535,35 @@ def _render_auctions(con):
 
             if not df.empty:
                 chart_df = df.sort_values("auction_date")
-                fig = _styled_fig(height=280)
-                fig.add_trace(go.Scatter(
-                    x=chart_df["auction_date"], y=chart_df["cutoff_yield"],
-                    mode="lines+markers", name="Cutoff Yield",
-                    line=dict(width=2, color=_COLORS["pib"]),
-                    marker=dict(size=6),
-                ))
+                fig = _styled_fig(height=320)
+
+                if sel_tenor == "All":
+                    # Plot each tenor as a separate line to avoid zigzag
+                    pib_colors = ["#9B59B6", "#3498DB", "#E67E22", "#2ECC71", "#E74C3C", "#1ABC9C", "#F39C12", "#00BCD4"]
+                    for idx, tenor in enumerate(sorted(chart_df["tenor"].unique())):
+                        sub = chart_df[chart_df["tenor"] == tenor]
+                        fig.add_trace(go.Scatter(
+                            x=sub["auction_date"], y=sub["cutoff_yield"],
+                            mode="lines+markers", name=tenor,
+                            line=dict(width=2, color=pib_colors[idx % len(pib_colors)]),
+                            marker=dict(size=5),
+                        ))
+                else:
+                    fig.add_trace(go.Scatter(
+                        x=chart_df["auction_date"], y=chart_df["cutoff_yield"],
+                        mode="lines+markers", name="Cutoff Yield",
+                        line=dict(width=2, color=_COLORS["pib"]),
+                        marker=dict(size=5),
+                    ))
+
+                ymin = chart_df["cutoff_yield"].min()
+                ymax = chart_df["cutoff_yield"].max()
+                pad = max((ymax - ymin) * 0.15, 0.1)
                 fig.update_layout(
-                    yaxis_title="Yield (%)",
-                    legend=dict(orientation="h", y=-0.15, bgcolor="rgba(0,0,0,0)"),
+                    yaxis=dict(title="Yield (%)", range=[ymin - pad, ymax + pad],
+                               gridcolor=_COLORS["grid"]),
+                    legend=dict(orientation="h", y=-0.18, bgcolor="rgba(0,0,0,0)",
+                                font=dict(size=10)),
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
@@ -563,13 +630,13 @@ def _render_kibor(con):
     st.markdown("### KIBOR Term Structure")
     kdf = pd.read_sql_query(
         "SELECT date, tenor, bid, offer FROM kibor_daily"
-        " WHERE tenor IN ('1M','3M','6M','1Y') AND offer IS NOT NULL ORDER BY date",
+        " WHERE tenor IN ('1M','3M','6M','12M') AND offer IS NOT NULL ORDER BY date",
         con,
     )
     if not kdf.empty:
         fig = _styled_fig(height=380)
-        kibor_colors = {"1M": "#FF6B35", "3M": "#4ECDC4", "6M": "#45B7D1", "1Y": "#96CEB4"}
-        for tenor in ["1M", "3M", "6M", "1Y"]:
+        kibor_colors = {"1M": "#FF6B35", "3M": "#4ECDC4", "6M": "#45B7D1", "12M": "#96CEB4"}
+        for tenor in ["1M", "3M", "6M", "12M"]:
             tdf = kdf[kdf["tenor"] == tenor]
             if not tdf.empty:
                 fig.add_trace(go.Scatter(
@@ -612,7 +679,7 @@ def _render_kibor(con):
         con,
     )
     if not latest.empty:
-        latest["days"] = latest["tenor"].map(lambda t: _TENOR_DAYS.get(t.strip(), ""))
+        latest["days"] = latest["tenor"].map(lambda t: _TENOR_DAYS.get(t.strip())).astype("Int64")
         latest["spread"] = (latest["offer"] - latest["bid"]).round(4)
         st.dataframe(latest.rename(columns={
             "date": "Date", "tenor": "Tenor", "days": "Days",
@@ -709,7 +776,155 @@ def _render_spreads(con):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# TAB 6: BONDS
+# TAB 6: GLOBAL RATES
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _render_global_rates(con):
+    from pakfindata.db.repositories.global_rates import (
+        ensure_tables,
+        get_all_latest_rates,
+        get_rate_comparison,
+        get_rate_history,
+        get_sofr_kibor_spread,
+    )
+
+    ensure_tables(con)
+
+    # ── Sync button ──
+    sc1, sc2 = st.columns([3, 1])
+    with sc2:
+        if st.button("Sync Global Rates", type="primary", key="tsy_gr_sync"):
+            with st.spinner("Fetching from NY Fed, BoE, ECB, BoJ..."):
+                try:
+                    from pakfindata.sources.global_rates_scraper import GlobalRatesScraper
+                    stats = GlobalRatesScraper().sync_all(con)
+                    parts = [f"{k}: {v}" for k, v in stats.items()]
+                    st.success(" | ".join(parts))
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Sync failed: {e}")
+
+    # ── Rate cards ──
+    st.markdown("### Global Benchmark Rates")
+    comparison = get_rate_comparison(con)
+
+    cols = st.columns(6)
+    rate_labels = [
+        ("SOFR", "USD", comparison.get("SOFR"), _COLORS["sofr"]),
+        ("EFFR", "USD", comparison.get("EFFR"), _COLORS["effr"]),
+        ("KIBOR 6M", "PKR", comparison.get("KIBOR_6M"), _COLORS["kibor"]),
+        ("KONIA", "PKR", comparison.get("KONIA"), _COLORS["konia"]),
+        ("SONIA", "GBP", comparison.get("SONIA"), _COLORS["sonia"]),
+        ("EUSTR", "EUR", comparison.get("EUSTR"), _COLORS["eustr"]),
+    ]
+    for col, (name, ccy, val, color) in zip(cols, rate_labels):
+        with col:
+            _card(f"{name} ({ccy})", f"{val:.4f}%" if val is not None else "N/A", color=color)
+
+    # ── SOFR + EFFR history chart ──
+    st.markdown("### SOFR & EFFR History")
+    days = st.selectbox("Period", [30, 60, 90, 180, 365], index=2, key="tsy_sofr_days")
+    from datetime import timedelta
+    start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    sofr_df = get_rate_history(con, rate_name="SOFR", tenor="ON", start_date=start, limit=0)
+    effr_df = get_rate_history(con, rate_name="EFFR", tenor="ON", start_date=start, limit=0)
+
+    if sofr_df.empty and effr_df.empty:
+        st.info("No SOFR/EFFR data. Click **Sync Global Rates** above.")
+    else:
+        fig = make_subplots(
+            rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
+            row_heights=[0.7, 0.3], subplot_titles=["Rate (%)", "SOFR Volume ($B)"],
+        )
+        if not sofr_df.empty:
+            sofr_df = sofr_df.sort_values("date")
+            fig.add_trace(go.Scatter(
+                x=sofr_df["date"], y=sofr_df["rate"], name="SOFR",
+                line=dict(color=_COLORS["sofr"], width=2),
+            ), row=1, col=1)
+            if "volume" in sofr_df.columns:
+                vol = sofr_df.dropna(subset=["volume"])
+                if not vol.empty:
+                    fig.add_trace(go.Bar(
+                        x=vol["date"], y=vol["volume"], name="Volume",
+                        marker_color="rgba(33,150,243,0.3)",
+                    ), row=2, col=1)
+        if not effr_df.empty:
+            effr_df = effr_df.sort_values("date")
+            fig.add_trace(go.Scatter(
+                x=effr_df["date"], y=effr_df["rate"], name="EFFR",
+                line=dict(color=_COLORS["effr"], width=2, dash="dot"),
+            ), row=1, col=1)
+        _layout = {k: v for k, v in _CHART_LAYOUT.items() if k != "legend"}
+        fig.update_layout(
+            **_layout, height=450,
+            legend=dict(orientation="h", y=-0.08, bgcolor="rgba(0,0,0,0)"),
+        )
+        fig.update_yaxes(title_text="Rate (%)", row=1, col=1)
+        fig.update_yaxes(title_text="$B", row=2, col=1)
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── SOFR-KIBOR Spread ──
+    st.markdown("### SOFR-KIBOR Spread")
+    st.caption("Higher spread = wider FX forward points")
+    spread_df = get_sofr_kibor_spread(con, start_date=start)
+
+    if spread_df.empty:
+        st.info("Need both KIBOR and SOFR synced for spread analysis.")
+    else:
+        tenors = sorted(spread_df["tenor"].unique().tolist())
+        sel_tenor = st.selectbox(
+            "KIBOR Tenor", tenors,
+            index=tenors.index("6M") if "6M" in tenors else 0,
+            key="tsy_spread_tenor",
+        )
+        tdf = spread_df[spread_df["tenor"] == sel_tenor].copy().sort_values("date")
+        if not tdf.empty:
+            fig = make_subplots(specs=[[{"secondary_y": True}]])
+            has_sofr = tdf.dropna(subset=["sofr_rate"])
+            if not has_sofr.empty:
+                fig.add_trace(go.Scatter(
+                    x=has_sofr["date"], y=has_sofr["sofr_rate"], name="SOFR",
+                    line=dict(color=_COLORS["sofr"], width=2),
+                ), secondary_y=False)
+            fig.add_trace(go.Scatter(
+                x=tdf["date"], y=tdf["kibor_offer"],
+                name=f"KIBOR {sel_tenor} (Offer)",
+                line=dict(color=_COLORS["kibor"], width=2),
+            ), secondary_y=False)
+            if not has_sofr.empty:
+                fig.add_trace(go.Bar(
+                    x=has_sofr["date"], y=has_sofr["spread_over_sofr"],
+                    name="Spread (ppts)", marker_color="rgba(76,175,80,0.4)",
+                ), secondary_y=True)
+            _layout = {k: v for k, v in _CHART_LAYOUT.items() if k != "legend"}
+            fig.update_layout(
+                **_layout, height=400,
+                legend=dict(orientation="h", y=-0.08, bgcolor="rgba(0,0,0,0)"),
+            )
+            fig.update_yaxes(title_text="Rate (%)", secondary_y=False)
+            fig.update_yaxes(title_text="Spread (ppts)", secondary_y=True)
+            st.plotly_chart(fig, use_container_width=True)
+
+    # ── All latest rates table ──
+    with st.expander("All Global Rates"):
+        df = get_all_latest_rates(con)
+        if df.empty:
+            st.info("No data yet.")
+        else:
+            display_cols = [c for c in ["date", "rate_name", "tenor", "currency", "rate", "volume", "source"] if c in df.columns]
+            st.dataframe(
+                df[display_cols], use_container_width=True, hide_index=True,
+                column_config={
+                    "rate": st.column_config.NumberColumn("Rate (%)", format="%.4f"),
+                    "volume": st.column_config.NumberColumn("Volume ($B)", format="%.1f"),
+                },
+            )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 7: BONDS (was 6)
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _render_bonds(con):
@@ -842,6 +1057,18 @@ def _render_sync(con):
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
 
+    st.markdown("##### Global Rates (SOFR, EFFR, SONIA, EUSTR, TONA)")
+    if st.button("Sync Global Rates (NY Fed / BoE / ECB)", key="tsy_sync_global"):
+        with st.spinner("Fetching global rates..."):
+            try:
+                from pakfindata.sources.global_rates_scraper import GlobalRatesScraper
+                stats = GlobalRatesScraper().sync_all(con)
+                parts = [f"{k}: {v}" for k, v in stats.items()]
+                st.success(" | ".join(parts))
+                st.rerun()
+            except Exception as e:
+                st.error(f"Global rates sync failed: {e}")
+
     st.markdown("##### MUFAP Yield Curves (PKRV/PKISRV/PKFRV)")
     if st.button("Sync Yield Curves (MUFAP)", key="tsy_sync_mufap"):
         with st.spinner("Downloading & parsing MUFAP rate files..."):
@@ -858,7 +1085,7 @@ def _render_sync(con):
                 st.error(f"MUFAP sync failed: {e}")
 
     st.markdown("##### Historical Backfill (SBP PDFs)")
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
         if st.button("Backfill SIR (T-Bill+PIB+KIBOR)", key="tsy_backfill_sir"):
             with st.spinner("Downloading & parsing SIR PDF..."):
@@ -884,6 +1111,8 @@ def _render_sync(con):
                     st.error(f"PIB backfill failed: {e}")
     with c3:
         _render_kibor_backfill_button()
+    with c4:
+        _render_konia_backfill_button()
 
 
 def _render_kibor_backfill_button():
@@ -916,3 +1145,46 @@ def _render_kibor_backfill_button():
                 st.rerun()
             else:
                 st.warning("KIBOR sync already running")
+
+
+def _render_konia_backfill_button():
+    from pakfindata.sources.sbp_konia_history import (
+        is_konia_history_sync_running,
+        read_konia_sync_progress,
+        start_konia_history_sync,
+    )
+
+    if is_konia_history_sync_running():
+        progress = read_konia_sync_progress()
+        if progress:
+            phase = progress.get("phase", "")
+            inserted = progress.get("inserted", 0)
+            total = progress.get("total_records", 0)
+            if total > 0:
+                pct = inserted / total
+                st.progress(pct, text=f"KONIA: {inserted}/{total} records")
+            else:
+                st.info(f"KONIA: {phase}...")
+        else:
+            st.info("KONIA history sync running...")
+    else:
+        progress = read_konia_sync_progress()
+        if progress and progress.get("status") == "completed":
+            st.caption(f"Last: {progress.get('inserted', 0)} records")
+
+        konia_count = 0
+        try:
+            from pakfindata.ui.components.helpers import get_connection
+            con = get_connection()
+            konia_count = con.execute("SELECT COUNT(*) FROM konia_daily").fetchone()[0]
+        except Exception:
+            pass
+        st.caption(f"Last: {konia_count} records, 0 dates" if konia_count else "No data yet")
+
+        if st.button("Backfill KONIA (2015-Present)", key="tsy_backfill_konia"):
+            started = start_konia_history_sync()
+            if started:
+                st.success("KONIA history sync started in background")
+                st.rerun()
+            else:
+                st.warning("KONIA sync already running")

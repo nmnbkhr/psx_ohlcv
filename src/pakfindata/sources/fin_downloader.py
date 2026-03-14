@@ -353,3 +353,255 @@ def download_financials(
         len(results), total_found, total_downloaded, total_skipped, total_errors,
     )
     return summary
+
+
+# ---------------------------------------------------------------------------
+# Import downloaded PDFs into database
+# ---------------------------------------------------------------------------
+
+# Filename patterns to classify report type and period
+_ANNUAL_RE = re.compile(
+    r"annual.?report|AR[_\s-]?\d{4}|full.?year",
+    re.I,
+)
+_QUARTERLY_RE = re.compile(
+    r"quarter|Q[1-4]|half.?year|interim|nine.?month|six.?month|three.?month|HY|9M|6M|3M",
+    re.I,
+)
+_SKIP_FILE_RE = re.compile(
+    r"presentation|transcript|conference|request.?form|proxy|"
+    r"governance|compliance|csr|sustainability|summary",
+    re.I,
+)
+
+
+def _classify_pdf_filename(filename: str) -> dict[str, str | None]:
+    """Classify a PDF filename to extract report type and fiscal year hint.
+
+    Returns dict with 'report_type' ('annual'|'quarterly') and 'year_hint'.
+    """
+    name = Path(filename).stem
+
+    # Skip non-financial files
+    if _SKIP_FILE_RE.search(name):
+        return {"report_type": None, "year_hint": None, "skip_reason": "non-financial"}
+
+    # Detect type
+    if _ANNUAL_RE.search(name):
+        report_type = "annual"
+    elif _QUARTERLY_RE.search(name):
+        report_type = "quarterly"
+    else:
+        # Default: try to parse the PDF to figure it out
+        report_type = "unknown"
+
+    # Extract year hint
+    year_match = re.search(r"20(1[5-9]|2[0-9])", name)
+    year_hint = f"20{year_match.group(1)}" if year_match else None
+
+    # FY pattern: FY26, FY2026, FY25-26
+    fy_match = re.search(r"FY[_\s-]?(\d{2,4})", name, re.I)
+    if fy_match and not year_hint:
+        y = fy_match.group(1)
+        year_hint = f"20{y}" if len(y) == 2 else y
+
+    return {"report_type": report_type, "year_hint": year_hint}
+
+
+def scan_symbol_pdfs(symbol_dir: Path) -> list[dict]:
+    """Scan a symbol directory for financial PDF files.
+
+    Returns list of dicts with: path, filename, report_type, year_hint, size_kb.
+    """
+    results = []
+    if not symbol_dir.is_dir():
+        return results
+
+    for pdf_path in sorted(symbol_dir.glob("*.pdf")):
+        info = _classify_pdf_filename(pdf_path.name)
+        if info.get("skip_reason"):
+            continue
+
+        results.append({
+            "path": str(pdf_path),
+            "filename": pdf_path.name,
+            "report_type": info["report_type"],
+            "year_hint": info["year_hint"],
+            "size_kb": round(pdf_path.stat().st_size / 1024, 1),
+        })
+
+    return results
+
+
+def import_symbol_pdfs(
+    con,
+    symbol: str,
+    base_dir: Path = BASE_DIR,
+    dry_run: bool = False,
+    progress_callback: Callable | None = None,
+) -> dict[str, Any]:
+    """Parse all downloaded PDFs for a symbol and upsert into company_financials.
+
+    Args:
+        con: SQLite connection
+        symbol: Stock symbol
+        base_dir: Root directory containing symbol folders
+        dry_run: If True, parse but don't write to DB
+        progress_callback: fn(filename, status, detail)
+
+    Returns:
+        Summary dict with counts and details.
+    """
+    from .financial_parser import flatten_parsed_to_financials, parse_ir_pdf
+    from .report_parser import is_bank_symbol
+    from ..db.repositories.company import upsert_company_financials
+
+    symbol = symbol.upper()
+    symbol_dir = base_dir / symbol
+
+    if not symbol_dir.is_dir():
+        return {"symbol": symbol, "error": f"No directory: {symbol_dir}", "parsed": 0, "upserted": 0}
+
+    pdfs = scan_symbol_pdfs(symbol_dir)
+    if not pdfs:
+        return {"symbol": symbol, "error": "No financial PDFs found", "parsed": 0, "upserted": 0}
+
+    is_bank = is_bank_symbol(con, symbol)
+
+    summary: dict[str, Any] = {
+        "symbol": symbol,
+        "is_bank": is_bank,
+        "total_pdfs": len(pdfs),
+        "parsed": 0,
+        "upserted": 0,
+        "skipped": 0,
+        "errors": [],
+        "details": [],
+    }
+
+    for pdf_info in pdfs:
+        fname = pdf_info["filename"]
+        fpath = pdf_info["path"]
+
+        try:
+            with open(fpath, "rb") as f:
+                pdf_bytes = f.read()
+
+            parsed = parse_ir_pdf(pdf_bytes, symbol=symbol, is_bank=is_bank)
+
+            confidence = parsed.get("confidence", 0.0)
+            warnings = parsed.get("warnings", [])
+            pl = parsed.get("income_statement", {})
+            bs = parsed.get("balance_sheet", {})
+
+            period_info = parsed.get("period_info", {})
+            period_end = period_info.get("period_end_date") or pdf_info.get("year_hint")
+            period_type = period_info.get("period_type") or pdf_info.get("report_type") or "annual"
+            if period_type == "unknown":
+                period_type = "annual"
+
+            detail = {
+                "file": fname,
+                "confidence": confidence,
+                "period_end": period_end,
+                "period_type": period_type,
+                "pl_fields": len(pl),
+                "bs_fields": len(bs),
+                "warnings": warnings,
+            }
+
+            if not period_end:
+                detail["status"] = "skipped"
+                detail["reason"] = "no period detected"
+                summary["skipped"] += 1
+                summary["details"].append(detail)
+                if progress_callback:
+                    progress_callback(fname, "skip", "no period detected")
+                continue
+
+            if not pl and not bs:
+                detail["status"] = "skipped"
+                detail["reason"] = "no P&L or BS data extracted"
+                summary["skipped"] += 1
+                summary["details"].append(detail)
+                if progress_callback:
+                    progress_callback(fname, "skip", "no data extracted")
+                continue
+
+            summary["parsed"] += 1
+
+            if not dry_run:
+                entries = flatten_parsed_to_financials(parsed, symbol, period_end, period_type)
+                rows = upsert_company_financials(con, symbol, entries)
+                summary["upserted"] += rows
+                detail["rows_upserted"] = rows
+
+            detail["status"] = "ok"
+            summary["details"].append(detail)
+
+            if progress_callback:
+                progress_callback(fname, "ok", f"period={period_end} pl={len(pl)} bs={len(bs)}")
+
+        except Exception as e:
+            summary["errors"].append({"file": fname, "error": str(e)})
+            summary["details"].append({"file": fname, "status": "error", "error": str(e)})
+            if progress_callback:
+                progress_callback(fname, "error", str(e))
+
+    return summary
+
+
+def import_all_pdfs(
+    con,
+    base_dir: Path = BASE_DIR,
+    symbols: list[str] | None = None,
+    dry_run: bool = False,
+    progress_callback: Callable | None = None,
+) -> dict[str, Any]:
+    """Import financial PDFs for all symbols found in base_dir.
+
+    Args:
+        con: SQLite connection
+        base_dir: Root directory (default /mnt/e/psxsymbolfin)
+        symbols: Optional filter — only these symbols
+        dry_run: Parse only, don't write to DB
+        progress_callback: fn(symbol, filename, status, detail)
+
+    Returns:
+        Aggregate summary.
+    """
+    if not base_dir.is_dir():
+        return {"error": f"Directory not found: {base_dir}", "symbols_processed": 0}
+
+    # Find all symbol directories
+    if symbols:
+        dirs = [base_dir / s.upper() for s in symbols]
+        dirs = [d for d in dirs if d.is_dir()]
+    else:
+        dirs = sorted([d for d in base_dir.iterdir() if d.is_dir()])
+
+    total_summary: dict[str, Any] = {
+        "base_dir": str(base_dir),
+        "symbols_found": len(dirs),
+        "symbols_processed": 0,
+        "total_parsed": 0,
+        "total_upserted": 0,
+        "total_errors": 0,
+        "per_symbol": [],
+    }
+
+    for sym_dir in dirs:
+        symbol = sym_dir.name.upper()
+
+        def _cb(fname, status, detail, _sym=symbol):
+            if progress_callback:
+                progress_callback(_sym, fname, status, detail)
+
+        result = import_symbol_pdfs(con, symbol, base_dir=base_dir, dry_run=dry_run, progress_callback=_cb)
+        total_summary["symbols_processed"] += 1
+        total_summary["total_parsed"] += result.get("parsed", 0)
+        total_summary["total_upserted"] += result.get("upserted", 0)
+        total_summary["total_errors"] += len(result.get("errors", []))
+        total_summary["per_symbol"].append(result)
+
+    return total_summary

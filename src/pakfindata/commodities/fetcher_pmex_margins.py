@@ -153,6 +153,11 @@ def _create_uc_driver(download_dir: str | None = None):
     """
     import undetected_chromedriver as uc
 
+    # Ensure DISPLAY is set for WSLg — Streamlit may not inherit it
+    if not os.environ.get("DISPLAY") and Path("/tmp/.X11-unix/X0").exists():
+        os.environ["DISPLAY"] = ":0"
+        logger.info("Set DISPLAY=:0 (WSLg detected)")
+
     chrome_bin = _find_chrome_binary()
     if chrome_bin is None:
         logger.warning("No Chrome/Chromium binary found on system")
@@ -421,6 +426,29 @@ def _download_with_curl(url: str, timeout: int = 30) -> tuple[bytes | None, int]
 
 
 # ---------------------------------------------------------------------------
+# Disk cache check (avoid launching Chrome for already-downloaded files)
+# ---------------------------------------------------------------------------
+
+
+def _check_disk_cache(
+    target_date: date, walk_back_days: int, dl_dir: str
+) -> tuple[bytes | None, date | None]:
+    """Check if a valid margins file already exists on disk."""
+    for i in range(walk_back_days + 1):
+        dt = target_date - timedelta(days=i)
+        if dt.weekday() >= 5:
+            continue
+        fname = f"Margins-{dt.day:02d}-{dt.month:02d}-{dt.year}.xlsx"
+        fpath = Path(dl_dir) / fname
+        if fpath.exists() and fpath.stat().st_size > 1000:
+            content = fpath.read_bytes()
+            if _is_valid_xlsx(content):
+                logger.info("Using cached file: %s (%d bytes)", fpath.name, len(content))
+                return content, dt
+    return None, None
+
+
+# ---------------------------------------------------------------------------
 # Main fetch function (tries strategies in order)
 # ---------------------------------------------------------------------------
 
@@ -443,6 +471,11 @@ def fetch_margins_file(
         target_date = date.today()
 
     dl_dir = download_dir or str(MARGINS_DOWNLOAD_DIR)
+
+    # Check disk cache first — avoid launching Chrome if file already downloaded
+    cached = _check_disk_cache(target_date, walk_back_days, dl_dir)
+    if cached[0] is not None:
+        return cached
 
     # If caller provides a driver, use it directly
     if driver is not None:

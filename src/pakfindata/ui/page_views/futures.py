@@ -561,148 +561,222 @@ def _render_sync(con, stats, migrate_from_eod_ohlcv):
         "This does NOT load into the database — use the buttons below to ingest."
     )
 
-    from datetime import date as _date
+    from datetime import date as _date, timedelta as _td
+
+    # Determine last trading day (Mon-Fri)
+    _today = _date.today()
+    _ltd = _today
+    from pakfindata.ui.components.helpers import MARKET_DAYS
+    while _ltd.weekday() not in MARKET_DAYS:
+        _ltd -= _td(days=1)
+    last_td_str = _ltd.isoformat()
+
+    st.info(
+        f"**Last trading day:** {last_td_str} ({_ltd.strftime('%A')})"
+        + (f"  |  Today: {_today.isoformat()} ({_today.strftime('%A')})"
+           if _today != _ltd else "")
+    )
 
     dl_date = st.date_input(
         "Date to download",
-        value=_date.today(),
+        value=_ltd,
         key="fut_dl_date",
     )
 
-    if st.button(
-        f"PSX .Z → CSV ({dl_date.isoformat()})",
-        key="fut_download_z",
-        help="Source: dps.psx.com.pk/download/mkt_summary/{date}.Z → "
-             "Destination: /mnt/e/psxdata/market_summary/csv/{date}.csv",
-    ):
-        with st.spinner(f"Downloading & extracting {dl_date.isoformat()}.Z ..."):
-            from pakfindata.sources.market_summary import fetch_day
-            result = fetch_day(dl_date.isoformat(), force=True)
+    dl_col1, dl_col2 = st.columns(2)
+    with dl_col1:
+        if st.button(
+            f"PSX .Z → CSV ({dl_date.isoformat()})",
+            key="fut_download_z",
+            help="Source: dps.psx.com.pk/download/mkt_summary/{date}.Z → "
+                 "Destination: /mnt/e/psxdata/market_summary/csv/{date}.csv",
+        ):
+            with st.spinner(f"Downloading & extracting {dl_date.isoformat()}.Z ..."):
+                from pakfindata.sources.market_summary import fetch_day
+                result = fetch_day(dl_date.isoformat(), force=True)
 
-        if result["status"] == "ok":
-            st.success(
-                f"Downloaded {result['row_count']} records → {result['csv_path']}"
-            )
-        elif result["status"] == "skipped":
-            st.info(f"CSV already exists ({result['row_count']} records). Use force to re-download.")
-        else:
-            st.error(f"Download failed: {result.get('message', 'unknown error')}")
+            if result["status"] == "ok":
+                st.success(
+                    f"Downloaded {result['row_count']} records → {result['csv_path']}"
+                )
+            elif result["status"] == "skipped":
+                st.info(f"CSV already exists ({result['row_count']} records). Use force to re-download.")
+            else:
+                st.error(f"Download failed: {result.get('message', 'unknown error')}")
+
+    with dl_col2:
+        if st.button(
+            f"CSV → DB ({dl_date.isoformat()})",
+            key="fut_csv_to_db",
+            type="primary",
+            help="Load the CSV into eod_ohlcv (equities) and futures_eod (derivatives) tables",
+        ):
+            from pathlib import Path as _Path
+            from pakfindata.config import DATA_ROOT
+            from pakfindata.db.repositories.eod import ingest_market_summary_csv
+
+            csv_path = DATA_ROOT / "market_summary" / "csv" / f"{dl_date.isoformat()}.csv"
+            if not csv_path.exists():
+                st.error(f"CSV not found: {csv_path}. Download first.")
+            else:
+                with st.spinner(f"Loading {csv_path.name} into database..."):
+                    result = ingest_market_summary_csv(
+                        con, csv_path, skip_existing=False, source="market_summary",
+                    )
+                reg = result.get("reg_rows", 0)
+                fut = result.get("futures_rows", 0)
+                _clear_futures_cache()
+                st.success(
+                    f"Loaded {csv_path.name}: **{reg:,}** equities → eod_ohlcv, "
+                    f"**{fut:,}** derivatives → futures_eod"
+                )
 
     st.divider()
 
-    # ── Read futures from eod_ohlcv → update futures_eod ─────────
-    st.markdown("### Update Futures from EOD Data")
+    # ── Sync eod_ohlcv → futures_eod ─────────────────────────────
+    st.markdown("### Sync eod_ohlcv → futures_eod")
     st.caption(
-        "Scan eod_ohlcv for FUT/CONT/IDX_FUT/ODL rows (sector_code 40, 41, 36), "
-        "classify them, and upsert into futures_eod. "
-        "Rows are **copied** (not deleted) so eod_ohlcv stays intact."
+        "Pick a date, check if CSV exists on disk and eod_ohlcv has data, "
+        "then sync derivative rows (FUT/CONT/IDX_FUT/ODL) into futures_eod."
     )
 
-    # Date range available in eod_ohlcv for derivatives
     from datetime import date as _dt_date, datetime as _dt_datetime
+    from pathlib import Path as _Path
+    from pakfindata.config import DATA_ROOT
 
-    eod_deriv_range = con.execute(
-        "SELECT MIN(date), MAX(date), COUNT(*) "
-        "FROM eod_ohlcv WHERE sector_code IN ('40', '41', '36')"
-    ).fetchone()
-    eod_min_date = eod_deriv_range[0]
-    eod_max_date = eod_deriv_range[1]
-    eod_pollution = eod_deriv_range[2]
+    _csv_dir = DATA_ROOT / "market_summary" / "csv"
 
-    st.metric("Derivative rows in eod_ohlcv", f"{eod_pollution:,}")
+    sync_date = st.date_input(
+        "Select date",
+        value=_ltd,
+        max_value=_dt_date.today(),
+        key="fut_sync_date",
+    )
+    _sync_ds = sync_date.isoformat()
 
-    if eod_pollution > 0 and eod_min_date and eod_max_date:
-        st.caption(f"Date range in eod_ohlcv: **{eod_min_date}** → **{eod_max_date}**")
+    # ── Status detection ──
+    csv_path = _csv_dir / f"{_sync_ds}.csv"
+    csv_exists = csv_path.exists()
 
-        col_from, col_to = st.columns(2)
-        with col_from:
-            eod_start = st.date_input(
-                "From date",
-                value=_dt_datetime.strptime(eod_max_date, "%Y-%m-%d").date(),
-                min_value=_dt_datetime.strptime(eod_min_date, "%Y-%m-%d").date(),
-                max_value=_dt_datetime.strptime(eod_max_date, "%Y-%m-%d").date(),
-                key="fut_eod_start",
-            )
-        with col_to:
-            eod_end = st.date_input(
-                "To date",
-                value=_dt_datetime.strptime(eod_max_date, "%Y-%m-%d").date(),
-                min_value=_dt_datetime.strptime(eod_min_date, "%Y-%m-%d").date(),
-                max_value=_dt_datetime.strptime(eod_max_date, "%Y-%m-%d").date(),
-                key="fut_eod_end",
-            )
+    eod_count = con.execute(
+        "SELECT COUNT(*) FROM eod_ohlcv WHERE date = ?", (_sync_ds,)
+    ).fetchone()[0]
 
-        # Count rows in selected range
-        sel_count = con.execute(
-            "SELECT COUNT(*) FROM eod_ohlcv "
-            "WHERE sector_code IN ('40', '41', '36') AND date BETWEEN ? AND ?",
-            (eod_start.isoformat(), eod_end.isoformat()),
-        ).fetchone()[0]
+    eod_deriv_count = con.execute(
+        "SELECT COUNT(*) FROM eod_ohlcv "
+        "WHERE sector_code IN ('40', '41', '36') AND date = ?",
+        (_sync_ds,),
+    ).fetchone()[0]
 
-        col_upd1, col_upd2 = st.columns(2)
-        with col_upd1:
-            if st.button(
-                f"Read & Update Futures ({sel_count:,} rows)",
-                key="fut_read_eod_update",
-                type="primary",
-                disabled=sel_count == 0,
-                help="Copy FUT/CONT/IDX_FUT/ODL rows from eod_ohlcv into futures_eod (non-destructive)",
-            ):
-                with st.spinner(f"Reading {sel_count:,} derivative rows ({eod_start} → {eod_end})..."):
-                    from pakfindata.sources.market_summary import (
-                        classify_market_type,
-                        parse_futures_symbol,
+    fut_count = con.execute(
+        "SELECT COUNT(*) FROM futures_eod WHERE date = ?", (_sync_ds,)
+    ).fetchone()[0]
+
+    s1, s2, s3, s4 = st.columns(4)
+    with s1:
+        st.metric("CSV on disk", "Yes" if csv_exists else "No")
+    with s2:
+        st.metric("eod_ohlcv rows", f"{eod_count:,}")
+    with s3:
+        st.metric("Derivative rows", f"{eod_deriv_count:,}")
+    with s4:
+        st.metric("futures_eod rows", f"{fut_count:,}")
+
+    # ── Action buttons (always enabled) ──
+    btn_col1, btn_col2, btn_col3 = st.columns(3)
+
+    with btn_col1:
+        if st.button(
+            f"CSV → DB ({_sync_ds})",
+            key="fut_sync_csv_to_eod",
+            help="Load CSV into eod_ohlcv (equities) and futures_eod (derivatives)",
+        ):
+            if not csv_exists:
+                st.error(f"CSV not found on disk: `{csv_path}`")
+            else:
+                from pakfindata.db.repositories.eod import ingest_market_summary_csv
+                with st.spinner(f"Loading {csv_path.name} ..."):
+                    result = ingest_market_summary_csv(
+                        con, csv_path, skip_existing=False, source="market_summary",
                     )
+                reg = result.get("reg_rows", 0)
+                fut = result.get("futures_rows", 0)
+                _clear_futures_cache()
+                st.success(f"**{reg:,}** equities → eod_ohlcv, **{fut:,}** derivatives → futures_eod")
+                st.rerun()
 
+    with btn_col2:
+        if st.button(
+            f"Sync to futures_eod ({_sync_ds})",
+            key="fut_sync_eod_to_fut",
+            type="primary",
+            help="Read derivatives from CSV (or eod_ohlcv) and upsert into futures_eod",
+        ):
+            from pakfindata.sources.market_summary import (
+                classify_market_type,
+                parse_futures_symbol,
+            )
+
+            # Try CSV first, then eod_ohlcv
+            df = pd.DataFrame()
+            src = ""
+            if csv_exists:
+                with st.spinner(f"Reading derivatives from {csv_path.name}..."):
+                    raw_df = pd.read_csv(csv_path)
+                    raw_df["sector_code"] = raw_df["sector_code"].astype(str).str.strip()
+                    df = raw_df[raw_df["sector_code"].isin(["40", "41", "36"])].copy()
+                    if "date" not in df.columns:
+                        df["date"] = _sync_ds
+                    src = "CSV"
+            if df.empty and eod_count > 0:
+                with st.spinner(f"Reading derivatives from eod_ohlcv..."):
                     df = pd.read_sql_query(
                         "SELECT * FROM eod_ohlcv "
-                        "WHERE sector_code IN ('40', '41', '36') AND date BETWEEN ? AND ?",
-                        con,
-                        params=(eod_start.isoformat(), eod_end.isoformat()),
+                        "WHERE sector_code IN ('40', '41', '36') AND date = ?",
+                        con, params=(_sync_ds,),
                     )
-                    if not df.empty:
-                        df["market_type"] = df.apply(
-                            lambda r: classify_market_type(
-                                str(r.get("sector_code", "")), r["symbol"]
-                            ),
-                            axis=1,
-                        )
-                        parsed = df.apply(
-                            lambda r: parse_futures_symbol(r["symbol"], r["market_type"]),
-                            axis=1,
-                            result_type="expand",
-                        )
-                        df["base_symbol"] = parsed[0]
-                        df["contract_month"] = parsed[1]
+                    src = "eod_ohlcv"
 
-                        from pakfindata.db.repositories.futures import upsert_futures_eod
-                        upserted = upsert_futures_eod(con, df, source="eod_ohlcv_sync")
-                        _clear_futures_cache()
-                        st.success(
-                            f"Upserted **{upserted:,}** rows into futures_eod "
-                            f"({eod_start} → {eod_end})"
-                        )
-                        st.rerun()
-                    else:
-                        st.info("No derivative rows found for selected dates.")
+            if df.empty:
+                st.warning(f"No derivative data found for {_sync_ds} in CSV or eod_ohlcv.")
+            else:
+                df["market_type"] = df.apply(
+                    lambda r: classify_market_type(
+                        str(r.get("sector_code", "")), r["symbol"]
+                    ),
+                    axis=1,
+                )
+                parsed = df.apply(
+                    lambda r: parse_futures_symbol(r["symbol"], r["market_type"]),
+                    axis=1,
+                    result_type="expand",
+                )
+                df["base_symbol"] = parsed[0]
+                df["contract_month"] = parsed[1]
 
-        with col_upd2:
-            if st.button(
-                "Migrate & Clean eod_ohlcv (all dates)",
-                key="fut_migrate_exec",
-                disabled=eod_pollution == 0,
-                help="Move ALL derivative rows from eod_ohlcv → futures_eod and DELETE from eod_ohlcv",
-            ):
+                from pakfindata.db.repositories.futures import upsert_futures_eod
+                upserted = upsert_futures_eod(con, df, source="eod_ohlcv_sync")
+                _clear_futures_cache()
+                st.success(f"Upserted **{upserted:,}** rows into futures_eod for {_sync_ds} (from {src})")
+                st.rerun()
+
+    with btn_col3:
+        if st.button(
+            f"Migrate & Clean ({_sync_ds})",
+            key="fut_migrate_exec",
+            help="Move derivative rows from eod_ohlcv → futures_eod and DELETE from eod_ohlcv",
+        ):
+            if eod_deriv_count == 0:
+                st.info(f"No derivative rows in eod_ohlcv for {_sync_ds} — nothing to migrate.")
+            else:
                 with st.spinner("Migrating..."):
                     result = migrate_from_eod_ohlcv(con, dry_run=False)
                 _clear_futures_cache()
                 st.success(
-                    f"Migrated {result['migrated']:,} rows to futures_eod, "
+                    f"Migrated {result['migrated']:,} rows, "
                     f"deleted {result['deleted_from_eod']:,} from eod_ohlcv"
-                )
-                st.rerun()
-    else:
-        st.success("No derivative rows in eod_ohlcv — clean!")
+            )
+            st.rerun()
 
     # Incremental load — only new CSVs since last loaded date
     from pathlib import Path

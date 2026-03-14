@@ -838,6 +838,58 @@ def main(argv: list[str] | None = None) -> int:
         help="Path to saved HTML file (page source from browser)",
     )
 
+    # company check - probe PSX page and show available filings
+    company_check_parser = company_sub.add_parser(
+        "check",
+        help="Check what financial data is available on PSX page vs stored in DB"
+    )
+    company_check_parser.add_argument(
+        "--symbol",
+        type=str,
+        required=True,
+        help="Stock symbol (e.g., OGDC)",
+    )
+    company_check_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="output_json",
+        help="Output raw JSON instead of formatted report",
+    )
+
+    # company import-financials - parse downloaded PDFs and import to DB
+    company_import_fin_parser = company_sub.add_parser(
+        "import-financials",
+        help="Parse downloaded PDF financial statements and import P&L + Balance Sheet to DB"
+    )
+    company_import_fin_parser.add_argument(
+        "--symbol",
+        type=str,
+        help="Single stock symbol (e.g., OGDC)",
+    )
+    company_import_fin_parser.add_argument(
+        "--all",
+        action="store_true",
+        dest="import_all",
+        help="Import from all symbol folders in /mnt/e/psxsymbolfin/",
+    )
+    company_import_fin_parser.add_argument(
+        "--dir",
+        type=str,
+        default="/mnt/e/psxsymbolfin",
+        dest="base_dir",
+        help="Base directory with symbol folders (default: /mnt/e/psxsymbolfin)",
+    )
+    company_import_fin_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Parse PDFs but don't write to database (preview mode)",
+    )
+    company_import_fin_parser.add_argument(
+        "--scan-only",
+        action="store_true",
+        help="Just list available PDFs without parsing",
+    )
+
     # company fetch-dividends - fetch dividend announcements from PSX
     company_sub.add_parser(
         "fetch-dividends",
@@ -1330,6 +1382,46 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=30,
         help="Trading dates per processing chunk (default: 30)",
+    )
+
+    # mufap compute-risk — compute quant risk metrics for funds
+    compute_risk_parser = mufap_sub.add_parser(
+        "compute-risk",
+        help="Compute risk metrics (Sharpe, Sortino, VaR, etc.) and store in fund_risk_metrics"
+    )
+    compute_risk_parser.add_argument(
+        "--fund", type=str, default=None,
+        help="Specific fund name (default: all funds)"
+    )
+    compute_risk_parser.add_argument(
+        "--period", type=str, default=None,
+        help="Specific period (1M,3M,6M,1Y,3Y,5Y,SI). Default: all"
+    )
+
+    # mufap signals — generate MA crossover and volatility signals
+    mufap_sub.add_parser(
+        "signals",
+        help="Generate MA crossover and volatility signals for all funds"
+    )
+
+    # mufap llm-context — generate LLM context JSON
+    llm_context_parser = mufap_sub.add_parser(
+        "llm-context",
+        help="Generate LLM market context JSON (print to stdout)"
+    )
+    llm_context_parser.add_argument(
+        "--category", type=str, default=None,
+        help="Filter by fund category"
+    )
+    llm_context_parser.add_argument(
+        "--top", type=int, default=10,
+        help="Number of top/bottom performers (default: 10)"
+    )
+
+    # mufap screen-amcs — placeholder compliance screening
+    mufap_sub.add_parser(
+        "screen-amcs",
+        help="Run compliance screening on all AMCs (placeholder)"
     )
 
     # =========================================================================
@@ -3921,6 +4013,10 @@ def handle_company(args: argparse.Namespace) -> int:
         return handle_company_show(args)
     elif args.company_command == "sync-sectors":
         return handle_company_sync_sectors(args)
+    elif args.company_command == "check":
+        return handle_company_check(args)
+    elif args.company_command == "import-financials":
+        return handle_company_import_financials(args)
     elif args.company_command == "deep-scrape":
         return handle_company_deep_scrape(args)
     elif args.company_command == "import-payouts":
@@ -4104,6 +4200,244 @@ def handle_company_sync_sectors(args: argparse.Namespace) -> int:
     con.close()
 
     print(f"Updated {count} symbol(s) with sector names.")
+    return EXIT_SUCCESS
+
+
+def handle_company_import_financials(args: argparse.Namespace) -> int:
+    """Import financial data from downloaded PDF files into the database."""
+    from pathlib import Path
+
+    from .sources.fin_downloader import (
+        import_all_pdfs,
+        import_symbol_pdfs,
+        scan_symbol_pdfs,
+    )
+
+    base_dir = Path(args.base_dir)
+    if not base_dir.is_dir():
+        print(f"Error: directory not found: {base_dir}", file=sys.stderr)
+        return EXIT_ERROR
+
+    # --- Scan-only mode: just list PDFs ---
+    if getattr(args, "scan_only", False):
+        if args.symbol:
+            sym_dir = base_dir / args.symbol.upper()
+            pdfs = scan_symbol_pdfs(sym_dir)
+            if not pdfs:
+                print(f"No financial PDFs found in {sym_dir}")
+                return EXIT_SUCCESS
+            print(f"\n{args.symbol.upper()} — {len(pdfs)} financial PDF(s) in {sym_dir}")
+            print(f"{'─' * 70}")
+            for p in pdfs:
+                print(f"  [{p['report_type']:>10}] {p['year_hint'] or '????'}  {p['size_kb']:>8.1f} KB  {p['filename']}")
+        else:
+            # Scan all
+            total = 0
+            for sym_dir in sorted(d for d in base_dir.iterdir() if d.is_dir()):
+                pdfs = scan_symbol_pdfs(sym_dir)
+                if pdfs:
+                    total += len(pdfs)
+                    print(f"\n{sym_dir.name} — {len(pdfs)} PDF(s)")
+                    for p in pdfs:
+                        print(f"  [{p['report_type']:>10}] {p['year_hint'] or '????'}  {p['size_kb']:>8.1f} KB  {p['filename']}")
+            print(f"\n{'=' * 70}")
+            print(f"Total: {total} financial PDFs across {sum(1 for d in base_dir.iterdir() if d.is_dir())} symbol folders")
+        return EXIT_SUCCESS
+
+    # --- Parse + import mode ---
+    symbol = getattr(args, "symbol", None)
+    import_all = getattr(args, "import_all", False)
+    dry_run = getattr(args, "dry_run", False)
+
+    if not symbol and not import_all:
+        print("Error: --symbol or --all required", file=sys.stderr)
+        return EXIT_ERROR
+
+    con = connect(args.db)
+    init_schema(con)
+
+    if dry_run:
+        print("DRY RUN — parsing PDFs but NOT writing to database\n")
+
+    if symbol:
+        symbol = symbol.upper()
+        print(f"Importing financials for {symbol} from {base_dir / symbol}/")
+        print(f"{'─' * 70}")
+
+        def _cb(fname, status, detail):
+            icon = "✓" if status == "ok" else "⊘" if status == "skip" else "✗"
+            print(f"  {icon} {fname}: {detail}")
+
+        result = import_symbol_pdfs(con, symbol, base_dir=base_dir, dry_run=dry_run, progress_callback=_cb)
+        con.close()
+
+        print(f"\n{'=' * 70}")
+        print(f"  {symbol}: {result['parsed']} parsed, {result['upserted']} rows upserted, "
+              f"{result['skipped']} skipped, {len(result.get('errors', []))} errors")
+        if result.get("is_bank"):
+            print(f"  Detected as BANK — markup earned/expensed extraction enabled")
+
+    else:
+        # --all
+        symbols_filter = None
+        print(f"Importing financials from ALL symbols in {base_dir}/")
+        print(f"{'─' * 70}")
+
+        def _cb_all(sym, fname, status, detail):
+            icon = "✓" if status == "ok" else "⊘" if status == "skip" else "✗"
+            print(f"  [{sym}] {icon} {fname}: {detail}")
+
+        result = import_all_pdfs(con, base_dir=base_dir, symbols=symbols_filter, dry_run=dry_run, progress_callback=_cb_all)
+        con.close()
+
+        print(f"\n{'=' * 70}")
+        print(f"  Symbols: {result['symbols_processed']}/{result['symbols_found']}")
+        print(f"  PDFs parsed:    {result['total_parsed']}")
+        print(f"  Rows upserted:  {result['total_upserted']}")
+        print(f"  Errors:         {result['total_errors']}")
+
+        if result.get("per_symbol"):
+            print(f"\n  Per symbol:")
+            for sr in result["per_symbol"]:
+                if sr.get("parsed", 0) > 0 or sr.get("errors"):
+                    e = len(sr.get("errors", []))
+                    print(f"    {sr['symbol']:>8}: {sr['parsed']} parsed, {sr['upserted']} upserted"
+                          f"{f', {e} errors' if e else ''}")
+
+    return EXIT_SUCCESS
+
+
+def handle_company_check(args: argparse.Namespace) -> int:
+    """Check what financial data is on PSX page vs what's in the DB."""
+    import json as _json
+
+    from .sources.deep_scraper import check_symbol_filings
+
+    symbol = args.symbol.upper()
+    print(f"Checking {symbol} — fetching https://dps.psx.com.pk/company/{symbol} ...")
+
+    con = connect(args.db)
+    init_schema(con)
+
+    report = check_symbol_filings(symbol, con=con)
+    con.close()
+
+    if not report["success"]:
+        print(f"Error: {report['error']}", file=sys.stderr)
+        return EXIT_ERROR
+
+    # Raw JSON output
+    if getattr(args, "output_json", False):
+        print(_json.dumps(report, indent=2, default=str))
+        return EXIT_SUCCESS
+
+    # Formatted report
+    pg = report["page"]
+    db = report["db"]
+
+    print()
+    print(f"{'=' * 64}")
+    print(f"  {pg.get('company_name', symbol)}  |  {pg.get('sector', '')}")
+    print(f"  Price: {pg.get('price', 'N/A')}  Change: {pg.get('change_pct', 'N/A')}%")
+    print(f"  Markets: {', '.join(pg.get('market_types', [])) or 'none'}")
+    print(f"{'=' * 64}")
+
+    # Equity
+    eq = pg.get("equity", {})
+    print(f"\n  EQUITY STRUCTURE {'✓' if eq.get('available') else '✗'}")
+    if eq.get("available"):
+        mcap = eq.get("market_cap")
+        mcap_str = f"PKR {mcap / 1e9:.2f}B" if mcap else "N/A"
+        print(f"    Market Cap:       {mcap_str}")
+        print(f"    Outstanding:      {eq.get('outstanding_shares', 'N/A'):,}" if eq.get("outstanding_shares") else "    Outstanding:      N/A")
+        print(f"    Free Float:       {eq.get('free_float_pct', 'N/A')}%")
+    db_eq = db.get("equity_snapshots", 0)
+    print(f"    DB snapshots:     {db_eq}")
+
+    # Profile
+    pr = pg.get("profile", {})
+    print(f"\n  COMPANY PROFILE {'✓' if pr.get('available') else '✗'}")
+    print(f"    Description:      {'yes' if pr.get('has_description') else 'no'}")
+    print(f"    Key People:       {pr.get('key_people_count', 0)}")
+    print(f"    DB stored:        {'yes' if db.get('profile_exists') else 'no'}")
+
+    # Financials
+    fi = pg.get("financials", {})
+    print(f"\n  FINANCIAL STATEMENTS {'✓' if fi.get('available') else '✗'}")
+    if fi.get("available"):
+        ann_p = fi.get("annual_periods", [])
+        qtr_p = fi.get("quarterly_periods", [])
+        print(f"    Annual periods:   {', '.join(ann_p) if ann_p else 'none'}")
+        print(f"    Quarterly:        {', '.join(qtr_p) if qtr_p else 'none'}")
+        print(f"    Metrics found:    {', '.join(fi.get('metrics', []))}")
+    db_fp = db.get("financials_periods", [])
+    print(f"    DB rows:          {db.get('financials_rows', 0)}  periods: {', '.join(db_fp) if db_fp else 'none'}")
+    # Gap analysis
+    if fi.get("available") and db_fp:
+        page_all = set(fi.get("annual_periods", []) + fi.get("quarterly_periods", []))
+        db_all = set(db_fp)
+        missing = sorted(page_all - db_all)
+        if missing:
+            print(f"    MISSING in DB:    {', '.join(missing)}")
+        else:
+            print(f"    Gap:              all page periods are in DB ✓")
+
+    # Ratios
+    ra = pg.get("ratios", {})
+    print(f"\n  FINANCIAL RATIOS {'✓' if ra.get('available') else '✗'}")
+    if ra.get("available"):
+        ann_r = ra.get("annual_periods", [])
+        qtr_r = ra.get("quarterly_periods", [])
+        print(f"    Annual periods:   {', '.join(ann_r) if ann_r else 'none'}")
+        print(f"    Quarterly:        {', '.join(qtr_r) if qtr_r else 'none'}")
+        print(f"    Metrics found:    {', '.join(ra.get('metrics', []))}")
+    db_rp = db.get("ratios_periods", [])
+    print(f"    DB rows:          {db.get('ratios_rows', 0)}  periods: {', '.join(db_rp) if db_rp else 'none'}")
+    if ra.get("available") and db_rp:
+        page_all = set(ra.get("annual_periods", []) + ra.get("quarterly_periods", []))
+        db_all = set(db_rp)
+        missing = sorted(page_all - db_all)
+        if missing:
+            print(f"    MISSING in DB:    {', '.join(missing)}")
+        else:
+            print(f"    Gap:              all page periods are in DB ✓")
+
+    # Announcements
+    an = pg.get("announcements", {})
+    print(f"\n  ANNOUNCEMENTS {'✓' if an.get('available') else '✗'}")
+    if an.get("available"):
+        print(f"    Total on page:    {an.get('total', 0)}")
+        for atype, cnt in an.get("by_type", {}).items():
+            print(f"      {atype}: {cnt}")
+    print(f"    DB rows:          {db.get('announcements_rows', 0)}")
+
+    # Payouts
+    pa = pg.get("payouts", {})
+    print(f"\n  PAYOUTS / DIVIDENDS {'✓' if pa.get('available') else '✗'}")
+    if pa.get("available"):
+        print(f"    Total on page:    {pa.get('total', 0)}")
+        for ptype, cnt in pa.get("by_type", {}).items():
+            print(f"      {ptype}: {cnt}")
+        fy = pa.get("fiscal_years", [])
+        if fy:
+            print(f"    Fiscal years:     {', '.join(fy)}")
+    print(f"    DB rows:          {db.get('payouts_rows', 0)}")
+
+    # Summary
+    print(f"\n{'=' * 64}")
+    sections_available = sum([
+        bool(fi.get("available")),
+        bool(ra.get("available")),
+        bool(an.get("available")),
+        bool(pa.get("available")),
+        bool(pr.get("available")),
+        bool(eq.get("available")),
+    ])
+    print(f"  {sections_available}/6 data sections available on page")
+    if sections_available > 0 and db.get("financials_rows", 0) == 0:
+        print(f"  → Run: pfsync company deep-scrape --symbol {symbol}")
+    print()
+
     return EXIT_SUCCESS
 
 
@@ -5084,6 +5418,14 @@ def handle_mufap(args: argparse.Namespace) -> int:
         return handle_mufap_resync_categories(args)
     elif args.mufap_command == "backfill-returns":
         return handle_mufap_backfill_returns(args)
+    elif args.mufap_command == "compute-risk":
+        return handle_mufap_compute_risk(args)
+    elif args.mufap_command == "signals":
+        return handle_mufap_signals(args)
+    elif args.mufap_command == "llm-context":
+        return handle_mufap_llm_context(args)
+    elif args.mufap_command == "screen-amcs":
+        return handle_mufap_screen_amcs(args)
     return EXIT_ERROR
 
 
@@ -5513,6 +5855,248 @@ def handle_mufap_backfill_returns(args: argparse.Namespace) -> int:
     else:
         print(f"  Error: {result.get('error', 'Unknown')}")
         return EXIT_ERROR
+
+
+# =============================================================================
+# Phase 2.5: Quant Engine CLI Handlers
+# =============================================================================
+
+
+def handle_mufap_compute_risk(args: argparse.Namespace) -> int:
+    """Compute risk metrics for all (or one) fund and store in fund_risk_metrics."""
+    import sqlite3
+    import time
+    import pandas as pd
+    from .engine.fund_risk import generate_fund_analytics
+    from .engine.benchmark import get_benchmark_nav
+    from .config import get_db_path
+
+    db_path = getattr(args, "db", None) or get_db_path()
+    con = sqlite3.connect(str(db_path))
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=WAL")
+
+    # Ensure schema
+    con.execute("""CREATE TABLE IF NOT EXISTS fund_risk_metrics (
+        fund_name TEXT NOT NULL, as_of_date TEXT NOT NULL, period TEXT NOT NULL,
+        sharpe_ratio REAL, sortino_ratio REAL, max_drawdown REAL,
+        volatility_ann REAL, beta REAL, alpha REAL, information_ratio REAL,
+        var_95 REAL, cvar_95 REAL, up_capture REAL, down_capture REAL,
+        tracking_error REAL, r_squared REAL,
+        computed_at TEXT DEFAULT (datetime('now')),
+        PRIMARY KEY (fund_name, as_of_date, period))""")
+
+    fund_filter = getattr(args, "fund", None)
+    period_filter = getattr(args, "period", None)
+
+    # Load benchmark
+    benchmark = get_benchmark_nav(con, "KSE-100")
+    bm = benchmark if not benchmark.empty else None
+
+    # Get funds
+    if fund_filter:
+        funds = con.execute(
+            """SELECT f.fund_id, f.fund_name, COUNT(n.date) as cnt
+               FROM mutual_funds f INNER JOIN mutual_fund_nav n ON f.fund_id = n.fund_id
+               WHERE f.fund_name LIKE ? GROUP BY f.fund_id HAVING cnt >= 90""",
+            (f"%{fund_filter}%",),
+        ).fetchall()
+    else:
+        funds = con.execute(
+            """SELECT f.fund_id, f.fund_name, COUNT(n.date) as cnt
+               FROM mutual_funds f INNER JOIN mutual_fund_nav n ON f.fund_id = n.fund_id
+               WHERE f.is_active = 1 GROUP BY f.fund_id HAVING cnt >= 90"""
+        ).fetchall()
+
+    print(f"Computing risk metrics for {len(funds)} funds...")
+    t0 = time.time()
+    computed = 0
+    from datetime import date
+    today = date.today().isoformat()
+
+    for i, fund in enumerate(funds):
+        fund_id = fund["fund_id"]
+        fund_name = fund["fund_name"]
+
+        df = pd.read_sql_query(
+            "SELECT date, nav FROM mutual_fund_nav WHERE fund_id = ? AND nav > 0 ORDER BY date",
+            con, params=(fund_id,),
+        )
+        if len(df) < 90:
+            continue
+
+        df["date"] = pd.to_datetime(df["date"])
+        df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
+        df = df.dropna(subset=["nav"])
+        nav = df.set_index("date")["nav"]
+
+        analytics = generate_fund_analytics(fund_name, nav, bm)
+        if "error" in analytics:
+            continue
+
+        risk = analytics.get("risk", {})
+        rel = analytics.get("relative", {})
+        perf = analytics.get("performance", {})
+
+        periods = [period_filter] if period_filter else list(perf.keys())
+        for p in periods:
+            p_data = perf.get(p, {})
+            if not isinstance(p_data, dict):
+                continue
+            con.execute(
+                """INSERT OR REPLACE INTO fund_risk_metrics
+                   (fund_name, as_of_date, period, sharpe_ratio, sortino_ratio,
+                    max_drawdown, volatility_ann, beta, alpha, information_ratio,
+                    var_95, cvar_95, up_capture, down_capture, tracking_error, r_squared)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (fund_name, today, p,
+                 risk.get("sharpe_1y"), risk.get("sortino_1y"),
+                 risk.get("max_drawdown"), risk.get("volatility_1y_ann"),
+                 rel.get("beta"), rel.get("alpha"), rel.get("information_ratio"),
+                 risk.get("var_95_daily"), risk.get("cvar_95"),
+                 rel.get("up_capture"), rel.get("down_capture"),
+                 rel.get("tracking_error"), None),
+            )
+        con.commit()
+        computed += 1
+
+        if (i + 1) % 50 == 0:
+            elapsed = time.time() - t0
+            print(f"  [{i+1}/{len(funds)}] {elapsed:.1f}s")
+
+    elapsed = time.time() - t0
+    print(f"\nDone. {computed} funds computed in {elapsed:.1f}s")
+    con.close()
+    return EXIT_SUCCESS
+
+
+def handle_mufap_signals(args: argparse.Namespace) -> int:
+    """Generate MA crossover and volatility signals for all funds."""
+    import json
+    import sqlite3
+    import time
+    import pandas as pd
+    from .engine.fund_factors import nav_ma_signals, volatility_regime
+    from .config import get_db_path
+
+    db_path = getattr(args, "db", None) or get_db_path()
+    con = sqlite3.connect(str(db_path))
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=WAL")
+
+    con.execute("""CREATE TABLE IF NOT EXISTS fund_signals (
+        fund_name TEXT NOT NULL, signal_date TEXT NOT NULL, signal_type TEXT NOT NULL,
+        signal_value TEXT NOT NULL, details TEXT,
+        PRIMARY KEY (fund_name, signal_date, signal_type))""")
+
+    funds = con.execute(
+        """SELECT f.fund_id, f.fund_name, COUNT(n.date) as cnt
+           FROM mutual_funds f INNER JOIN mutual_fund_nav n ON f.fund_id = n.fund_id
+           WHERE f.is_active = 1 GROUP BY f.fund_id HAVING cnt >= 50"""
+    ).fetchall()
+
+    print(f"Generating signals for {len(funds)} funds...")
+    t0 = time.time()
+    from datetime import date
+    today = date.today().isoformat()
+    generated = 0
+
+    for i, fund in enumerate(funds):
+        df = pd.read_sql_query(
+            "SELECT date, nav FROM mutual_fund_nav WHERE fund_id = ? AND nav > 0 ORDER BY date",
+            con, params=(fund["fund_id"],),
+        )
+        if len(df) < 50:
+            continue
+
+        df["date"] = pd.to_datetime(df["date"])
+        df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
+        df = df.dropna(subset=["nav"])
+        nav = df.set_index("date")["nav"]
+
+        # MA crossover
+        ma = nav_ma_signals(nav)
+        if not ma.empty:
+            pos = int(ma["position"].iloc[-1])
+            signal = "BULLISH" if pos == 1 else "BEARISH"
+            days = ma["days_since_cross"].iloc[-1]
+            details = json.dumps({"days_since_cross": int(days) if not pd.isna(days) else None})
+            con.execute(
+                "INSERT OR REPLACE INTO fund_signals VALUES (?,?,?,?,?)",
+                (fund["fund_name"], today, "MA_CROSS", signal, details),
+            )
+
+        # Volatility regime
+        regime = volatility_regime(nav)
+        if regime != "INSUFFICIENT_DATA":
+            con.execute(
+                "INSERT OR REPLACE INTO fund_signals VALUES (?,?,?,?,?)",
+                (fund["fund_name"], today, "VOL_REGIME", regime, None),
+            )
+
+        generated += 1
+        if (i + 1) % 100 == 0:
+            con.commit()
+            print(f"  [{i+1}/{len(funds)}]")
+
+    con.commit()
+    elapsed = time.time() - t0
+    print(f"\nDone. {generated} funds signaled in {elapsed:.1f}s")
+    con.close()
+    return EXIT_SUCCESS
+
+
+def handle_mufap_llm_context(args: argparse.Namespace) -> int:
+    """Generate LLM market context JSON to stdout."""
+    import json
+    import sqlite3
+    from .engine.fund_llm import generate_market_context
+    from .config import get_db_path
+
+    db_path = getattr(args, "db", None) or get_db_path()
+    con = sqlite3.connect(str(db_path))
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=WAL")
+
+    category = getattr(args, "category", None)
+    top_n = getattr(args, "top", 10)
+
+    ctx = generate_market_context(con, top_n=top_n, category=category)
+    print(json.dumps(ctx, indent=2, default=str))
+
+    con.close()
+    return EXIT_SUCCESS
+
+
+def handle_mufap_screen_amcs(args: argparse.Namespace) -> int:
+    """Run placeholder compliance screening on all AMCs."""
+    import json
+    import sqlite3
+    from .compliance.fund_compliance import AMCComplianceHook
+    from .config import get_db_path
+
+    db_path = getattr(args, "db", None) or get_db_path()
+    con = sqlite3.connect(str(db_path))
+    con.row_factory = sqlite3.Row
+
+    hook = AMCComplianceHook()  # No screener = placeholder
+
+    amcs = con.execute(
+        "SELECT DISTINCT amc_name FROM mutual_funds WHERE amc_name IS NOT NULL ORDER BY amc_name"
+    ).fetchall()
+
+    print(f"Screening {len(amcs)} AMCs (placeholder mode)...")
+    results = []
+    for amc in amcs:
+        name = amc["amc_name"]
+        result = hook.screen_amc(name)
+        results.append(result)
+        print(f"  {name}: {result['status']}")
+
+    print(f"\nDone. {len(results)} AMCs screened.")
+    print("Note: No compliance screener configured. Plug in WatchGuard PK for actual screening.")
+    con.close()
+    return EXIT_SUCCESS
 
 
 # =============================================================================

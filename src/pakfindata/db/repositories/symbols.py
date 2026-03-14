@@ -11,6 +11,10 @@ from pakfindata.models import now_iso
 # XD=ex-dividend, XB=ex-bonus, XR=ex-rights, XA=ex-AGM, XI=ex-interim,
 # XW=ex-warrant, NC=non-clearing/new counter, O=odd lot
 _STATUS_SUFFIXES = ("XD", "XB", "XR", "XA", "XI", "XW", "NC")
+
+# Symbols ending with these suffixes are separate winding-up counters that
+# PSX does not serve company pages for (HTTP 500).  Skip them during scraping.
+_WINDING_UP_SUFFIX = "WU"
 # Longest first so "XD" is checked before just "D"
 _SUFFIX_RE = re.compile(r"^(.+?)(" + "|".join(_STATUS_SUFFIXES) + r")$")
 
@@ -158,6 +162,9 @@ def get_scrapable_symbols(con: sqlite3.Connection) -> list[str]:
 
     for sym in all_active:
         base, _ = normalize_symbol(sym, master_set)
+        # Skip winding-up counters — PSX returns HTTP 500 for these
+        if base.endswith(_WINDING_UP_SUFFIX):
+            continue
         if base not in seen:
             seen.add(base)
             result.append(base)

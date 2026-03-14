@@ -52,7 +52,7 @@ def render_post_close():
 
     # Stats
     stats = get_post_close_stats(con)
-    missing_dates = get_dates_missing_turnover(con)
+    missing_dates = get_dates_missing_turnover(con, since="2020-01-01")
 
     st.subheader("Statistics")
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -229,27 +229,89 @@ def render_post_close():
             "and download turnover for them."
         )
 
-        if missing_dates:
-            st.info(
-                f"{len(missing_dates)} dates with EOD data but no turnover: "
-                f"{missing_dates[-1]} to {missing_dates[0]}"
+        # ── Period selector ──
+        bf_col1, bf_col2 = st.columns(2)
+        with bf_col1:
+            period_options = [
+                "Last 30 days",
+                "Last 90 days",
+                "Year to date",
+                "2025",
+                "2024",
+                "2023",
+                "2022",
+                "2021",
+                "2020",
+                "All (2020–present)",
+                "Custom range",
+            ]
+            bf_period = st.selectbox(
+                "Period",
+                options=period_options,
+                index=0,
+                key="pc_bf_period",
             )
 
-            backfill_limit = st.number_input(
+        # Resolve since/until dates from period
+        today = date_type.today()
+        if bf_period == "Last 30 days":
+            bf_since = str(today - td(days=30))
+            bf_until = str(today)
+        elif bf_period == "Last 90 days":
+            bf_since = str(today - td(days=90))
+            bf_until = str(today)
+        elif bf_period == "Year to date":
+            bf_since = f"{today.year}-01-01"
+            bf_until = str(today)
+        elif bf_period == "All (2020–present)":
+            bf_since = "2020-01-01"
+            bf_until = str(today)
+        elif bf_period == "Custom range":
+            with bf_col2:
+                bf_custom_start = st.date_input(
+                    "From",
+                    value=today - td(days=365),
+                    max_value=today,
+                    key="pc_bf_custom_start",
+                )
+                bf_custom_end = st.date_input(
+                    "To",
+                    value=today,
+                    max_value=today,
+                    key="pc_bf_custom_end",
+                )
+            bf_since = str(bf_custom_start)
+            bf_until = str(bf_custom_end)
+        else:
+            # Year selection (e.g. "2024")
+            year = int(bf_period)
+            bf_since = f"{year}-01-01"
+            bf_until = f"{year}-12-31"
+
+        # Query missing dates for selected period
+        bf_missing = get_dates_missing_turnover(con, since=bf_since, until=bf_until)
+
+        if bf_missing:
+            st.info(
+                f"{len(bf_missing)} dates with EOD data but no turnover "
+                f"({bf_missing[-1]} to {bf_missing[0]})"
+            )
+
+            bf_limit = st.number_input(
                 "Max dates to process",
                 min_value=1,
-                max_value=len(missing_dates),
-                value=min(30, len(missing_dates)),
+                max_value=len(bf_missing),
+                value=min(50, len(bf_missing)),
                 key="pc_backfill_limit",
                 help="Process the most recent dates first",
             )
 
             if st.button(
-                f"Backfill {backfill_limit} dates",
+                f"Backfill {bf_limit} dates",
                 key="pc_backfill_run",
                 type="primary",
             ):
-                to_process = missing_dates[:backfill_limit]
+                to_process = bf_missing[:bf_limit]
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 ok_count = 0
@@ -279,7 +341,7 @@ def render_post_close():
                     f"{miss_count} missing (404), {fail_count} failed"
                 )
         else:
-            st.success("All dates with EOD data have turnover loaded.")
+            st.success(f"All dates in selected period have turnover loaded.")
 
     # =========================================================================
     # Tab 4: History

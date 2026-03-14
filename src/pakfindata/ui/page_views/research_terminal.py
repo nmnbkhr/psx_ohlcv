@@ -194,7 +194,9 @@ Provide a structured analysis with:
 4. Caveats and data limitations
 """
         response = get_completion(full_prompt)
-        st.markdown(response)
+
+        from pakfindata.ui.components.commentary_renderer import render_styled_commentary
+        render_styled_commentary(response, "AI Research")
 
         st.session_state.research_history.append({
             "query": query,
