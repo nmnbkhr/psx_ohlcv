@@ -16,6 +16,35 @@ from pakfindata.ui.components.helpers import (
     render_market_status_badge,
 )
 
+_CACHE_TTL = 900
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_current_market_with_sectors():
+    client = get_client()
+    con = client.connection
+    return get_current_market_with_sectors(con)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_current_market():
+    from pakfindata.sources.regular_market import get_current_market
+    client = get_client()
+    con = client.connection
+    return get_current_market(con)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_market_analytics():
+    client = get_client()
+    return client.get_latest_market_analytics()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_top_list(list_type: str, limit: int = 5):
+    client = get_client()
+    return client.get_top_list(list_type, limit=limit)
+
 
 def render_regular_market():
     """Regular market watch - live market data display."""
@@ -148,11 +177,11 @@ def render_regular_market():
         st.markdown("---")
 
         # Load current market data from database with sector names joined
-        df = get_current_market_with_sectors(con)
+        df = _load_current_market_with_sectors()
 
         if df.empty:
             # Fallback to raw data
-            df = get_current_market(con)
+            df = _load_current_market()
 
         if df.empty:
             st.info(
@@ -165,7 +194,7 @@ def render_regular_market():
         # Market overview using pre-computed analytics
         st.subheader("📈 Market Overview")
 
-        market_analytics = client.get_latest_market_analytics()
+        market_analytics = _load_market_analytics()
         if market_analytics:
             total_symbols = market_analytics.get("total_symbols", len(df))
             gainers = market_analytics.get("gainers_count", 0)
@@ -201,7 +230,7 @@ def render_regular_market():
 
             with col2:
                 # Use analytics table for top gainers
-                top_gainers_df = client.get_top_list("gainers", limit=5)
+                top_gainers_df = _load_top_list("gainers", limit=5)
                 if top_gainers_df.empty:
                     top_gainers_df = df.nlargest(5, "change_pct")[
                         ["symbol", "change_pct"]
@@ -220,12 +249,12 @@ def render_regular_market():
                     with gcols[i]:
                         if st.button(f"📈 {sym}", key=f"rm_gainer_{sym}"):
                             st.session_state.company_symbol = sym
-                            st.session_state.nav_to = "🏢 Company Analytics"
+                            st.session_state.nav_to = "Company Profile"
                             st.rerun()
 
             with col3:
                 # Use analytics table for top losers
-                top_losers_df = client.get_top_list("losers", limit=5)
+                top_losers_df = _load_top_list("losers", limit=5)
                 if top_losers_df.empty:
                     top_losers_df = df.nsmallest(5, "change_pct")[
                         ["symbol", "change_pct"]
@@ -244,7 +273,7 @@ def render_regular_market():
                     with lcols[i]:
                         if st.button(f"📉 {sym}", key=f"rm_loser_{sym}"):
                             st.session_state.company_symbol = sym
-                            st.session_state.nav_to = "🏢 Company Analytics"
+                            st.session_state.nav_to = "Company Profile"
                             st.rerun()
 
         st.markdown("---")

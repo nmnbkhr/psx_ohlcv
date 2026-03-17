@@ -25,6 +25,38 @@ from pakfindata.ui.components.helpers import (
     render_market_status_badge,
 )
 
+_CACHE_TTL = 3600
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_index_instruments(active_only: bool = True):
+    con = get_connection()
+    return get_instruments(con, instrument_type="INDEX", active_only=active_only)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_index_metrics(instrument_id: int):
+    con = get_connection()
+    return compute_all_metrics(con, instrument_id)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_ohlcv(instrument_id: int, limit: int = 2):
+    con = get_connection()
+    return get_ohlcv_instrument(con, instrument_id, limit=limit)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_constituents(symbol: str):
+    con = get_connection()
+    return get_index_constituents(con, symbol)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_normalized_performance(instrument_ids: tuple):
+    con = get_connection()
+    return get_normalized_performance(con, list(instrument_ids))
+
 
 def render_indices():
     """Comprehensive Index Analytics - All PSX indices with KPIs."""
@@ -41,7 +73,7 @@ def render_indices():
     con = get_connection()
 
     # Get all index instruments
-    indices = get_instruments(con, instrument_type="INDEX", active_only=True)
+    indices = _load_index_instruments(active_only=True)
 
     if not indices:
         st.warning("No indices found. Run `pfsync universe seed-phase1` to seed indices.")
@@ -57,7 +89,7 @@ def render_indices():
     # Compute metrics for all indices
     all_metrics = []
     for idx in indices:
-        metrics = compute_all_metrics(con, idx["instrument_id"])
+        metrics = _load_index_metrics(idx["instrument_id"])
         if "error" not in metrics:
             metrics["symbol"] = idx["symbol"]
             metrics["name"] = idx.get("name", idx["symbol"])
@@ -69,7 +101,7 @@ def render_indices():
 
         # Get latest close prices
         for i, row in metrics_df.iterrows():
-            ohlcv = get_ohlcv_instrument(con, row["instrument_id"], limit=2)
+            ohlcv = _load_ohlcv(row["instrument_id"], limit=2)
             if not ohlcv.empty:
                 latest = ohlcv.sort_values("date", ascending=False).iloc[0]
                 metrics_df.at[i, "close"] = latest.get("close", 0)
@@ -177,14 +209,14 @@ def render_indices():
         instrument_id = id_map.get(selected_symbol)
 
         # Get metrics for selected index
-        metrics = compute_all_metrics(con, instrument_id)
+        metrics = _load_index_metrics(instrument_id)
 
         # KPI row for selected index
         st.markdown("#### Performance Metrics")
         col1, col2, col3, col4, col5 = st.columns(5)
 
         with col1:
-            ohlcv = get_ohlcv_instrument(con, instrument_id, limit=2)
+            ohlcv = _load_ohlcv(instrument_id, limit=2)
             if not ohlcv.empty:
                 latest = ohlcv.sort_values("date", ascending=False).iloc[0]
                 st.metric("Current Value", f"{latest.get('close', 0):,.2f}")
@@ -223,7 +255,7 @@ def render_indices():
 
         # Chart
         st.markdown("#### Price Chart")
-        ohlcv_df = get_ohlcv_instrument(con, instrument_id, limit=limit)
+        ohlcv_df = _load_ohlcv(instrument_id, limit=limit)
 
         if not ohlcv_df.empty:
             ohlcv_df = ohlcv_df.sort_values("date")
@@ -251,7 +283,7 @@ def render_indices():
             st.info("No OHLCV data available. Run `pfsync instruments sync-eod` to sync index data.")
 
         # Constituents table
-        constituents = get_index_constituents(con, selected_symbol)
+        constituents = _load_constituents(selected_symbol)
         if constituents:
             st.markdown("#### Constituents ({} symbols)".format(len(constituents)))
             const_df = pd.DataFrame(constituents)[["symbol", "name"]]
@@ -279,7 +311,7 @@ def render_indices():
         # Get normalized performance
         compare_ids = [id_map.get(s) for s in compare_symbols if id_map.get(s)]
 
-        perf_df = get_normalized_performance(con, compare_ids)
+        perf_df = _load_normalized_performance(tuple(compare_ids))
 
         if not perf_df.empty:
             import plotly.graph_objects as go

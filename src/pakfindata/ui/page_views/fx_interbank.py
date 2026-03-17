@@ -16,6 +16,46 @@ _FX_TABLES = {
 }
 
 
+# ── Cached data loaders ──────────────────────────────────────────────────────
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_latest_rate(table: str, currency: str) -> dict | None:
+    """Get latest rate for a currency from a table (cached)."""
+    try:
+        con = get_connection()
+        row = con.execute(
+            f"""SELECT date, buying, selling FROM {table}
+                WHERE UPPER(currency) = ? ORDER BY date DESC LIMIT 1""",
+            (currency.upper(),),
+        ).fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_spread_history(currency: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Load interbank and kerb history for a currency (cached)."""
+    con = get_connection()
+    try:
+        ib_df = pd.read_sql_query(
+            """SELECT date, selling as ib_selling FROM sbp_fx_interbank
+               WHERE UPPER(currency) = ? ORDER BY date LIMIT 365""",
+            con, params=(currency.upper(),),
+        )
+    except Exception:
+        ib_df = pd.DataFrame()
+    try:
+        kerb_df = pd.read_sql_query(
+            """SELECT date, selling as kerb_selling FROM forex_kerb
+               WHERE UPPER(currency) = ? ORDER BY date LIMIT 365""",
+            con, params=(currency.upper(),),
+        )
+    except Exception:
+        kerb_df = pd.DataFrame()
+    return ib_df, kerb_df
+
+
 def render_fx_interbank():
     """Render Interbank vs Open Market comparison page."""
     st.markdown("## Interbank vs Open Market")
@@ -65,19 +105,6 @@ def render_fx_interbank():
     render_footer()
 
 
-def _get_latest_rate(con, table: str, currency: str) -> dict | None:
-    """Get latest rate for a currency from a table."""
-    try:
-        row = con.execute(
-            f"""SELECT date, buying, selling FROM {table}
-                WHERE UPPER(currency) = ? ORDER BY date DESC LIMIT 1""",
-            (currency.upper(),),
-        ).fetchone()
-        return dict(row) if row else None
-    except Exception:
-        return None
-
-
 def _render_rate_comparison(con):
     """Side-by-side rate comparison for key currencies."""
     st.subheader("Rate Comparison")
@@ -87,7 +114,7 @@ def _render_rate_comparison(con):
         cols[0].markdown(f"**{currency}/PKR**")
 
         for i, (src_name, table) in enumerate(_FX_TABLES.items()):
-            rate = _get_latest_rate(con, table, currency)
+            rate = _load_latest_rate(table, currency)
             with cols[i + 1]:
                 if rate:
                     st.metric(
@@ -99,8 +126,8 @@ def _render_rate_comparison(con):
                     st.metric(src_name, "N/A")
 
         # Spread
-        ib = _get_latest_rate(con, "sbp_fx_interbank", currency)
-        kerb = _get_latest_rate(con, "forex_kerb", currency)
+        ib = _load_latest_rate("sbp_fx_interbank", currency)
+        kerb = _load_latest_rate("forex_kerb", currency)
         with cols[4]:
             if ib and kerb and ib.get("selling") and kerb.get("selling"):
                 spread = kerb["selling"] - ib["selling"]
@@ -115,8 +142,8 @@ def _render_spread_chart(con):
 
     spreads = []
     for currency in _KEY_CURRENCIES:
-        ib = _get_latest_rate(con, "sbp_fx_interbank", currency)
-        kerb = _get_latest_rate(con, "forex_kerb", currency)
+        ib = _load_latest_rate("sbp_fx_interbank", currency)
+        kerb = _load_latest_rate("forex_kerb", currency)
         if ib and kerb and ib.get("selling") and kerb.get("selling"):
             spreads.append({
                 "Currency": currency,
@@ -157,42 +184,30 @@ def _render_spread_history(con):
 
     currency = st.selectbox("Currency", _KEY_CURRENCIES, key="fxib_hist_curr")
 
-    try:
-        ib_df = pd.read_sql_query(
-            """SELECT date, selling as ib_selling FROM sbp_fx_interbank
-               WHERE UPPER(currency) = ? ORDER BY date LIMIT 365""",
-            con, params=(currency.upper(),),
-        )
-        kerb_df = pd.read_sql_query(
-            """SELECT date, selling as kerb_selling FROM forex_kerb
-               WHERE UPPER(currency) = ? ORDER BY date LIMIT 365""",
-            con, params=(currency.upper(),),
-        )
+    ib_df, kerb_df = _load_spread_history(currency)
 
-        if ib_df.empty and kerb_df.empty:
-            st.info("No historical data for this currency.")
-            return
+    if ib_df.empty and kerb_df.empty:
+        st.info("No historical data for this currency.")
+        return
 
-        fig = go.Figure()
-        if not ib_df.empty:
-            fig.add_trace(go.Scatter(
-                x=ib_df["date"], y=ib_df["ib_selling"],
-                mode="lines", name="Interbank",
-                line=dict(color="#FF6B35", width=2),
-            ))
-        if not kerb_df.empty:
-            fig.add_trace(go.Scatter(
-                x=kerb_df["date"], y=kerb_df["kerb_selling"],
-                mode="lines", name="Kerb",
-                line=dict(color="#45B7D1", width=2),
-            ))
+    fig = go.Figure()
+    if not ib_df.empty:
+        fig.add_trace(go.Scatter(
+            x=ib_df["date"], y=ib_df["ib_selling"],
+            mode="lines", name="Interbank",
+            line=dict(color="#FF6B35", width=2),
+        ))
+    if not kerb_df.empty:
+        fig.add_trace(go.Scatter(
+            x=kerb_df["date"], y=kerb_df["kerb_selling"],
+            mode="lines", name="Kerb",
+            line=dict(color="#45B7D1", width=2),
+        ))
 
-        fig.update_layout(
-            height=400,
-            xaxis_title="Date",
-            yaxis_title=f"{currency}/PKR (Selling)",
-            legend=dict(orientation="h", y=-0.15),
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    except Exception as e:
-        st.error(f"Error loading history: {e}")
+    fig.update_layout(
+        height=400,
+        xaxis_title="Date",
+        yaxis_title=f"{currency}/PKR (Selling)",
+        legend=dict(orientation="h", y=-0.15),
+    )
+    st.plotly_chart(fig, use_container_width=True)

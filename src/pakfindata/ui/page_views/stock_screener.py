@@ -6,6 +6,86 @@ import streamlit as st
 from pakfindata.ui.components.helpers import get_connection, render_footer
 
 
+# ── Cached data loaders ──────────────────────────────────────────────────────
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _load_screener_data(
+    sector: str,
+    min_pe: float,
+    max_pe: float,
+    min_mcap: float,
+    min_vol: float,
+) -> pd.DataFrame:
+    con = get_connection()
+    query = """
+        SELECT
+            s.symbol,
+            COALESCE(cp.company_name, cf.company_name, s.name) AS name,
+            COALESCE(cp.sector_name, s.sector_name) AS sector,
+            COALESCE(rm.current, cf.price) AS price,
+            cf.pe_ratio,
+            cf.market_cap,
+            cf.free_float_pct,
+            COALESCE(rm.volume, e.volume) AS last_volume,
+            ROUND(COALESCE(rm.current, cf.price) * COALESCE(rm.volume, e.volume), 0) AS turnover,
+            COALESCE(rm.change_pct,
+                ROUND((e.close - e.prev_close) / NULLIF(e.prev_close, 0) * 100, 2)
+            ) AS change_pct
+        FROM symbols s
+        LEFT JOIN regular_market_current rm ON s.symbol = rm.symbol
+        LEFT JOIN company_fundamentals cf ON s.symbol = cf.symbol
+        LEFT JOIN company_profile cp ON s.symbol = cp.symbol
+        LEFT JOIN eod_ohlcv e ON s.symbol = e.symbol
+            AND e.date = (SELECT MAX(date) FROM eod_ohlcv)
+        WHERE s.is_active = 1
+    """
+    params = []
+
+    if sector != "All":
+        query += " AND COALESCE(cp.sector_name, s.sector_name) = ?"
+        params.append(sector)
+
+    if min_pe > 0:
+        query += " AND cf.pe_ratio >= ?"
+        params.append(min_pe)
+
+    if max_pe < 100:
+        query += " AND cf.pe_ratio <= ?"
+        params.append(max_pe)
+
+    if min_mcap > 0:
+        query += " AND cf.market_cap >= ?"
+        params.append(min_mcap * 1e6)
+
+    if min_vol > 0:
+        query += " AND COALESCE(rm.volume, e.volume) >= ?"
+        params.append(min_vol)
+
+    query += " ORDER BY cf.market_cap DESC NULLS LAST, turnover DESC NULLS LAST LIMIT 200"
+
+    return pd.read_sql_query(query, con, params=params)
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _load_sector_list() -> list[str]:
+    con = get_connection()
+    sectors = []
+    try:
+        rows = con.execute(
+            "SELECT DISTINCT sector_name FROM sectors ORDER BY sector_name"
+        ).fetchall()
+        sectors = [r[0] for r in rows if r[0]]
+    except Exception:
+        try:
+            rows = con.execute(
+                "SELECT DISTINCT sector_name FROM company_profile WHERE sector_name IS NOT NULL ORDER BY sector_name"
+            ).fetchall()
+            sectors = [r[0] for r in rows if r[0]]
+        except Exception:
+            pass
+    return sectors
+
+
 def render_stock_screener():
     """Render the Stock Screener page with fundamental filters."""
     st.markdown("## Stock Screener")
@@ -36,20 +116,7 @@ def render_stock_screener():
     col1, col2, col3, col4 = st.columns(4)
 
     # Get sectors
-    sectors = ["All"]
-    try:
-        rows = con.execute(
-            "SELECT DISTINCT sector_name FROM sectors ORDER BY sector_name"
-        ).fetchall()
-        sectors += [r[0] for r in rows if r[0]]
-    except Exception:
-        try:
-            rows = con.execute(
-                "SELECT DISTINCT sector_name FROM company_profile WHERE sector_name IS NOT NULL ORDER BY sector_name"
-            ).fetchall()
-            sectors += [r[0] for r in rows if r[0]]
-        except Exception:
-            pass
+    sectors = ["All"] + _load_sector_list()
 
     with col1:
         sector = st.selectbox("Sector", sectors, key="scr_sector")
@@ -72,54 +139,7 @@ def render_stock_screener():
     # Uses regular_market_current as primary source for price/volume/change
     # and company_fundamentals for P/E, market cap, free float when available.
     try:
-        query = """
-            SELECT
-                s.symbol,
-                COALESCE(cp.company_name, cf.company_name, s.name) AS name,
-                COALESCE(cp.sector_name, s.sector_name) AS sector,
-                COALESCE(rm.current, cf.price) AS price,
-                cf.pe_ratio,
-                cf.market_cap,
-                cf.free_float_pct,
-                COALESCE(rm.volume, e.volume) AS last_volume,
-                ROUND(COALESCE(rm.current, cf.price) * COALESCE(rm.volume, e.volume), 0) AS turnover,
-                COALESCE(rm.change_pct,
-                    ROUND((e.close - e.prev_close) / NULLIF(e.prev_close, 0) * 100, 2)
-                ) AS change_pct
-            FROM symbols s
-            LEFT JOIN regular_market_current rm ON s.symbol = rm.symbol
-            LEFT JOIN company_fundamentals cf ON s.symbol = cf.symbol
-            LEFT JOIN company_profile cp ON s.symbol = cp.symbol
-            LEFT JOIN eod_ohlcv e ON s.symbol = e.symbol
-                AND e.date = (SELECT MAX(date) FROM eod_ohlcv)
-            WHERE s.is_active = 1
-        """
-        params = []
-
-        if sector != "All":
-            query += " AND COALESCE(cp.sector_name, s.sector_name) = ?"
-            params.append(sector)
-
-        if min_pe > 0:
-            query += " AND cf.pe_ratio >= ?"
-            params.append(min_pe)
-
-        if max_pe < 100:
-            query += " AND cf.pe_ratio <= ?"
-            params.append(max_pe)
-
-        if min_mcap > 0:
-            query += " AND cf.market_cap >= ?"
-            params.append(min_mcap * 1e6)
-
-        if min_vol > 0:
-            query += " AND COALESCE(rm.volume, e.volume) >= ?"
-            params.append(min_vol)
-
-        # Sort by market cap when available, fall back to turnover
-        query += " ORDER BY cf.market_cap DESC NULLS LAST, turnover DESC NULLS LAST LIMIT 200"
-
-        df = pd.read_sql_query(query, con, params=params)
+        df = _load_screener_data(sector, min_pe, max_pe, min_mcap, min_vol)
 
         if df.empty:
             st.info("No stocks match your filters. Try adjusting criteria.")

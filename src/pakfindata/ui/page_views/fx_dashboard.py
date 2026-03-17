@@ -60,6 +60,119 @@ _SRC_COLORS = {
 _AXIS_STYLE = dict(gridcolor=_COLORS["grid"], zeroline=False)
 
 
+# ── Cached data loaders ──────────────────────────────────────────────────────
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_all_currency_rates(table: str) -> pd.DataFrame:
+    con = get_connection()
+    return pd.read_sql_query(
+        f"""SELECT t.currency, t.date, t.buying, t.selling,
+                   ROUND(t.selling - t.buying, 4) as spread
+            FROM {table} t
+            INNER JOIN (SELECT currency, MAX(date) as max_date FROM {table} GROUP BY currency)
+                 mx ON t.currency=mx.currency AND t.date=mx.max_date
+            ORDER BY t.currency""",
+        con,
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_fx_history(table: str, currency: str, limit: int) -> pd.DataFrame:
+    con = get_connection()
+    return pd.read_sql_query(
+        f"SELECT date, buying, selling FROM {table}"
+        " WHERE UPPER(currency)=? ORDER BY date DESC LIMIT ?",
+        con, params=(currency.upper(), limit),
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_fx_ohlcv(pair: str, limit: int) -> pd.DataFrame:
+    con = get_connection()
+    return pd.read_sql_query(
+        "SELECT date, open, high, low, close FROM fx_ohlcv"
+        " WHERE pair=? ORDER BY date DESC LIMIT ?",
+        con, params=(pair, limit),
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_global_pairs() -> list[str]:
+    con = get_connection()
+    rows = con.execute(
+        "SELECT DISTINCT pair FROM commodity_fx_rates ORDER BY pair"
+    ).fetchall()
+    return [r["pair"] for r in rows]
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_global_fx_history(pair: str, limit: int) -> pd.DataFrame:
+    con = get_connection()
+    return pd.read_sql_query(
+        "SELECT date, close FROM commodity_fx_rates"
+        " WHERE pair=? ORDER BY date DESC LIMIT ?",
+        con, params=(pair, limit),
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_spread_heatmap() -> pd.DataFrame:
+    con = get_connection()
+    return pd.read_sql_query(
+        """SELECT i.currency, i.date, ROUND(k.selling - i.selling, 2) as spread
+           FROM sbp_fx_interbank i
+           INNER JOIN forex_kerb k ON i.currency=k.currency AND i.date=k.date
+           WHERE i.currency IN ('USD','EUR','GBP','SAR','AED')
+           ORDER BY i.date DESC LIMIT 150""",
+        con,
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_volatility_data() -> tuple[pd.DataFrame, str]:
+    con = get_connection()
+    df = pd.read_sql_query(
+        "SELECT date, close FROM fx_ohlcv WHERE pair='USD/PKR' ORDER BY date", con,
+    )
+    source_label = "FX OHLCV"
+    if len(df) < 10:
+        df = pd.read_sql_query(
+            "SELECT date, selling as close FROM sbp_fx_interbank"
+            " WHERE UPPER(currency)='USD' ORDER BY date", con,
+        )
+        source_label = "SBP Interbank"
+    return df, source_label
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_npc_rates() -> pd.DataFrame:
+    con = get_connection()
+    return pd.read_sql_query(
+        "SELECT * FROM npc_rates ORDER BY date DESC, tenor", con,
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_kibor_history() -> pd.DataFrame:
+    con = get_connection()
+    return pd.read_sql_query(
+        "SELECT date, tenor, offer FROM kibor_daily"
+        " WHERE tenor IN ('1M','3M','6M','1Y') AND offer IS NOT NULL ORDER BY date",
+        con,
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_fx_sync_runs() -> pd.DataFrame:
+    con = get_connection()
+    try:
+        return pd.read_sql_query(
+            "SELECT * FROM fx_sync_runs ORDER BY started_at DESC LIMIT 10", con,
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
 def _styled_fig(height=400, **kw):
     fig = go.Figure(layout={**_CHART_LAYOUT, "height": height, **kw})
     fig.update_xaxes(**_AXIS_STYLE)
@@ -198,15 +311,7 @@ def _render_overview(con):
     st.markdown("### All Currency Rates")
     for src_name, table in _FX_TABLES.items():
         try:
-            df = pd.read_sql_query(
-                f"""SELECT t.currency, t.date, t.buying, t.selling,
-                           ROUND(t.selling - t.buying, 4) as spread
-                    FROM {table} t
-                    INNER JOIN (SELECT currency, MAX(date) as max_date FROM {table} GROUP BY currency)
-                         mx ON t.currency=mx.currency AND t.date=mx.max_date
-                    ORDER BY t.currency""",
-                con,
-            )
+            df = _load_all_currency_rates(table)
             if not df.empty:
                 st.markdown(f"**{src_name}** ({df['date'].iloc[0]})")
                 st.dataframe(df.rename(columns={
@@ -237,11 +342,7 @@ def _render_charts(con):
     if chart_mode == "Overlay":
         fig = _styled_fig(height=450)
         for src_name, table in _FX_TABLES.items():
-            df = pd.read_sql_query(
-                f"SELECT date, buying, selling FROM {table}"
-                " WHERE UPPER(currency)=? ORDER BY date DESC LIMIT ?",
-                con, params=(currency.upper(), limit),
-            )
+            df = _load_fx_history(table, currency, limit)
             if not df.empty:
                 df = df.sort_values("date")
                 fig.add_trace(go.Scatter(
@@ -264,11 +365,7 @@ def _render_charts(con):
     else:
         # Candlestick from fx_ohlcv
         pair = f"{currency}/PKR"
-        df = pd.read_sql_query(
-            "SELECT date, open, high, low, close FROM fx_ohlcv"
-            " WHERE pair=? ORDER BY date DESC LIMIT ?",
-            con, params=(pair, limit),
-        )
+        df = _load_fx_ohlcv(pair, limit)
         if df.empty:
             st.info(f"No OHLCV data for {pair}. Use FX microservice sync.")
         else:
@@ -289,20 +386,13 @@ def _render_charts(con):
 
     # ── DXY + major pairs ──
     st.markdown("### Global FX (yfinance)")
-    global_pairs = con.execute(
-        "SELECT DISTINCT pair FROM commodity_fx_rates ORDER BY pair"
-    ).fetchall()
-    pair_list = [r["pair"] for r in global_pairs]
+    pair_list = _load_global_pairs()
     if pair_list:
         sel_pairs = st.multiselect("Pairs", pair_list, default=["DXY", "USD_PKR"][:len(pair_list)], key="fx_global_pairs")
         if sel_pairs:
             fig = _styled_fig(height=380)
             for pair in sel_pairs:
-                df = pd.read_sql_query(
-                    "SELECT date, close FROM commodity_fx_rates"
-                    " WHERE pair=? ORDER BY date DESC LIMIT ?",
-                    con, params=(pair, limit),
-                )
+                df = _load_global_fx_history(pair, limit)
                 if not df.empty:
                     df = df.sort_values("date")
                     fig.add_trace(go.Scatter(
@@ -368,14 +458,7 @@ def _render_spreads(con):
 
     # ── Spread heatmap over time ──
     st.markdown("### Spread Heatmap (History)")
-    df = pd.read_sql_query(
-        """SELECT i.currency, i.date, ROUND(k.selling - i.selling, 2) as spread
-           FROM sbp_fx_interbank i
-           INNER JOIN forex_kerb k ON i.currency=k.currency AND i.date=k.date
-           WHERE i.currency IN ('USD','EUR','GBP','SAR','AED')
-           ORDER BY i.date DESC LIMIT 150""",
-        con,
-    )
+    df = _load_spread_heatmap()
     if not df.empty:
         pivot = df.pivot_table(index="date", columns="currency", values="spread").sort_index()
         if not pivot.empty:
@@ -425,17 +508,7 @@ def _render_spreads(con):
 def _render_volatility(con):
     st.markdown("### USD/PKR Volatility Analysis")
 
-    # Try fx_ohlcv first, then sbp_fx_interbank
-    df = pd.read_sql_query(
-        "SELECT date, close FROM fx_ohlcv WHERE pair='USD/PKR' ORDER BY date", con,
-    )
-    source_label = "FX OHLCV"
-    if len(df) < 10:
-        df = pd.read_sql_query(
-            "SELECT date, selling as close FROM sbp_fx_interbank"
-            " WHERE UPPER(currency)='USD' ORDER BY date", con,
-        )
-        source_label = "SBP Interbank"
+    df, source_label = _load_volatility_data()
 
     if len(df) < 10:
         st.info("Need at least 10 data points for volatility analysis")
@@ -602,9 +675,7 @@ def _render_carry(con):
     )
 
     # ── NPC Certificate Rates ──
-    npc = pd.read_sql_query(
-        "SELECT * FROM npc_rates ORDER BY date DESC, tenor", con,
-    )
+    npc = _load_npc_rates()
     if not npc.empty:
         st.markdown("### NPC Certificate Rates")
         st.caption("National Prize Certificate / PKR deposit alternatives for NRPs")
@@ -612,11 +683,7 @@ def _render_carry(con):
 
     # ── KIBOR History chart ──
     st.markdown("### KIBOR Term Structure History")
-    kdf = pd.read_sql_query(
-        "SELECT date, tenor, offer FROM kibor_daily"
-        " WHERE tenor IN ('1M','3M','6M','1Y') AND offer IS NOT NULL ORDER BY date",
-        con,
-    )
+    kdf = _load_kibor_history()
     if not kdf.empty:
         fig = _styled_fig(height=350)
         kibor_colors = {"1M": "#FF6B35", "3M": "#4ECDC4", "6M": "#45B7D1", "1Y": "#96CEB4"}
@@ -791,12 +858,7 @@ def _render_sync(con):
                         st.error(f"Backfill failed: {e}")
 
     # Sync runs table
-    try:
-        runs = pd.read_sql_query(
-            "SELECT * FROM fx_sync_runs ORDER BY started_at DESC LIMIT 10", con,
-        )
-        if not runs.empty:
-            st.markdown("#### Recent Sync Runs")
-            st.dataframe(runs, use_container_width=True, hide_index=True)
-    except Exception:
-        pass
+    runs = _load_fx_sync_runs()
+    if not runs.empty:
+        st.markdown("#### Recent Sync Runs")
+        st.dataframe(runs, use_container_width=True, hide_index=True)

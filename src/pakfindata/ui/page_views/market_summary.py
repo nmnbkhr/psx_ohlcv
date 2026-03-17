@@ -11,6 +11,40 @@ from pakfindata.ui.components.helpers import (
 )
 
 
+# ── Cached data loaders ──────────────────────────────────────────────────────
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _load_tracking_stats() -> dict:
+    """Load market summary tracking stats (cached)."""
+    from pakfindata.sources.market_summary import get_tracking_stats
+    con = get_connection()
+    return get_tracking_stats(con)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _load_failed_dates() -> list:
+    """Load failed download dates (cached)."""
+    from pakfindata.sources.market_summary import get_failed_dates
+    con = get_connection()
+    return get_failed_dates(con)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _load_missing_dates() -> list:
+    """Load missing download dates (cached)."""
+    from pakfindata.sources.market_summary import get_missing_dates
+    con = get_connection()
+    return get_missing_dates(con)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _load_tracking_records(limit: int = 500) -> list:
+    """Load all tracking records (cached)."""
+    from pakfindata.sources.market_summary import get_all_tracking_records
+    con = get_connection()
+    return get_all_tracking_records(con, limit=limit)
+
+
 def render_market_summary():
     """Download and manage market summary history files."""
     from datetime import date as date_type
@@ -58,7 +92,7 @@ def render_market_summary():
         st.session_state.ms_download_results = []
 
     # Get stats
-    stats = get_tracking_stats(con)
+    stats = _load_tracking_stats()
 
     # Stats row
     st.subheader("Download Statistics")
@@ -386,8 +420,8 @@ def render_market_summary():
     with tab_retry:
         st.subheader("Retry Failed Downloads")
 
-        failed_dates = get_failed_dates(con)
-        missing_dates = get_missing_dates(con)
+        failed_dates = _load_failed_dates()
+        missing_dates = _load_missing_dates()
 
         col1, col2 = st.columns(2)
         with col1:
@@ -478,7 +512,7 @@ def render_market_summary():
             key="ms_history_filter",
         )
 
-        records = get_all_tracking_records(con, limit=500)
+        records = _load_tracking_records(limit=500)
 
         if status_filter:
             records = [r for r in records if r["status"] in status_filter]

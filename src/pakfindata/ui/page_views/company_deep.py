@@ -17,6 +17,38 @@ from pakfindata.ui.components.helpers import (
 )
 
 
+# ── Cached data loaders ──────────────────────────────────────────────────────
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _load_company_overview(symbol: str) -> dict | None:
+    client = get_client()
+    return client.get_company_overview(symbol)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _load_company_quotes(symbol: str, limit: int = 100) -> pd.DataFrame:
+    client = get_client()
+    return client.get_company_quotes(symbol, limit=limit)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _load_company_financials(symbol: str) -> pd.DataFrame:
+    client = get_client()
+    return client.get_company_financials(symbol)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _load_company_ratios(symbol: str) -> pd.DataFrame:
+    client = get_client()
+    return client.get_company_ratios(symbol)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _load_company_payouts(symbol: str) -> pd.DataFrame:
+    client = get_client()
+    return client.get_company_payouts(symbol)
+
+
 def _fmt_pkr(value) -> str:
     """Format a PKR value for display (B/M/K suffixes)."""
     if value is None or (isinstance(value, float) and value != value):
@@ -287,7 +319,7 @@ def render_company_deep():
     # =================================================================
     # FETCH DATA
     # =================================================================
-    unified_data = client.get_company_overview(symbol)
+    unified_data = _load_company_overview(symbol)
     signals = client.get_company_latest_signals(symbol)
     quote_stats = client.get_company_quote_stats(symbol)
 
@@ -315,7 +347,7 @@ def render_company_deep():
     change_pct = data.get("change_pct") or 0
 
     # Determine color based on change
-    price_color = "#00C853" if change_pct >= 0 else "#FF1744"
+    price_color = "#00C853" if change_pct >= 0 else "#FF5252"
     change_sign = "+" if change_pct >= 0 else ""
     arrow = "▲" if change_pct > 0 else "▼" if change_pct < 0 else "●"
 
@@ -654,7 +686,7 @@ def render_company_deep():
     st.subheader("📈 Charts")
 
     # Get quote history for charts
-    quotes_df = client.get_company_quotes(symbol, limit=100)
+    quotes_df = _load_company_quotes(symbol, limit=100)
 
     if not quotes_df.empty and len(quotes_df) > 1:
         import plotly.graph_objects as go
@@ -730,9 +762,9 @@ def render_company_deep():
     st.subheader("📊 Financial Data")
 
     # Fetch financial data
-    financials_df = client.get_company_financials(symbol)
-    ratios_df = client.get_company_ratios(symbol)
-    payouts_df = client.get_company_payouts(symbol)
+    financials_df = _load_company_financials(symbol)
+    ratios_df = _load_company_ratios(symbol)
+    payouts_df = _load_company_payouts(symbol)
 
     has_financial_data = (
         not financials_df.empty or

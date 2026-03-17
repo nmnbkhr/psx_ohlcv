@@ -12,6 +12,26 @@ from pakfindata.ui.components.helpers import (
     render_market_status_badge,
 )
 
+_CACHE_TTL = 3600
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_symbols(active_only: bool = False):
+    client = get_client()
+    return client.get_symbols(active_only=active_only)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_ohlcv_range(symbol: str, start_date: str = None, end_date: str = None):
+    client = get_client()
+    return client.get_ohlcv_range(symbol, start_date=start_date, end_date=end_date)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_data_freshness():
+    client = get_client()
+    return client.get_data_freshness()
+
 
 def render_candlestick():
     """Candlestick chart explorer with SMA overlays."""
@@ -30,7 +50,7 @@ def render_candlestick():
             render_market_status_badge()
 
         # Load symbols
-        symbols = client.get_symbols(active_only=False)
+        symbols = _load_symbols(active_only=False)
         if not symbols:
             st.warning("No symbols found. Run `pfsync symbols refresh` first.")
             render_footer()
@@ -65,7 +85,7 @@ def render_candlestick():
             show_sma = st.checkbox("SMA", value=True, help="Show SMA(20) and SMA(50)")
 
         with ctrl_col4:
-            days_old, latest_date = client.get_data_freshness()
+            days_old, latest_date = _load_data_freshness()
             if latest_date:
                 st.caption(f"📅 {latest_date}")
 
@@ -78,7 +98,7 @@ def render_candlestick():
             start_date = None
 
         # Fetch OHLCV data
-        df = client.get_ohlcv_range(selected, start_date=start_date, end_date=end_date)
+        df = _load_ohlcv_range(selected, start_date=start_date, end_date=end_date)
 
         if df.empty:
             st.warning(

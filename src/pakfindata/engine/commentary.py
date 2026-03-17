@@ -1,16 +1,77 @@
-"""Quant Analyst Commentary Engine — rule-based + optional OpenAI LLM.
+"""Quant Analyst Commentary Engine — rule-based + Ollama LLM + optional OpenAI.
 
 Provides tactical commentary for:
   - VPIN / Microstructure (order flow toxicity, maker-taker strategy)
   - FFT / Macro Cycles (dominant cycle phase, mean-reversion signals)
+  - Intraday Quant Lab (volume profile, order flow, ORB, vol regime)
 
-Rule-based functions are instant. OpenAI functions require OPENAI_API_KEY in .env.
+Rule-based functions are instant.
+Ollama functions use local llama3.1 / deepseek-r1 (no API key needed).
+OpenAI functions require OPENAI_API_KEY in .env.
 """
 
 from __future__ import annotations
 
+import json
 import os
+import urllib.request
+import urllib.error
 from typing import Optional
+
+# ═════════════════════════════════════════════════════════════════════════════
+# LLM BACKENDS
+# ═════════════════════════════════════════════════════════════════════════════
+
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+OLLAMA_MODEL_FAST = "llama3.1:8b-instruct-q4_K_M"   # fast, good for structured commentary
+OLLAMA_MODEL_DEEP = "deepseek-r1:latest"             # reasoning-heavy, good for analysis
+
+
+def _ollama_call(
+    system: str,
+    user: str,
+    model: str = OLLAMA_MODEL_FAST,
+    max_tokens: int = 600,
+    temperature: float = 0.4,
+) -> Optional[str]:
+    """Call local Ollama API. Returns None on failure."""
+    import re as _re
+
+    # DeepSeek reasoning models need extra tokens for the <think> block
+    is_reasoning = "deepseek" in model.lower() or "r1" in model.lower()
+    actual_tokens = max_tokens * 3 if is_reasoning else max_tokens
+
+    payload = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "stream": False,
+        "options": {
+            "num_predict": actual_tokens,
+            "temperature": temperature,
+        },
+    }).encode()
+    req = urllib.request.Request(
+        f"{OLLAMA_URL}/api/chat",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    timeout = 120 if is_reasoning else 60
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read())
+        content = data.get("message", {}).get("content", "")
+        # deepseek-r1 wraps reasoning in <think>...</think> — strip it
+        if "<think>" in content:
+            # Handle both closed and unclosed think blocks
+            content = _re.sub(r"<think>.*?</think>", "", content, flags=_re.DOTALL).strip()
+            # If think block was never closed (truncated), strip from <think> to end
+            content = _re.sub(r"<think>.*", "", content, flags=_re.DOTALL).strip()
+        return content or None
+    except (urllib.error.URLError, TimeoutError, Exception) as e:
+        return f"Ollama Error: {str(e)[:200]}"
 
 
 def _llm_call(system: str, user: str, max_tokens: int = 600) -> Optional[str]:
@@ -320,3 +381,169 @@ def get_fft_ai_commentary(
     )
 
     return _llm_call(system, user, max_tokens=600)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# MODULE 3: INTRADAY QUANT LAB COMMENTARY  (Ollama-powered)
+# ═════════════════════════════════════════════════════════════════════════════
+
+_QUANT_SYSTEM = (
+    "You are a senior quantitative analyst at a Pakistani institutional desk. "
+    "Write concise, actionable commentary in 3-5 sentences. "
+    "Use precise numbers from the data provided. "
+    "Reference specific levels (POC, VAH, VAL, VWAP, sigma bands). "
+    "End with a clear directional bias or trade setup. "
+    "PSX context: ±7.5% circuit limits, T+2 settlement, PKR denominated. "
+    "Format: markdown, no headers, just dense analytical prose."
+)
+
+
+def get_volume_profile_commentary(
+    symbol: str,
+    poc: float,
+    vah: float,
+    val: float,
+    last_price: float,
+    total_volume: float,
+    model: str = OLLAMA_MODEL_FAST,
+) -> Optional[str]:
+    """Ollama commentary for volume profile / market profile analysis."""
+    position = "above POC" if last_price > poc else "below POC"
+    in_va = val <= last_price <= vah
+    user = (
+        f"Volume Profile for **{symbol}** on PSX:\n"
+        f"- POC (Point of Control): {poc:.2f} — heaviest traded price\n"
+        f"- Value Area High: {vah:.2f}\n"
+        f"- Value Area Low: {val:.2f}\n"
+        f"- Last Price: {last_price:.2f} ({position})\n"
+        f"- {'Inside' if in_va else 'Outside'} Value Area\n"
+        f"- Total Volume: {total_volume:,.0f}\n\n"
+        "Interpret: Is price accepting or rejecting value? "
+        "Where are institutional levels? What's the likely move?"
+    )
+    return _ollama_call(_QUANT_SYSTEM, user, model=model)
+
+
+def get_order_flow_commentary(
+    symbol: str,
+    buy_vol: float,
+    sell_vol: float,
+    imbalance: float,
+    cum_delta: float,
+    n_blocks: int,
+    price_change: float,
+    model: str = OLLAMA_MODEL_FAST,
+) -> Optional[str]:
+    """Ollama commentary for order flow / cumulative delta analysis."""
+    divergence = (price_change > 0 and cum_delta < 0) or (price_change < 0 and cum_delta > 0)
+    user = (
+        f"Order Flow for **{symbol}** on PSX:\n"
+        f"- Buy Volume: {buy_vol:,.0f} | Sell Volume: {sell_vol:,.0f}\n"
+        f"- Imbalance: {imbalance:+.1%}\n"
+        f"- Cumulative Delta: {cum_delta:,.0f}\n"
+        f"- Block Trades Detected: {n_blocks}\n"
+        f"- Price Change: {price_change:+.2f}\n"
+        f"- Price-Delta Divergence: {'YES' if divergence else 'No'}\n\n"
+        "Assess: Who's in control — buyers or sellers? "
+        "Is smart money accumulating or distributing? "
+        "Flag any divergence implications."
+    )
+    return _ollama_call(_QUANT_SYSTEM, user, model=model)
+
+
+def get_orb_commentary(
+    n_bull: int,
+    n_bear: int,
+    n_inside: int,
+    n_chop: int,
+    top_breakouts: list[dict],
+    orb_minutes: int,
+    model: str = OLLAMA_MODEL_FAST,
+) -> Optional[str]:
+    """Ollama commentary for Opening Range Breakout scan results."""
+    total = n_bull + n_bear + n_inside + n_chop
+    top_str = ", ".join(
+        f"{b['Symbol']} ({b['Direction']} {b['Breakout Move %']:+.1f}%)"
+        for b in top_breakouts[:5]
+    ) if top_breakouts else "none"
+    user = (
+        f"Opening Range Breakout Scan ({orb_minutes}-min range, {total} symbols):\n"
+        f"- Bull Breakouts: {n_bull} | Bear Breakdowns: {n_bear}\n"
+        f"- Inside Range: {n_inside} | Chop (both sides): {n_chop}\n"
+        f"- Top movers: {top_str}\n\n"
+        "Assess: Is today's session trending or range-bound? "
+        "What does the bull/bear ratio tell us about market sentiment? "
+        "Which breakouts look real vs. likely to fade?"
+    )
+    return _ollama_call(_QUANT_SYSTEM, user, model=model)
+
+
+def get_vwap_commentary(
+    symbol: str,
+    vwap: float,
+    last_price: float,
+    deviation_sigma: float,
+    premium_pct: float,
+    model: str = OLLAMA_MODEL_FAST,
+) -> Optional[str]:
+    """Ollama commentary for VWAP deviation analysis."""
+    user = (
+        f"VWAP Analysis for **{symbol}** on PSX:\n"
+        f"- VWAP: {vwap:.2f}\n"
+        f"- Last Price: {last_price:.2f}\n"
+        f"- Deviation: {deviation_sigma:+.2f} sigma\n"
+        f"- Premium/Discount to VWAP: {premium_pct:+.2f}%\n\n"
+        "Interpret: Institutional traders anchor to VWAP. "
+        "Is this stock stretched? Mean-reversion or trend continuation? "
+        "At what sigma level should traders fade the move?"
+    )
+    return _ollama_call(_QUANT_SYSTEM, user, model=model)
+
+
+def get_vol_regime_commentary(
+    symbol: str,
+    current_vol: float,
+    avg_vol: float,
+    vol_ratio: float,
+    regime: str,
+    n_compressed: int,
+    n_expanding: int,
+    model: str = OLLAMA_MODEL_DEEP,
+) -> Optional[str]:
+    """DeepSeek commentary for volatility regime analysis (uses reasoning model)."""
+    user = (
+        f"Volatility Regime for **{symbol}** on PSX:\n"
+        f"- Current Realized Vol (annualized): {current_vol:.1%}\n"
+        f"- Average Vol: {avg_vol:.1%}\n"
+        f"- Vol Ratio: {vol_ratio:.2f}x\n"
+        f"- Regime: {regime}\n"
+        f"- Market-wide: {n_compressed} stocks compressed, {n_expanding} expanding\n\n"
+        "Analyze: Vol compression precedes breakouts (Mandelbrot). "
+        "Is this stock coiling for a move? "
+        "What's the options/position-sizing implication? "
+        "Compare to market-wide vol state."
+    )
+    return _ollama_call(_QUANT_SYSTEM, user, model=model, max_tokens=400)
+
+
+def get_mtf_confluence_commentary(
+    n_all_bull: int,
+    n_all_bear: int,
+    n_total: int,
+    top_bulls: list[str],
+    top_bears: list[str],
+    model: str = OLLAMA_MODEL_FAST,
+) -> Optional[str]:
+    """Ollama commentary for multi-timeframe trend confluence."""
+    user = (
+        f"Multi-Timeframe Confluence Scan ({n_total} liquid symbols):\n"
+        f"- All-Timeframe Bullish: {n_all_bull} symbols\n"
+        f"- All-Timeframe Bearish: {n_all_bear} symbols\n"
+        f"- Mixed/Flat: {n_total - n_all_bull - n_all_bear}\n"
+        f"- Top Bullish: {', '.join(top_bulls[:8]) or 'none'}\n"
+        f"- Top Bearish: {', '.join(top_bears[:8]) or 'none'}\n\n"
+        "Assess: When all timeframes align, conviction is highest. "
+        "What does the bull/bear balance say about broad market trend? "
+        "Which names have the strongest setup?"
+    )
+    return _ollama_call(_QUANT_SYSTEM, user, model=model)

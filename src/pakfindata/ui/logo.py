@@ -1,5 +1,8 @@
 """PakFinData brand elements — logo, powered-by, disclaimer."""
 
+import base64
+from pathlib import Path
+
 import streamlit as st
 
 # Brand colors (matches Bloomberg theme tokens)
@@ -28,11 +31,25 @@ def render_logo(variant: str = "sidebar") -> None:
     Args:
         variant: 'sidebar' for compact sidebar logo, 'header' for page header.
     """
-    svg = _logo_svg(28 if variant == "sidebar" else 32)
-
     if variant == "sidebar":
-        st.markdown(
-            f"""<div style="display:flex;align-items:center;gap:10px;padding:4px 0 8px 0;">
+        # Use the SVG asset file for sidebar branding
+        logo_path = Path(__file__).parent / "assets" / "pakfindata-nav-logo.svg"
+        if logo_path.exists():
+            svg_content = logo_path.read_text()
+            b64 = base64.b64encode(svg_content.encode()).decode()
+            st.markdown(
+                f"""
+                <div style="padding: 1rem 0.5rem 1.5rem 0.5rem; border-bottom: 1px solid #1e293b; margin-bottom: 1rem;">
+                    <img src="data:image/svg+xml;base64,{b64}" width="200" />
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            # Fallback to inline SVG if asset not found
+            svg = _logo_svg(28)
+            st.markdown(
+                f"""<div style="display:flex;align-items:center;gap:10px;padding:4px 0 8px 0;">
   {svg}
   <div>
     <div style="font-size:16px;font-weight:700;font-family:ui-monospace,monospace;
@@ -45,9 +62,10 @@ def render_logo(variant: str = "sidebar") -> None:
     </div>
   </div>
 </div>""",
-            unsafe_allow_html=True,
-        )
+                unsafe_allow_html=True,
+            )
     else:
+        svg = _logo_svg(32)
         st.markdown(
             f"""<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
   {svg}

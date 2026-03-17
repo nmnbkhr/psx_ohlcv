@@ -121,7 +121,7 @@ DEFAULT_THEME = ThemeTokens(
 
     # Semantic Colors
     color_positive="#00C853",
-    color_negative="#FF1744",
+    color_negative="#FF5252",
     color_neutral="#78909C",
     color_warning="#FFC107",
     color_info="#2196F3",

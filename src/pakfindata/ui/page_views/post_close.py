@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 from pakfindata.config import DATA_ROOT
@@ -13,6 +14,36 @@ from pakfindata.ui.components.helpers import (
 )
 
 
+# ── Cached data loaders ──────────────────────────────────────────────────────
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_post_close_stats() -> dict:
+    from pakfindata.db.repositories.post_close import get_post_close_stats
+    con = get_connection()
+    return get_post_close_stats(con)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_dates_missing_turnover(since: str, until: str | None = None) -> list[str]:
+    from pakfindata.db.repositories.post_close import get_dates_missing_turnover
+    con = get_connection()
+    return get_dates_missing_turnover(con, since=since, until=until)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_post_close_dates() -> list[str]:
+    from pakfindata.db.repositories.post_close import get_post_close_dates
+    con = get_connection()
+    return get_post_close_dates(con)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_post_close_data(date: str, limit: int = 500) -> pd.DataFrame:
+    from pakfindata.db.repositories.post_close import get_post_close
+    con = get_connection()
+    return get_post_close(con, date=date, limit=limit)
+
+
 def render_post_close():
     """Standalone page for post-close turnover data."""
     from datetime import date as date_type
@@ -22,7 +53,6 @@ def render_post_close():
         get_dates_missing_turnover,
         get_post_close,
         get_post_close_dates,
-        get_post_close_stats,
     )
     from pakfindata.sources.market_summary import fetch_post_close
 
@@ -51,8 +81,8 @@ def render_post_close():
     con = get_connection()
 
     # Stats
-    stats = get_post_close_stats(con)
-    missing_dates = get_dates_missing_turnover(con, since="2020-01-01")
+    stats = _load_post_close_stats()
+    missing_dates = _load_dates_missing_turnover(since="2020-01-01")
 
     st.subheader("Statistics")
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -289,7 +319,7 @@ def render_post_close():
             bf_until = f"{year}-12-31"
 
         # Query missing dates for selected period
-        bf_missing = get_dates_missing_turnover(con, since=bf_since, until=bf_until)
+        bf_missing = _load_dates_missing_turnover(since=bf_since, until=bf_until)
 
         if bf_missing:
             st.info(
@@ -349,7 +379,7 @@ def render_post_close():
     with tab_history:
         st.subheader("Turnover Data")
 
-        dates = get_post_close_dates(con)
+        dates = _load_post_close_dates()
         if dates:
             selected_date = st.selectbox(
                 "Select date",
@@ -357,7 +387,7 @@ def render_post_close():
                 key="pc_history_date",
             )
 
-            df = get_post_close(con, date=selected_date, limit=500)
+            df = _load_post_close_data(selected_date, limit=500)
             if not df.empty:
                 import pandas as pd
 

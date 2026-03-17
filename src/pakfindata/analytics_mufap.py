@@ -40,13 +40,16 @@ def compute_nav_returns(df: pd.DataFrame, periods: list[int] | None = None) -> d
         return {}
 
     if periods is None:
-        periods = [5, 21, 63, 126, 252]  # 1W, 1M, 3M, 6M, 1Y
+        periods = [5, 21, 63, 126, 252, 504, 756, 1260]
 
     # Ensure sorted by date descending
     df = df.sort_values("date", ascending=False).reset_index(drop=True)
 
     results = {}
-    period_labels = {5: "1W", 21: "1M", 63: "3M", 126: "6M", 252: "1Y"}
+    period_labels = {
+        5: "1W", 21: "1M", 63: "3M", 126: "6M", 252: "1Y",
+        504: "2Y", 756: "3Y", 1260: "5Y",
+    }
 
     current_nav = df["nav"].iloc[0] if len(df) > 0 else None
 
@@ -62,6 +65,30 @@ def compute_nav_returns(df: pd.DataFrame, periods: list[int] | None = None) -> d
             if past_nav and past_nav != 0:
                 ret = (current_nav - past_nav) / past_nav
                 results[key] = round(ret, 6)
+
+    # YTD return
+    try:
+        df_asc = df.sort_values("date", ascending=True)
+        df_asc["date"] = pd.to_datetime(df_asc["date"])
+        current_year = df_asc["date"].iloc[-1].year
+        jan1_nav = df_asc[df_asc["date"].dt.year == current_year]["nav"].iloc[0]
+        if jan1_nav and jan1_nav != 0:
+            results["return_YTD"] = round((current_nav / jan1_nav - 1), 6)
+    except (IndexError, KeyError):
+        pass
+
+    # Since Inception return
+    if len(df) >= 2:
+        first_nav = df["nav"].iloc[-1]  # oldest (sorted desc)
+        if first_nav and first_nav != 0:
+            total_ret = current_nav / first_nav - 1
+            results["return_SI"] = round(total_ret, 6)
+            # Annualized SI
+            trading_days = len(df)
+            if trading_days > 252:
+                years = trading_days / 252
+                ann_ret = (1 + total_ret) ** (1 / years) - 1
+                results["return_SI_ann"] = round(ann_ret, 6)
 
     return results
 
@@ -215,8 +242,8 @@ def get_mf_analytics(
     if not fund:
         return {"fund_id": fund_id, "error": "fund_not_found"}
 
-    # Get NAV data
-    df = get_mf_nav(con, fund_id, limit=300)
+    # Get NAV data (enough for 5Y + buffer)
+    df = get_mf_nav(con, fund_id, limit=1400)
 
     if df.empty:
         return {
@@ -287,7 +314,7 @@ def get_category_performance(
     if not funds:
         return []
 
-    period_days = {"1W": 5, "1M": 21, "3M": 63, "6M": 126, "1Y": 252}
+    period_days = {"1W": 5, "1M": 21, "3M": 63, "6M": 126, "1Y": 252, "2Y": 504, "3Y": 756, "5Y": 1260}
     days = period_days.get(period, 21)
 
     results = []

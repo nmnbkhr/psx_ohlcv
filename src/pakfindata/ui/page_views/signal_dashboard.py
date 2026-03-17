@@ -47,22 +47,22 @@ except ImportError:
 # ═════════════════════════════════════════════════════════════════════════════
 
 _COLORS = {
-    "accent": "#C8A96E",
-    "up": "#00E676",
+    "accent": "#2F81F7",
+    "up": "#22c55e",
     "down": "#FF5252",
     "neutral": "#78909C",
     "bg": "#0B0E11",
-    "card_bg": "#12151A",
-    "card_border": "#2A2D35",
-    "grid": "#1A1D23",
+    "card_bg": "rgba(0,0,0,0)",
+    "card_border": "#30363D",
+    "grid": "rgba(0,0,0,0)",
     "text": "#e0e0e0",
-    "text_dim": "#8B8D93",
-    "vwap_line": "#C8A96E",
-    "band_1": "rgba(200,169,110,0.3)",
-    "band_2": "rgba(200,169,110,0.15)",
+    "text_dim": "#6B7280",
+    "vwap_line": "#2F81F7",
+    "band_1": "rgba(47,129,247,0.3)",
+    "band_2": "rgba(47,129,247,0.15)",
     "poc_line": "#FFD600",
     "va_fill": "rgba(255,214,0,0.1)",
-    "buy": "#00E676",
+    "buy": "#22c55e",
     "sell": "#FF5252",
     "block": "#FF9800",
 }
@@ -82,8 +82,7 @@ _PAGE_CSS = """
     text-align: center;
     padding: 24px 16px;
     border-radius: 12px;
-    background: linear-gradient(135deg, #12151A 0%, #1A1D23 100%);
-    border: 1px solid #2A2D35;
+    border: 1px solid #30363D;
     margin-bottom: 16px;
 }
 .signal-score-value {
@@ -93,41 +92,34 @@ _PAGE_CSS = """
 }
 .signal-score-label {
     font-size: 1rem;
-    color: #8B8D93;
+    color: #6B7280;
     margin-top: 4px;
 }
 .signal-breakdown {
     font-size: 0.9rem;
-    color: #8B8D93;
+    color: #6B7280;
     margin-top: 8px;
-}
-.metric-card {
-    background: linear-gradient(135deg, #12151A 0%, #1A1D23 100%);
-    border: 1px solid #2A2D35;
-    border-radius: 8px;
-    padding: 14px;
-    text-align: center;
 }
 .metric-value {
     font-size: 1.6rem;
     font-weight: bold;
-    color: #C8A96E;
+    color: #2F81F7;
 }
 .metric-label {
     font-size: 0.8rem;
-    color: #8B8D93;
+    color: #6B7280;
     margin-top: 2px;
 }
 .metric-sub {
     font-size: 0.75rem;
-    color: #5A5D63;
+    color: #6B7280;
     margin-top: 2px;
 }
 .layer-header {
     font-size: 1.1rem;
     font-weight: bold;
-    color: #C8A96E;
-    border-bottom: 1px solid #2A2D35;
+    color: #2F81F7;
+    border-bottom: 1px solid #30363D;
     padding-bottom: 8px;
     margin-top: 24px;
     margin-bottom: 12px;
@@ -152,13 +144,15 @@ def _metric_card(label: str, value: str, sub: str = "") -> str:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# DATA LOADING
+# DATA LOADING (cached)
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-def _get_symbols(con) -> list[str]:
-    """Get active symbols from symbols table."""
+@st.cache_data(ttl=1800, show_spinner=False)
+def _get_symbols() -> list[str]:
+    """Get active symbols from symbols table (cached)."""
     try:
+        con = get_connection()
         rows = con.execute(
             "SELECT symbol FROM symbols WHERE is_active = 1 ORDER BY symbol"
         ).fetchall()
@@ -167,9 +161,11 @@ def _get_symbols(con) -> list[str]:
         return []
 
 
-def _get_symbol_info(con, symbol: str) -> dict:
-    """Get sector info for a symbol."""
+@st.cache_data(ttl=1800, show_spinner=False)
+def _get_symbol_info(symbol: str) -> dict:
+    """Get sector info for a symbol (cached)."""
     try:
+        con = get_connection()
         row = con.execute(
             "SELECT sector, sector_name FROM symbols WHERE symbol = ?", (symbol,)
         ).fetchone()
@@ -180,9 +176,11 @@ def _get_symbol_info(con, symbol: str) -> dict:
     return {"sector": None, "sector_name": None}
 
 
-def _get_eod_data(con, symbol: str, limit: int = 600) -> pd.DataFrame:
-    """Query EOD OHLCV from eod_ohlcv table."""
+@st.cache_data(ttl=1800, show_spinner=False)
+def _get_eod_data(symbol: str, limit: int = 600) -> pd.DataFrame:
+    """Query EOD OHLCV from eod_ohlcv table (cached)."""
     try:
+        con = get_connection()
         return pd.read_sql_query(
             """SELECT date, open, high, low, close, volume
                FROM eod_ohlcv
@@ -195,9 +193,10 @@ def _get_eod_data(con, symbol: str, limit: int = 600) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def _get_index_data(con, limit: int = 600) -> pd.DataFrame:
-    """Query KSE-100 daily data for relative strength."""
-    # Try common index symbols
+@st.cache_data(ttl=1800, show_spinner=False)
+def _get_index_data(limit: int = 600) -> pd.DataFrame:
+    """Query KSE-100 daily data for relative strength (cached)."""
+    con = get_connection()
     for idx_sym in ("KSE100", "KSE-100", "KSEALL"):
         try:
             df = pd.read_sql_query(
@@ -213,9 +212,11 @@ def _get_index_data(con, limit: int = 600) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def _get_intraday_data(con, symbol: str, limit: int = 5000) -> pd.DataFrame:
-    """Query intraday bars from intraday_bars table."""
+@st.cache_data(ttl=1800, show_spinner=False)
+def _get_intraday_data(symbol: str, limit: int = 5000) -> pd.DataFrame:
+    """Query intraday bars from intraday_bars table (cached)."""
     try:
+        con = get_connection()
         return pd.read_sql_query(
             """SELECT ts, ts_epoch, open, high, low, close, volume
                FROM intraday_bars
@@ -228,11 +229,13 @@ def _get_intraday_data(con, symbol: str, limit: int = 5000) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
 def _get_tick_data(
-    con, symbol: str, market: str = "REG", days: int = 3
+    symbol: str, market: str = "REG", days: int = 3
 ) -> pd.DataFrame:
-    """Query tick logs from tick_logs table."""
+    """Query tick logs from tick_logs table (cached)."""
     try:
+        con = get_connection()
         cutoff = (
             datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5)))
             - datetime.timedelta(days=days)
@@ -253,9 +256,11 @@ def _get_tick_data(
         return pd.DataFrame()
 
 
-def _check_tick_table_exists(con) -> bool:
-    """Check if tick_logs table exists and has data."""
+@st.cache_data(ttl=1800, show_spinner=False)
+def _check_tick_table_exists() -> bool:
+    """Check if tick_logs table exists and has data (cached)."""
     try:
+        con = get_connection()
         row = con.execute(
             "SELECT COUNT(*) as cnt FROM tick_logs LIMIT 1"
         ).fetchone()
@@ -922,9 +927,11 @@ def _render_signal_commentary(report: SignalReport, symbol: str):
 _ALL_MARKET = "── ALL (Batch Scanner) ──"
 
 
-def _get_sectors(con) -> list[str]:
-    """Get distinct sector names."""
+@st.cache_data(ttl=1800, show_spinner=False)
+def _get_sectors() -> list[str]:
+    """Get distinct sector names (cached)."""
     try:
+        con = get_connection()
         rows = con.execute(
             "SELECT DISTINCT sector_name FROM symbols WHERE is_active = 1 AND sector_name IS NOT NULL ORDER BY sector_name"
         ).fetchall()
@@ -1152,7 +1159,7 @@ def render_signal_dashboard():
     st.markdown(_PAGE_CSS, unsafe_allow_html=True)
 
     con = get_connection()
-    symbols = _get_symbols(con)
+    symbols = _get_symbols()
 
     if not symbols:
         st.error("No symbols found. Sync data first.")
@@ -1160,7 +1167,7 @@ def render_signal_dashboard():
 
     # ── Top Bar: Symbol selector + filters on main page ──
     options = [_ALL_MARKET] + symbols
-    sectors = _get_sectors(con)
+    sectors = _get_sectors()
 
     row1 = st.columns([3, 1, 1])
     with row1[0]:
@@ -1246,7 +1253,7 @@ def render_signal_dashboard():
     symbol = selection
 
     # Show symbol name prominently
-    info = _get_symbol_info(con, symbol)
+    info = _get_symbol_info(symbol)
     sector_name = info.get("sector_name") or ""
     sector_label = f" — {sector_name}" if sector_name else ""
     st.markdown(
@@ -1351,13 +1358,13 @@ def _run_full_analysis(con, symbol: str) -> SignalReport:
     )
 
     # --- Symbol info ---
-    info = _get_symbol_info(con, symbol)
+    info = _get_symbol_info(symbol)
 
     # --- Layer 1: Macro Regime ---
-    eod_df = _get_eod_data(con, symbol)
+    eod_df = _get_eod_data(symbol)
     report.eod_days = len(eod_df)
 
-    index_df = _get_index_data(con)
+    index_df = _get_index_data()
 
     if not eod_df.empty:
         if len(eod_df) < 200:
@@ -1376,7 +1383,7 @@ def _run_full_analysis(con, symbol: str) -> SignalReport:
         st.error(f"No EOD data found for {symbol}. Check the Symbols page.")
 
     # --- Layer 2: Intraday Anchor ---
-    intraday_df = _get_intraday_data(con, symbol)
+    intraday_df = _get_intraday_data(symbol)
     report.intraday_bars = len(intraday_df)
 
     if not intraday_df.empty:
@@ -1387,11 +1394,11 @@ def _run_full_analysis(con, symbol: str) -> SignalReport:
         report.intraday = IntradayAnchor(data_source="none")
 
     # --- Layer 3: Execution DNA ---
-    has_ticks = _check_tick_table_exists(con)
+    has_ticks = _check_tick_table_exists()
 
     if has_ticks:
-        reg_ticks = _get_tick_data(con, symbol, market="REG")
-        fut_ticks = _get_tick_data(con, symbol, market="FUT")
+        reg_ticks = _get_tick_data(symbol, market="REG")
+        fut_ticks = _get_tick_data(symbol, market="FUT")
         report.tick_count = len(reg_ticks)
 
         if not reg_ticks.empty:

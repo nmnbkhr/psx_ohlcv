@@ -1,0 +1,37 @@
+<svg width="380" height="100" viewBox="0 0 380 100" xmlns="http://www.w3.org/2000/svg">
+  <!-- Icon -->
+  <rect x="0" y="0" width="100" height="100" rx="20" fill="#0a0e17"/>
+  <g transform="translate(12, 12)">
+    <circle cx="10" cy="10" r="5" fill="#1D9E75"/>
+    <circle cx="26" cy="10" r="5" fill="#378ADD"/>
+    <circle cx="42" cy="10" r="5" fill="#378ADD"/>
+    <circle cx="58" cy="10" r="5" fill="#22c55e"/>
+    <circle cx="74" cy="10" r="5" fill="#1e293b"/>
+    <circle cx="10" cy="26" r="5" fill="#1D9E75"/>
+    <circle cx="26" cy="26" r="5" fill="#1e293b"/>
+    <circle cx="42" cy="26" r="5" fill="#1e293b"/>
+    <circle cx="58" cy="26" r="5" fill="#378ADD"/>
+    <circle cx="74" cy="26" r="5" fill="#1e293b"/>
+    <circle cx="10" cy="42" r="5" fill="#1D9E75"/>
+    <circle cx="26" cy="42" r="5" fill="#378ADD"/>
+    <circle cx="42" cy="42" r="5" fill="#378ADD"/>
+    <circle cx="58" cy="42" r="5" fill="#22c55e" opacity="0.5"/>
+    <circle cx="74" cy="42" r="5" fill="#1e293b"/>
+    <circle cx="10" cy="58" r="5" fill="#1D9E75"/>
+    <circle cx="26" cy="58" r="5" fill="#1e293b"/>
+    <circle cx="42" cy="58" r="5" fill="#1e293b"/>
+    <circle cx="58" cy="58" r="5" fill="#1e293b"/>
+    <circle cx="74" cy="58" r="5" fill="#1e293b"/>
+    <circle cx="10" cy="74" r="5" fill="#1D9E75"/>
+    <circle cx="26" cy="74" r="5" fill="#1e293b"/>
+    <circle cx="42" cy="74" r="5" fill="#1e293b"/>
+    <circle cx="58" cy="74" r="5" fill="#1e293b"/>
+    <circle cx="74" cy="74" r="5" fill="#1e293b"/>
+  </g>
+  <!-- Wordmark -->
+  <text x="118" y="46" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="28" font-weight="500" fill="#f1f5f9" letter-spacing="-0.5">pak</text>
+  <text x="191" y="46" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="28" font-weight="500" fill="#378ADD" letter-spacing="-0.5">fin</text>
+  <text x="241" y="46" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="28" font-weight="500" fill="#f1f5f9" letter-spacing="-0.5">data</text>
+  <circle cx="333" cy="40" r="4" fill="#22c55e"/>
+  <text x="118" y="68" font-family="'SF Mono', 'Fira Code', 'Consolas', monospace" font-size="9" fill="#64748b" letter-spacing="3">QUANTITATIVE FINANCE</text>
+</svg>

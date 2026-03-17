@@ -33,7 +33,7 @@ _COLORS = {
     "index": "#9B59B6",
     "copper": "#B87333",
     "up": "#00C853",
-    "down": "#FF1744",
+    "down": "#FF5252",
     "neutral": "#78909C",
     "bg": "#0E1117",
     "card": "#1E1E2E",
@@ -251,21 +251,24 @@ def render_pmex():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# QUOTE STRIP — Live-style ticker at top
+# CACHED DATA LOADERS
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-def _render_quote_strip(con: sqlite3.Connection):
-    """Bloomberg-style quote strip: key benchmarks across the top."""
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_quote_strip_data() -> list[tuple[str, str, float, float, float]] | None:
+    """Load benchmark quotes for the top ticker strip."""
+    con = _get_commod_con()
+    if con is None:
+        return None
     dates = [r[0] for r in con.execute(
         "SELECT DISTINCT trading_date FROM pmex_ohlc ORDER BY trading_date DESC LIMIT 2"
     ).fetchall()]
     if not dates:
-        return
+        return None
 
     latest_dt, prev_dt = dates[0], dates[1] if len(dates) > 1 else dates[0]
 
-    # Key benchmark symbols — pick the most liquid per asset class
     benchmarks = [
         ("GOMOZ", "Gold USD/oz", "$"),
         ("TOLAGOLD", "Tola Gold PKR", "Rs "),
@@ -286,21 +289,156 @@ def _render_quote_strip(con: sqlite3.Connection):
         ).fetchone()
         if not row:
             continue
-
         prev_row = con.execute(
             """SELECT close FROM pmex_ohlc
                WHERE symbol = ? AND trading_date = ? AND traded_volume > 0""",
             (row["symbol"], prev_dt),
         ).fetchone()
-
         price = row["close"]
         prev_price = prev_row["close"] if prev_row else price
         chg = price - prev_price
         chg_pct = (chg / prev_price * 100) if prev_price else 0
         quotes.append((label, curr, price, chg, chg_pct))
 
-    if not quotes:
+    return (quotes, latest_dt, prev_dt) if quotes else None
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_market_overview_data() -> tuple | None:
+    """Load latest + previous session OHLC for market overview."""
+    con = _get_commod_con()
+    if con is None:
+        return None
+    latest_date = con.execute("SELECT MAX(trading_date) FROM pmex_ohlc").fetchone()[0]
+    if not latest_date:
+        return None
+    prev_date = con.execute(
+        "SELECT MAX(trading_date) FROM pmex_ohlc WHERE trading_date < ?", (latest_date,)
+    ).fetchone()[0]
+    df = pd.read_sql_query(
+        "SELECT * FROM pmex_ohlc WHERE trading_date = ?", con, params=(latest_date,),
+    )
+    prev_df = None
+    if prev_date:
+        prev_df = pd.read_sql_query(
+            "SELECT symbol, close, traded_volume FROM pmex_ohlc WHERE trading_date = ?",
+            con, params=(prev_date,),
+        )
+    return latest_date, prev_date, df, prev_df
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_symbol_list() -> list[str]:
+    """Load symbols sorted by total traded volume."""
+    con = _get_commod_con()
+    if con is None:
+        return []
+    return [r[0] for r in con.execute(
+        """SELECT symbol, SUM(traded_volume) as vol FROM pmex_ohlc
+           WHERE traded_volume > 0 GROUP BY symbol ORDER BY vol DESC"""
+    ).fetchall()]
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_price_chart_data(symbol: str) -> pd.DataFrame:
+    """Load OHLC history for a single symbol."""
+    con = _get_commod_con()
+    if con is None:
+        return pd.DataFrame()
+    return pd.read_sql_query(
+        """SELECT trading_date, open, high, low, close, traded_volume, settlement_price
+           FROM pmex_ohlc WHERE symbol = ? AND traded_volume > 0 ORDER BY trading_date""",
+        con, params=(symbol,),
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_gold_data() -> pd.DataFrame:
+    """Load gold/silver OHLC data."""
+    con = _get_commod_con()
+    if con is None:
+        return pd.DataFrame()
+    return pd.read_sql_query(
+        """SELECT trading_date, symbol, open, high, low, close, traded_volume,
+                  settlement_price, fx_rate
+           FROM pmex_ohlc
+           WHERE traded_volume > 0
+             AND (symbol LIKE 'GOMOZ%' OR symbol LIKE 'GO1OZ%' OR symbol LIKE 'GO10OZ%'
+                  OR symbol LIKE 'GO100OZ%'
+                  OR symbol LIKE 'TOLAGOLD%' OR symbol LIKE 'MTOLAGOLD%'
+                  OR symbol LIKE 'SL100OZ%' OR symbol LIKE 'SL1000OZ%')
+           ORDER BY trading_date""",
+        con,
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_returns_data() -> pd.DataFrame:
+    """Load symbols with enough data for return calculations."""
+    con = _get_commod_con()
+    if con is None:
+        return pd.DataFrame(), pd.DataFrame()
+    symbols_df = pd.read_sql_query(
+        """SELECT symbol, COUNT(*) as days FROM pmex_ohlc
+           WHERE traded_volume > 0 GROUP BY symbol HAVING days >= 2
+           ORDER BY days DESC""",
+        con,
+    )
+    if symbols_df.empty:
+        return symbols_df, pd.DataFrame()
+    # Load all active price history at once instead of per-symbol queries
+    all_prices = pd.read_sql_query(
+        """SELECT symbol, trading_date, close, traded_volume FROM pmex_ohlc
+           WHERE traded_volume > 0 ORDER BY symbol, trading_date""",
+        con,
+    )
+    return symbols_df, all_prices
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_margin_data() -> tuple | None:
+    """Load margin report data."""
+    con = _get_commod_con()
+    if con is None:
+        return None
+    dates = [r[0] for r in con.execute(
+        "SELECT DISTINCT report_date FROM pmex_margins ORDER BY report_date DESC LIMIT 30"
+    ).fetchall()]
+    if not dates:
+        return None
+    latest_date = dates[0]
+    prev_date = dates[1] if len(dates) > 1 else None
+    latest_df = pd.read_sql_query(
+        """SELECT contract_code, product_group, reference_price,
+                  initial_margin_pct, initial_margin_value, wcm,
+                  maintenance_margin, lower_limit, upper_limit, fx_rate, is_active
+           FROM pmex_margins WHERE report_date = ? AND is_active = 1
+           ORDER BY product_group, contract_code""",
+        con, params=(latest_date,),
+    )
+    prev_df = None
+    if prev_date:
+        prev_df = pd.read_sql_query(
+            """SELECT contract_code, initial_margin_value as prev_margin,
+                      reference_price as prev_price
+               FROM pmex_margins WHERE report_date = ? AND is_active = 1""",
+            con, params=(prev_date,),
+        )
+    return latest_date, prev_date, latest_df, prev_df
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# QUOTE STRIP — Live-style ticker at top
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def _render_quote_strip(con: sqlite3.Connection):
+    """Bloomberg-style quote strip: key benchmarks across the top."""
+    result = _load_quote_strip_data()
+    if result is None:
         return
+
+    quotes, latest_dt, prev_dt = result
 
     cols = st.columns(len(quotes))
     for i, (label, curr, price, chg, chg_pct) in enumerate(quotes):
@@ -317,28 +455,18 @@ def _render_quote_strip(con: sqlite3.Connection):
 
 
 def _render_market_overview(con: sqlite3.Connection):
-    latest_date = con.execute("SELECT MAX(trading_date) FROM pmex_ohlc").fetchone()[0]
-    if not latest_date:
+    result = _load_market_overview_data()
+    if result is None:
         st.info("No OHLC data. Go to **Data Sync** tab to fetch data.")
         return
 
-    # Load latest + previous session
-    prev_date = con.execute(
-        "SELECT MAX(trading_date) FROM pmex_ohlc WHERE trading_date < ?", (latest_date,)
-    ).fetchone()[0]
+    latest_date, prev_date, df, prev_df = result
 
-    df = pd.read_sql_query(
-        "SELECT * FROM pmex_ohlc WHERE trading_date = ?", con, params=(latest_date,),
-    )
     df["asset_class"] = df["symbol"].apply(_classify_symbol)
     df["base"] = df["symbol"].apply(_base_product)
     active = df[df["traded_volume"] > 0].copy()
 
-    if prev_date:
-        prev_df = pd.read_sql_query(
-            "SELECT symbol, close, traded_volume FROM pmex_ohlc WHERE trading_date = ?",
-            con, params=(prev_date,),
-        )
+    if prev_date and prev_df is not None:
         prev_map = dict(zip(prev_df["symbol"], prev_df["close"]))
         active["prev_close"] = active["symbol"].map(prev_map)
         active["chg"] = active["close"] - active["prev_close"]
@@ -468,10 +596,7 @@ def _render_market_overview(con: sqlite3.Connection):
 
 
 def _render_price_charts(con: sqlite3.Connection):
-    symbols = [r[0] for r in con.execute(
-        """SELECT symbol, SUM(traded_volume) as vol FROM pmex_ohlc
-           WHERE traded_volume > 0 GROUP BY symbol ORDER BY vol DESC"""
-    ).fetchall()]
+    symbols = _load_symbol_list()
     if not symbols:
         st.info("No active OHLC data. Fetch data first.")
         return
@@ -484,11 +609,7 @@ def _render_price_charts(con: sqlite3.Connection):
     with c3:
         show_sma = st.checkbox("Show SMA", value=False, key="pmex_sma")
 
-    df = pd.read_sql_query(
-        """SELECT trading_date, open, high, low, close, traded_volume, settlement_price
-           FROM pmex_ohlc WHERE symbol = ? AND traded_volume > 0 ORDER BY trading_date""",
-        con, params=(sel_sym,),
-    )
+    df = _load_price_chart_data(sel_sym)
 
     if df.empty:
         st.info(f"No active trading data for {sel_sym}")
@@ -596,11 +717,7 @@ def _render_price_charts(con: sqlite3.Connection):
             palette = [_COLORS["gold"], _COLORS["crude"], _COLORS["accent"],
                        _COLORS["fx"], _COLORS["index"]]
             for i, sym in enumerate(compare_syms):
-                sdf = pd.read_sql_query(
-                    """SELECT trading_date, close FROM pmex_ohlc
-                       WHERE symbol = ? AND traded_volume > 0 ORDER BY trading_date""",
-                    con, params=(sym,),
-                )
+                sdf = _load_price_chart_data(sym)[["trading_date", "close"]]
                 if sdf.empty or sdf.iloc[0]["close"] <= 0:
                     continue
                 sdf["norm"] = sdf["close"] / sdf.iloc[0]["close"] * 100
@@ -620,18 +737,7 @@ def _render_price_charts(con: sqlite3.Connection):
 
 
 def _render_gold_terminal(con: sqlite3.Connection):
-    gold_df = pd.read_sql_query(
-        """SELECT trading_date, symbol, open, high, low, close, traded_volume,
-                  settlement_price, fx_rate
-           FROM pmex_ohlc
-           WHERE traded_volume > 0
-             AND (symbol LIKE 'GOMOZ%' OR symbol LIKE 'GO1OZ%' OR symbol LIKE 'GO10OZ%'
-                  OR symbol LIKE 'GO100OZ%'
-                  OR symbol LIKE 'TOLAGOLD%' OR symbol LIKE 'MTOLAGOLD%'
-                  OR symbol LIKE 'SL100OZ%' OR symbol LIKE 'SL1000OZ%')
-           ORDER BY trading_date""",
-        con,
-    )
+    gold_df = _load_gold_data()
 
     if gold_df.empty:
         st.info("No gold/silver trading data. Fetch OHLC data first.")
@@ -783,12 +889,7 @@ def _render_gold_terminal(con: sqlite3.Connection):
 
 def _render_returns(con: sqlite3.Connection):
     # Get symbols with at least 2 active days
-    symbols_df = pd.read_sql_query(
-        """SELECT symbol, COUNT(*) as days FROM pmex_ohlc
-           WHERE traded_volume > 0 GROUP BY symbol HAVING days >= 2
-           ORDER BY days DESC""",
-        con,
-    )
+    symbols_df, all_prices = _load_returns_data()
     if symbols_df.empty:
         st.info("Need at least 2 trading sessions for return calculations.")
         return
@@ -796,11 +897,7 @@ def _render_returns(con: sqlite3.Connection):
     returns_data = []
     for _, row in symbols_df.iterrows():
         sym = row["symbol"]
-        prices = pd.read_sql_query(
-            """SELECT trading_date, close, traded_volume FROM pmex_ohlc
-               WHERE symbol = ? AND traded_volume > 0 ORDER BY trading_date""",
-            con, params=(sym,),
-        )
+        prices = all_prices[all_prices["symbol"] == sym].sort_values("trading_date").reset_index(drop=True)
         if len(prices) < 2 or prices.iloc[0]["close"] <= 0:
             continue
 
@@ -925,24 +1022,12 @@ def _render_returns(con: sqlite3.Connection):
 
 
 def _render_margin_monitor(con: sqlite3.Connection):
-    dates = [r[0] for r in con.execute(
-        "SELECT DISTINCT report_date FROM pmex_margins ORDER BY report_date DESC LIMIT 30"
-    ).fetchall()]
-    if not dates:
+    result = _load_margin_data()
+    if result is None:
         st.info("No margins data. Go to **Data Sync** tab.")
         return
 
-    latest_date = dates[0]
-    prev_date = dates[1] if len(dates) > 1 else None
-
-    latest_df = pd.read_sql_query(
-        """SELECT contract_code, product_group, reference_price,
-                  initial_margin_pct, initial_margin_value, wcm,
-                  maintenance_margin, lower_limit, upper_limit, fx_rate, is_active
-           FROM pmex_margins WHERE report_date = ? AND is_active = 1
-           ORDER BY product_group, contract_code""",
-        con, params=(latest_date,),
-    )
+    latest_date, prev_date, latest_df, prev_df_cached = result
 
     if latest_df.empty:
         st.info(f"No active margins for {latest_date}")
@@ -1046,14 +1131,9 @@ def _render_margin_monitor(con: sqlite3.Connection):
     # ── Margin changes ──
     if prev_date:
         st.markdown(f"#### Margin Changes: {prev_date} vs {latest_date}")
-        prev_df = pd.read_sql_query(
-            """SELECT contract_code, initial_margin_value as prev_margin,
-                      reference_price as prev_price
-               FROM pmex_margins WHERE report_date = ? AND is_active = 1""",
-            con, params=(prev_date,),
-        )
+        prev_df = prev_df_cached
 
-        if not prev_df.empty:
+        if prev_df is not None and not prev_df.empty:
             merged = latest_df.merge(prev_df, on="contract_code", how="inner")
             merged["margin_chg"] = merged["initial_margin_value"] - merged["prev_margin"]
             merged["margin_chg_pct"] = (

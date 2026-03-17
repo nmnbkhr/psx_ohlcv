@@ -1,0 +1,46 @@
+<svg width="600" height="120" viewBox="0 0 600 120" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="600" height="120" rx="16" fill="#0a0e17"/>
+  <!-- Large icon -->
+  <g transform="translate(25, 10)">
+    <circle cx="12" cy="12" r="6.5" fill="#1D9E75"/>
+    <circle cx="32" cy="12" r="6.5" fill="#378ADD"/>
+    <circle cx="52" cy="12" r="6.5" fill="#378ADD"/>
+    <circle cx="72" cy="12" r="6.5" fill="#22c55e"/>
+    <circle cx="92" cy="12" r="6.5" fill="#1e293b"/>
+    <circle cx="12" cy="32" r="6.5" fill="#1D9E75"/>
+    <circle cx="32" cy="32" r="6.5" fill="#1e293b"/>
+    <circle cx="52" cy="32" r="6.5" fill="#1e293b"/>
+    <circle cx="72" cy="32" r="6.5" fill="#378ADD"/>
+    <circle cx="92" cy="32" r="6.5" fill="#1e293b"/>
+    <circle cx="12" cy="52" r="6.5" fill="#1D9E75"/>
+    <circle cx="32" cy="52" r="6.5" fill="#378ADD"/>
+    <circle cx="52" cy="52" r="6.5" fill="#378ADD"/>
+    <circle cx="72" cy="52" r="6.5" fill="#22c55e" opacity="0.5"/>
+    <circle cx="92" cy="52" r="6.5" fill="#1e293b"/>
+    <circle cx="12" cy="72" r="6.5" fill="#1D9E75"/>
+    <circle cx="32" cy="72" r="6.5" fill="#1e293b"/>
+    <circle cx="52" cy="72" r="6.5" fill="#1e293b"/>
+    <circle cx="72" cy="72" r="6.5" fill="#1e293b"/>
+    <circle cx="92" cy="72" r="6.5" fill="#1e293b"/>
+    <circle cx="12" cy="92" r="6.5" fill="#1D9E75"/>
+    <circle cx="32" cy="92" r="6.5" fill="#1e293b"/>
+    <circle cx="52" cy="92" r="6.5" fill="#1e293b"/>
+    <circle cx="72" cy="92" r="6.5" fill="#1e293b"/>
+    <circle cx="92" cy="92" r="6.5" fill="#1e293b"/>
+  </g>
+  <!-- Wordmark -->
+  <text x="155" y="52" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="38" font-weight="500" fill="#f1f5f9" letter-spacing="-1">pak</text>
+  <text x="252" y="52" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="38" font-weight="500" fill="#378ADD" letter-spacing="-1">fin</text>
+  <text x="318" y="52" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="38" font-weight="500" fill="#f1f5f9" letter-spacing="-1">data</text>
+  <circle cx="428" cy="44" r="5" fill="#22c55e"/>
+  <text x="155" y="80" font-family="'SF Mono', 'Fira Code', 'Consolas', monospace" font-size="11" fill="#475569" letter-spacing="4">QUANTITATIVE FINANCE</text>
+  <!-- Trailing signal dots -->
+  <circle cx="460" cy="50" r="2.5" fill="#1D9E75" opacity="0.6"/>
+  <circle cx="478" cy="42" r="2" fill="#378ADD" opacity="0.4"/>
+  <circle cx="492" cy="54" r="2.5" fill="#22c55e" opacity="0.5"/>
+  <circle cx="510" cy="38" r="2" fill="#1D9E75" opacity="0.3"/>
+  <circle cx="526" cy="50" r="2.5" fill="#378ADD" opacity="0.25"/>
+  <circle cx="542" cy="44" r="2" fill="#22c55e" opacity="0.2"/>
+  <circle cx="558" cy="52" r="1.5" fill="#1D9E75" opacity="0.15"/>
+  <circle cx="572" cy="40" r="1.5" fill="#378ADD" opacity="0.1"/>
+</svg>

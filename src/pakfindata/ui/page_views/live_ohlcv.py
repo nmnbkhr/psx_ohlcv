@@ -26,7 +26,7 @@ from pakfindata.sync_timeseries import (
     read_intraday_sync_progress,
     start_intraday_sync,
 )
-from pakfindata.ui.components.helpers import get_connection, render_footer
+from pakfindata.ui.components.helpers import get_connection
 
 
 # =====================================================================
@@ -383,7 +383,7 @@ def _render_price_chart(symbol: str, ticks: list[dict], ohlcv: dict):
     fig.add_hline(
         y=ohlcv["low"],
         line_dash="dot",
-        line_color="#FF1744",
+        line_color="#FF5252",
         annotation_text=f"LOW {ohlcv['low']:,.2f}",
         annotation_position="bottom right",
     )
@@ -418,7 +418,7 @@ def _render_price_chart(symbol: str, ticks: list[dict], ohlcv: dict):
             vol_deltas.append(delta)
 
         colors = [
-            "#00C853" if prices[i] >= prices[max(0, i - 1)] else "#FF1744"
+            "#00C853" if prices[i] >= prices[max(0, i - 1)] else "#FF5252"
             for i in range(len(prices))
         ]
 
@@ -528,7 +528,7 @@ def _render_running_ohlcv_table(collector: TickCollector):
             if val > 0:
                 return "color: #00C853"
             elif val < 0:
-                return "color: #FF1744"
+                return "color: #FF5252"
         return ""
 
     styled = df.style.map(_color_chg, subset=["Chg", "Chg%"]).format({

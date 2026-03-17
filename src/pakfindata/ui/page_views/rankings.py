@@ -15,6 +15,16 @@ from pakfindata.ui.components.helpers import (
 )
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_rankings(instrument_types, top_n):
+    return get_rankings(get_connection(), as_of_date=None, instrument_types=list(instrument_types), top_n=top_n)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_normalized_performance(selected_ids):
+    return get_normalized_performance(get_connection(), list(selected_ids))
+
+
 def render_rankings():
     """View and compare instrument performance rankings."""
     # =================================================================
@@ -26,8 +36,6 @@ def render_rankings():
         st.caption("Performance comparison for ETFs, REITs, and Indexes")
     with header_col2:
         render_market_status_badge()
-
-    con = get_connection()
 
     # Filter options
     col1, col2, col3 = st.columns([2, 2, 2])
@@ -48,7 +56,7 @@ def render_rankings():
     if compute_btn and types_filter:
         with st.spinner("Computing rankings..."):
             result = compute_rankings(
-                con,
+                get_connection(),
                 as_of_date=None,  # Today
                 instrument_types=types_filter,
                 top_n=top_n,
@@ -61,10 +69,8 @@ def render_rankings():
     st.markdown("---")
 
     # Get rankings
-    rankings = get_rankings(
-        con,
-        as_of_date=None,  # Most recent
-        instrument_types=types_filter if types_filter else None,
+    rankings = _cached_rankings(
+        instrument_types=tuple(types_filter) if types_filter else (),
         top_n=top_n,
     )
 
@@ -139,7 +145,7 @@ def render_rankings():
                 ]
 
                 # Get normalized performance
-                perf_df = get_normalized_performance(con, selected_ids)
+                perf_df = _cached_normalized_performance(tuple(selected_ids))
 
                 if not perf_df.empty:
                     import plotly.graph_objects as go

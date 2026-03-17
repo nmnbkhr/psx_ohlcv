@@ -6,6 +6,35 @@ import streamlit as st
 
 from pakfindata.ui.components.helpers import get_connection, render_footer
 
+_CACHE_TTL = 86400
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_benchmark_snapshot():
+    from pakfindata.db.repositories.bond_market import get_benchmark_snapshot
+    con = get_connection()
+    return get_benchmark_snapshot(con)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_bond_market_status():
+    from pakfindata.db.repositories.bond_market import get_bond_market_status
+    con = get_connection()
+    return get_bond_market_status(con)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_benchmark_metric_history(metric: str):
+    con = get_connection()
+    try:
+        return pd.read_sql_query(
+            "SELECT date, value FROM sbp_benchmark_snapshot "
+            "WHERE metric = ? ORDER BY date",
+            con, params=(metric,),
+        )
+    except Exception:
+        return pd.DataFrame()
+
 
 def render_benchmark_monitor():
     """Render the Benchmark Monitor page — SBP benchmark history."""
@@ -17,15 +46,11 @@ def render_benchmark_monitor():
         st.error("Database connection not available")
         return
 
-    from pakfindata.db.repositories.bond_market import (
-        init_bond_market_schema,
-        get_benchmark_snapshot,
-        get_bond_market_status,
-    )
+    from pakfindata.db.repositories.bond_market import init_bond_market_schema
     init_bond_market_schema(con)
 
     # ── Latest Snapshot ──────────────────────────────────────────
-    snap = get_benchmark_snapshot(con)
+    snap = _load_benchmark_snapshot()
     if not snap:
         st.info("No benchmark data. Click sync below to populate.")
     else:
@@ -49,7 +74,7 @@ def render_benchmark_monitor():
     st.divider()
 
     # ── Data Status ──────────────────────────────────────────────
-    status = get_bond_market_status(con)
+    status = _load_bond_market_status()
     st.subheader("Data Coverage")
     c1, c2, c3 = st.columns(3)
     c1.metric("Benchmark Days", status.get("benchmark_days", 0))
@@ -112,20 +137,13 @@ def _render_benchmark_history(con):
     fig = go.Figure()
     for label in selected:
         metric = metric_options[label]
-        try:
-            df = pd.read_sql_query(
-                "SELECT date, value FROM sbp_benchmark_snapshot "
-                "WHERE metric = ? ORDER BY date",
-                con, params=(metric,),
-            )
-            if not df.empty:
-                fig.add_trace(go.Scatter(
-                    x=df["date"], y=df["value"],
-                    mode="lines", name=label,
-                    line=dict(width=2),
-                ))
-        except Exception:
-            pass
+        df = _load_benchmark_metric_history(metric)
+        if not df.empty:
+            fig.add_trace(go.Scatter(
+                x=df["date"], y=df["value"],
+                mode="lines", name=label,
+                line=dict(width=2),
+            ))
 
     if fig.data:
         fig.update_layout(

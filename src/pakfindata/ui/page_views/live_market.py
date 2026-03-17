@@ -60,7 +60,7 @@ def render_live_market():
                 arrow = "\u25b2"
                 sign = "+"
             elif change < 0:
-                color = "#FF1744"
+                color = "#FF5252"
                 arrow = "\u25bc"
                 sign = ""
             else:
@@ -215,7 +215,7 @@ def render_live_market():
                         path=["sector_name"],
                         values="count",
                         color="avg_change",
-                        color_continuous_scale=["#FF1744", "#424242", "#00C853"],
+                        color_continuous_scale=["#FF5252", "#424242", "#00C853"],
                         color_continuous_midpoint=0,
                         hover_data={
                             "avg_change": ":.2f",

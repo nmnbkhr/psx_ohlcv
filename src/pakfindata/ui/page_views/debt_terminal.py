@@ -35,69 +35,49 @@ from pakfindata.ui.components.helpers import get_connection, render_footer
 TERMINAL_CSS = """
 <style>
 .debt-terminal-header {
-    background: linear-gradient(135deg, #0a0e17 0%, #0f1520 100%);
+    background: rgba(0,0,0,0);
     padding: 16px 24px;
-    border-bottom: 1px solid #1a2235;
+    border-bottom: 1px solid #30363D;
     border-radius: 8px;
     margin-bottom: 16px;
 }
 .debt-terminal-header h1 {
     margin: 0; font-size: 28px; font-weight: 800; letter-spacing: 2px;
 }
-.debt-terminal-header .pak { color: #00d4aa; }
+.debt-terminal-header .pak { color: #22c55e; }
 .debt-terminal-header .fin { color: #e2e8f0; }
-.debt-terminal-header .data { color: #64748b; }
+.debt-terminal-header .data { color: #6B7280; }
 .debt-terminal-header .subtitle {
-    color: #64748b; font-size: 12px; margin-top: 4px;
+    color: #6B7280; font-size: 12px; margin-top: 4px;
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
 }
-
-.metric-card {
-    background: #0f1520;
-    border: 1px solid #1a2235;
-    border-radius: 8px;
-    padding: 12px 16px;
-    text-align: center;
-}
-.metric-card .label {
-    font-size: 10px; color: #64748b; text-transform: uppercase;
-    letter-spacing: 1.5px; margin-bottom: 4px;
-}
-.metric-card .value {
-    font-size: 20px; font-weight: 700;
-    font-family: 'JetBrains Mono', 'Fira Code', monospace;
-    color: #e2e8f0;
-}
-.metric-card .value.green { color: #00d4aa; }
-.metric-card .value.red { color: #ff4757; }
-.metric-card .value.amber { color: #ffa502; }
 
 .badge {
     display: inline-block; padding: 2px 8px; border-radius: 4px;
     font-size: 10px; font-weight: 700; letter-spacing: 1px;
     text-transform: uppercase;
 }
-.badge-cheap { background: rgba(0,212,170,0.15); color: #00d4aa; }
-.badge-fair { background: rgba(255,165,2,0.15); color: #ffa502; }
-.badge-rich { background: rgba(255,71,87,0.15); color: #ff4757; }
-.badge-islamic { background: rgba(255,165,2,0.15); color: #ffa502; }
-.badge-conventional { background: rgba(83,82,237,0.15); color: #5352ed; }
-.badge-stale { background: rgba(255,71,87,0.15); color: #ff4757; }
+.badge-cheap { background: rgba(34,197,94,0.15); color: #22c55e; }
+.badge-fair { background: rgba(255,179,0,0.15); color: #FFB300; }
+.badge-rich { background: rgba(255,82,82,0.15); color: #FF5252; }
+.badge-islamic { background: rgba(255,179,0,0.15); color: #FFB300; }
+.badge-conventional { background: rgba(47,129,247,0.15); color: #2F81F7; }
+.badge-stale { background: rgba(255,82,82,0.15); color: #FF5252; }
 
 .liquidity-bar {
-    height: 6px; border-radius: 3px; background: #1a2235; width: 48px;
+    height: 6px; border-radius: 3px; background: #30363D; width: 48px;
     display: inline-block; vertical-align: middle;
 }
 .liquidity-fill {
     height: 100%; border-radius: 3px;
 }
-.liq-high { background: #00d4aa; width: 90%; }
-.liq-med { background: #ffa502; width: 55%; }
-.liq-low { background: #ff4757; width: 20%; }
+.liq-high { background: #22c55e; width: 90%; }
+.liq-med { background: #FFB300; width: 55%; }
+.liq-low { background: #FF5252; width: 20%; }
 
 .terminal-footer {
-    color: #475569; font-size: 11px; padding: 12px 0;
-    border-top: 1px solid #1a2235;
+    color: #6B7280; font-size: 11px; padding: 12px 0;
+    border-top: 1px solid #30363D;
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
 }
 
@@ -105,17 +85,17 @@ TERMINAL_CSS = """
     padding: 10px 16px; border-radius: 6px; margin-top: 10px;
     font-size: 13px;
 }
-.sim-alert-ease { background: rgba(0,212,170,0.1); color: #00d4aa; border: 1px solid rgba(0,212,170,0.2); }
-.sim-alert-tight { background: rgba(255,71,87,0.1); color: #ff4757; border: 1px solid rgba(255,71,87,0.2); }
+.sim-alert-ease { background: rgba(34,197,94,0.1); color: #22c55e; border: 1px solid rgba(34,197,94,0.2); }
+.sim-alert-tight { background: rgba(255,82,82,0.1); color: #FF5252; border: 1px solid rgba(255,82,82,0.2); }
 
 .data-source-bar {
-    font-size: 11px; color: #475569; padding: 6px 12px;
-    background: rgba(15,21,32,0.5); border-radius: 4px;
+    font-size: 11px; color: #6B7280; padding: 6px 12px;
+    background: rgba(0,0,0,0); border-radius: 4px;
     margin-bottom: 12px;
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
 }
-.data-source-bar .live { color: #00d4aa; }
-.data-source-bar .fallback { color: #ffa502; }
+.data-source-bar .live { color: #22c55e; }
+.data-source-bar .fallback { color: #FFB300; }
 </style>
 """
 
@@ -1196,7 +1176,7 @@ def _render_price_volume_chart(instrument_id: str, con=None):
     fig.add_trace(go.Bar(
         x=df["date"], y=df["volume"],
         name="Volume",
-        marker_color="rgba(0,212,170,0.2)",
+        marker_color="rgba(34,197,94,0.2)",
         yaxis="y2",
     ))
 
@@ -1205,7 +1185,7 @@ def _render_price_volume_chart(instrument_id: str, con=None):
         x=df["date"], y=df["price"],
         name="Price",
         mode="lines+markers",
-        line=dict(color="#00d4aa", width=2),
+        line=dict(color="#22c55e", width=2),
         marker=dict(size=4),
     ))
 
@@ -1213,10 +1193,10 @@ def _render_price_volume_chart(instrument_id: str, con=None):
         height=250,
         margin=dict(l=0, r=0, t=10, b=30),
         paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="#0a0e17",
-        font=dict(family="JetBrains Mono, Fira Code, monospace", size=10, color="#64748b"),
-        xaxis=dict(gridcolor="#1a2235", showgrid=True),
-        yaxis=dict(title="Price", gridcolor="#1a2235", side="left"),
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="JetBrains Mono, Fira Code, monospace", size=10, color="#BDC1C6"),
+        xaxis=dict(gridcolor="#30363D", showgrid=True),
+        yaxis=dict(title="Price", gridcolor="#30363D", side="left"),
         yaxis2=dict(title="Volume", overlaying="y", side="right", showgrid=False),
         legend=dict(orientation="h", y=-0.2),
         showlegend=True,
@@ -1241,7 +1221,7 @@ def _render_yield_curve(
         x=pkrv_years, y=pkrv_yields,
         mode="lines+markers",
         name="PKRV (Govt)",
-        line=dict(color="#00d4aa", width=2),
+        line=dict(color="#22c55e", width=2),
         marker=dict(size=5),
     ))
 
@@ -1252,7 +1232,7 @@ def _render_yield_curve(
         x=ifrv_years, y=ifrv_yields,
         mode="lines+markers",
         name="IFRV (Islamic)",
-        line=dict(color="#ffa502", width=2, dash="dash"),
+        line=dict(color="#FFB300", width=2, dash="dash"),
         marker=dict(size=5),
     ))
 
@@ -1269,7 +1249,7 @@ def _render_yield_curve(
             x=traded_x, y=traded_y,
             mode="markers",
             name="Traded Securities",
-            marker=dict(color="#5352ed", size=10, symbol="circle",
+            marker=dict(color="#2F81F7", size=10, symbol="circle",
                        line=dict(width=1, color="#e2e8f0")),
             text=traded_text,
             hoverinfo="text",
@@ -1286,11 +1266,11 @@ def _render_yield_curve(
         height=350,
         margin=dict(l=0, r=0, t=10, b=30),
         paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="#0a0e17",
-        font=dict(family="JetBrains Mono, Fira Code, monospace", size=10, color="#64748b"),
-        xaxis=dict(title="Tenor (Years)", gridcolor="#1a2235",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="JetBrains Mono, Fira Code, monospace", size=10, color="#BDC1C6"),
+        xaxis=dict(title="Tenor (Years)", gridcolor="#30363D",
                    tickvals=tick_vals, ticktext=tick_text),
-        yaxis=dict(title="Yield (%)", gridcolor="#1a2235"),
+        yaxis=dict(title="Yield (%)", gridcolor="#30363D"),
         legend=dict(orientation="h", y=-0.2),
     )
 
@@ -1321,7 +1301,7 @@ def _render_simulator(
         help="Parallel shift to benchmark curves. Negative = easing, Positive = tightening.",
     )
 
-    shift_color = "#ff4757" if shift > 0 else ("#00d4aa" if shift < 0 else "#e2e8f0")
+    shift_color = "#FF5252" if shift > 0 else ("#22c55e" if shift < 0 else "#e2e8f0")
     st.markdown(
         f'<div style="text-align:center; font-size:36px; font-weight:800; '
         f'font-family: monospace; color:{shift_color}; margin:8px 0">'

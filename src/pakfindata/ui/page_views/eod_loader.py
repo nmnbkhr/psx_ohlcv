@@ -14,6 +14,42 @@ from pakfindata.ui.components.helpers import (
     render_market_status_badge,
 )
 
+_CACHE_TTL = 3600
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_eod_stats():
+    """Load EOD table statistics (row counts, date range, etc.)."""
+    con = get_connection()
+
+    total_rows = con.execute("SELECT COUNT(*) FROM eod_ohlcv").fetchone()[0]
+    total_dates = con.execute("SELECT COUNT(DISTINCT date) FROM eod_ohlcv").fetchone()[0]
+    total_symbols = con.execute("SELECT COUNT(DISTINCT symbol) FROM eod_ohlcv").fetchone()[0]
+    date_range = con.execute("SELECT MIN(date), MAX(date) FROM eod_ohlcv").fetchone()
+
+    source_data = con.execute("""
+        SELECT source, processname, COUNT(*) as count
+        FROM eod_ohlcv
+        GROUP BY source, processname
+        ORDER BY source
+    """).fetchall()
+
+    return {
+        "total_rows": total_rows,
+        "total_dates": total_dates,
+        "total_symbols": total_symbols,
+        "date_range": (date_range[0], date_range[1]) if date_range else (None, None),
+        "source_data": [dict(r) for r in source_data] if source_data else [],
+    }
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_db_dates():
+    """Load set of dates already in eod_ohlcv."""
+    con = get_connection()
+    cursor = con.execute("SELECT DISTINCT date FROM eod_ohlcv")
+    return set(row[0] for row in cursor.fetchall())
+
 
 def render_eod_loader():
     """Load EOD data from CSV/PDF files into eod_ohlcv table.
@@ -128,20 +164,12 @@ def _eod_data_loader_page_impl():
             api_available = False  # Fall back to direct DB
 
     if not api_available:
-        # Direct DB access (fallback)
-        con = get_connection()
-
-        cursor = con.execute("SELECT COUNT(*) FROM eod_ohlcv")
-        total_rows = cursor.fetchone()[0]
-
-        cursor = con.execute("SELECT COUNT(DISTINCT date) FROM eod_ohlcv")
-        total_dates = cursor.fetchone()[0]
-
-        cursor = con.execute("SELECT COUNT(DISTINCT symbol) FROM eod_ohlcv")
-        total_symbols = cursor.fetchone()[0]
-
-        cursor = con.execute("SELECT MIN(date), MAX(date) FROM eod_ohlcv")
-        date_range = cursor.fetchone()
+        # Direct DB access (fallback) — cached stats
+        stats = _load_eod_stats()
+        total_rows = stats["total_rows"]
+        total_dates = stats["total_dates"]
+        total_symbols = stats["total_symbols"]
+        date_range = stats["date_range"]
 
         col1, col2, col3, col4 = st.columns(4)
         with col1:
@@ -158,16 +186,11 @@ def _eod_data_loader_page_impl():
 
         # Source breakdown
         st.markdown("#### By Source & Process")
-        cursor = con.execute("""
-            SELECT source, processname, COUNT(*) as count
-            FROM eod_ohlcv
-            GROUP BY source, processname
-            ORDER BY source
-        """)
-        source_data = cursor.fetchall()
+        source_data = stats["source_data"]
 
         if source_data:
-            source_df = pd.DataFrame(source_data, columns=["Source", "Process Name", "Rows"])
+            source_df = pd.DataFrame(source_data)
+            source_df.columns = ["Source", "Process Name", "Rows"]
             st.dataframe(source_df, use_container_width=True, hide_index=True)
         else:
             st.info("No data in eod_ohlcv table yet.")
@@ -186,8 +209,7 @@ def _eod_data_loader_page_impl():
         for f in pdf_csv_files:
             all_csv_dates.add(f.stem)
 
-        cursor = con.execute("SELECT DISTINCT date FROM eod_ohlcv")
-        db_dates = set(row[0] for row in cursor.fetchall())
+        db_dates = _load_db_dates()
 
         not_loaded = sorted(all_csv_dates - db_dates, reverse=True)
         total_csv = len(all_csv_dates)

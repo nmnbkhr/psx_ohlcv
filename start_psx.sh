@@ -2,8 +2,14 @@
 # ============================================
 # PSX Live — Single command to start everything
 # Usage: bash ~/pakfindata/start_psx.sh
+# Works from cron (no interactive shell assumed)
 # ============================================
 
+# Full PATH for cron compatibility
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/miniconda/envs/psx/bin:$PATH"
+export HOME="/home/adnoman"
+
+echo "$(date '+%Y-%m-%d %H:%M:%S') — PSX start triggered"
 echo "🔄 Stopping existing processes..."
 pkill -9 -f "python.*tick_service" 2>/dev/null
 pkill -9 -f "vite" 2>/dev/null

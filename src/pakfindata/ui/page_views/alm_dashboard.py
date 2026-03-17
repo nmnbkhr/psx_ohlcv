@@ -48,6 +48,50 @@ _LAYOUT = dict(
 BUCKETS_ORDER = ["ON", "1D-1M", "1M-3M", "3M-6M", "6M-1Y", "1Y-2Y", "2Y-3Y", "3Y-5Y", "5Y-10Y", "10Y+"]
 
 
+# ── Cached data loaders ──────────────────────────────────────────────────────
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_repricing_gap() -> pd.DataFrame:
+    from pakfindata.db.repositories.alm import get_repricing_gap
+    con = get_connection()
+    return get_repricing_gap(con)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_ftp_rates() -> pd.DataFrame:
+    from pakfindata.db.repositories.alm import get_ftp_rates
+    con = get_connection()
+    return get_ftp_rates(con)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_sensitivity() -> pd.DataFrame:
+    from pakfindata.db.repositories.alm import get_sensitivity
+    con = get_connection()
+    return get_sensitivity(con)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_liquidity_ladder() -> pd.DataFrame:
+    from pakfindata.db.repositories.alm import get_liquidity_ladder
+    con = get_connection()
+    return get_liquidity_ladder(con)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_alm_products(active_only: bool = True) -> pd.DataFrame:
+    from pakfindata.db.repositories.alm import get_alm_products
+    con = get_connection()
+    return get_alm_products(con, active_only=active_only)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_alm_positions() -> pd.DataFrame:
+    from pakfindata.db.repositories.alm import get_alm_positions
+    con = get_connection()
+    return get_alm_positions(con)
+
+
 def _fig(height=400, **kw):
     return go.Figure(layout={**_LAYOUT, "height": height, **kw})
 
@@ -138,11 +182,9 @@ def _render_overview(con):
     # ALM summary cards
     _section("BALANCE SHEET SUMMARY")
 
-    from pakfindata.db.repositories.alm import get_repricing_gap, get_ftp_rates, get_sensitivity
-
-    gap_df = get_repricing_gap(con)
-    ftp_df = get_ftp_rates(con)
-    sens_df = get_sensitivity(con)
+    gap_df = _load_repricing_gap()
+    ftp_df = _load_ftp_rates()
+    sens_df = _load_sensitivity()
 
     if gap_df.empty:
         st.info("No balance sheet positions loaded yet. Go to **Positions** tab to upload data, or **Products** tab to seed the product catalog.")
@@ -191,11 +233,9 @@ def _render_overview(con):
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _render_repricing_gap(con):
-    from pakfindata.db.repositories.alm import get_repricing_gap
-
     _section("REPRICING GAP ANALYSIS")
 
-    gap_df = get_repricing_gap(con)
+    gap_df = _load_repricing_gap()
     if gap_df.empty:
         st.info("No positions loaded. Upload balance sheet data in the Positions tab.")
         return
@@ -268,7 +308,6 @@ def _render_repricing_gap(con):
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _render_sensitivity(con):
-    from pakfindata.db.repositories.alm import get_sensitivity
     from pakfindata.engine.alm_engine import run_sensitivity
 
     _section("NII / EVE SENSITIVITY ANALYSIS")
@@ -281,7 +320,7 @@ def _render_sensitivity(con):
                 st.success(f"Computed {len(results)} scenarios")
                 st.rerun()
 
-    sens_df = get_sensitivity(con)
+    sens_df = _load_sensitivity()
     if sens_df.empty:
         st.info("No sensitivity results. Click **Run Sensitivity** to compute (requires positions).")
         return
@@ -336,7 +375,6 @@ def _render_sensitivity(con):
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _render_liquidity(con):
-    from pakfindata.db.repositories.alm import get_liquidity_ladder
     from pakfindata.engine.alm_engine import compute_liquidity_ladder
 
     _section("LIQUIDITY MATURITY LADDER")
@@ -349,7 +387,7 @@ def _render_liquidity(con):
                 st.success(f"Computed {len(results)} buckets")
                 st.rerun()
 
-    liq_df = get_liquidity_ladder(con)
+    liq_df = _load_liquidity_ladder()
     if liq_df.empty:
         st.info("No liquidity data. Click **Compute Ladder** (requires positions).")
         return
@@ -407,7 +445,7 @@ def _render_liquidity(con):
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _render_products(con):
-    from pakfindata.db.repositories.alm import get_alm_products, seed_default_products, upsert_alm_product
+    from pakfindata.db.repositories.alm import seed_default_products, upsert_alm_product
 
     _section("ALM PRODUCT CATALOG")
 
@@ -418,7 +456,7 @@ def _render_products(con):
             st.success(f"Seeded {count} products")
             st.rerun()
 
-    products = get_alm_products(con, active_only=False)
+    products = _load_alm_products(active_only=False)
     if products.empty:
         st.info("No products configured. Click **Seed Default Products** to load a typical Pakistani bank product set.")
         return
@@ -487,11 +525,11 @@ def _render_products(con):
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _render_positions(con):
-    from pakfindata.db.repositories.alm import get_alm_products, get_alm_positions, upsert_alm_position
+    from pakfindata.db.repositories.alm import upsert_alm_position
 
     _section("BALANCE SHEET POSITIONS")
 
-    products = get_alm_products(con)
+    products = _load_alm_products()
     if products.empty:
         st.warning("No products configured. Go to Products tab first.")
         return
@@ -570,7 +608,7 @@ def _render_positions(con):
                 st.rerun()
 
     # Show current positions
-    positions = get_alm_positions(con)
+    positions = _load_alm_positions()
     if not positions.empty:
         _section("CURRENT POSITIONS")
         display = positions[[

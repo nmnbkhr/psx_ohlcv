@@ -274,6 +274,33 @@ def _render_sync_tools(con):
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
 
+    # ── Recompute Risk Metrics ──
+    st.markdown("---")
+    st.markdown(_section_label("RISK METRICS ENGINE"), unsafe_allow_html=True)
+    rm_c1, rm_c2 = st.columns([1, 3])
+    with rm_c1:
+        if st.button("Recompute Risk Metrics", type="primary", key="fexp_recompute_risk"):
+            with st.spinner("Computing risk metrics for all funds (may take 2-4 min)..."):
+                try:
+                    from pakfindata.engine.compute_risk_batch import run_batch
+                    run_batch()
+                    st.success("Risk metrics recomputed for all funds")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Risk batch failed: {e}")
+    with rm_c2:
+        try:
+            rm_row = con.execute(
+                "SELECT COUNT(*), MAX(computed_at) FROM fund_risk_metrics"
+            ).fetchone()
+            rm_n, rm_ts = rm_row[0], rm_row[1]
+            if rm_n and rm_ts:
+                st.caption(f"**{rm_n}** funds computed — last run: **{rm_ts[:16]}**")
+            else:
+                st.caption("No pre-computed risk metrics yet. Click to compute.")
+        except Exception:
+            pass
+
     # NAV CSV Export via browser (Highcharts scraper)
     st.markdown("---")
     st.caption("**NAV CSV Export** — Browser-based Highcharts scraper (undetected-chromedriver + Xvfb)")
@@ -1020,7 +1047,7 @@ def _render_risk_metrics(con):
 
 
 def _render_etf_section(con):
-    """ETF listing with NAV vs market price."""
+    """ETF listing with NAV vs market price, premium/discount, and history charts."""
     st.markdown(_section_label("LISTED ETFS"), unsafe_allow_html=True)
 
     df = pd.read_sql_query(
@@ -1038,22 +1065,49 @@ def _render_etf_section(con):
         st.info("No ETF data. Run `pfsync etf sync` to fetch.")
         return
 
-    st.dataframe(
-        df.rename(columns={
-            "symbol": "Symbol", "name": "Name", "amc": "AMC",
-            "nav": "NAV", "market_price": "Market Price",
-            "premium_discount": "Prem/Disc %", "aum_millions": "AUM (M)",
-            "date": "Date", "shariah_compliant": "Shariah",
-        }),
-        use_container_width=True, hide_index=True,
-    )
+    # ── Summary cards ──
+    cols = st.columns(len(df))
+    for i, (_, row) in enumerate(df.iterrows()):
+        sym = row["symbol"]
+        nav_val = row.get("nav")
+        mkt = row.get("market_price")
+        pd_val = row.get("premium_discount")
 
+        # Color: green if discount (buying below NAV), red if premium
+        if pd_val is not None:
+            color = C_UP if pd_val < 0 else C_DN if pd_val > 0 else C_NEU
+            pd_text = f'<span style="color:{color};font-weight:700">{pd_val:+.2f}%</span>'
+        else:
+            pd_text = f'<span style="color:{C_NEU}">---</span>'
+
+        nav_text = f"{nav_val:.4f}" if nav_val else "---"
+        mkt_text = f"{mkt:.2f}" if mkt else "---"
+        shariah = " ☪" if row.get("shariah_compliant") else ""
+
+        cols[i].markdown(
+            f'<div style="background:{C_BG};border:1px solid {C_BORDER};'
+            f'border-radius:6px;padding:10px;text-align:center">'
+            f'<div style="color:{C_ACCENT};font-weight:700;font-size:14px;font-family:{MONO}">'
+            f'{sym}{shariah}</div>'
+            f'<div style="color:{C_MUTED};font-size:10px;margin:2px 0">{(row["name"] or "")[:30]}</div>'
+            f'<div style="margin:6px 0">'
+            f'<span style="color:{C_MUTED};font-size:10px">MKT</span> '
+            f'<span style="font-weight:600;font-size:16px">{mkt_text}</span></div>'
+            f'<div><span style="color:{C_MUTED};font-size:10px">NAV</span> '
+            f'<span style="font-size:13px">{nav_text}</span></div>'
+            f'<div style="margin-top:4px;font-size:12px">P/D: {pd_text}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── Premium/Discount bar chart ──
     etfs_with_pd = df.dropna(subset=["premium_discount"])
     if not etfs_with_pd.empty:
         st.markdown(_section_label("PREMIUM / DISCOUNT"), unsafe_allow_html=True)
         layout = _plotly_base()
         fig = go.Figure()
-        colors = [C_UP if v >= 0 else C_DN for v in etfs_with_pd["premium_discount"]]
+        # green=discount (buying below NAV, good), red=premium
+        colors = [C_UP if v < 0 else C_DN for v in etfs_with_pd["premium_discount"]]
         fig.add_trace(go.Bar(
             x=etfs_with_pd["symbol"], y=etfs_with_pd["premium_discount"],
             marker_color=colors,
@@ -1069,6 +1123,104 @@ def _render_etf_section(con):
             xaxis=dict(tickfont=dict(family=MONO, size=10)),
         )
         st.plotly_chart(fig, use_container_width=True)
+
+    # ── Per-ETF detail section ──
+    st.markdown(_section_label("ETF DETAIL"), unsafe_allow_html=True)
+    etf_options = {row["symbol"]: f"{row['symbol']} — {row['name']}" for _, row in df.iterrows()}
+    sel_etf = st.selectbox("Select ETF", options=list(etf_options.keys()),
+                           format_func=lambda x: etf_options.get(x, x), key="etf_detail_select")
+
+    if sel_etf:
+        # Load full NAV history from etf_nav
+        hist = pd.read_sql_query(
+            "SELECT date, nav, market_price, premium_discount FROM etf_nav WHERE symbol = ? ORDER BY date",
+            con, params=(sel_etf,),
+        )
+
+        # Also load MUFAP NAV history (richer — 700-2100 days)
+        from pakfindata.sources.etf_scraper import ETF_PSX_TO_MUFAP
+        mufap_sym = ETF_PSX_TO_MUFAP.get(sel_etf)
+        mufap_nav = pd.DataFrame()
+        if mufap_sym:
+            mufap_nav = pd.read_sql_query(
+                """SELECT n.date, n.nav FROM mutual_fund_nav n
+                   JOIN mutual_funds mf ON mf.fund_id = n.fund_id
+                   WHERE mf.symbol = ? AND n.nav > 0 ORDER BY n.date""",
+                con, params=(mufap_sym,),
+            )
+
+        c1, c2 = st.columns(2)
+
+        # NAV History chart
+        with c1:
+            if not mufap_nav.empty:
+                layout = _plotly_base()
+                mufap_nav["date"] = pd.to_datetime(mufap_nav["date"])
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=mufap_nav["date"], y=mufap_nav["nav"],
+                    line=dict(color=C_ACCENT, width=1.5), name="NAV",
+                    hovertemplate="Date: %{x}<br>NAV: %{y:.4f}<extra></extra>",
+                ))
+                if not hist.empty and "market_price" in hist.columns:
+                    hist_mp = hist.dropna(subset=["market_price"])
+                    if not hist_mp.empty:
+                        fig.add_trace(go.Scatter(
+                            x=pd.to_datetime(hist_mp["date"]), y=hist_mp["market_price"],
+                            line=dict(color=C_UP, width=1, dash="dot"), name="Market Price",
+                        ))
+                fig.update_layout(
+                    **layout, height=320,
+                    title=dict(text=f"{sel_etf} — NAV History ({len(mufap_nav)} days)", font=dict(size=12)),
+                    margin=dict(l=10, r=10, t=40, b=30),
+                    showlegend=True, legend=dict(x=0, y=1, font=dict(size=10)),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            elif not hist.empty:
+                st.metric("NAV Data Points", len(hist))
+
+        # Premium/Discount history chart
+        with c2:
+            pd_hist = hist.dropna(subset=["premium_discount"]) if not hist.empty else pd.DataFrame()
+            if not pd_hist.empty and len(pd_hist) > 1:
+                layout = _plotly_base()
+                pd_hist["date"] = pd.to_datetime(pd_hist["date"])
+                fig = go.Figure()
+                pos = pd_hist["premium_discount"].copy()
+                neg = pd_hist["premium_discount"].copy()
+                pos[pos < 0] = 0
+                neg[neg > 0] = 0
+                fig.add_trace(go.Scatter(
+                    x=pd_hist["date"], y=pos, fill="tozeroy",
+                    fillcolor="rgba(255,82,82,0.15)", line=dict(color=C_DN, width=1),
+                    name="Premium", hovertemplate="%{y:+.2f}%<extra></extra>",
+                ))
+                fig.add_trace(go.Scatter(
+                    x=pd_hist["date"], y=neg, fill="tozeroy",
+                    fillcolor="rgba(0,200,83,0.15)", line=dict(color=C_UP, width=1),
+                    name="Discount", hovertemplate="%{y:+.2f}%<extra></extra>",
+                ))
+                fig.add_hline(y=0, line_dash="dot", line_color=C_NEU, opacity=0.4)
+                fig.update_layout(
+                    **layout, height=320,
+                    title=dict(text=f"{sel_etf} — Premium/Discount History", font=dict(size=12)),
+                    margin=dict(l=10, r=10, t=40, b=30),
+                    showlegend=False, yaxis=dict(ticksuffix="%"),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Not enough premium/discount history for chart")
+
+        # Data table
+        if not hist.empty:
+            with st.expander(f"Raw Data ({len(hist)} rows)"):
+                st.dataframe(
+                    hist.rename(columns={
+                        "date": "Date", "nav": "NAV", "market_price": "Market Price",
+                        "premium_discount": "Prem/Disc %",
+                    }),
+                    use_container_width=True, hide_index=True,
+                )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1382,6 +1534,30 @@ def _get_fund_list_with_nav_count(_con, min_navs: int = 90):
     return result
 
 
+def _try_precomputed(con, fund_id: str) -> dict | None:
+    """Try to load pre-computed risk metrics; return None if stale (>7d) or missing."""
+    try:
+        row = con.execute(
+            "SELECT * FROM fund_risk_metrics WHERE fund_id = ?", (fund_id,)
+        ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        # Check staleness
+        computed = d.get("computed_at", "")
+        if computed:
+            from datetime import datetime, timedelta
+            try:
+                ts = datetime.fromisoformat(computed)
+                if datetime.now() - ts > timedelta(days=7):
+                    return None  # stale
+            except Exception:
+                pass
+        return d
+    except Exception:
+        return None
+
+
 def _render_risk_analytics(con):
     """Comprehensive risk analytics dashboard using the quant engine."""
     from pakfindata.engine.fund_risk import (
@@ -1412,36 +1588,67 @@ def _render_risk_analytics(con):
         st.warning("Insufficient NAV data for this fund.")
         return
 
-    # Load benchmark
-    benchmark = get_benchmark_nav(con, "KSE-100")
-    bm = benchmark if not benchmark.empty else None
+    # ── Try pre-computed metrics first ──
+    pre = _try_precomputed(con, sel_fund)
+    use_precomputed = pre is not None
 
-    with st.spinner("Computing analytics..."):
-        analytics = generate_fund_analytics(
-            fund_options.get(sel_fund, sel_fund), nav, bm,
-        )
-
-    if "error" in analytics:
-        st.warning(f"Analysis error: {analytics['error']}")
-        return
-
-    risk = analytics.get("risk", {})
-    rel = analytics.get("relative", {})
+    if use_precomputed:
+        risk = pre
+        rel = pre
+        st.caption(f"Pre-computed metrics (last run: {pre.get('computed_at', '?')[:16]})")
+    else:
+        benchmark = get_benchmark_nav(con, "KSE-100")
+        bm = benchmark if not benchmark.empty else None
+        with st.spinner("Computing analytics (no pre-computed data)..."):
+            analytics = generate_fund_analytics(
+                fund_options.get(sel_fund, sel_fund), nav, bm,
+            )
+        if "error" in analytics:
+            st.warning(f"Analysis error: {analytics['error']}")
+            return
+        risk = analytics.get("risk", {})
+        rel = analytics.get("relative", {})
 
     # ── KPI Cards ──
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Sharpe (1Y)", f"{risk.get('sharpe_1y', 0):.2f}" if risk.get("sharpe_1y") else "---")
-    c2.metric("Sortino (1Y)", f"{risk.get('sortino_1y', 0):.2f}" if risk.get("sortino_1y") else "---")
-    c3.metric("Max Drawdown", f"{risk.get('max_drawdown', 0)*100:.1f}%" if risk.get("max_drawdown") else "---")
-    c4.metric("VaR 95%", f"{risk.get('var_95_daily', 0)*100:.2f}%" if risk.get("var_95_daily") else "---")
-    c5.metric("Beta", f"{rel.get('beta', 0):.2f}" if rel.get("beta") else "---")
+    if use_precomputed:
+        c1.metric("Sharpe (1Y)", f"{pre['sharpe_ratio']:.2f}" if pre.get("sharpe_ratio") else "---")
+        c2.metric("Sortino (1Y)", f"{pre['sortino_ratio']:.2f}" if pre.get("sortino_ratio") else "---")
+        c3.metric("Max Drawdown", f"{pre['max_drawdown']*100:.1f}%" if pre.get("max_drawdown") else "---")
+        c4.metric("VaR 95%", f"{pre['var_95']*100:.2f}%" if pre.get("var_95") else "---")
+        c5.metric("Beta", f"{pre['beta']:.2f}" if pre.get("beta") else "---")
 
-    c6, c7, c8, c9, c10 = st.columns(5)
-    c6.metric("Volatility (1Y)", f"{risk.get('volatility_1y_ann', 0)*100:.1f}%" if risk.get("volatility_1y_ann") else "---")
-    c7.metric("Alpha", f"{rel.get('alpha', 0)*100:.2f}%" if rel.get("alpha") else "---")
-    c8.metric("Info Ratio", f"{rel.get('information_ratio', 0):.2f}" if rel.get("information_ratio") else "---")
-    c9.metric("Up Capture", f"{rel.get('up_capture', 0):.0f}%" if rel.get("up_capture") else "---")
-    c10.metric("Down Capture", f"{rel.get('down_capture', 0):.0f}%" if rel.get("down_capture") else "---")
+        c6, c7, c8, c9, c10, c11 = st.columns(6)
+        c6.metric("Treynor", f"{pre['treynor_ratio']:.2f}" if pre.get("treynor_ratio") else "---")
+        c7.metric("Volatility (1Y)", f"{pre['volatility_1y']*100:.1f}%" if pre.get("volatility_1y") else "---")
+        c8.metric("Alpha", f"{pre['alpha']*100:.2f}%" if pre.get("alpha") else "---")
+        c9.metric("Info Ratio", f"{pre['information_ratio']:.2f}" if pre.get("information_ratio") else "---")
+        c10.metric("Up Capture", f"{pre['up_capture']:.0f}%" if pre.get("up_capture") else "---")
+        c11.metric("Down Capture", f"{pre['down_capture']:.0f}%" if pre.get("down_capture") else "---")
+
+        # ── Returns row ──
+        st.markdown(_section_label("RETURNS"), unsafe_allow_html=True)
+        rc1, rc2, rc3, rc4, rc5, rc6 = st.columns(6)
+        rc1.metric("1M", f"{pre['return_1m']*100:.1f}%" if pre.get("return_1m") else "---")
+        rc2.metric("3M", f"{pre['return_3m']*100:.1f}%" if pre.get("return_3m") else "---")
+        rc3.metric("6M", f"{pre['return_6m']*100:.1f}%" if pre.get("return_6m") else "---")
+        rc4.metric("1Y", f"{pre['return_1y']*100:.1f}%" if pre.get("return_1y") else "---")
+        rc5.metric("YTD", f"{pre['return_ytd']*100:.1f}%" if pre.get("return_ytd") else "---")
+        rc6.metric("Since Inception", f"{pre['return_since_inception']*100:.1f}%" if pre.get("return_since_inception") else "---")
+    else:
+        c1.metric("Sharpe (1Y)", f"{risk.get('sharpe_1y', 0):.2f}" if risk.get("sharpe_1y") else "---")
+        c2.metric("Sortino (1Y)", f"{risk.get('sortino_1y', 0):.2f}" if risk.get("sortino_1y") else "---")
+        c3.metric("Max Drawdown", f"{risk.get('max_drawdown', 0)*100:.1f}%" if risk.get("max_drawdown") else "---")
+        c4.metric("VaR 95%", f"{risk.get('var_95_daily', 0)*100:.2f}%" if risk.get("var_95_daily") else "---")
+        c5.metric("Beta", f"{rel.get('beta', 0):.2f}" if rel.get("beta") else "---")
+
+        c6, c7, c8, c9, c10, c11 = st.columns(6)
+        c6.metric("Treynor", f"{rel.get('treynor_ratio', 0):.2f}" if rel.get("treynor_ratio") else "---")
+        c7.metric("Volatility (1Y)", f"{risk.get('volatility_1y_ann', 0)*100:.1f}%" if risk.get("volatility_1y_ann") else "---")
+        c8.metric("Alpha", f"{rel.get('alpha', 0)*100:.2f}%" if rel.get("alpha") else "---")
+        c9.metric("Info Ratio", f"{rel.get('information_ratio', 0):.2f}" if rel.get("information_ratio") else "---")
+        c10.metric("Up Capture", f"{rel.get('up_capture', 0):.0f}%" if rel.get("up_capture") else "---")
+        c11.metric("Down Capture", f"{rel.get('down_capture', 0):.0f}%" if rel.get("down_capture") else "---")
 
     # ── Rolling Sharpe Chart ──
     sharpe_s = rolling_sharpe(nav, window=63)
@@ -1492,6 +1699,54 @@ def _render_risk_analytics(con):
             yaxis=dict(ticksuffix="%"),
         )
         st.plotly_chart(fig, use_container_width=True)
+
+    # ── Rolling 1Y Return Chart ──
+    from pakfindata.engine.fund_risk import compute_rolling_returns
+    rolling_1y = compute_rolling_returns(nav, window=252)
+    rolling_1y = rolling_1y.dropna()
+    if not rolling_1y.empty:
+        layout = _plotly_base()
+        fig = go.Figure()
+        pos = rolling_1y.copy()
+        neg = rolling_1y.copy()
+        pos[pos < 0] = 0
+        neg[neg > 0] = 0
+        fig.add_trace(go.Scatter(
+            x=pos.index, y=pos.values * 100, fill="tozeroy",
+            fillcolor="rgba(0,200,83,0.15)", line=dict(color="#00C853", width=1),
+            name="Positive",
+        ))
+        fig.add_trace(go.Scatter(
+            x=neg.index, y=neg.values * 100, fill="tozeroy",
+            fillcolor="rgba(255,82,82,0.15)", line=dict(color="#FF5252", width=1),
+            name="Negative",
+        ))
+        fig.add_hline(y=0, line_dash="dot", line_color="#6B7280")
+        fig.update_layout(
+            **layout,
+            title=dict(text="Rolling 1-Year Return (%)", font=dict(size=12)),
+            height=280, margin=dict(l=10, r=10, t=40, b=30),
+            showlegend=False, yaxis=dict(ticksuffix="%"),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── Calendar Year Returns ──
+    from pakfindata.engine.fund_risk import compute_calendar_year_returns
+    cal_returns = compute_calendar_year_returns(nav)
+    if cal_returns:
+        st.markdown(_section_label("CALENDAR YEAR RETURNS"), unsafe_allow_html=True)
+        years = sorted(cal_returns.keys())
+        cols = st.columns(min(len(years), 10))
+        for i, yr in enumerate(years[-10:]):  # last 10 years
+            ret = cal_returns[yr]
+            color = C_UP if ret > 0 else C_DN
+            cols[i % len(cols)].markdown(
+                f'<div style="text-align:center;padding:4px">'
+                f'<div style="color:{C_MUTED};font-size:11px">{yr}</div>'
+                f'<div style="color:{color};font-weight:700;font-size:16px">'
+                f'{"+" if ret > 0 else ""}{ret:.1f}%</div></div>',
+                unsafe_allow_html=True,
+            )
 
     # ── Risk Scatter (all funds in category) ──
     with st.expander("Category Risk-Return Scatter"):

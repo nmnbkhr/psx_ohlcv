@@ -11,6 +11,56 @@ from pakfindata.ui.components.helpers import (
 )
 
 
+# ── Cached data loaders ──────────────────────────────────────────────────────
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_pkrv_curve(date: str) -> pd.DataFrame:
+    con = get_connection()
+    return pd.read_sql_query(
+        "SELECT tenor_months, yield_pct FROM pkrv_daily "
+        "WHERE date = ? ORDER BY tenor_months",
+        con, params=(date,),
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_pkisrv_curve(date: str) -> pd.DataFrame:
+    con = get_connection()
+    return pd.read_sql_query(
+        "SELECT tenor, yield_pct FROM pkisrv_daily WHERE date = ?",
+        con, params=(date,),
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_pkrv_dates() -> list[str]:
+    con = get_connection()
+    rows = con.execute(
+        "SELECT DISTINCT date FROM pkrv_daily ORDER BY date DESC"
+    ).fetchall()
+    return [r["date"] for r in rows]
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_pkisrv_dates() -> list[str]:
+    con = get_connection()
+    rows = con.execute(
+        "SELECT DISTINCT date FROM pkisrv_daily ORDER BY date DESC"
+    ).fetchall()
+    return [r["date"] for r in rows]
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_both_curve_dates() -> list[str]:
+    con = get_connection()
+    rows = con.execute(
+        "SELECT DISTINCT date FROM pkrv_daily "
+        "UNION SELECT DISTINCT date FROM pkisrv_daily "
+        "ORDER BY date DESC"
+    ).fetchall()
+    return [r["date"] for r in rows]
+
+
 def _extract_issuer(s) -> str:
     """Extract issuer name from a PSX debt security."""
     import re
@@ -328,20 +378,11 @@ def render_yield_curve():
 
     # Get available dates based on curve type
     if curve_type == "PKISRV (Islamic)":
-        date_rows = con.execute(
-            "SELECT DISTINCT date FROM pkisrv_daily ORDER BY date DESC"
-        ).fetchall()
+        date_list = _load_pkisrv_dates()
     elif curve_type == "PKRV (Government)":
-        date_rows = con.execute(
-            "SELECT DISTINCT date FROM pkrv_daily ORDER BY date DESC"
-        ).fetchall()
+        date_list = _load_pkrv_dates()
     else:
-        date_rows = con.execute(
-            "SELECT DISTINCT date FROM pkrv_daily "
-            "UNION SELECT DISTINCT date FROM pkisrv_daily "
-            "ORDER BY date DESC"
-        ).fetchall()
-    date_list = [r["date"] for r in date_rows]
+        date_list = _load_both_curve_dates()
 
     with ctrl_col2:
         if date_list:
@@ -378,11 +419,7 @@ def render_yield_curve():
 
         # --- PKRV ---
         if curve_type in ("PKRV (Government)", "Both (Overlay)"):
-            df_pkrv = pd.read_sql_query(
-                "SELECT tenor_months, yield_pct FROM pkrv_daily "
-                "WHERE date = ? ORDER BY tenor_months",
-                con, params=(sel_date,),
-            )
+            df_pkrv = _load_pkrv_curve(sel_date)
             if not df_pkrv.empty:
                 has_data = True
                 df_pkrv["tenor_label"] = df_pkrv["tenor_months"].apply(
@@ -409,11 +446,7 @@ def render_yield_curve():
 
                 # Comparison
                 if cmp_date:
-                    df_cmp = pd.read_sql_query(
-                        "SELECT tenor_months, yield_pct FROM pkrv_daily "
-                        "WHERE date = ? ORDER BY tenor_months",
-                        con, params=(cmp_date,),
-                    )
+                    df_cmp = _load_pkrv_curve(cmp_date)
                     if not df_cmp.empty:
                         df_cmp["tenor_label"] = df_cmp["tenor_months"].apply(
                             lambda m: _TENOR_LABELS.get(m, f"{m}M")
@@ -429,10 +462,7 @@ def render_yield_curve():
 
         # --- PKISRV ---
         if curve_type in ("PKISRV (Islamic)", "Both (Overlay)"):
-            df_pkisrv = pd.read_sql_query(
-                "SELECT tenor, yield_pct FROM pkisrv_daily WHERE date = ?",
-                con, params=(sel_date,),
-            )
+            df_pkisrv = _load_pkisrv_curve(sel_date)
             if not df_pkisrv.empty:
                 has_data = True
                 df_pkisrv["tenor_months"] = df_pkisrv["tenor"].apply(_pkisrv_tenor_to_months)
@@ -459,10 +489,7 @@ def render_yield_curve():
                         })
 
                 if cmp_date:
-                    df_cmp_i = pd.read_sql_query(
-                        "SELECT tenor, yield_pct FROM pkisrv_daily WHERE date = ?",
-                        con, params=(cmp_date,),
-                    )
+                    df_cmp_i = _load_pkisrv_curve(cmp_date)
                     if not df_cmp_i.empty:
                         df_cmp_i["tenor_months"] = df_cmp_i["tenor"].apply(_pkisrv_tenor_to_months)
                         df_cmp_i = df_cmp_i.sort_values("tenor_months").reset_index(drop=True)

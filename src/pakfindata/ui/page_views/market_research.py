@@ -49,9 +49,11 @@ _LAYOUT = dict(
 # DATA LOADERS (all queries, no rendering)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _load_indices(con) -> pd.DataFrame:
+@st.cache_data(ttl=1800, show_spinner=False)
+def _load_indices() -> pd.DataFrame:
     """Latest row per index code."""
     try:
+        con = get_connection()
         return pd.read_sql_query("""
             SELECT p.* FROM psx_indices p
             INNER JOIN (
@@ -66,8 +68,10 @@ def _load_indices(con) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def _load_index_history(con, code: str = "KSE100", days: int = 60) -> pd.DataFrame:
+@st.cache_data(ttl=1800, show_spinner=False)
+def _load_index_history(code: str = "KSE100", days: int = 60) -> pd.DataFrame:
     try:
+        con = get_connection()
         return pd.read_sql_query("""
             SELECT DISTINCT index_date, value, change_pct, volume
             FROM psx_indices WHERE index_code = ?
@@ -77,9 +81,11 @@ def _load_index_history(con, code: str = "KSE100", days: int = 60) -> pd.DataFra
         return pd.DataFrame()
 
 
-def _load_breadth(con) -> dict:
+@st.cache_data(ttl=1800, show_spinner=False)
+def _load_breadth() -> dict:
     """Advance/decline from latest EOD data."""
     try:
+        con = get_connection()
         row = con.execute("""
             SELECT e.date AS session_date,
                 SUM(CASE WHEN e.close > e.prev_close THEN 1
@@ -98,9 +104,11 @@ def _load_breadth(con) -> dict:
         return {}
 
 
-def _load_sector_performance(con) -> pd.DataFrame:
+@st.cache_data(ttl=1800, show_spinner=False)
+def _load_sector_performance() -> pd.DataFrame:
     """Sector-level aggregates from latest EOD + sectors lookup."""
     try:
+        con = get_connection()
         return pd.read_sql_query("""
             SELECT
                 s.sector_name AS sector,
@@ -125,9 +133,11 @@ def _load_sector_performance(con) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def _load_momentum_picks(con, n: int = 15) -> pd.DataFrame:
+@st.cache_data(ttl=1800, show_spinner=False)
+def _load_momentum_picks(n: int = 15) -> pd.DataFrame:
     """Top momentum stocks — highest daily change % with decent volume."""
     try:
+        con = get_connection()
         return pd.read_sql_query("""
             SELECT e.symbol,
                    e.close,
@@ -154,9 +164,11 @@ def _load_momentum_picks(con, n: int = 15) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def _load_value_picks(con, n: int = 15) -> pd.DataFrame:
+@st.cache_data(ttl=1800, show_spinner=False)
+def _load_value_picks(n: int = 15) -> pd.DataFrame:
     """Value / investment picks — low P/E, decent liquidity."""
     try:
+        con = get_connection()
         return pd.read_sql_query("""
             SELECT e.symbol,
                    e.close,
@@ -184,9 +196,11 @@ def _load_value_picks(con, n: int = 15) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def _load_volume_leaders(con, n: int = 10) -> pd.DataFrame:
+@st.cache_data(ttl=1800, show_spinner=False)
+def _load_volume_leaders(n: int = 10) -> pd.DataFrame:
     """Highest volume traded stocks."""
     try:
+        con = get_connection()
         return pd.read_sql_query("""
             SELECT e.symbol,
                    e.close,
@@ -207,8 +221,10 @@ def _load_volume_leaders(con, n: int = 10) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def _load_macro_snapshot(con) -> dict:
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_macro_snapshot() -> dict:
     """Policy rate, KIBOR, KONIA, FX, PKRV."""
+    con = get_connection()
     data: dict = {}
     # Policy rate
     try:
@@ -271,8 +287,10 @@ def _load_macro_snapshot(con) -> dict:
     return data
 
 
-def _load_fixed_income(con) -> dict:
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_fixed_income() -> dict:
     """Latest T-bill yields, PIB yields, and bond market data."""
+    con = get_connection()
     fi: dict = {}
     # T-Bill latest yields
     try:
@@ -325,9 +343,11 @@ def _load_fixed_income(con) -> dict:
     return fi
 
 
-def _load_funds_snapshot(con) -> pd.DataFrame:
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_funds_snapshot() -> pd.DataFrame:
     """Top mutual funds by category with latest NAV and returns."""
     try:
+        con = get_connection()
         return pd.read_sql_query("""
             SELECT
                 mf.category,
@@ -348,9 +368,11 @@ def _load_funds_snapshot(con) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def _load_fund_category_summary(con) -> pd.DataFrame:
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_fund_category_summary() -> pd.DataFrame:
     """Average returns by fund category — computes daily change from consecutive NAVs."""
     try:
+        con = get_connection()
         return pd.read_sql_query("""
             WITH date_counts AS (
                 SELECT date, COUNT(*) AS cnt FROM mutual_fund_nav
@@ -395,6 +417,7 @@ def _load_fund_category_summary(con) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
 def _load_commodities_snapshot() -> pd.DataFrame:
     """Latest PMEX commodity prices from commod.db."""
     import sqlite3 as _sqlite3
@@ -693,9 +716,9 @@ def _render_market_snapshot(indices: pd.DataFrame, breadth: dict):
         c4.markdown(_metric_card("Turnover", f"PKR {tv/1e9:.2f}B", format_volume(vol) + " shares"), unsafe_allow_html=True)
 
 
-def _render_index_chart(con):
+def _render_index_chart():
     """KSE-100 recent chart."""
-    df = _load_index_history(con, "KSE100", 60)
+    df = _load_index_history("KSE100", 60)
     if df.empty:
         return
     df = df.sort_values("index_date")
@@ -985,23 +1008,21 @@ def render_market_research():
         unsafe_allow_html=True,
     )
 
-    con = get_connection()
-
-    # Load all data up front
-    indices = _load_indices(con)
-    breadth = _load_breadth(con)
-    sectors = _load_sector_performance(con)
-    momentum = _load_momentum_picks(con)
-    value_picks = _load_value_picks(con)
-    vol_leaders = _load_volume_leaders(con)
-    macro = _load_macro_snapshot(con)
-    fixed_income = _load_fixed_income(con)
-    fund_cats = _load_fund_category_summary(con)
+    # Load all data up front (cached, each function gets its own connection)
+    indices = _load_indices()
+    breadth = _load_breadth()
+    sectors = _load_sector_performance()
+    momentum = _load_momentum_picks()
+    value_picks = _load_value_picks()
+    vol_leaders = _load_volume_leaders()
+    macro = _load_macro_snapshot()
+    fixed_income = _load_fixed_income()
+    fund_cats = _load_fund_category_summary()
     commodities = _load_commodities_snapshot()
 
     # Render sections
     _render_market_snapshot(indices, breadth)
-    _render_index_chart(con)
+    _render_index_chart()
 
     st.markdown("---")
     _render_sector_heatmap(sectors)

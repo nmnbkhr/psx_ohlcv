@@ -35,12 +35,12 @@ def render_ai_insights():
     <style>
     /* Page Header Styling */
     .ai-header {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: #2F81F7;
         border-radius: 12px;
         padding: 24px;
         margin-bottom: 20px;
         text-align: center;
-        box-shadow: 0 4px 20px rgba(102, 126, 234, 0.3);
+        box-shadow: 0 4px 20px rgba(47, 129, 247, 0.3);
     }
     .ai-header h1 {
         color: white;
@@ -62,33 +62,33 @@ def render_ai_insights():
         transition: all 0.3s ease;
     }
     .mode-card:hover {
-        background: rgba(102, 126, 234, 0.1);
-        border-color: rgba(102, 126, 234, 0.3);
+        background: rgba(47, 129, 247, 0.1);
+        border-color: rgba(47, 129, 247, 0.3);
     }
     .mode-card.active {
-        background: rgba(102, 126, 234, 0.15);
-        border-color: #667eea;
-        box-shadow: 0 2px 10px rgba(102, 126, 234, 0.2);
+        background: rgba(47, 129, 247, 0.15);
+        border-color: #2F81F7;
+        box-shadow: 0 2px 10px rgba(47, 129, 247, 0.2);
     }
 
     /* Generate Button Enhancement */
     .stButton > button[kind="primary"] {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+        background: #2F81F7 !important;
         border: none !important;
-        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4) !important;
+        box-shadow: 0 4px 15px rgba(47, 129, 247, 0.4) !important;
         transition: all 0.3s ease !important;
     }
     .stButton > button[kind="primary"]:hover {
-        box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6) !important;
+        box-shadow: 0 6px 20px rgba(47, 129, 247, 0.6) !important;
         transform: translateY(-2px);
     }
 
     /* Info Cards */
     .info-card {
-        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        background: rgba(0, 0, 0, 0);
         border-radius: 8px;
         padding: 16px;
-        border-left: 3px solid #667eea;
+        border-left: 3px solid #2F81F7;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -485,7 +485,7 @@ def render_ai_insights():
             <style>
             /* AI Insights Theme Styling */
             .ai-insights-container {
-                background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+                background: rgba(0, 0, 0, 0);
                 border-radius: 12px;
                 padding: 20px;
                 margin: 10px 0;
@@ -493,20 +493,20 @@ def render_ai_insights():
 
             /* Assessment Box Styling */
             .assessment-box {
-                background: linear-gradient(135deg, #0f3460 0%, #16213e 100%);
-                border-left: 4px solid #00d9ff;
+                background: rgba(0, 0, 0, 0);
+                border-left: 4px solid #2F81F7;
                 border-radius: 8px;
                 padding: 16px 20px;
                 margin-bottom: 20px;
-                box-shadow: 0 4px 15px rgba(0, 217, 255, 0.1);
+                box-shadow: 0 4px 15px rgba(47, 129, 247, 0.1);
             }
             .assessment-bullish {
-                border-left-color: #00ff88;
-                box-shadow: 0 4px 15px rgba(0, 255, 136, 0.15);
+                border-left-color: #22c55e;
+                box-shadow: 0 4px 15px rgba(34, 197, 94, 0.15);
             }
             .assessment-bearish {
-                border-left-color: #ff4757;
-                box-shadow: 0 4px 15px rgba(255, 71, 87, 0.15);
+                border-left-color: #FF5252;
+                box-shadow: 0 4px 15px rgba(255, 82, 82, 0.15);
             }
             .assessment-neutral {
                 border-left-color: #ffa502;
@@ -522,17 +522,17 @@ def render_ai_insights():
                 border: 1px solid rgba(255, 255, 255, 0.08);
             }
             .ai-section h2, .ai-section h3 {
-                color: #00d9ff;
+                color: #2F81F7;
                 margin-top: 0;
             }
 
             /* Action Items Styling */
             .action-items {
-                background: linear-gradient(135deg, #1e3a5f 0%, #16213e 100%);
+                background: rgba(0, 0, 0, 0);
                 border-radius: 8px;
                 padding: 16px;
                 margin-top: 16px;
-                border: 1px solid rgba(0, 217, 255, 0.2);
+                border: 1px solid rgba(47, 129, 247, 0.2);
             }
             .action-items li {
                 padding: 8px 0;
@@ -549,10 +549,10 @@ def render_ai_insights():
                 margin: 12px 0;
             }
             .ai-insights-container th {
-                background: rgba(0, 217, 255, 0.1);
+                background: rgba(107, 114, 128, 0.15);
                 padding: 10px;
                 text-align: left;
-                border-bottom: 2px solid rgba(0, 217, 255, 0.3);
+                border-bottom: 2px solid rgba(107, 114, 128, 0.3);
             }
             .ai-insights-container td {
                 padding: 10px;
@@ -561,8 +561,8 @@ def render_ai_insights():
 
             /* Blockquote Styling for Assessment */
             .ai-insights-container blockquote {
-                background: linear-gradient(135deg, #0f3460 0%, #1a1a2e 100%);
-                border-left: 4px solid #00d9ff;
+                background: rgba(0, 0, 0, 0);
+                border-left: 4px solid #2F81F7;
                 padding: 16px 20px;
                 margin: 16px 0;
                 border-radius: 0 8px 8px 0;

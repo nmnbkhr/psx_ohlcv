@@ -9,6 +9,71 @@ from pakfindata.ui.components.helpers import (
     render_footer,
 )
 
+_CACHE_TTL = 3600
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_fund_categories():
+    con = get_connection()
+    rows = con.execute(
+        "SELECT DISTINCT category FROM mutual_funds WHERE category IS NOT NULL ORDER BY category"
+    ).fetchall()
+    return [r["category"] for r in rows]
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_mutual_funds(category: str = None, fund_type: str = None,
+                       is_shariah: bool = None, active_only: bool = True,
+                       search: str = None):
+    from pakfindata.db import get_mutual_funds
+    con = get_connection()
+    return get_mutual_funds(
+        con, category=category, fund_type=fund_type,
+        is_shariah=is_shariah, active_only=active_only, search=search,
+    )
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_mf_nav(fund_id: int, limit: int = 5000):
+    from pakfindata.db import get_mf_nav
+    con = get_connection()
+    return get_mf_nav(con, fund_id, limit=limit)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_category_summary(category: str, period: str):
+    from pakfindata.analytics_mufap import get_category_summary
+    con = get_connection()
+    return get_category_summary(con, category, period)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_category_performance(category: str, period: str, top_n: int = 15):
+    from pakfindata.analytics_mufap import get_category_performance
+    con = get_connection()
+    return get_category_performance(con, category, period, top_n=top_n)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_fund_comparison_table(fund_ids: tuple):
+    from pakfindata.analytics_mufap import get_fund_comparison_table
+    con = get_connection()
+    return get_fund_comparison_table(con, list(fund_ids))
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_compare_funds(fund_ids: tuple, start_date: str):
+    from pakfindata.analytics_mufap import compare_funds
+    con = get_connection()
+    return compare_funds(con, list(fund_ids), start_date=start_date)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_mf_analytics(fund_id: int):
+    from pakfindata.analytics_mufap import get_mf_analytics
+    con = get_connection()
+    return get_mf_analytics(con, fund_id)
+
 
 def render_mutual_funds():
     """Mutual Funds Browser - Fund listing with filters."""
@@ -46,10 +111,8 @@ def render_mutual_funds():
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        db_categories = con.execute(
-            "SELECT DISTINCT category FROM mutual_funds WHERE category IS NOT NULL ORDER BY category"
-        ).fetchall()
-        categories = ["All"] + [r["category"] for r in db_categories]
+        db_categories = _load_fund_categories()
+        categories = ["All"] + db_categories
         category = st.selectbox("Category", categories, key="mf_category")
         category_filter = None if category == "All" else category
 
@@ -67,8 +130,7 @@ def render_mutual_funds():
     # =================================================================
     # FUND LIST
     # =================================================================
-    funds = get_mutual_funds(
-        con,
+    funds = _load_mutual_funds(
         category=category_filter,
         fund_type=type_filter,
         is_shariah=True if shariah_only else None,
@@ -162,7 +224,7 @@ def render_mutual_funds():
                                 st.error(f"Sync failed: {e}")
 
                 # NAV data
-                nav_df = get_mf_nav(con, fund_id, limit=5000)
+                nav_df = _load_mf_nav(fund_id, limit=5000)
 
                 if not nav_df.empty:
                     # Latest NAV metrics
@@ -316,15 +378,6 @@ def render_mutual_funds():
 
 def render_fund_analytics():
     """Fund Analytics - Performance comparison and rankings."""
-    from pakfindata.analytics_mufap import (
-        compare_funds,
-        get_category_performance,
-        get_category_summary,
-        get_fund_comparison_table,
-        get_mf_analytics,
-    )
-    from pakfindata.db import get_mutual_funds
-
     # =================================================================
     # HEADER
     # =================================================================
@@ -341,7 +394,7 @@ def render_fund_analytics():
     con = get_connection()
 
     # Check if we have data
-    funds = get_mutual_funds(con, active_only=True)
+    funds = _load_mutual_funds(active_only=True)
     if not funds:
         st.warning("No mutual funds found. Go to 'Mutual Funds' page and seed data first.")
         render_footer()
@@ -356,10 +409,8 @@ def render_fund_analytics():
     col1, col2, col3 = st.columns([1, 1, 2])
 
     with col1:
-        db_cats = con.execute(
-            "SELECT DISTINCT category FROM mutual_funds WHERE category IS NOT NULL ORDER BY category"
-        ).fetchall()
-        categories = [r["category"] for r in db_cats] if db_cats else ["Equity"]
+        db_cats = _load_fund_categories()
+        categories = db_cats if db_cats else ["Equity"]
         category = st.selectbox("Select Category", categories, key="fa_category")
 
     with col2:
@@ -368,7 +419,7 @@ def render_fund_analytics():
 
     with col3:
         # Category summary
-        summary = get_category_summary(con, category, period)
+        summary = _load_category_summary(category, period)
         if not summary.get("error"):
             col_a, col_b, col_c = st.columns(3)
             with col_a:
@@ -387,7 +438,7 @@ def render_fund_analytics():
 
     # Rankings table
     st.subheader(f"Top {category} Funds ({period})")
-    rankings = get_category_performance(con, category, period, top_n=15)
+    rankings = _load_category_performance(category, period, top_n=15)
 
     if rankings:
         rankings_df = pd.DataFrame(rankings)
@@ -432,7 +483,7 @@ def render_fund_analytics():
 
     if selected_funds:
         # Comparison table
-        comparison = get_fund_comparison_table(con, selected_funds)
+        comparison = _load_fund_comparison_table(tuple(selected_funds))
 
         if comparison:
             st.subheader("Performance Comparison")
@@ -480,7 +531,7 @@ def render_fund_analytics():
             from datetime import datetime, timedelta
             start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
-            perf_df = compare_funds(con, selected_funds, start_date=start_date)
+            perf_df = _load_compare_funds(tuple(selected_funds), start_date=start_date)
 
             if not perf_df.empty:
                 st.line_chart(perf_df, height=400)
@@ -504,7 +555,7 @@ def render_fund_analytics():
     )
 
     if selected_fund:
-        analytics = get_mf_analytics(con, selected_fund)
+        analytics = _load_mf_analytics(selected_fund)
 
         if not analytics.get("error"):
             col1, col2 = st.columns(2)

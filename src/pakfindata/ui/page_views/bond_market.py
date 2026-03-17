@@ -7,6 +7,43 @@ import streamlit as st
 from pakfindata.ui.components.helpers import get_connection, render_footer
 
 
+# ── Cached data loaders ──────────────────────────────────────────────────────
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_pkrv_latest_curve() -> pd.DataFrame:
+    con = get_connection()
+    return pd.read_sql_query(
+        """SELECT tenor_months, yield_pct FROM pkrv_daily
+           WHERE date = (SELECT MAX(date) FROM pkrv_daily)
+           ORDER BY tenor_months""",
+        con,
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_benchmark_history(metric: str) -> pd.DataFrame:
+    con = get_connection()
+    return pd.read_sql_query(
+        "SELECT date, value FROM sbp_benchmark_snapshot "
+        "WHERE metric = ? ORDER BY date",
+        con, params=(metric,),
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_trading_volume_latest() -> pd.DataFrame:
+    con = get_connection()
+    return pd.read_sql_query(
+        """SELECT date, security_type, segment,
+                  SUM(face_amount) as face_m,
+                  AVG(yield_weighted_avg) as avg_yield
+           FROM sbp_bond_trading_daily
+           WHERE date = (SELECT MAX(date) FROM sbp_bond_trading_daily)
+           GROUP BY security_type, segment""",
+        con,
+    )
+
+
 def render_bond_market():
     """Render the OTC Bond Market dashboard."""
     st.header("OTC Bond Market")
@@ -178,12 +215,7 @@ def _render_yield_curve(snap: dict, con):
 
     # Add PKRV overlay if available
     try:
-        pkrv_df = pd.read_sql_query(
-            """SELECT tenor_months, yield_pct FROM pkrv_daily
-               WHERE date = (SELECT MAX(date) FROM pkrv_daily)
-               ORDER BY tenor_months""",
-            con,
-        )
+        pkrv_df = _load_pkrv_latest_curve()
         if not pkrv_df.empty:
             fig.add_trace(go.Scatter(
                 x=pkrv_df["tenor_months"],
@@ -266,11 +298,7 @@ def _render_benchmark_history(con):
     for label in selected:
         metric = metric_options[label]
         try:
-            df = pd.read_sql_query(
-                "SELECT date, value FROM sbp_benchmark_snapshot "
-                "WHERE metric = ? ORDER BY date",
-                con, params=(metric,),
-            )
+            df = _load_benchmark_history(metric)
             if not df.empty:
                 fig.add_trace(go.Scatter(
                     x=df["date"], y=df["value"],
@@ -299,15 +327,7 @@ def _render_trading_volume(con, status: dict):
     )
 
     try:
-        df = pd.read_sql_query(
-            """SELECT date, security_type, segment,
-                      SUM(face_amount) as face_m,
-                      AVG(yield_weighted_avg) as avg_yield
-               FROM sbp_bond_trading_daily
-               WHERE date = (SELECT MAX(date) FROM sbp_bond_trading_daily)
-               GROUP BY security_type, segment""",
-            con,
-        )
+        df = _load_trading_volume_latest()
         if not df.empty:
             st.dataframe(df, use_container_width=True)
     except Exception:

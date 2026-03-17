@@ -1619,28 +1619,45 @@ CREATE INDEX IF NOT EXISTS idx_quote_snap_symbol_ts
 
 -- Risk metrics computed from NAV history (materialized for performance)
 CREATE TABLE IF NOT EXISTS fund_risk_metrics (
-    fund_name        TEXT NOT NULL,
-    as_of_date       TEXT NOT NULL,
-    period           TEXT NOT NULL,  -- '1M', '3M', '6M', '1Y', '3Y', '5Y', 'SI'
-    sharpe_ratio     REAL,
-    sortino_ratio    REAL,
-    max_drawdown     REAL,
-    volatility_ann   REAL,
-    beta             REAL,
-    alpha            REAL,
-    information_ratio REAL,
-    var_95           REAL,
-    cvar_95          REAL,
-    up_capture       REAL,
-    down_capture     REAL,
-    tracking_error   REAL,
-    r_squared        REAL,
-    computed_at      TEXT DEFAULT (datetime('now')),
-    PRIMARY KEY (fund_name, as_of_date, period)
+    fund_id              TEXT PRIMARY KEY,
+    fund_name            TEXT,
+    category             TEXT,
+    -- Returns
+    return_1m            REAL,
+    return_3m            REAL,
+    return_6m            REAL,
+    return_1y            REAL,
+    return_2y            REAL,
+    return_3y            REAL,
+    return_5y            REAL,
+    return_ytd           REAL,
+    return_since_inception REAL,
+    -- Risk metrics
+    volatility_1y        REAL,
+    sharpe_ratio         REAL,
+    sortino_ratio        REAL,
+    max_drawdown         REAL,
+    max_drawdown_start   TEXT,
+    max_drawdown_end     TEXT,
+    beta                 REAL,
+    alpha                REAL,
+    r_squared            REAL,
+    var_95               REAL,
+    cvar_95              REAL,
+    information_ratio    REAL,
+    tracking_error       REAL,
+    treynor_ratio        REAL,
+    up_capture           REAL,
+    down_capture         REAL,
+    -- Metadata
+    nav_count            INTEGER,
+    first_nav_date       TEXT,
+    last_nav_date        TEXT,
+    computed_at          TEXT DEFAULT (datetime('now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_frm_date
-    ON fund_risk_metrics(as_of_date);
+CREATE INDEX IF NOT EXISTS idx_frm_category
+    ON fund_risk_metrics(category);
 CREATE INDEX IF NOT EXISTS idx_frm_fund
     ON fund_risk_metrics(fund_name);
 
@@ -1652,6 +1669,18 @@ CREATE TABLE IF NOT EXISTS fund_signals (
     signal_value   TEXT NOT NULL,  -- 'BULLISH', 'BEARISH', 'HIGH_VOL', etc.
     details        TEXT,           -- JSON with additional context
     PRIMARY KEY (fund_name, signal_date, signal_type)
+);
+
+-- Calendar year returns per fund (materialized)
+CREATE TABLE IF NOT EXISTS fund_calendar_returns (
+    fund_id       TEXT NOT NULL,
+    year          INTEGER NOT NULL,
+    return_pct    REAL,
+    first_nav     REAL,
+    last_nav      REAL,
+    trading_days  INTEGER,
+    computed_at   TEXT,
+    PRIMARY KEY (fund_id, year)
 );
 
 -- Compliance screening results

@@ -58,14 +58,14 @@ def render_chat_header():
     <style>
     /* Chat Header */
     .chat-header {
-        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        background: rgba(0, 0, 0, 0);
         border-radius: 12px;
         padding: 20px;
         margin-bottom: 20px;
-        border-left: 4px solid #ff9800;
+        border-left: 4px solid #2F81F7;
     }
     .chat-header h2 {
-        color: #ff9800;
+        color: #2F81F7;
         margin: 0;
         font-size: 1.5em;
     }
@@ -84,9 +84,9 @@ def render_chat_header():
         font-weight: 600;
         margin-right: 8px;
     }
-    .agent-market { background: rgba(76, 175, 80, 0.2); color: #4caf50; }
-    .agent-sync { background: rgba(33, 150, 243, 0.2); color: #2196f3; }
-    .agent-fi { background: rgba(156, 39, 176, 0.2); color: #9c27b0; }
+    .agent-market { background: rgba(34, 197, 94, 0.2); color: #22c55e; }
+    .agent-sync { background: rgba(47, 129, 247, 0.2); color: #2F81F7; }
+    .agent-fi { background: rgba(107, 114, 128, 0.2); color: #6B7280; }
 
     /* Chat Messages */
     .chat-message {
@@ -96,12 +96,12 @@ def render_chat_header():
         max-width: 85%;
     }
     .chat-user {
-        background: rgba(255, 152, 0, 0.15);
-        border: 1px solid rgba(255, 152, 0, 0.3);
+        background: rgba(47, 129, 247, 0.1);
+        border: 1px solid rgba(47, 129, 247, 0.3);
         margin-left: auto;
     }
     .chat-assistant {
-        background: rgba(255, 255, 255, 0.05);
+        background: rgba(0, 0, 0, 0);
         border: 1px solid rgba(255, 255, 255, 0.1);
     }
 
@@ -116,8 +116,8 @@ def render_chat_header():
         font-size: 0.85em;
     }
     .example-query:hover {
-        background: rgba(255, 152, 0, 0.1);
-        border-color: rgba(255, 152, 0, 0.3);
+        background: rgba(47, 129, 247, 0.1);
+        border-color: rgba(47, 129, 247, 0.3);
     }
     </style>
     """, unsafe_allow_html=True)
@@ -220,6 +220,20 @@ def render_chat_interface():
 
     st.markdown("---")
 
+    # Chat controls (top of main area)
+    col1, col2, _ = st.columns([1, 1, 4])
+    with col1:
+        if st.button("🗑️ Clear Chat"):
+            st.session_state.chat_messages = []
+            if orchestrator:
+                orchestrator.clear_context()
+            st.rerun()
+    with col2:
+        if st.button("🔄 Reset Agents"):
+            st.session_state.chat_orchestrator = None
+            st.session_state.chat_initialized = False
+            st.rerun()
+
     # Chat history container
     chat_container = st.container()
 
@@ -275,25 +289,6 @@ def render_chat_interface():
         # Rerun to update the chat display
         st.rerun()
 
-    # Sidebar controls
-    with st.sidebar:
-        st.markdown("---")
-        st.markdown("### 💬 Chat Controls")
-
-        if st.button("🗑️ Clear Chat", use_container_width=True):
-            st.session_state.chat_messages = []
-            if orchestrator:
-                orchestrator.clear_context()
-            st.rerun()
-
-        if st.button("🔄 Reset Agents", use_container_width=True):
-            st.session_state.chat_orchestrator = None
-            st.session_state.chat_initialized = False
-            st.rerun()
-
-        # Show message count
-        msg_count = len(st.session_state.chat_messages)
-        st.caption(f"Messages: {msg_count}")
 
 
 def chat_page():

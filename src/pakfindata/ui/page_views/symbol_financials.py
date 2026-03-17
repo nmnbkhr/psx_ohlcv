@@ -14,6 +14,41 @@ import streamlit as st
 
 from pakfindata.ui.components.helpers import get_connection, render_footer
 
+
+# ── Cached data loaders ──────────────────────────────────────────────────────
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _load_financial_symbols() -> list[str]:
+    con = get_connection()
+    return [r[0] for r in con.execute(
+        "SELECT DISTINCT symbol FROM company_financials ORDER BY symbol"
+    ).fetchall()]
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _load_financials(symbol: str, period_filter: str) -> pd.DataFrame:
+    con = get_connection()
+    where = "WHERE symbol = ?"
+    params = [symbol]
+    if period_filter == "Annual":
+        where += " AND period_type = 'annual'"
+    elif period_filter == "Quarterly":
+        where += " AND period_type = 'quarterly'"
+    return pd.read_sql_query(
+        f"SELECT * FROM company_financials {where} ORDER BY period_end DESC",
+        con, params=params,
+    )
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _check_is_bank(symbol: str) -> bool:
+    con = get_connection()
+    bank_row = con.execute(
+        "SELECT markup_earned FROM company_financials WHERE symbol = ? AND markup_earned IS NOT NULL LIMIT 1",
+        (symbol,),
+    ).fetchone()
+    return bank_row is not None
+
 # ═════════════════════════════════════════════════════════════════════════════
 # DESIGN SYSTEM (Bloomberg-style)
 # ═════════════════════════════════════════════════════════════════════════════
@@ -88,9 +123,7 @@ def render():
     con = get_connection()
 
     # Symbol selector
-    symbols = [r[0] for r in con.execute(
-        "SELECT DISTINCT symbol FROM company_financials ORDER BY symbol"
-    ).fetchall()]
+    symbols = _load_financial_symbols()
 
     if not symbols:
         st.warning("No financial data imported yet. Use `pfsync company import-financials --all` to import PDFs.")
@@ -103,13 +136,7 @@ def render():
         period_filter = st.selectbox("Period", ["All", "Annual", "Quarterly"])
 
     # Check if bank
-    is_bank = False
-    bank_row = con.execute(
-        "SELECT markup_earned FROM company_financials WHERE symbol = ? AND markup_earned IS NOT NULL LIMIT 1",
-        (symbol,),
-    ).fetchone()
-    if bank_row:
-        is_bank = True
+    is_bank = _check_is_bank(symbol)
 
     with col3:
         if is_bank:
@@ -120,17 +147,7 @@ def render():
                         unsafe_allow_html=True)
 
     # Load data
-    where = "WHERE symbol = ?"
-    params = [symbol]
-    if period_filter == "Annual":
-        where += " AND period_type = 'annual'"
-    elif period_filter == "Quarterly":
-        where += " AND period_type = 'quarterly'"
-
-    df = pd.read_sql_query(
-        f"SELECT * FROM company_financials {where} ORDER BY period_end DESC",
-        con, params=params,
-    )
+    df = _load_financials(symbol, period_filter)
 
     if df.empty:
         st.info(f"No financial data for {symbol}")

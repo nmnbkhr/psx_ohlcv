@@ -14,6 +14,7 @@ All endpoints are POST-based JSON APIs (X-Requested-With: XMLHttpRequest).
 import asyncio
 import json
 import logging
+import os
 import random
 import re
 import time
@@ -818,3 +819,313 @@ async def async_fetch_nav_batch(
         "total": len(funds),
         "elapsed": time.time() - start,
     }
+
+
+# ---------------------------------------------------------------------------
+# Metadata gap-fill utilities
+# ---------------------------------------------------------------------------
+
+_FILL_MAP = {
+    "sector": "_raw_sector",
+    "benchmark": "benchmark",
+    "risk_profile": "risk_profile",
+    "front_load": "front_load",
+    "back_load": "back_load",
+    "trustee": "trustee",
+    "fund_manager": "fund_manager",
+    "management_fee": "management_fee",
+    "expense_ratio": "expense_ratio",
+}
+
+
+def fix_metadata_bulk(con, fund_id: str | None = None) -> dict:
+    """Re-fetch metadata from MUFAP GetAllFundProfile API and update NULL columns.
+
+    Single API call — fast, no per-fund rate limiting needed.
+    """
+    import sqlite3 as _sq
+
+    profiles = fetch_fund_profiles()
+    if not profiles:
+        return {"error": "No profiles returned from MUFAP API", "updated": 0}
+
+    # Build lookup
+    by_fid = {}
+    by_name = {}
+    for p in profiles:
+        d = profile_to_fund_dict(p)
+        d["_raw_sector"] = (p.get("Sector_Desc") or "").strip() or None
+        fid_key = str(p.get("FundID", ""))
+        fname = (p.get("Fund_Desc") or "").strip()
+        if fid_key:
+            by_fid[fid_key] = d
+        if fname:
+            by_name[fname] = d
+
+    if fund_id:
+        funds = con.execute(
+            "SELECT * FROM mutual_funds WHERE fund_id = ?", (fund_id,)
+        ).fetchall()
+    else:
+        funds = con.execute("SELECT * FROM mutual_funds").fetchall()
+
+    updated = 0
+    col_counts = {k: 0 for k in _FILL_MAP}
+
+    for f in funds:
+        fdict = dict(f)
+        profile = by_fid.get(fdict.get("mufap_fund_id", "")) or by_name.get(fdict["fund_name"])
+        if not profile:
+            continue
+
+        sets, vals = [], []
+        for db_col, profile_key in _FILL_MAP.items():
+            if fdict.get(db_col) is not None:
+                continue
+            new_val = profile.get(profile_key)
+            if new_val is not None and new_val != "" and new_val != "N/A":
+                sets.append(f"[{db_col}] = ?")
+                vals.append(new_val)
+                col_counts[db_col] += 1
+
+        if sets:
+            vals.append(fdict["fund_id"])
+            con.execute(
+                f"UPDATE mutual_funds SET {', '.join(sets)} WHERE fund_id = ?", vals
+            )
+            updated += 1
+
+    con.commit()
+    return {"updated": updated, "profiles_fetched": len(profiles), "columns": col_counts}
+
+
+def fix_metadata_detail(con, fund_id: str | None = None, delay: float = 1.5) -> dict:
+    """Re-fetch metadata via per-fund FundDetail API for funds with NULL columns.
+
+    Slower but richer data: benchmark, fund_manager, expense_ratio, AUM.
+    """
+    where = "WHERE mufap_int_id IS NOT NULL AND (benchmark IS NULL OR fund_manager IS NULL OR front_load IS NULL OR aum IS NULL)"
+    params: tuple = ()
+    if fund_id:
+        where = "WHERE fund_id = ? AND mufap_int_id IS NOT NULL"
+        params = (fund_id,)
+
+    funds = con.execute(f"SELECT * FROM mutual_funds {where}", params).fetchall()
+
+    updated = 0
+    errors = 0
+    col_counts: dict[str, int] = {}
+
+    for i, f in enumerate(funds):
+        fdict = dict(f)
+        int_id = fdict["mufap_int_id"]
+        fname = fdict["fund_name"]
+
+        try:
+            detail = fetch_fund_detail(int_id)
+        except Exception as e:
+            errors += 1
+            logger.warning("FundDetail error for %s: %s", fname, e)
+            continue
+
+        profile = detail.get("profile") or {}
+        expenses = detail.get("expenses") or {}
+        portfolio = detail.get("portfolio") or {}
+
+        sets, vals = [], []
+
+        def _try_fill(db_col, value):
+            if fdict.get(db_col) is not None:
+                return
+            if value is None or value == "" or value == "N/A":
+                return
+            sets.append(f"[{db_col}] = ?")
+            vals.append(value)
+            col_counts[db_col] = col_counts.get(db_col, 0) + 1
+
+        _try_fill("benchmark", (profile.get("BenchMark") or "").strip() or None)
+        _try_fill("fund_manager", (profile.get("FundManager") or "").strip() or None)
+        _try_fill("front_load", _safe_float(profile.get("FrontLoad")))
+        _try_fill("back_load", _safe_float(profile.get("BackLoad")))
+        _try_fill("management_fee", _safe_float(profile.get("ManagementFee")))
+        _try_fill("risk_profile", (profile.get("ProfileRiskOfFund") or "").strip() or None)
+        _try_fill("sector", (profile.get("Sector_Desc") or "").strip() or None)
+        _try_fill("expense_ratio", _safe_float(expenses.get("ExpenseRatio") or expenses.get("TER")))
+        aum_val = _safe_float(
+            portfolio.get("NetAsset") or portfolio.get("TotalNetAssets") or profile.get("NetAsset")
+        )
+        _try_fill("aum", aum_val)
+
+        if sets:
+            vals.append(fdict["fund_id"])
+            con.execute(f"UPDATE mutual_funds SET {', '.join(sets)} WHERE fund_id = ?", vals)
+            updated += 1
+
+        if (i + 1) % 50 == 0:
+            con.commit()
+            print(f"  [{i+1}/{len(funds)}] {fname[:40]} — {'updated' if sets else 'no new data'}")
+
+        time.sleep(delay)
+
+    con.commit()
+    return {"updated": updated, "errors": errors, "total": len(funds), "columns": col_counts}
+
+
+def fill_from_staging(con, staging_dir: str | None = None) -> dict:
+    """Fill metadata from cached nav_staging JSON files (no web requests).
+
+    Each file is MUFAP_{uuid}.json containing the full FundDetail response
+    with profile, portfolio, expenses, and returns data.
+    """
+    import glob
+
+    if staging_dir is None:
+        staging_dir = str(DATA_ROOT / "nav_staging")
+
+    files = glob.glob(os.path.join(staging_dir, "MUFAP_*.json"))
+    if not files:
+        return {"updated": 0, "files": 0, "error": f"No MUFAP_*.json in {staging_dir}"}
+
+    # Load current mutual_funds state
+    funds_by_id = {}
+    for r in con.execute("SELECT * FROM mutual_funds"):
+        funds_by_id[dict(r)["fund_id"]] = dict(r)
+
+    updated = 0
+    col_counts: dict[str, int] = {}
+
+    for fpath in files:
+        try:
+            with open(fpath) as f:
+                cache = json.load(f)
+        except Exception:
+            continue
+
+        fid = cache.get("fund_id")
+        if not fid or fid not in funds_by_id:
+            continue
+
+        cur = funds_by_id[fid]
+        data = cache.get("data", {})
+        profile = data.get("profile") or {}
+        portfolio = data.get("portfolio") or {}
+        expenses = data.get("expenses") or {}
+
+        sets, vals = [], []
+
+        def _try_fill(db_col, value):
+            if cur.get(db_col) is not None:
+                return
+            if value is None or value == "" or value == "N/A":
+                return
+            sets.append(f"[{db_col}] = ?")
+            vals.append(value)
+            col_counts[db_col] = col_counts.get(db_col, 0) + 1
+
+        _try_fill("benchmark", (profile.get("BenchMark") or "").strip() or None)
+        _try_fill("fund_manager", (profile.get("FundManager") or "").strip() or None)
+        _try_fill("front_load", _safe_float(profile.get("FrontLoad")))
+        _try_fill("back_load", _safe_float(profile.get("BackLoad")))
+
+        mgmt = profile.get("ManagementFee")
+        if mgmt and isinstance(mgmt, str):
+            m = re.search(r"[\d.]+", mgmt)
+            mgmt = float(m.group()) if m else None
+        _try_fill("management_fee", _safe_float(mgmt))
+
+        _try_fill("risk_profile", (profile.get("ProfileRiskOfFund") or "").strip() or None)
+        _try_fill("sector", (profile.get("Sector_Desc") or "").strip() or None)
+        _try_fill("trustee", (profile.get("TrusteeNAME") or "").strip() or None)
+        _try_fill("expense_ratio", _safe_float(
+            expenses.get("TotalExpenseRatioYTD") or expenses.get("TotalExpenseRatioMTD")
+        ))
+        _try_fill("aum", _safe_float(portfolio.get("Total")))
+
+        if sets:
+            vals.append(fid)
+            con.execute(f"UPDATE mutual_funds SET {', '.join(sets)} WHERE fund_id = ?", vals)
+            updated += 1
+
+    con.commit()
+    return {"updated": updated, "files": len(files), "columns": col_counts}
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+def _cli_main():
+    """CLI for MUFAP metadata operations."""
+    import argparse
+    import sqlite3
+
+    from ..config import get_db_path
+
+    parser = argparse.ArgumentParser(description="MUFAP metadata tools")
+    parser.add_argument("--fix-metadata", action="store_true",
+                        help="Full fix: staging files + bulk API + detail scrape")
+    parser.add_argument("--fix-metadata-bulk", action="store_true",
+                        help="Bulk fill from GetAllFundProfile API (fast, 1 call)")
+    parser.add_argument("--fix-metadata-detail", action="store_true",
+                        help="Per-fund FundDetail scrape (slow, thorough)")
+    parser.add_argument("--fill-from-staging", action="store_true",
+                        help="Fill from cached nav_staging/ JSON files (no web)")
+    parser.add_argument("--fund-id", help="Target a specific fund_id")
+    parser.add_argument("--delay", type=float, default=1.5,
+                        help="Delay between FundDetail requests (default 1.5s)")
+    args = parser.parse_args()
+
+    db_path = str(get_db_path())
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+
+    def _show_nulls():
+        print("\n=== NULL COUNTS ===")
+        for col in ['sector', 'benchmark', 'risk_profile', 'front_load', 'back_load',
+                     'trustee', 'fund_manager', 'aum', 'expense_ratio', 'management_fee']:
+            n = con.execute(f"SELECT COUNT(*) FROM mutual_funds WHERE [{col}] IS NULL").fetchone()[0]
+            total = con.execute("SELECT COUNT(*) FROM mutual_funds").fetchone()[0]
+            pct = n / total * 100
+            status = "OK" if pct < 20 else "PARTIAL" if pct < 60 else "GAP"
+            print(f"  {col}: {n}/{total} NULL ({pct:.0f}%) [{status}]")
+
+    ran_any = False
+
+    if args.fix_metadata or args.fill_from_staging:
+        ran_any = True
+        print("=== FILL FROM STAGING FILES ===")
+        result = fill_from_staging(con)
+        print(f"Updated: {result['updated']} funds from {result.get('files', 0)} cached files")
+        for col, count in sorted(result.get("columns", {}).items(), key=lambda x: -x[1]):
+            if count:
+                print(f"  {col}: {count} filled")
+        _show_nulls()
+
+    if args.fix_metadata or args.fix_metadata_bulk:
+        ran_any = True
+        print("\n=== BULK FILL (GetAllFundProfile API) ===")
+        result = fix_metadata_bulk(con, args.fund_id)
+        print(f"Updated: {result['updated']} funds from {result.get('profiles_fetched', 0)} profiles")
+        for col, count in result.get("columns", {}).items():
+            if count:
+                print(f"  {col}: {count} filled")
+        _show_nulls()
+
+    if args.fix_metadata or args.fix_metadata_detail:
+        ran_any = True
+        print("\n=== DETAIL SCRAPE (per-fund FundDetail) ===")
+        result = fix_metadata_detail(con, args.fund_id, delay=args.delay)
+        print(f"Updated: {result['updated']}, Errors: {result['errors']}, Total: {result['total']}")
+        for col, count in result.get("columns", {}).items():
+            if count:
+                print(f"  {col}: {count} filled")
+        _show_nulls()
+
+    if not ran_any:
+        parser.print_help()
+
+    con.close()
+
+
+if __name__ == "__main__":
+    _cli_main()

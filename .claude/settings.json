@@ -32,10 +32,39 @@
       "Bash(/usr/bin/git -C /home/adnoman/pakfindata diff --stat)",
       "Bash(/usr/bin/git -C /home/adnoman/pakfindata log --oneline -10)",
       "Bash(/usr/bin/git -C /home/adnoman/pakfindata diff HEAD -- pyproject.toml)",
-      "Bash(/usr/bin/git add:*)"
+      "Bash(/usr/bin/git add:*)",
+      "Bash(/usr/bin/git -C /home/adnoman/pakfindata diff --cached --stat)",
+      "Bash(/usr/bin/git -C:*)",
+      "Bash(/usr/bin/git commit -m \"v3.8.0: phase3 — quant engine, new analytics pages, data backfill:*)",
+      "Bash(/usr/bin/git push:*)",
+      "Bash(/usr/bin/git remote:*)",
+      "Bash(/opt/miniconda/envs/psx/bin/python3 -c \":*)",
+      "Bash(/opt/miniconda/envs/psx/bin/python3:*)",
+      "Bash(/usr/bin/cat /tmp/claude-1000/-home-adnoman-pakfindata/e051501e-be37-48bf-a9df-3bce9493aa56/tasks/bnwf4cskz.output)",
+      "Bash(/usr/bin/tail -30 /tmp/claude-1000/-home-adnoman-pakfindata/e051501e-be37-48bf-a9df-3bce9493aa56/tasks/b5fjtmewf.output)",
+      "Bash(/usr/bin/fuser /mnt/e/psxdata/psx.sqlite)",
+      "Bash(/usr/bin/lsof /mnt/e/psxdata/psx.sqlite)",
+      "Bash(/usr/bin/kill -9 53188 95657)",
+      "Bash(/usr/bin/grep streamlit:*)",
+      "Bash(/usr/bin/head -3)",
+      "Bash(/usr/bin/wc -l /home/adnoman/pakfindata/src/pakfindata/ui/app.py /home/adnoman/pakfindata/src/pakfindata/ui/page_views/*.py /home/adnoman/pakfindata/src/pakfindata/ui/themes.py /home/adnoman/pakfindata/src/pakfindata/ui/charts.py /home/adnoman/pakfindata/src/pakfindata/ui/chat.py /home/adnoman/pakfindata/src/pakfindata/ui/logo.py /home/adnoman/pakfindata/src/pakfindata/ui/session_tracker.py /home/adnoman/pakfindata/src/pakfindata/ui/components/*.py)",
+      "Bash(/bin/mkdir -p ~/psxdata/intraday)",
+      "Bash(command mkdir:*)",
+      "Bash(/usr/bin/ls /home/adnoman/psxdata/intraday/)",
+      "Bash(timedatectl)",
+      "Bash(/usr/bin/crontab -l)",
+      "Bash(/usr/bin/setsid /bin/bash /home/adnoman/pakfindata/start_psx.sh)",
+      "Bash(python3 -c \"open\\(''/home/adnoman/psxdata/scheduler.log'',''w''\\).write\\(''''\\)\")",
+      "Bash(/usr/bin/pkill -9 -f tick_service)",
+      "Bash(/usr/bin/pkill -9 -f vite)",
+      "Bash(/usr/bin/pkill -9 -f esbuild)",
+      "Bash(/bin/bash /home/adnoman/pakfindata/stop_psx.sh)",
+      "Bash(command -v curl wget python3)"
     ],
     "additionalDirectories": [
-      "/home/adnoman/.claude/shell-snapshots"
+      "/home/adnoman/.claude/shell-snapshots",
+      "/tmp",
+      "/home/adnoman/psxdata"
     ]
   }
 }

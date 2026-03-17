@@ -7,6 +7,54 @@ import streamlit as st
 from pakfindata.ui.components.helpers import get_connection, render_footer
 
 
+# ── Cached data loaders ──────────────────────────────────────────────────────
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_available_pairs() -> list[str]:
+    """Get list of available FX pairs (cached)."""
+    try:
+        con = get_connection()
+        from pakfindata.db import get_fx_pairs
+        pairs_data = get_fx_pairs(con, active_only=True)
+        return [p["pair"] for p in pairs_data] if pairs_data else []
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_fx_ohlcv(pair: str, limit: int) -> pd.DataFrame:
+    """Load FX OHLCV data for a pair (cached)."""
+    try:
+        con = get_connection()
+        from pakfindata.db import get_fx_ohlcv
+        df = get_fx_ohlcv(con, pair, limit=limit)
+        return df if not df.empty else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_fx_analytics(pair: str) -> dict:
+    """Load FX analytics for a pair (cached)."""
+    try:
+        con = get_connection()
+        from pakfindata.analytics_fx import get_fx_analytics
+        return get_fx_analytics(con, pair)
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_normalized_fx_performance(pairs: tuple[str, ...]) -> pd.DataFrame:
+    """Load normalized FX performance for comparison (cached)."""
+    try:
+        con = get_connection()
+        from pakfindata.analytics_fx import get_normalized_fx_performance
+        return get_normalized_fx_performance(con, list(pairs))
+    except Exception:
+        return pd.DataFrame()
+
+
 def render_fx_history():
     """Render the FX Rate History page — interactive pair charts."""
     st.markdown("## FX Rate History")
@@ -18,7 +66,7 @@ def render_fx_history():
         return
 
     # Get available pairs
-    pairs = _get_available_pairs(con)
+    pairs = _load_available_pairs()
     if not pairs:
         st.info(
             "No FX data available. Run `pfsync fx seed` then `pfsync fx sync` to fetch data."
@@ -45,17 +93,17 @@ def render_fx_history():
     limit = days_map[period]
 
     # ── Rate Chart ───────────────────────────────────────────────
-    _render_rate_chart(con, selected_pair, limit)
+    _render_rate_chart(selected_pair, limit)
 
     st.divider()
 
     # ── Key Metrics ──────────────────────────────────────────────
-    _render_rate_metrics(con, selected_pair)
+    _render_rate_metrics(selected_pair)
 
     st.divider()
 
     # ── Multi-Pair Comparison ────────────────────────────────────
-    _render_multi_pair_comparison(con, pairs)
+    _render_multi_pair_comparison(pairs)
 
     # ── Sync Section ─────────────────────────────────────────────
     st.divider()
@@ -84,23 +132,9 @@ def render_fx_history():
     render_footer()
 
 
-def _get_available_pairs(con) -> list[str]:
-    """Get list of available FX pairs."""
-    try:
-        from pakfindata.db import get_fx_pairs
-        pairs_data = get_fx_pairs(con, active_only=True)
-        return [p["pair"] for p in pairs_data] if pairs_data else []
-    except Exception:
-        return []
-
-
-def _render_rate_chart(con, pair: str, limit: int):
+def _render_rate_chart(pair: str, limit: int):
     """Interactive rate chart for selected pair."""
-    try:
-        from pakfindata.db import get_fx_ohlcv
-        df = get_fx_ohlcv(con, pair, limit=limit)
-    except Exception:
-        df = pd.DataFrame()
+    df = _load_fx_ohlcv(pair, limit)
 
     if df.empty:
         st.info(f"No chart data for {pair}.")
@@ -149,15 +183,11 @@ def _render_rate_chart(con, pair: str, limit: int):
                            "text/csv", key="fxh_export")
 
 
-def _render_rate_metrics(con, pair: str):
+def _render_rate_metrics(pair: str):
     """Key metrics for selected pair."""
     st.subheader("Rate Metrics")
 
-    try:
-        from pakfindata.analytics_fx import get_fx_analytics
-        analytics = get_fx_analytics(con, pair)
-    except Exception:
-        analytics = {}
+    analytics = _load_fx_analytics(pair)
 
     if analytics.get("error"):
         st.info(f"No analytics for {pair}.")
@@ -178,7 +208,7 @@ def _render_rate_metrics(con, pair: str):
     c4.metric("30D Volatility", f"{vol * 100:.2f}%")
 
 
-def _render_multi_pair_comparison(con, pairs: list[str]):
+def _render_multi_pair_comparison(pairs: list[str]):
     """Normalized performance comparison across pairs."""
     st.subheader("Multi-Pair Comparison")
 
@@ -197,11 +227,7 @@ def _render_multi_pair_comparison(con, pairs: list[str]):
     if not selected:
         return
 
-    try:
-        from pakfindata.analytics_fx import get_normalized_fx_performance
-        perf_df = get_normalized_fx_performance(con, selected)
-    except Exception:
-        perf_df = pd.DataFrame()
+    perf_df = _load_normalized_fx_performance(tuple(selected))
 
     if perf_df.empty:
         st.info("Not enough data for comparison.")

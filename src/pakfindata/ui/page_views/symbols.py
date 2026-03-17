@@ -14,6 +14,46 @@ from pakfindata.ui.components.helpers import (
 )
 
 
+# ── Cached data loaders ──────────────────────────────────────────────────────
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_active_count() -> int:
+    """Get count of active symbols (cached)."""
+    con = get_connection()
+    return len(get_symbols_list(con, is_active_only=True))
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_symbols_df(show_inactive: bool, search: str) -> pd.DataFrame:
+    """Load symbols dataframe with filters (cached)."""
+    con = get_connection()
+    query = """
+        SELECT symbol, name, sector as sector_code,
+               sector_name, outstanding_shares, is_active, source,
+               discovered_at, updated_at
+        FROM symbols
+    """
+    conditions = []
+    if not show_inactive:
+        conditions.append("is_active = 1")
+    if search:
+        search_upper = search.upper()
+        conditions.append(
+            f"(symbol LIKE '%{search_upper}%' OR name LIKE '%{search}%')"
+        )
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    query += " ORDER BY symbol"
+    return pd.read_sql_query(query, con)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_symbols_string(is_active_only: bool) -> str:
+    """Get comma-separated symbols string (cached)."""
+    con = get_connection()
+    return get_symbols_string(con, is_active_only=is_active_only)
+
+
 def render_symbols():
     """Browse and manage all symbols."""
     # =================================================================
@@ -27,8 +67,6 @@ def render_symbols():
         render_market_status_badge()
 
     try:
-        con = get_connection()
-
         # Filters
         col1, col2 = st.columns([1, 3])
         with col1:
@@ -48,30 +86,10 @@ def render_symbols():
         is_active_only = not show_inactive
 
         # Display count of active symbols
-        active_count = len(get_symbols_list(con, is_active_only=True))
+        active_count = _load_active_count()
         st.markdown(f"**Active symbols: {active_count}**")
 
-        # Build query for full symbol details
-        # sector_name is now stored directly in symbols table from master file
-        query = """
-            SELECT symbol, name, sector as sector_code,
-                   sector_name, outstanding_shares, is_active, source,
-                   discovered_at, updated_at
-            FROM symbols
-        """
-        conditions = []
-        if not show_inactive:
-            conditions.append("is_active = 1")
-        if search:
-            search_upper = search.upper()
-            conditions.append(
-                f"(symbol LIKE '%{search_upper}%' OR name LIKE '%{search}%')"
-            )
-        if conditions:
-            query += " WHERE " + " AND ".join(conditions)
-        query += " ORDER BY symbol"
-
-        df = pd.read_sql_query(query, con)
+        df = _load_symbols_df(show_inactive, search)
 
         st.markdown(f"**{len(df)} symbols found**")
 
@@ -105,7 +123,7 @@ def render_symbols():
                 )
             with col2:
                 # Copy comma-separated symbols string
-                symbols_str = get_symbols_string(con, is_active_only=is_active_only)
+                symbols_str = _load_symbols_string(is_active_only)
                 if len(symbols_str) > 100:
                     display_str = symbols_str[:100] + "..."
                 else:

@@ -127,7 +127,7 @@ def render_price_card(
     """Render a price card with change indicator."""
     change_html = ""
     if change_pct is not None:
-        color = "#00C853" if change_pct >= 0 else "#FF1744"
+        color = "#00C853" if change_pct >= 0 else "#FF5252"
         sign = "+" if change_pct >= 0 else ""
         change_html = f' <span style="color: {color}; font-size: 14px;">({sign}{change_pct:.2f}%)</span>'
 
@@ -330,45 +330,33 @@ MARKET_DAYS = [0, 1, 2, 3, 4]  # Monday to Friday
 # DATABASE CONNECTION HELPERS
 # =============================================================================
 
-def get_connection():
-    """
-    Get database connection, initializing schema if needed.
-
-    Note: We don't cache the connection because SQLite connections
-    are not thread-safe by default. Streamlit runs in multiple threads.
-    """
-    import sqlite3 as _sqlite3
-
-    db_path = get_db_path()
-    # Use check_same_thread=False to allow connection to be used across threads
-    # timeout=30 waits up to 30s if DB is locked (e.g. during bulk sync)
-    con = _sqlite3.connect(str(db_path), check_same_thread=False, timeout=30)
-    con.row_factory = _sqlite3.Row
-
-    # Enable WAL mode for better concurrent access
-    con.execute("PRAGMA journal_mode=WAL")
-    con.execute("PRAGMA busy_timeout=30000")
-
-    # Initialize schema
-    init_schema(con)
-    return con
-
-
 @st.cache_resource
 def get_cached_connection():
     """
-    Get a cached database connection with thread-safety enabled.
+    Singleton DB connection cached across reruns.
 
-    Uses check_same_thread=False to allow Streamlit's multi-threaded access.
+    Uses check_same_thread=False for Streamlit's multi-threaded access.
+    WAL mode + busy_timeout for concurrent read/write safety.
     """
     import sqlite3 as _sqlite3
 
     db_path = get_db_path()
-    con = _sqlite3.connect(str(db_path), check_same_thread=False)
+    con = _sqlite3.connect(str(db_path), check_same_thread=False, timeout=30)
     con.row_factory = _sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA synchronous=NORMAL")
+    con.execute("PRAGMA busy_timeout=30000")
     init_schema(con)
     return con
+
+
+def get_connection():
+    """Get database connection — returns the cached singleton.
+
+    All UI pages do read-only queries, so sharing a single connection
+    is safe and eliminates per-rerun connection overhead.
+    """
+    return get_cached_connection()
 
 
 @st.cache_data(ttl=60)
@@ -480,7 +468,7 @@ def render_domain_freshness_bar(con):
     status_colors = {
         "fresh": "#00C853",
         "stale": "#FF9800",
-        "old": "#FF1744",
+        "old": "#FF5252",
         "empty": "#9E9E9E",
         "error": "#9E9E9E",
     }

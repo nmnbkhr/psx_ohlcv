@@ -400,6 +400,104 @@ def capture_ratios(
 
 
 # ---------------------------------------------------------------------------
+# Treynor Ratio
+# ---------------------------------------------------------------------------
+
+def compute_treynor_ratio(
+    fund_returns: pd.Series,
+    benchmark_returns: pd.Series,
+    risk_free_rate: float = 0.1208,
+) -> float | None:
+    """Treynor Ratio = (R_fund - R_f) / Beta.
+
+    Measures excess return per unit of systematic risk (beta).
+    Unlike Sharpe (total risk), Treynor uses only market risk.
+
+    Args:
+        fund_returns: Daily fund returns.
+        benchmark_returns: Daily benchmark returns.
+        risk_free_rate: Annualized risk-free rate.
+
+    Returns:
+        Treynor ratio (float) or None if beta is zero/negative.
+    """
+    aligned = pd.DataFrame({"fund": fund_returns, "bench": benchmark_returns}).dropna()
+    if len(aligned) < 30:
+        return None
+
+    cov = np.cov(aligned["fund"], aligned["bench"])
+    beta = cov[0, 1] / cov[1, 1] if cov[1, 1] != 0 else 0.0
+
+    if beta <= 0:
+        return None
+
+    # Annualized fund return
+    ann_return = aligned["fund"].mean() * TRADING_DAYS
+    treynor = (ann_return - risk_free_rate) / beta
+    return float(treynor)
+
+
+# ---------------------------------------------------------------------------
+# Rolling Returns
+# ---------------------------------------------------------------------------
+
+def compute_rolling_returns(
+    nav_series: pd.Series,
+    window: int = 252,
+) -> pd.Series:
+    """Rolling return over trailing window.
+
+    For each date t: rolling_return[t] = nav[t] / nav[t - window] - 1
+
+    Args:
+        nav_series: Daily NAV values with DatetimeIndex.
+        window: Lookback window in trading days (default 252 = 1Y).
+
+    Returns:
+        Series of rolling returns, NaN for first `window` entries.
+    """
+    nav = nav_series.dropna()
+    return (nav / nav.shift(window) - 1)
+
+
+# ---------------------------------------------------------------------------
+# Calendar Year Returns
+# ---------------------------------------------------------------------------
+
+def compute_calendar_year_returns(
+    nav_series: pd.Series,
+    min_days: int = 20,
+) -> dict[int, float]:
+    """Compute annual return for each calendar year.
+
+    Args:
+        nav_series: Daily NAV values with DatetimeIndex.
+        min_days: Minimum trading days per year (skip if fewer).
+
+    Returns:
+        Dict mapping year -> return percentage, e.g. {2020: 12.5, 2021: -3.2}
+    """
+    nav = nav_series.dropna().sort_index()
+    if len(nav) < 2:
+        return {}
+
+    results = {}
+    years = sorted(set(nav.index.year))
+
+    for year in years:
+        year_nav = nav[nav.index.year == year]
+        if len(year_nav) < min_days:
+            continue
+
+        first = year_nav.iloc[0]
+        last = year_nav.iloc[-1]
+        if first > 0:
+            results[year] = round(float((last / first - 1) * 100), 2)
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Comprehensive Fund Report
 # ---------------------------------------------------------------------------
 
@@ -518,9 +616,13 @@ def generate_fund_analytics(
             aligned = pd.DataFrame({"fund": fr, "bench": br}).dropna()
             te = float(aligned["fund"].sub(aligned["bench"]).std(ddof=1) * math.sqrt(TRADING_DAYS)) if len(aligned) > 1 else None
 
+            # Treynor Ratio
+            treynor_val = compute_treynor_ratio(fr, br, risk_free_rate) if len(aligned) >= 30 else None
+
             relative = {
                 "beta": beta_val,
                 "alpha": alpha_val if not np.isnan(alpha_val) else None,
+                "treynor_ratio": treynor_val,
                 "information_ratio": ir_val if not np.isnan(ir_val) else None,
                 "tracking_error": te,
                 "up_capture": cap["up_capture"],

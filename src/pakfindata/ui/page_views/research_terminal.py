@@ -6,6 +6,121 @@ import plotly.graph_objects as go
 
 from pakfindata.ui.components.helpers import get_connection, render_footer
 
+_CACHE_TTL = 3600
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_kibor_rates():
+    con = get_connection()
+    try:
+        return pd.read_sql_query(
+            "SELECT date, tenor, bid, offer FROM kibor_daily ORDER BY date DESC LIMIT 20", con
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_policy_rates(limit: int = 10):
+    con = get_connection()
+    try:
+        return pd.read_sql_query(
+            f"SELECT rate_date, policy_rate FROM sbp_policy_rates ORDER BY rate_date DESC LIMIT {limit}", con
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_tbill_auctions():
+    con = get_connection()
+    try:
+        return pd.read_sql_query(
+            "SELECT auction_date, tenor, cutoff_yield FROM tbill_auctions ORDER BY auction_date DESC LIMIT 20", con
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_pib_auctions():
+    con = get_connection()
+    try:
+        return pd.read_sql_query(
+            "SELECT auction_date, tenor, cutoff_yield FROM pib_auctions ORDER BY auction_date DESC LIMIT 15", con
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_fx_interbank():
+    con = get_connection()
+    try:
+        return pd.read_sql_query(
+            """SELECT currency, date, buying, selling FROM sbp_fx_interbank
+               WHERE currency IN ('USD', 'EUR', 'GBP') ORDER BY date DESC LIMIT 30""", con
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_fund_performance():
+    con = get_connection()
+    try:
+        return pd.read_sql_query(
+            """SELECT fund_name, category, return_ytd, return_30d, return_90d, return_365d
+               FROM fund_performance_latest
+               ORDER BY return_ytd DESC LIMIT 20""", con
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_psx_indices():
+    con = get_connection()
+    try:
+        return pd.read_sql_query(
+            """SELECT index_code, index_date, value, change_pct
+               FROM psx_indices ORDER BY index_date DESC LIMIT 20""", con
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_market_summary():
+    con = get_connection()
+    try:
+        return pd.read_sql_query(
+            """SELECT index_code, MAX(index_date) as date, value, change_pct
+               FROM psx_indices GROUP BY index_code ORDER BY index_code""", con
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_schema_tables():
+    con = get_connection()
+    rows = con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+    ).fetchall()
+    return [r["name"] for r in rows]
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_table_info(table_name: str):
+    con = get_connection()
+    try:
+        cnt = con.execute(f"SELECT COUNT(*) FROM [{table_name}]").fetchone()[0]
+    except Exception:
+        cnt = 0
+    cols = con.execute(f"PRAGMA table_info([{table_name}])").fetchall()
+    return cnt, [{"name": c["name"], "type": c["type"], "pk": c["pk"]} for c in cols]
+
 _WRITE_KEYWORDS = {"INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "TRUNCATE", "REPLACE", "ATTACH", "DETACH"}
 
 # Quick research prompts
@@ -219,93 +334,43 @@ def _build_research_context(con, query: str) -> str:
     q_lower = query.lower()
 
     if any(kw in q_lower for kw in ["rate", "kibor", "policy", "interest", "monetary"]):
-        try:
-            df = pd.read_sql_query(
-                "SELECT date, tenor, bid, offer FROM kibor_daily ORDER BY date DESC LIMIT 20", con
-            )
-            if not df.empty:
-                context_parts.append(f"## KIBOR Rates (Latest 20)\n{df.to_string(index=False)}")
-        except Exception:
-            pass
-        try:
-            df = pd.read_sql_query(
-                "SELECT rate_date, policy_rate FROM sbp_policy_rates ORDER BY rate_date DESC LIMIT 10", con
-            )
-            if not df.empty:
-                context_parts.append(f"## Policy Rate History\n{df.to_string(index=False)}")
-        except Exception:
-            pass
+        df = _load_kibor_rates()
+        if not df.empty:
+            context_parts.append(f"## KIBOR Rates (Latest 20)\n{df.to_string(index=False)}")
+        df = _load_policy_rates(limit=10)
+        if not df.empty:
+            context_parts.append(f"## Policy Rate History\n{df.to_string(index=False)}")
 
     if any(kw in q_lower for kw in ["treasury", "tbill", "t-bill", "pib", "bond", "yield", "auction"]):
-        try:
-            df = pd.read_sql_query(
-                "SELECT auction_date, tenor, cutoff_yield FROM tbill_auctions ORDER BY auction_date DESC LIMIT 20", con
-            )
-            if not df.empty:
-                context_parts.append(f"## T-Bill Auctions\n{df.to_string(index=False)}")
-        except Exception:
-            pass
-        try:
-            df = pd.read_sql_query(
-                "SELECT auction_date, tenor, cutoff_yield FROM pib_auctions ORDER BY auction_date DESC LIMIT 15", con
-            )
-            if not df.empty:
-                context_parts.append(f"## PIB Auctions\n{df.to_string(index=False)}")
-        except Exception:
-            pass
+        df = _load_tbill_auctions()
+        if not df.empty:
+            context_parts.append(f"## T-Bill Auctions\n{df.to_string(index=False)}")
+        df = _load_pib_auctions()
+        if not df.empty:
+            context_parts.append(f"## PIB Auctions\n{df.to_string(index=False)}")
 
     if any(kw in q_lower for kw in ["fx", "currency", "pkr", "dollar", "usd", "exchange", "kerb", "interbank"]):
-        try:
-            df = pd.read_sql_query(
-                """SELECT currency, date, buying, selling FROM sbp_fx_interbank
-                   WHERE currency IN ('USD', 'EUR', 'GBP') ORDER BY date DESC LIMIT 30""", con
-            )
-            if not df.empty:
-                context_parts.append(f"## FX Interbank Rates\n{df.to_string(index=False)}")
-        except Exception:
-            pass
+        df = _load_fx_interbank()
+        if not df.empty:
+            context_parts.append(f"## FX Interbank Rates\n{df.to_string(index=False)}")
 
     if any(kw in q_lower for kw in ["fund", "mutual", "nav", "mufap", "equity fund", "income fund", "vps"]):
-        try:
-            df = pd.read_sql_query(
-                """SELECT fund_name, category, return_ytd, return_30d, return_90d, return_365d
-                   FROM fund_performance_latest
-                   ORDER BY return_ytd DESC LIMIT 20""", con
-            )
-            if not df.empty:
-                context_parts.append(f"## Top Fund Performance\n{df.to_string(index=False)}")
-        except Exception:
-            pass
+        df = _load_fund_performance()
+        if not df.empty:
+            context_parts.append(f"## Top Fund Performance\n{df.to_string(index=False)}")
 
     if any(kw in q_lower for kw in ["market", "kse", "index", "breadth", "sector", "stock"]):
-        try:
-            df = pd.read_sql_query(
-                """SELECT index_code, index_date, value, change_pct
-                   FROM psx_indices ORDER BY index_date DESC LIMIT 20""", con
-            )
-            if not df.empty:
-                context_parts.append(f"## PSX Indices\n{df.to_string(index=False)}")
-        except Exception:
-            pass
+        df = _load_psx_indices()
+        if not df.empty:
+            context_parts.append(f"## PSX Indices\n{df.to_string(index=False)}")
 
     if not context_parts:
-        try:
-            df = pd.read_sql_query(
-                """SELECT index_code, MAX(index_date) as date, value, change_pct
-                   FROM psx_indices GROUP BY index_code ORDER BY index_code""", con
-            )
-            if not df.empty:
-                context_parts.append(f"## Market Summary\n{df.to_string(index=False)}")
-        except Exception:
-            pass
-        try:
-            df = pd.read_sql_query(
-                "SELECT rate_date, policy_rate FROM sbp_policy_rates ORDER BY rate_date DESC LIMIT 5", con
-            )
-            if not df.empty:
-                context_parts.append(f"## Policy Rate\n{df.to_string(index=False)}")
-        except Exception:
-            pass
+        df = _load_market_summary()
+        if not df.empty:
+            context_parts.append(f"## Market Summary\n{df.to_string(index=False)}")
+        df = _load_policy_rates(limit=5)
+        if not df.empty:
+            context_parts.append(f"## Policy Rate\n{df.to_string(index=False)}")
 
     return "\n\n".join(context_parts)
 
@@ -394,20 +459,13 @@ def _render_schema_browser(con):
 
     search = st.text_input("Search tables", key="schema_search", placeholder="e.g., fund, fx, kibor")
 
-    tables = con.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-    ).fetchall()
+    table_names = _load_schema_tables()
 
-    for t in tables:
-        table_name = t["name"]
+    for table_name in table_names:
         if search and search.lower() not in table_name.lower():
             continue
-        try:
-            cnt = con.execute(f"SELECT COUNT(*) FROM [{table_name}]").fetchone()[0]
-        except Exception:
-            cnt = 0
+        cnt, cols = _load_table_info(table_name)
         with st.expander(f"{table_name} ({cnt:,} rows)"):
-            cols = con.execute(f"PRAGMA table_info([{table_name}])").fetchall()
             for c in cols:
                 pk = " PK" if c["pk"] else ""
                 st.text(f"  {c['name']} ({c['type']}{pk})")

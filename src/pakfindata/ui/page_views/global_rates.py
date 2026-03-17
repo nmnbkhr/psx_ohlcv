@@ -6,6 +6,32 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 
+from pakfindata.ui.components.helpers import get_connection
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_rate_comparison():
+    from pakfindata.db.repositories.global_rates import get_rate_comparison
+    return get_rate_comparison(get_connection())
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_all_latest_rates():
+    from pakfindata.db.repositories.global_rates import get_all_latest_rates
+    return get_all_latest_rates(get_connection())
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_rate_history(rate_name, tenor, start_date, limit):
+    from pakfindata.db.repositories.global_rates import get_rate_history
+    return get_rate_history(get_connection(), rate_name=rate_name, tenor=tenor, start_date=start_date, limit=limit)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_sofr_kibor_spread(start_date):
+    from pakfindata.db.repositories.global_rates import get_sofr_kibor_spread
+    return get_sofr_kibor_spread(get_connection(), start_date=start_date)
+
 
 def render_global_rates():
     """Main entry point for global reference rates page."""
@@ -33,13 +59,13 @@ def render_global_rates():
     ])
 
     with tab1:
-        _render_rate_dashboard(con)
+        _render_rate_dashboard()
 
     with tab2:
-        _render_sofr_history(con)
+        _render_sofr_history()
 
     with tab3:
-        _render_sofr_kibor_spread(con)
+        _render_sofr_kibor_spread_tab()
 
     with tab4:
         _render_fcy_instruments(con)
@@ -78,16 +104,11 @@ def _render_sync_controls(con):
                         st.error(f"Sync failed: {e}")
 
 
-def _render_rate_dashboard(con):
+def _render_rate_dashboard():
     """Tab 1: Rate comparison dashboard."""
-    from pakfindata.db.repositories.global_rates import (
-        get_all_latest_rates,
-        get_rate_comparison,
-    )
-
     st.markdown("### Global Rate Comparison")
 
-    comparison = get_rate_comparison(con)
+    comparison = _cached_rate_comparison()
 
     # Summary metrics row
     cols = st.columns(7)
@@ -110,7 +131,7 @@ def _render_rate_dashboard(con):
 
     # Detailed table
     st.markdown("### All Latest Rates")
-    df = get_all_latest_rates(con)
+    df = _cached_all_latest_rates()
     if df.empty:
         st.info("No global rate data. Click **Sync SOFR/EFFR (NY Fed)** above.")
         return
@@ -129,17 +150,15 @@ def _render_rate_dashboard(con):
     )
 
 
-def _render_sofr_history(con):
+def _render_sofr_history():
     """Tab 2: SOFR + EFFR history chart."""
-    from pakfindata.db.repositories.global_rates import get_rate_history
-
     st.markdown("### SOFR & EFFR History")
 
     days = st.selectbox("Period", [30, 60, 90, 180, 365], index=2, key="sofr_hist_days")
     start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
-    sofr_df = get_rate_history(con, rate_name="SOFR", tenor="ON", start_date=start, limit=0)
-    effr_df = get_rate_history(con, rate_name="EFFR", tenor="ON", start_date=start, limit=0)
+    sofr_df = _cached_rate_history(rate_name="SOFR", tenor="ON", start_date=start, limit=0)
+    effr_df = _cached_rate_history(rate_name="EFFR", tenor="ON", start_date=start, limit=0)
 
     if sofr_df.empty and effr_df.empty:
         st.info("No SOFR/EFFR data. Sync global rates first.")
@@ -208,17 +227,15 @@ def _render_sofr_history(con):
             )
 
 
-def _render_sofr_kibor_spread(con):
+def _render_sofr_kibor_spread_tab():
     """Tab 3: SOFR-KIBOR spread analysis."""
-    from pakfindata.db.repositories.global_rates import get_sofr_kibor_spread
-
     st.markdown("### SOFR-KIBOR Spread Analysis")
     st.caption("Key metric for FX swap pricing — higher spread = wider forward points")
 
     days = st.selectbox("Period", [30, 60, 90, 180, 365], index=2, key="spread_days")
     start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
-    df = get_sofr_kibor_spread(con, start_date=start)
+    df = _cached_sofr_kibor_spread(start_date=start)
 
     if df.empty:
         st.info("No spread data. Ensure both KIBOR and SOFR are synced.")

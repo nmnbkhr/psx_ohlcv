@@ -34,7 +34,7 @@ from pakfindata.ui.components.helpers import get_connection, render_footer
 
 _COLORS = {
     "up": "#00E676", "down": "#FF5252", "neutral": "#78909C",
-    "accent": "#00D4AA", "warning": "#FFD600", "toxic": "#FF1744",
+    "accent": "#00D4AA", "warning": "#FFD600", "toxic": "#FF5252",
     "safe": "#00C853", "vpin_line": "#FFD600",
     "buy": "#00E676", "sell": "#FF5252",
     "cycle_line": "#00B0FF", "ifft_line": "#FFD600",

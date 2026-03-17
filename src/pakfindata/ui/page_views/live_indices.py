@@ -378,7 +378,7 @@ def render_live_indices():
     # Auto-refresh for live data
     age = _file_age()
     if age < 5 and HAS_AUTOREFRESH and st_autorefresh:
-        st_autorefresh(interval=2000, limit=None, key="idx_autorefresh")
+        st_autorefresh(interval=5000, limit=None, key="idx_autorefresh")
     elif age < 30 and HAS_AUTOREFRESH and st_autorefresh:
         st_autorefresh(interval=5000, limit=None, key="idx_autorefresh")
 

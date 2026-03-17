@@ -75,11 +75,11 @@ def render_live_ticker():
     # Auto-refresh: use autorefresh if data is fresh, fallback rerun if stale
     if age < 5:
         if HAS_AUTOREFRESH and st_autorefresh:
-            st_autorefresh(interval=2000, limit=None, key="live_ticker_refresh")
+            st_autorefresh(interval=5000, limit=None, key="live_ticker_refresh")
     elif age < 30:
         # STALE — data exists but autorefresh may have stopped
         if HAS_AUTOREFRESH and st_autorefresh:
-            st_autorefresh(interval=3000, limit=None, key="live_ticker_refresh")
+            st_autorefresh(interval=5000, limit=None, key="live_ticker_refresh")
 
     # ------------------------------------------------------------------
     # HEADER + START/STOP + REFRESH BUTTON

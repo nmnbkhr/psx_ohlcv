@@ -14,16 +14,37 @@ from pakfindata.ui.components.helpers import (
 )
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_ohlcv_stats():
+    from pakfindata.query import get_ohlcv_stats
+    return get_ohlcv_stats(get_connection())
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_market_daily(start_date, limit):
+    from pakfindata.query import get_ohlcv_market_daily
+    return get_ohlcv_market_daily(get_connection(), start_date=start_date, limit=limit)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_symbols_list(is_active_only):
+    return get_symbols_list(get_connection(), is_active_only=is_active_only)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_symbol_stats(symbol):
+    from pakfindata.query import get_ohlcv_symbol_stats
+    return get_ohlcv_symbol_stats(get_connection(), symbol)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_ohlcv_range(symbol, start_date):
+    return get_ohlcv_range(get_connection(), symbol, start_date=start_date)
+
+
 def render_history():
     """Display historical OHLCV data and trends."""
     import plotly.graph_objects as go
-
-    from pakfindata.query import (
-        get_ohlcv_market_daily,
-        get_ohlcv_range,
-        get_ohlcv_stats,
-        get_ohlcv_symbol_stats,
-    )
 
     # =================================================================
     # HEADER
@@ -35,10 +56,8 @@ def render_history():
     with header_col2:
         render_market_status_badge()
 
-    con = get_connection()
-
     # Check data availability
-    ohlcv_stats = get_ohlcv_stats(con)
+    ohlcv_stats = _cached_ohlcv_stats()
 
     if ohlcv_stats["total_rows"] == 0:
         st.warning(
@@ -98,7 +117,7 @@ def render_history():
             start_date = None
 
         # Fetch market daily data
-        df = get_ohlcv_market_daily(con, start_date=start_date, limit=500)
+        df = _cached_market_daily(start_date, 500)
 
         if df.empty:
             st.info("No market daily data available for selected range.")
@@ -124,7 +143,7 @@ def render_history():
                 y=df["losers"],
                 mode="lines",
                 name="Losers",
-                line={"color": "#FF1744", "width": 2},
+                line={"color": "#FF5252", "width": 2},
             ))
             fig_breadth.add_trace(go.Scatter(
                 x=df["date"],
@@ -165,7 +184,7 @@ def render_history():
             st.markdown("#### Daily Average Change %")
             fig_chg = go.Figure()
             colors = [
-                "#00C853" if v >= 0 else "#FF1744"
+                "#00C853" if v >= 0 else "#FF5252"
                 for v in df["avg_change_pct"]
             ]
             fig_chg.add_trace(go.Bar(
@@ -213,7 +232,7 @@ def render_history():
         st.subheader("Symbol OHLCV History")
 
         # Symbol input with suggestions
-        symbols_list = get_symbols_list(con, is_active_only=True)
+        symbols_list = _cached_symbols_list(is_active_only=True)
         col1, col2 = st.columns([2, 1])
 
         with col1:
@@ -243,7 +262,7 @@ def render_history():
 
         if symbol_input:
             # Get symbol stats
-            sym_stats = get_ohlcv_symbol_stats(con, symbol_input)
+            sym_stats = _cached_symbol_stats(symbol_input)
 
             if sym_stats["total_rows"] == 0:
                 st.info(f"No OHLCV history for {symbol_input}.")
@@ -271,7 +290,7 @@ def render_history():
                     start_date = None
 
                 # Fetch symbol OHLCV history
-                sym_df = get_ohlcv_range(con, symbol_input, start_date=start_date)
+                sym_df = _cached_ohlcv_range(symbol_input, start_date)
 
                 if sym_df.empty:
                     st.info(f"No OHLCV data for {symbol_input} in selected range.")
@@ -334,7 +353,7 @@ def render_history():
                     st.markdown(f"#### {symbol_input} Volume")
                     # Color bars by price direction
                     vol_colors = [
-                        "#00C853" if c >= o else "#FF1744"
+                        "#00C853" if c >= o else "#FF5252"
                         for o, c in zip(sym_df["open"], sym_df["close"])
                     ]
                     fig_vol = go.Figure()
