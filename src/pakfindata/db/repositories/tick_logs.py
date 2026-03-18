@@ -181,37 +181,42 @@ def get_backfill_status() -> dict:
 
 def _run_backfill(files: list[Path]) -> None:
     """Worker: insert files one by one, updating shared progress dict."""
-    wcon = _wal_connection()
-    ensure_tick_logs_table(wcon)
-
     total = len(files)
-    for i, path in enumerate(files):
+    try:
+        wcon = _wal_connection()
+        ensure_tick_logs_table(wcon)
+
+        for i, path in enumerate(files):
+            with _backfill_lock:
+                _backfill_status.update(
+                    current_file=path.name,
+                    files_done=i,
+                    files_total=total,
+                    running=True,
+                )
+
+            records = _parse_jsonl(path)
+            if not records:
+                continue
+
+            rows = [_tick_to_row(t, path.name) for t in records]
+            for j in range(0, len(rows), BATCH_SIZE):
+                batch = rows[j : j + BATCH_SIZE]
+                wcon.executemany(_INSERT_SQL, batch)
+                wcon.commit()
+
+            with _backfill_lock:
+                _backfill_status["ticks_inserted"] = (
+                    _backfill_status.get("ticks_inserted", 0) + len(rows)
+                )
+
+        wcon.close()
+    except Exception as e:
         with _backfill_lock:
-            _backfill_status.update(
-                current_file=path.name,
-                files_done=i,
-                files_total=total,
-                running=True,
-            )
-
-        records = _parse_jsonl(path)
-        if not records:
-            continue
-
-        rows = [_tick_to_row(t, path.name) for t in records]
-        for j in range(0, len(rows), BATCH_SIZE):
-            batch = rows[j : j + BATCH_SIZE]
-            wcon.executemany(_INSERT_SQL, batch)
-            wcon.commit()
-
+            _backfill_status["error"] = str(e)
+    finally:
         with _backfill_lock:
-            _backfill_status["ticks_inserted"] = (
-                _backfill_status.get("ticks_inserted", 0) + len(rows)
-            )
-
-    wcon.close()
-    with _backfill_lock:
-        _backfill_status.update(running=False, files_done=total)
+            _backfill_status.update(running=False, files_done=_backfill_status.get("files_done", total))
 
 
 def backfill_background(files: list[Path]) -> None:

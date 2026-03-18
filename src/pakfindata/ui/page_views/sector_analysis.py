@@ -95,17 +95,17 @@ def _load_sector_breadth(date: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _load_sector_heatmap_data() -> tuple:
+def _load_sector_heatmap_data() -> dict:
     """Load sector heatmap data (dates and returns)."""
     con = get_connection()
     if con is None:
-        return None, pd.DataFrame()
+        return {"dates": [], "df": pd.DataFrame()}
 
-    dates = [r[0] for r in con.execute(
+    dates = [str(r[0]) for r in con.execute(
         "SELECT DISTINCT date FROM eod_ohlcv ORDER BY date DESC LIMIT 5"
     ).fetchall()]
     if len(dates) < 2:
-        return dates, pd.DataFrame()
+        return {"dates": dates, "df": pd.DataFrame()}
 
     latest = dates[0]
 
@@ -122,7 +122,7 @@ def _load_sector_heatmap_data() -> tuple:
            ORDER BY return_1d DESC""",
         con, params=(latest,),
     )
-    return dates, df
+    return {"dates": dates, "df": df}
 
 
 def _render_sector_performance(date: str):
@@ -175,8 +175,9 @@ def _render_sector_heatmap():
     st.subheader("Sector Returns (Multi-Period)")
 
     try:
-        dates, df = _load_sector_heatmap_data()
-        if dates is None:
+        result = _load_sector_heatmap_data()
+        dates, df = result["dates"], result["df"]
+        if not dates:
             st.error("Database connection not available")
             return
         if len(dates) < 2:

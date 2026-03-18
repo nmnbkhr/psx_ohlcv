@@ -6,9 +6,12 @@ Tabs:
   Market Pulse — Advance/decline, tick distribution, intraday momentum
   Volume — Volume leaders, unusual activity, block trades, concentration
   Movers — Gainers, losers, most active with visual cards and scatter
+  Index — IDX market ticks from JSONL tick_logs (KSE-100, KSE-30, KMI-30 etc.)
+  Dedup — Scan & deduplicate JSONL tick_logs files
   Sync — All bulk/single sync controls preserved
 """
 
+import json as _json
 import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -406,8 +409,8 @@ def render_intraday():
     )
 
     # Tabs
-    tab_dash, tab_charts, tab_pulse, tab_vol, tab_movers, tab_sync = st.tabs(
-        ["Dashboard", "Charts", "Market Pulse", "Volume", "Movers", "Sync"]
+    tab_dash, tab_charts, tab_pulse, tab_vol, tab_movers, tab_idx, tab_dedup, tab_sync = st.tabs(
+        ["Dashboard", "Charts", "Market Pulse", "Volume", "Movers", "Index", "Dedup", "Sync"]
     )
 
     # Lazy-load summary data: only compute once per run, skip if only Sync needed
@@ -474,7 +477,25 @@ def render_intraday():
             st.error(f"Movers error: {e}")
 
     # ═════════════════════════════════════════════════════════════════════
-    # TAB 6: SYNC
+    # TAB 6: INDEX
+    # ═════════════════════════════════════════════════════════════════════
+    with tab_idx:
+        try:
+            _render_index_ticks(sel_date)
+        except Exception as e:
+            st.error(f"Index error: {e}")
+
+    # ═════════════════════════════════════════════════════════════════════
+    # TAB 7: DEDUP
+    # ═════════════════════════════════════════════════════════════════════
+    with tab_dedup:
+        try:
+            _render_dedup()
+        except Exception as e:
+            st.error(f"Dedup error: {e}")
+
+    # ═════════════════════════════════════════════════════════════════════
+    # TAB 8: SYNC
     # ═════════════════════════════════════════════════════════════════════
     with tab_sync:
         try:
@@ -1489,6 +1510,312 @@ def _render_movers(con, df, sel_date):
         f"psx_intraday_{sel_date}.csv",
         "text/csv",
     )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB: INDEX — IDX market ticks from JSONL
+# ═════════════════════════════════════════════════════════════════════════════
+
+_TICK_LOGS_DIR = Path("/mnt/e/psxdata/tick_logs")
+
+def _list_jsonl_files():
+    """Return sorted list of JSONL files in tick_logs (newest first)."""
+    if not _TICK_LOGS_DIR.exists():
+        return []
+    return sorted(
+        [f for f in _TICK_LOGS_DIR.glob("ticks_*.jsonl") if "deduped" not in f.name],
+        reverse=True,
+    )
+
+
+def _load_idx_ticks(jsonl_path: Path) -> pd.DataFrame:
+    """Load only IDX market rows from a JSONL file."""
+    rows = []
+    with open(jsonl_path) as fh:
+        for line in fh:
+            row = _json.loads(line)
+            if row.get("market") == "IDX":
+                rows.append(row)
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    df["_ts"] = pd.to_datetime(df["_ts"])
+    return df
+
+
+def _render_index_ticks(sel_date: str):
+    st.markdown("### Index Ticks (IDX Market)")
+    st.caption("Real-time index data from JSONL tick_logs — KSE-100, KSE-30, KMI-30, etc.")
+
+    files = _list_jsonl_files()
+    if not files:
+        st.warning("No JSONL files found in /mnt/e/psxdata/tick_logs/")
+        return
+
+    # Try to match selected date, fallback to first file
+    date_file_map = {f.stem.replace("ticks_", ""): f for f in files}
+    default_idx = 0
+    if sel_date in date_file_map:
+        default_idx = list(date_file_map.keys()).index(sel_date)
+
+    sel_file = st.selectbox(
+        "Tick log file",
+        files,
+        index=default_idx,
+        format_func=lambda f: f"{f.name}  ({f.stat().st_size / 1024 / 1024:.1f} MB)",
+        key="idx_file_sel",
+    )
+
+    with st.spinner("Loading IDX ticks..."):
+        df = _load_idx_ticks(sel_file)
+
+    if df.empty:
+        st.info("No IDX ticks in this file.")
+        return
+
+    indices = sorted(df["symbol"].unique())
+    st.markdown(f"**{len(df):,}** IDX ticks across **{len(indices)}** indices")
+
+    # ── KPIs row ──
+    latest = df.sort_values("_ts").groupby("symbol").last().reset_index()
+    kpi_cols = st.columns(min(len(indices), 6))
+    for i, idx_sym in enumerate(indices[:6]):
+        row = latest[latest["symbol"] == idx_sym]
+        if row.empty:
+            continue
+        r = row.iloc[0]
+        chg_pct = r["changePercent"] * 100 if abs(r["changePercent"]) < 1 else r["changePercent"]
+        color = "green" if r["change"] >= 0 else "red"
+        with kpi_cols[i % len(kpi_cols)]:
+            st.metric(
+                idx_sym,
+                f"{r['price']:,.2f}",
+                delta=f"{r['change']:+,.2f} ({chg_pct:+.2f}%)",
+            )
+
+    # ── Index selector for charts ──
+    sel_indices = st.multiselect(
+        "Select indices to chart", indices,
+        default=indices[:3],
+        key="idx_chart_sel",
+    )
+
+    if not sel_indices:
+        return
+
+    df_sel = df[df["symbol"].isin(sel_indices)].copy()
+
+    # ── Price chart ──
+    fig_price = go.Figure()
+    for sym in sel_indices:
+        d = df_sel[df_sel["symbol"] == sym].sort_values("_ts")
+        fig_price.add_trace(go.Scatter(
+            x=d["_ts"], y=d["price"], mode="lines", name=sym,
+            line=dict(width=1.5),
+            hovertemplate="%{x|%H:%M:%S}<br>%{y:,.2f}<extra>%{fullData.name}</extra>",
+        ))
+    fig_price.update_layout(
+        title="Index Price (Intraday)",
+        height=420,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#EAECEF", size=11),
+        xaxis=dict(gridcolor="#1e2430"), yaxis=dict(gridcolor="#1e2430"),
+        margin=dict(l=10, r=10, t=40, b=10),
+        hovermode="x unified",
+        legend=dict(orientation="h", y=1.12),
+    )
+    st.plotly_chart(fig_price, use_container_width=True)
+
+    # ── Change % chart ──
+    fig_chg = go.Figure()
+    for sym in sel_indices:
+        d = df_sel[df_sel["symbol"] == sym].sort_values("_ts")
+        chg_pct = d["changePercent"] * 100 if d["changePercent"].abs().max() < 1 else d["changePercent"]
+        fig_chg.add_trace(go.Scatter(
+            x=d["_ts"], y=chg_pct, mode="lines", name=sym,
+            line=dict(width=1.5),
+        ))
+    fig_chg.update_layout(
+        title="Index Change %",
+        height=320,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#EAECEF", size=11),
+        xaxis=dict(gridcolor="#1e2430"), yaxis=dict(gridcolor="#1e2430", ticksuffix="%"),
+        margin=dict(l=10, r=10, t=40, b=10),
+        hovermode="x unified",
+        legend=dict(orientation="h", y=1.12),
+    )
+    st.plotly_chart(fig_chg, use_container_width=True)
+
+    # ── High/Low range bar ──
+    st.markdown("#### Intraday Range")
+    range_data = latest[latest["symbol"].isin(sel_indices)][["symbol", "low", "high", "price", "previousClose"]].copy()
+    range_data["range_pct"] = ((range_data["high"] - range_data["low"]) / range_data["low"] * 100).round(2)
+    range_data = range_data.sort_values("range_pct", ascending=True)
+
+    fig_range = go.Figure()
+    for _, r in range_data.iterrows():
+        color = "#00E676" if r["price"] >= r["previousClose"] else "#FF5252"
+        fig_range.add_trace(go.Bar(
+            y=[r["symbol"]], x=[r["range_pct"]], orientation="h",
+            marker_color=color, name=r["symbol"],
+            text=f"{r['low']:,.2f} — {r['high']:,.2f} ({r['range_pct']:.2f}%)",
+            textposition="auto", showlegend=False,
+        ))
+    fig_range.update_layout(
+        height=max(200, len(range_data) * 40),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#EAECEF", size=11),
+        xaxis=dict(gridcolor="#1e2430", title="Range %"),
+        yaxis=dict(gridcolor="#1e2430"),
+        margin=dict(l=10, r=10, t=10, b=10),
+    )
+    st.plotly_chart(fig_range, use_container_width=True)
+
+    # ── Raw data table ──
+    with st.expander("Raw IDX ticks"):
+        show_cols = ["symbol", "price", "change", "changePercent", "high", "low",
+                     "previousClose", "volume", "value", "trades", "_ts"]
+        show_cols = [c for c in show_cols if c in df_sel.columns]
+        st.dataframe(
+            df_sel[show_cols].sort_values("_ts", ascending=False),
+            use_container_width=True, hide_index=True, height=400,
+        )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB: DEDUP — Scan & deduplicate JSONL tick_logs
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _scan_file_dupes(path: Path) -> dict:
+    """Scan a JSONL file and return dupe stats without writing."""
+    seen = set()
+    total = 0
+    dupes = 0
+    with open(path) as fh:
+        for line in fh:
+            total += 1
+            row = _json.loads(line)
+            key = (row.get("symbol"), row.get("timestamp"), row.get("price"), row.get("volume"))
+            if key in seen:
+                dupes += 1
+            seen.add(key)
+    return {"total": total, "unique": total - dupes, "dupes": dupes, "size_mb": path.stat().st_size / 1024 / 1024}
+
+
+def _dedup_file(src: Path) -> dict:
+    """Deduplicate a JSONL file → _deduped.jsonl in same folder. Returns stats."""
+    seen = set()
+    total = 0
+    kept = 0
+    dst = src.with_name(src.stem + "_deduped.jsonl")
+
+    with open(src) as fin, open(dst, "w") as fout:
+        for line in fin:
+            total += 1
+            row = _json.loads(line)
+            key = (row.get("symbol"), row.get("timestamp"), row.get("price"), row.get("volume"))
+            if key not in seen:
+                seen.add(key)
+                fout.write(line)
+                kept += 1
+
+    return {
+        "total": total, "kept": kept, "removed": total - kept,
+        "src_mb": src.stat().st_size / 1024 / 1024,
+        "dst_mb": dst.stat().st_size / 1024 / 1024,
+        "dst": dst,
+    }
+
+
+def _render_dedup():
+    st.markdown("### Tick Log Deduplicator")
+    st.caption(
+        "Scans JSONL files in `/mnt/e/psxdata/tick_logs/` for duplicate rows "
+        "(same symbol + exchange timestamp + price + volume). "
+        "Creates a `_deduped.jsonl` file — originals are never modified."
+    )
+
+    files = _list_jsonl_files()
+    if not files:
+        st.warning("No JSONL files found.")
+        return
+
+    # File selector
+    sel_files = st.multiselect(
+        "Select files to process",
+        files,
+        default=files[:1],
+        format_func=lambda f: f"{f.name}  ({f.stat().st_size / 1024 / 1024:.1f} MB)",
+        key="dedup_file_sel",
+    )
+
+    if not sel_files:
+        return
+
+    c1, c2 = st.columns(2)
+    scan_btn = c1.button("Scan for duplicates", key="dedup_scan_btn")
+    dedup_btn = c2.button("Deduplicate selected", key="dedup_run_btn", type="primary")
+
+    # ── Scan ──
+    if scan_btn:
+        results = []
+        progress = st.progress(0, text="Scanning...")
+        for i, f in enumerate(sel_files):
+            progress.progress((i + 1) / len(sel_files), text=f"Scanning {f.name}...")
+            stats = _scan_file_dupes(f)
+            stats["file"] = f.name
+            # Check if deduped version exists
+            deduped = f.with_name(f.stem + "_deduped.jsonl")
+            stats["has_deduped"] = deduped.exists()
+            results.append(stats)
+        progress.empty()
+
+        rdf = pd.DataFrame(results)
+        rdf["dupe_%"] = (rdf["dupes"] / rdf["total"] * 100).round(1)
+        rdf["saved_mb"] = (rdf["size_mb"] * rdf["dupes"] / rdf["total"]).round(1)
+        rdf = rdf[["file", "total", "unique", "dupes", "dupe_%", "size_mb", "saved_mb", "has_deduped"]]
+        rdf.columns = ["File", "Total Rows", "Unique", "Duplicates", "Dupe %", "Size (MB)", "Saveable (MB)", "Deduped Exists"]
+
+        # Color-code dupe % for visibility
+        st.dataframe(
+            rdf,
+            use_container_width=True, hide_index=True,
+            column_config={
+                "Dupe %": st.column_config.ProgressColumn("Dupe %", min_value=0, max_value=100, format="%.1f%%"),
+                "Size (MB)": st.column_config.NumberColumn("Size (MB)", format="%.1f"),
+                "Saveable (MB)": st.column_config.NumberColumn("Saveable (MB)", format="%.1f"),
+            },
+        )
+
+        total_dupes = rdf["Duplicates"].sum()
+        total_save = rdf["Saveable (MB)"].sum()
+        if total_dupes > 0:
+            st.warning(f"**{total_dupes:,.0f}** duplicate rows found across {len(sel_files)} file(s). Potential savings: **{total_save:.1f} MB**")
+        else:
+            st.success("All files are clean — no duplicates found.")
+
+    # ── Dedup ──
+    if dedup_btn:
+        results = []
+        progress = st.progress(0, text="Deduplicating...")
+        for i, f in enumerate(sel_files):
+            progress.progress((i + 1) / len(sel_files), text=f"Deduplicating {f.name}...")
+            stats = _dedup_file(f)
+            stats["file"] = f.name
+            results.append(stats)
+        progress.empty()
+
+        for r in results:
+            if r["removed"] > 0:
+                st.success(
+                    f"**{r['file']}**: {r['total']:,} → {r['kept']:,} "
+                    f"(removed {r['removed']:,} dupes) | "
+                    f"{r['src_mb']:.1f} MB → {r['dst_mb']:.1f} MB | "
+                    f"Saved to `{r['dst'].name}`"
+                )
+            else:
+                st.info(f"**{r['file']}**: Clean — no duplicates. Deduped copy still written.")
 
 
 # ═════════════════════════════════════════════════════════════════════════════

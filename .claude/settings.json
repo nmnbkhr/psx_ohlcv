@@ -59,7 +59,10 @@
       "Bash(/usr/bin/pkill -9 -f vite)",
       "Bash(/usr/bin/pkill -9 -f esbuild)",
       "Bash(/bin/bash /home/adnoman/pakfindata/stop_psx.sh)",
-      "Bash(command -v curl wget python3)"
+      "Bash(command -v curl wget python3)",
+      "Bash(/bin/ps aux:*)",
+      "Bash(export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/miniconda/envs/psx/bin:$PATH)",
+      "Read(//usr/**)"
     ],
     "additionalDirectories": [
       "/home/adnoman/.claude/shell-snapshots",

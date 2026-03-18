@@ -1330,6 +1330,8 @@ def _render_tick_sync():
             import time
             time.sleep(2)
             st.rerun()
+        elif bf_status.get("error"):
+            st.error(f"Backfill failed: {bf_status['error']}")
         elif n_unsynced == 0:
             if bf_status.get("files_done", 0) > 0:
                 st.success(
