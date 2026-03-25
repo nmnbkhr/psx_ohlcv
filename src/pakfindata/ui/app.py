@@ -517,9 +517,24 @@ def microstructure_page():
     render_microstructure()
 
 
+def strategy_vpin_page():
+    from pakfindata.ui.page_views.strategy_vpin import render_page
+    render_page()
+
+
 def tick_analytics_page():
     from pakfindata.ui.page_views.tick_analytics import render_tick_analytics
     render_tick_analytics()
+
+
+def tick_replay_page():
+    from pakfindata.ui.page_views.tick_replay import render_tick_replay
+    render_tick_replay()
+
+
+def ml_predictions_page():
+    from pakfindata.ui.page_views.ml_predictions import render_ml_predictions
+    render_ml_predictions()
 
 
 def intraday_quant_lab_page():
@@ -772,10 +787,14 @@ def main():
         "Signal Analysis":   st.Page(signal_dashboard_page,    title="Signal Analysis",   url_path="signal-analysis"),
         "Microstructure":     st.Page(microstructure_page,      title="Microstructure",    url_path="microstructure"),
         "Tick Analytics":    st.Page(tick_analytics_page,      title="Tick Analytics",    url_path="tick-analytics"),
+        "Tick Replay":       st.Page(tick_replay_page,        title="Tick Replay",       url_path="tick-replay"),
         "Quant Lab":         st.Page(intraday_quant_lab_page, title="Quant Lab",         url_path="quant-lab"),
         "Macro Cycles":       st.Page(macro_cycles_page,        title="Macro Cycles",      url_path="macro-cycles"),
         "Sector Breadth":     st.Page(sector_breadth_page,      title="Sector Breadth",    url_path="sector-breadth"),
         "Market Research":    st.Page(market_research_page,     title="Market Research",   url_path="market-research"),
+        "ML Predictions":    st.Page(ml_predictions_page,      title="ML Predictions",    url_path="ml-predictions"),
+        # STRATEGIES
+        "VPIN Strategy":     st.Page(strategy_vpin_page,       title="VPIN Strategy",     url_path="vpin-strategy"),
         # ADMIN
         "Data Status":        st.Page(data_status_page,       title="Data Status",        url_path="data-status"),
         "Sync Center":        st.Page(sync_center_page,       title="Sync Center",        url_path="sync-center"),
@@ -797,7 +816,8 @@ def main():
                             "Fund Analytics", "ETFs"],
         "FX & RATES":      ["Currency Dashboard", "FX Dashboard", "Interbank vs Open", "Rate History"],
         "COMMODITIES":     ["Commodities", "PMEX"],
-        "RESEARCH":        ["Research", "Signal Analysis", "Microstructure", "Tick Analytics", "Quant Lab", "Macro Cycles", "Sector Breadth", "Market Research"],
+        "RESEARCH":        ["Research", "Signal Analysis", "Microstructure", "Tick Analytics", "Tick Replay", "Quant Lab", "Macro Cycles", "Sector Breadth", "Market Research", "ML Predictions"],
+        "STRATEGIES":      ["VPIN Strategy"],
         "ADMIN":           ["Data Status", "Sync Center", "Schema Explorer"],
     }
 
@@ -949,7 +969,10 @@ def main():
     st.sidebar.markdown("---")
 
     # Identify current page for button highlighting
-    current_url = pg.url_path
+    try:
+        current_url = pg.url_path
+    except AttributeError:
+        current_url = ""
 
     # Render grouped navigation with section headers
     for group_name, page_names in nav_groups.items():
@@ -962,7 +985,10 @@ def main():
 
         for page_name in page_names:
             page_ref = _pages[page_name]
-            is_selected = (page_ref.url_path == current_url)
+            try:
+                is_selected = (page_ref.url_path == current_url)
+            except AttributeError:
+                is_selected = (page_ref.title == pg.title)
 
             if st.sidebar.button(
                 page_name,
@@ -988,6 +1014,26 @@ def main():
                 st.sidebar.error(f"Data: {badge_text}")
     except Exception:
         pass
+
+    # Tick data freshness
+    try:
+        import duckdb as _ddb
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        _pkt = _tz(_td(hours=5))
+        _today = _dt.now(_pkt).strftime("%Y-%m-%d")
+        _tcon = _ddb.connect("/mnt/e/psxdata/pakfindata.duckdb", read_only=True)
+        _tick_row = _tcon.execute(
+            "SELECT MAX(SUBSTR(_ts, 1, 10)), COUNT(*) FROM tick_logs"
+        ).fetchone()
+        _tcon.close()
+        if _tick_row and _tick_row[0]:
+            _tick_date, _tick_count = _tick_row
+            if str(_tick_date) == _today:
+                st.sidebar.success(f"📡 Ticks: {_today} ({_tick_count:,})")
+            else:
+                st.sidebar.warning(f"📡 Ticks: {_tick_date} ({_tick_count:,})")
+    except Exception:
+        st.sidebar.caption("📡 Tick status unavailable")
 
     st.sidebar.markdown("---")
     st.sidebar.caption("CLI: `pfsync --help`")

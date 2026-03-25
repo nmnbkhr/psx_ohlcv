@@ -32,7 +32,7 @@ from typing import Optional
 API_BASE = "https://easydata.sbp.org.pk/api/v1"
 
 # ⚠️ UPDATE THIS — generate at: My Data Basket → My Account → Generate API Key
-API_KEY ="6353A150564FE7E3E4C5BC070ED4333A7A1BDA96"
+API_KEY ="38181E447386BBD36429D936DF60F09F272341DC"
 OUTPUT_DIR = Path("/mnt/e/psxdata/sbp_easydata")
 RAW_DIR = OUTPUT_DIR / "raw"          # Raw JSON responses
 DATASETS_DIR = OUTPUT_DIR / "datasets"  # Dataset metadata
