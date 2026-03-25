@@ -532,6 +532,11 @@ def strategy_cvd_page():
     render_page()
 
 
+def strategy_basis_page():
+    from pakfindata.ui.page_views.strategy_basis import render_page
+    render_page()
+
+
 def tick_analytics_page():
     from pakfindata.ui.page_views.tick_analytics import render_tick_analytics
     render_tick_analytics()
@@ -807,6 +812,7 @@ def main():
         "VPIN Strategy":     st.Page(strategy_vpin_page,       title="VPIN Strategy",     url_path="vpin-strategy"),
         "OFI Alpha":         st.Page(strategy_ofi_page,        title="OFI Alpha",         url_path="ofi-alpha"),
         "CVD Divergence":    st.Page(strategy_cvd_page,        title="CVD Divergence",    url_path="cvd-divergence"),
+        "Basis Arb":         st.Page(strategy_basis_page,      title="Basis Arb",         url_path="basis-arb"),
         # ADMIN
         "Data Status":        st.Page(data_status_page,       title="Data Status",        url_path="data-status"),
         "Sync Center":        st.Page(sync_center_page,       title="Sync Center",        url_path="sync-center"),
@@ -829,7 +835,7 @@ def main():
         "FX & RATES":      ["Currency Dashboard", "FX Dashboard", "Interbank vs Open", "Rate History"],
         "COMMODITIES":     ["Commodities", "PMEX"],
         "RESEARCH":        ["Research", "Signal Analysis", "Microstructure", "Tick Analytics", "Tick Replay", "Quant Lab", "Macro Cycles", "Sector Breadth", "Market Research", "ML Predictions"],
-        "STRATEGIES":      ["VPIN Strategy", "OFI Alpha", "CVD Divergence"],
+        "STRATEGIES":      ["VPIN Strategy", "OFI Alpha", "CVD Divergence", "Basis Arb"],
         "ADMIN":           ["Data Status", "Sync Center", "Schema Explorer"],
     }
 
