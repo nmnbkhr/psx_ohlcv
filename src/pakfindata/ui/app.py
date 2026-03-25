@@ -542,6 +542,11 @@ def strategy_vwap_page():
     render_page()
 
 
+def strategy_hmm_page():
+    from pakfindata.ui.page_views.strategy_hmm import render_page
+    render_page()
+
+
 def tick_analytics_page():
     from pakfindata.ui.page_views.tick_analytics import render_tick_analytics
     render_tick_analytics()
@@ -722,6 +727,11 @@ def sync_center_page():
     render_sync_monitor()
 
 
+def app_lineage_page():
+    from pakfindata.ui.page_views.app_lineage import render_app_lineage
+    render_app_lineage()
+
+
 # -----------------------------------------------------------------------------
 # Page: Commodities Dashboard
 # -----------------------------------------------------------------------------
@@ -819,10 +829,12 @@ def main():
         "CVD Divergence":    st.Page(strategy_cvd_page,        title="CVD Divergence",    url_path="cvd-divergence"),
         "Basis Arb":         st.Page(strategy_basis_page,      title="Basis Arb",         url_path="basis-arb"),
         "VWAP Execution":    st.Page(strategy_vwap_page,       title="VWAP Execution",    url_path="vwap-execution"),
+        "Macro Regime":      st.Page(strategy_hmm_page,        title="Macro Regime",      url_path="macro-regime-hmm"),
         # ADMIN
         "Data Status":        st.Page(data_status_page,       title="Data Status",        url_path="data-status"),
         "Sync Center":        st.Page(sync_center_page,       title="Sync Center",        url_path="sync-center"),
         "Schema Explorer":    st.Page(schema_page,            title="Schema Explorer",    url_path="schema"),
+        "App Lineage":        st.Page(app_lineage_page,       title="App Lineage",        url_path="app-lineage"),
     }
 
     # Navigation groups — 5-pillar blueprint structure
@@ -841,8 +853,8 @@ def main():
         "FX & RATES":      ["Currency Dashboard", "FX Dashboard", "Interbank vs Open", "Rate History"],
         "COMMODITIES":     ["Commodities", "PMEX"],
         "RESEARCH":        ["Research", "Signal Analysis", "Microstructure", "Tick Analytics", "Tick Replay", "Quant Lab", "Macro Cycles", "Sector Breadth", "Market Research", "ML Predictions"],
-        "STRATEGIES":      ["VPIN Strategy", "OFI Alpha", "CVD Divergence", "Basis Arb", "VWAP Execution"],
-        "ADMIN":           ["Data Status", "Sync Center", "Schema Explorer"],
+        "STRATEGIES":      ["VPIN Strategy", "OFI Alpha", "CVD Divergence", "Basis Arb", "VWAP Execution", "Macro Regime"],
+        "ADMIN":           ["Data Status", "Sync Center", "Schema Explorer", "App Lineage"],
     }
 
     # HIDDEN PAGES — registered for URL access but no sidebar button
