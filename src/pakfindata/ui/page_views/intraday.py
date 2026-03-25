@@ -174,12 +174,50 @@ def _last_trading_day() -> date:
 
 @st.cache_data(ttl=120, show_spinner="Loading intraday data...")
 def _load_today_summary(_con, date_str: str) -> pd.DataFrame:
-    """Load aggregated intraday summary for a given date (cached 2 min)."""
+    """Load aggregated intraday summary for a given date (cached 2 min).
+
+    Uses DuckDB for speed (window functions on 3M rows) with SQLite fallback.
+    """
+    ts_start, ts_end = _ts_range(date_str)
+
+    # Try DuckDB first (much faster for window functions on large tables)
+    try:
+        from pakfindata.db.connections import has_duckdb
+        if has_duckdb():
+            import duckdb as _duckdb
+            from pakfindata.db.duckdb_manager import DUCKDB_PATH
+            dcon = _duckdb.connect(str(DUCKDB_PATH), read_only=True)
+            df = dcon.execute("""
+                WITH ranked AS (
+                    SELECT symbol, ts_epoch, close, volume,
+                           ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY ts_epoch ASC) AS rn_first,
+                           ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY ts_epoch DESC) AS rn_last
+                    FROM intraday_bars WHERE ts BETWEEN ? AND ?
+                )
+                SELECT
+                    symbol,
+                    COUNT(*) AS ticks,
+                    MAX(CASE WHEN rn_first=1 THEN close END) AS open,
+                    MAX(close) AS high,
+                    MIN(close) AS low,
+                    MAX(CASE WHEN rn_last=1 THEN close END) AS last_price,
+                    MAX(volume) AS total_vol,
+                    CAST(MAX(CASE WHEN rn_first=1 THEN ts_epoch END) AS BIGINT) AS first_epoch,
+                    CAST(MAX(CASE WHEN rn_last=1 THEN ts_epoch END) AS BIGINT) AS last_epoch
+                FROM ranked
+                GROUP BY symbol
+                HAVING COUNT(*) >= 2
+                ORDER BY total_vol DESC
+            """, [ts_start, ts_end]).df()
+            dcon.close()
+            return df
+    except Exception:
+        pass
+
+    # Fallback to SQLite
     import sqlite3 as _sqlite3
     db_path = _con.execute("PRAGMA database_list").fetchone()[2]
     con = _sqlite3.connect(db_path)
-
-    ts_start, ts_end = _ts_range(date_str)
     df = pd.read_sql_query(
         """
         WITH ranked AS (
@@ -301,31 +339,54 @@ def _add_sector_info(con: sqlite3.Connection, df: pd.DataFrame, date_str: str = 
 # SECTOR CODE LABELS
 # ═════════════════════════════════════════════════════════════════════════════
 
-_SECTOR_LABELS = {
-    "0101": "Banks", "0102": "Inv.Banks", "0103": "Modaraba", "0104": "Leasing",
-    "0105": "Insurance", "0106": "Close-End Funds",
-    "0201": "Textile Composite", "0202": "Textile Spinning", "0203": "Textile Weaving",
-    "0301": "Sugar", "0302": "Food", "0303": "Tobacco",
-    "0401": "Cement", "0402": "Glass", "0403": "Ceramics",
-    "0501": "Chemical", "0502": "Pharma", "0503": "Fertilizer",
-    "0601": "Engineering", "0602": "Auto Assembler", "0603": "Auto Parts",
-    "0604": "Cable", "0605": "Transport", "0606": "Technology",
-    "0701": "Paper", "0702": "Vanaspati", "0703": "Leather",
-    "0801": "Refinery", "0802": "Power", "0803": "Oil & Gas Mktg",
-    "0804": "Oil & Gas Expl", "0805": "Gas Distribution",
-    "0807": "Real Estate",
-    "0900": "Miscellaneous", "0901": "Misc",
+_SECTOR_LABELS_RAW = {
+    "0801": "AUTOMOBILE ASSEMBLER", "0802": "AUTOMOBILE PARTS & ACCESSORIES",
+    "0803": "CABLE & ELECTRICAL GOODS", "0804": "CEMENT", "0805": "CHEMICAL",
+    "0806": "CLOSE - END MUTUAL FUND", "0807": "COMMERCIAL BANKS",
+    "0808": "ENGINEERING", "0809": "FERTILIZER",
+    "0810": "FOOD & PERSONAL CARE PRODUCTS", "0811": "GLASS & CERAMICS",
+    "0812": "INV. BANKS / INV. COS. / SECURITIES COS.", "0813": "INSURANCE",
+    "0814": "JUTE", "0815": "LEATHER & TANNERIES", "0816": "LEASING COMPANIES",
+    "0817": "MISCELLANEOUS", "0818": "MODARABAS", "0819": "OIL & GAS EXPLORATION COMPANIES",
+    "0820": "OIL & GAS MARKETING COMPANIES", "0821": "PAPER & BOARD",
+    "0822": "PHARMACEUTICALS", "0823": "POWER GENERATION & DISTRIBUTION",
+    "0824": "REFINERY", "0825": "SUGAR & ALLIED INDUSTRIES",
+    "0826": "SYNTHETIC & RAYON", "0827": "TECHNOLOGY & COMMUNICATION",
+    "0828": "TEXTILE COMPOSITE", "0829": "TEXTILE SPINNING",
+    "0830": "TEXTILE WEAVING", "0831": "TOBACCO", "0832": "TRANSPORT",
+    "0833": "VANASPATI & ALLIED INDUSTRIES", "0834": "WOOLLEN",
+    "0835": "REAL ESTATE INVESTMENT TRUST", "0836": "EXCHANGE TRADED FUNDS",
+    "0837": "PROPERTY",
 }
+# Build lookup that works with both "0807" and "807" formats
+_SECTOR_LABELS = {}
+for code, name in _SECTOR_LABELS_RAW.items():
+    _SECTOR_LABELS[code] = name
+    _SECTOR_LABELS[code.lstrip("0") or "0"] = name
 
 
 @st.cache_data(ttl=600, show_spinner=False)
 def _get_intraday_dates_cached(_con) -> list[str]:
-    """Cached wrapper for intraday date list (avoids 5s full-table scan)."""
+    """Cached wrapper for intraday date list."""
+    # Try DuckDB first (instant DISTINCT on columnar data)
+    try:
+        from pakfindata.db.connections import has_duckdb
+        if has_duckdb():
+            import duckdb as _duckdb
+            from pakfindata.db.duckdb_manager import DUCKDB_PATH
+            dcon = _duckdb.connect(str(DUCKDB_PATH), read_only=True)
+            rows = dcon.execute(
+                "SELECT DISTINCT ts[:10] AS d FROM intraday_bars ORDER BY d DESC"
+            ).fetchall()
+            dcon.close()
+            return [r[0] for r in rows]
+    except Exception:
+        pass
+
+    # Fallback to SQLite skip-scan
     import sqlite3 as _sqlite3
     db_path = _con.execute("PRAGMA database_list").fetchone()[2]
     con = _sqlite3.connect(db_path)
-    # Skip-scan: walk the ts index backward, O(num_dates) not O(num_rows)
-    # ~0.3s vs ~5s for the full DISTINCT SUBSTR scan
     dates: list[str] = []
     row = con.execute("SELECT MAX(ts) FROM intraday_bars").fetchone()
     if row and row[0]:
@@ -896,30 +957,42 @@ def _render_market_pulse(con, df, sel_date):
         params=[*_ts_range(sel_date)],
     )
 
-    # ── Load KSE-100 intraday ticks from tick_bars.db (optional overlay) ──
+    # ── Load KSE-100 intraday ticks (DuckDB preferred, tick_bars.db fallback) ──
     kse_df = pd.DataFrame()
     try:
-        from pakfindata.services.tick_service import EOD_DB_PATH
-        if EOD_DB_PATH.exists():
-            import sqlite3 as _sqlite3
-            tick_con = _sqlite3.connect(str(EOD_DB_PATH))
-            tick_con.row_factory = _sqlite3.Row
-            # index_raw_ticks stores KSE100 with epoch timestamps
-            kse_df = pd.read_sql_query(
+        from pakfindata.db.connections import has_duckdb
+        if has_duckdb():
+            import duckdb as _duckdb
+            from pakfindata.db.duckdb_manager import DUCKDB_PATH
+            dcon = _duckdb.connect(str(DUCKDB_PATH), read_only=True)
+            kse_df = dcon.execute(
                 """SELECT ts, value FROM index_raw_ticks
                    WHERE symbol IN ('KSE100', 'KSE-100', 'KMIALL')
                    AND ts > 0
-                   ORDER BY ts""",
-                tick_con,
-            )
-            tick_con.close()
+                   ORDER BY ts"""
+            ).df()
+            dcon.close()
+        else:
+            from pakfindata.services.tick_service import EOD_DB_PATH
+            if EOD_DB_PATH.exists():
+                import sqlite3 as _sqlite3
+                tick_con = _sqlite3.connect(str(EOD_DB_PATH))
+                tick_con.row_factory = _sqlite3.Row
+                kse_df = pd.read_sql_query(
+                    """SELECT ts, value FROM index_raw_ticks
+                       WHERE symbol IN ('KSE100', 'KSE-100', 'KMIALL')
+                       AND ts > 0
+                       ORDER BY ts""",
+                    tick_con,
+                )
+                tick_con.close()
+        if not kse_df.empty:
+            kse_df["ts_dt"] = pd.to_datetime(kse_df["ts"], unit="s", utc=True)
+            kse_df["date"] = kse_df["ts_dt"].dt.strftime("%Y-%m-%d")
+            kse_df = kse_df[kse_df["date"] == sel_date].copy()
             if not kse_df.empty:
-                kse_df["ts_dt"] = pd.to_datetime(kse_df["ts"], unit="s", utc=True)
-                kse_df["date"] = kse_df["ts_dt"].dt.strftime("%Y-%m-%d")
-                kse_df = kse_df[kse_df["date"] == sel_date].copy()
-                if not kse_df.empty:
-                    kse_df["minute"] = kse_df["ts_dt"].dt.strftime("%Y-%m-%d %H:%M")
-                    kse_df = kse_df.groupby("minute").agg(value=("value", "last")).reset_index()
+                kse_df["minute"] = kse_df["ts_dt"].dt.strftime("%Y-%m-%d %H:%M")
+                kse_df = kse_df.groupby("minute").agg(value=("value", "last")).reset_index()
     except Exception:
         pass  # KSE-100 overlay is optional — fail silently
 
@@ -1195,26 +1268,27 @@ def _render_market_pulse(con, df, sel_date):
         # Multi-day cumulative A/D chart
         if len(daily_df) > 1:
             st.markdown("**Multi-Day Cumulative A/D**")
-            hist = daily_df.sort_values("Date")
-            hist["running_ad"] = hist["Net A/D"].cumsum()
+            hist = daily_df.sort_values("date")
+            hist["net_ad"] = hist["adv"] - hist["dec"]
+            hist["running_ad"] = hist["net_ad"].cumsum()
 
             fig_hist_ad = go.Figure()
             pos_run = hist["running_ad"].where(hist["running_ad"] >= 0, 0)
             neg_run = hist["running_ad"].where(hist["running_ad"] <= 0, 0)
             fig_hist_ad.add_trace(go.Scatter(
-                x=hist["Date"], y=pos_run,
+                x=hist["date"], y=pos_run,
                 mode="lines", line=dict(color=_COLORS["up"], width=0),
                 fill="tozeroy", fillcolor="rgba(0,230,118,0.2)",
                 name="Bullish", showlegend=True,
             ))
             fig_hist_ad.add_trace(go.Scatter(
-                x=hist["Date"], y=neg_run,
+                x=hist["date"], y=neg_run,
                 mode="lines", line=dict(color=_COLORS["down"], width=0),
                 fill="tozeroy", fillcolor="rgba(255,82,82,0.2)",
                 name="Bearish", showlegend=True,
             ))
             fig_hist_ad.add_trace(go.Scatter(
-                x=hist["Date"], y=hist["running_ad"],
+                x=hist["date"], y=hist["running_ad"],
                 mode="lines+markers", name="Running A/D",
                 line=dict(color="white", width=2),
                 marker=dict(size=5),
@@ -1518,6 +1592,7 @@ def _render_movers(con, df, sel_date):
 
 _TICK_LOGS_DIR = Path("/mnt/e/psxdata/tick_logs")
 
+
 def _list_jsonl_files():
     """Return sorted list of JSONL files in tick_logs (newest first)."""
     if not _TICK_LOGS_DIR.exists():
@@ -1528,8 +1603,33 @@ def _list_jsonl_files():
     )
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_idx_from_duckdb(date_str: str) -> pd.DataFrame:
+    """Load index data from DuckDB index_ohlcv_5s (fast, pre-aggregated 5s bars)."""
+    try:
+        from pakfindata.db.connections import duck
+        df = duck(
+            "SELECT symbol, ts, o AS open, h AS high, l AS low, c AS price, "
+            "v AS volume, turnover "
+            "FROM index_ohlcv_5s WHERE ts LIKE ? ORDER BY symbol, ts",
+            [f"{date_str}%"],
+        )
+        if not df.empty:
+            df["_ts"] = pd.to_datetime(df["ts"])
+            # Compute change from first bar per symbol
+            first = df.groupby("symbol")["price"].first()
+            df["change"] = df.apply(lambda r: r["price"] - first[r["symbol"]], axis=1)
+            df["changePercent"] = df.apply(
+                lambda r: (r["change"] / first[r["symbol"]] * 100) if first[r["symbol"]] else 0, axis=1
+            )
+            return df
+    except Exception:
+        pass
+    return pd.DataFrame()
+
+
 def _load_idx_ticks(jsonl_path: Path) -> pd.DataFrame:
-    """Load only IDX market rows from a JSONL file."""
+    """Fallback: Load only IDX market rows from a JSONL file."""
     rows = []
     with open(jsonl_path) as fh:
         for line in fh:
@@ -1545,29 +1645,33 @@ def _load_idx_ticks(jsonl_path: Path) -> pd.DataFrame:
 
 def _render_index_ticks(sel_date: str):
     st.markdown("### Index Ticks (IDX Market)")
-    st.caption("Real-time index data from JSONL tick_logs — KSE-100, KSE-30, KMI-30, etc.")
+    st.caption("Index data from DuckDB index_ohlcv_5s (5-second bars) — KSE-100, KSE-30, KMI-30, etc.")
 
-    files = _list_jsonl_files()
-    if not files:
-        st.warning("No JSONL files found in /mnt/e/psxdata/tick_logs/")
-        return
+    # DuckDB primary — fast, pre-aggregated
+    df = _load_idx_from_duckdb(sel_date)
 
-    # Try to match selected date, fallback to first file
-    date_file_map = {f.stem.replace("ticks_", ""): f for f in files}
-    default_idx = 0
-    if sel_date in date_file_map:
-        default_idx = list(date_file_map.keys()).index(sel_date)
+    # Fallback: JSONL files
+    if df.empty:
+        files = _list_jsonl_files()
+        if not files:
+            st.warning("No index data in DuckDB or JSONL files.")
+            return
 
-    sel_file = st.selectbox(
-        "Tick log file",
-        files,
-        index=default_idx,
-        format_func=lambda f: f"{f.name}  ({f.stat().st_size / 1024 / 1024:.1f} MB)",
-        key="idx_file_sel",
-    )
+        date_file_map = {f.stem.replace("ticks_", ""): f for f in files}
+        default_idx = 0
+        if sel_date in date_file_map:
+            default_idx = list(date_file_map.keys()).index(sel_date)
 
-    with st.spinner("Loading IDX ticks..."):
-        df = _load_idx_ticks(sel_file)
+        sel_file = st.selectbox(
+            "Tick log file (JSONL fallback)",
+            files,
+            index=default_idx,
+            format_func=lambda f: f"{f.name}  ({f.stat().st_size / 1024 / 1024:.1f} MB)",
+            key="idx_file_sel",
+        )
+
+        with st.spinner("Loading IDX ticks from JSONL..."):
+            df = _load_idx_ticks(sel_file)
 
     if df.empty:
         st.info("No IDX ticks in this file.")
@@ -1649,8 +1753,13 @@ def _render_index_ticks(sel_date: str):
 
     # ── High/Low range bar ──
     st.markdown("#### Intraday Range")
-    range_data = latest[latest["symbol"].isin(sel_indices)][["symbol", "low", "high", "price", "previousClose"]].copy()
-    range_data["range_pct"] = ((range_data["high"] - range_data["low"]) / range_data["low"] * 100).round(2)
+    range_cols = ["symbol", "low", "high", "price"]
+    if "previousClose" in latest.columns:
+        range_cols.append("previousClose")
+    range_data = latest[latest["symbol"].isin(sel_indices)][range_cols].copy()
+    if "previousClose" not in range_data.columns:
+        range_data["previousClose"] = range_data["price"] - latest.loc[range_data.index, "change"] if "change" in latest.columns else range_data["price"]
+    range_data["range_pct"] = ((range_data["high"] - range_data["low"]) / range_data["low"].replace(0, 1) * 100).round(2)
     range_data = range_data.sort_values("range_pct", ascending=True)
 
     fig_range = go.Figure()
@@ -1865,6 +1974,8 @@ def _render_sync(con, sel_date):
             if progress.get("json_dir"):
                 st.caption(f"JSON files: {progress['json_dir']}")
 
+        # Row 1: SQLite buttons (existing)
+        st.markdown("#### SQLite (psx.sqlite)")
         bulk_col1, bulk_col2, bulk_col3 = st.columns(3)
         with bulk_col1:
             save_json = st.checkbox(
@@ -1921,6 +2032,169 @@ def _render_sync(con, sel_date):
                     st.success(f"Promoted {eod_count} symbols to eod_ohlcv for {last_td_str}")
                 except Exception as e:
                     st.error(f"Promote failed: {e}")
+
+        # Row 2: DuckDB buttons (new)
+        st.markdown("#### DuckDB (pakfindata.duckdb) — Primary")
+        duck_col1, duck_col2 = st.columns(2)
+        with duck_col1:
+            if st.button(
+                f"🦆 Fetch PSX Ticks → DuckDB ({last_td_str})", key="int_duck_fetch_btn",
+                type="primary",
+                help=f"Fetches {last_td_str} ticks and writes ONLY to DuckDB intraday_bars.",
+            ):
+                try:
+                    from pakfindata.db.connections import has_duckdb, duck_write
+                    if not has_duckdb():
+                        st.error("DuckDB file not found at /mnt/e/psxdata/pakfindata.duckdb")
+                    else:
+                        import time as _time
+                        import requests
+                        INT_URL = "https://dps.psx.com.pk/timeseries/int/{symbol}"
+
+                        syms = get_symbols_list(con)
+                        total = len(syms)
+                        progress_bar = st.progress(0, text=f"Fetching 0/{total}...")
+                        ok_count = 0
+                        fail_count = 0
+                        total_rows = 0
+                        session = requests.Session()
+
+                        for i, sym in enumerate(syms):
+                            try:
+                                resp = session.get(INT_URL.format(symbol=sym), timeout=15)
+                                resp.raise_for_status()
+                                payload = resp.json()
+                                data = payload.get("data", payload) if isinstance(payload, dict) else payload
+                                if not isinstance(data, list):
+                                    data = []
+
+                                if data:
+                                    rows = []
+                                    now = datetime.now().isoformat()
+                                    for item in data:
+                                        if not isinstance(item, list) or len(item) < 2:
+                                            continue
+                                        ts_epoch = int(item[0])
+                                        try:
+                                            ts_str = datetime.fromtimestamp(ts_epoch).strftime("%Y-%m-%d %H:%M:%S")
+                                        except (ValueError, OSError):
+                                            continue
+                                        price = float(item[1])
+                                        volume = float(item[2]) if len(item) >= 3 else 0
+                                        rows.append({
+                                            "symbol": sym, "ts": ts_str, "ts_epoch": ts_epoch,
+                                            "open": price, "high": price, "low": price,
+                                            "close": price, "volume": volume,
+                                            "interval": "int", "ingested_at": now,
+                                            "operation": "insert", "process_ts": "",
+                                        })
+
+                                    if rows:
+                                        import pandas as _pd
+                                        from pakfindata.db.connections import duck_insert
+                                        df = _pd.DataFrame(rows)
+                                        duck_insert("intraday_bars", df)
+                                        total_rows += len(rows)
+
+                                ok_count += 1
+                            except Exception:
+                                fail_count += 1
+
+                            if (i + 1) % 5 == 0 or i == total - 1:
+                                progress_bar.progress(
+                                    (i + 1) / total,
+                                    text=f"{i+1}/{total} — {ok_count} ok, {fail_count} fail, {total_rows:,} rows",
+                                )
+                            _time.sleep(0.3)
+
+                        st.success(
+                            f"DuckDB: {ok_count}/{total} symbols, {total_rows:,} rows → intraday_bars"
+                        )
+                except Exception as e:
+                    st.error(f"DuckDB fetch failed: {e}")
+
+        with duck_col2:
+            if st.button(
+                f"🦆 intraday_bars → eod_ohlcv DuckDB ({last_td_str})", key="int_duck_promote_btn",
+                help=f"Reads DuckDB intraday_bars, aggregates to DuckDB eod_ohlcv for {last_td_str}.",
+            ):
+                try:
+                    from pakfindata.db.connections import has_duckdb, duck_write
+                    if not has_duckdb():
+                        st.error("DuckDB file not found")
+                    else:
+                        dcon = duck_write()
+                        ts_start = f"{last_td_str} 00:00:00"
+                        ts_end = f"{last_td_str} 23:59:59"
+                        now = datetime.now().isoformat()
+
+                        # Aggregate intraday_bars → OHLCV
+                        agg = dcon.execute("""
+                            WITH ranked AS (
+                                SELECT symbol, close, volume,
+                                    ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY ts_epoch ASC) AS rn_first,
+                                    ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY ts_epoch DESC) AS rn_last
+                                FROM intraday_bars
+                                WHERE ts BETWEEN ? AND ?
+                            )
+                            SELECT
+                                symbol,
+                                MAX(CASE WHEN rn_first = 1 THEN close END) AS open,
+                                MAX(close) AS high,
+                                MIN(close) AS low,
+                                MAX(CASE WHEN rn_last = 1 THEN close END) AS close,
+                                MAX(volume) AS volume
+                            FROM ranked
+                            GROUP BY symbol
+                            HAVING COUNT(*) >= 2
+                        """, [ts_start, ts_end]).fetchall()
+
+                        if not agg:
+                            dcon.close()
+                            st.warning(f"No intraday_bars found for {last_td_str} in DuckDB")
+                        else:
+                            # Get prev_close from DuckDB eod_ohlcv
+                            prev_rows = dcon.execute("""
+                                SELECT symbol, close, sector_code, company_name
+                                FROM eod_ohlcv
+                                WHERE date = (SELECT MAX(date) FROM eod_ohlcv WHERE date < ?)
+                            """, [last_td_str]).fetchall()
+                            prev_map = {r[0]: r[1] for r in prev_rows}
+                            sector_map = {r[0]: r[2] for r in prev_rows if r[2]}
+                            name_map = {r[0]: r[3] for r in prev_rows if r[3]}
+
+                            import pandas as _pd
+                            eod_rows = []
+                            for r in agg:
+                                sym = r[0]
+                                eod_rows.append({
+                                    "symbol": sym, "date": last_td_str,
+                                    "open": r[1], "high": r[2], "low": r[3],
+                                    "close": r[4], "volume": int(r[5]) if r[5] else 0,
+                                    "prev_close": prev_map.get(sym),
+                                    "sector_code": sector_map.get(sym),
+                                    "company_name": name_map.get(sym),
+                                    "ingested_at": now, "source": "intraday_aggregation",
+                                    "processname": "duckdb_promote", "turnover": None,
+                                })
+                            eod_df = _pd.DataFrame(eod_rows)
+                            dcon.register("_eod_agg", eod_df)
+                            dcon.execute("""
+                                INSERT INTO eod_ohlcv SELECT * FROM _eod_agg
+                                ON CONFLICT (symbol, date) DO UPDATE SET
+                                    open = excluded.open, high = excluded.high,
+                                    low = excluded.low, close = excluded.close,
+                                    volume = excluded.volume, prev_close = excluded.prev_close,
+                                    sector_code = COALESCE(excluded.sector_code, eod_ohlcv.sector_code),
+                                    company_name = COALESCE(excluded.company_name, eod_ohlcv.company_name),
+                                    ingested_at = excluded.ingested_at, source = excluded.source,
+                                    processname = excluded.processname
+                            """)
+                            dcon.unregister("_eod_agg")
+                            dcon.close()
+                            st.success(f"DuckDB: {len(agg)} symbols → eod_ohlcv for {last_td_str}")
+                except Exception as e:
+                    st.error(f"DuckDB promote failed: {e}")
 
     st.markdown("---")
 

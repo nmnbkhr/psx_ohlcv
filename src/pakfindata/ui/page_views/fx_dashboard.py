@@ -810,11 +810,16 @@ def _render_sync(con):
 
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("Sync SBP Interbank", type="primary", key="fx_sync_interbank"):
-            with st.spinner("Syncing SBP interbank rates..."):
+        if st.button("Sync SBP EasyData (FX + KIBOR + Policy)", type="primary", key="fx_sync_interbank"):
+            with st.spinner("Syncing from SBP EasyData CSVs..."):
                 try:
-                    result = SBPFXScraper().sync_interbank(con)
-                    st.success(f"Interbank: {result.get('ok', 0)} rates synced")
+                    from pakfindata.sources.sbp_easydata import sync_all_to_db
+                    result = sync_all_to_db(con)
+                    st.success(
+                        f"EasyData: {result.get('fx_rows', 0)} FX, "
+                        f"{result.get('kibor_rows', 0)} KIBOR, "
+                        f"{result.get('policy_rows', 0)} policy rate rows synced"
+                    )
                     st.rerun()
                 except Exception as e:
                     st.error(f"Sync failed: {e}")

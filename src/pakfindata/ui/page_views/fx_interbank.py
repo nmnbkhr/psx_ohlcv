@@ -84,12 +84,13 @@ def render_fx_interbank():
     with st.expander("Sync FX Data"):
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("Sync SBP Interbank", type="primary", key="fxib_sync"):
-                with st.spinner("Syncing..."):
+            if st.button("Sync SBP EasyData (FX + KIBOR)", type="primary", key="fxib_sync"):
+                with st.spinner("Syncing from SBP EasyData..."):
                     try:
-                        from pakfindata.sources.sbp_fx import SBPFXScraper
-                        result = SBPFXScraper().sync_interbank(con)
-                        st.success(f"Interbank: {result.get('ok', 0)} rates synced")
+                        from pakfindata.sources.sbp_easydata import sync_fx_to_db, sync_kibor_to_db
+                        r1 = sync_fx_to_db(con)
+                        r2 = sync_kibor_to_db(con)
+                        st.success(f"EasyData: {r1.get('fx_rows',0)} FX + {r2.get('kibor_rows',0)} KIBOR rows")
                     except Exception as e:
                         st.error(f"Sync failed: {e}")
         with col2:

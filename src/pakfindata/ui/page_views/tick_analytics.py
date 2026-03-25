@@ -1,4 +1,10 @@
-"""Tick Analytics Terminal — Quant-grade market microstructure from JSONL tick logs.
+"""Tick Analytics Terminal — Quant-grade market microstructure from tick_bars.db.
+
+Data source: tick_bars.db (written by tick_service)
+  ohlcv_5s        — 5-second OHLCV bars per symbol (REG/FUT/ODL)
+  raw_ticks       — individual ticks with bid/ask
+  index_ohlcv_5s  — 5-second bars for indices (KSE100, ALLSHR, etc.)
+  index_raw_ticks — raw index ticks
 
 Sections:
   Overview — Market-wide KPIs with cross-day history, regime indicators, daily KPI table
@@ -14,6 +20,7 @@ Sections:
 from __future__ import annotations
 
 import json
+import sqlite3
 import statistics
 from pathlib import Path
 from datetime import datetime
@@ -27,9 +34,17 @@ from pakfindata.db.repositories.tick_logs import (
     backfill_background,
     get_backfill_status,
     insert_ticks_from_file,
-    get_synced_files,
-    get_tick_logs_stats,
     ensure_tick_logs_table,
+)
+from pakfindata.db.repositories.tick_summary import (
+    ensure_summary_table,
+    get_available_dates as _summary_available_dates,
+    get_summary_dates,
+    compute_daily_summary,
+    compute_missing_summaries,
+    get_daily_summary,
+    get_multi_day_summary,
+    get_summary_stats,
 )
 
 # Heavy libs — lazy-loaded on first use via _lazy_imports()
@@ -71,113 +86,305 @@ _CHART = dict(
 )
 
 TICK_LOG_DIR = Path("/mnt/e/psxdata/tick_logs")
+TICK_BARS_DB = Path("/mnt/e/psxdata/tick_bars.db")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# DATA LOADING (DB-first, JSONL fallback)
+# DATA LOADING — tick_bars.db (primary) with JSONL fallback
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def _tick_bars_con() -> sqlite3.Connection:
+    """Open a read-only connection to tick_bars.db."""
+    con = sqlite3.connect(f"file:{TICK_BARS_DB}?mode=ro", uri=True, timeout=5)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA cache_size=-20000")  # 20 MB cache
+    return con
+
 
 @st.cache_data(ttl=60, show_spinner=False)
 def _available_dates() -> list[str]:
-    """List available dates from tick_logs source_file index + JSONL files on disk."""
-    db_dates: set[str] = set()
+    """List all dates with tick data from any source.
+
+    Sources: tick_daily_summary, DuckDB tick_logs, JSONL files.
+    """
+    dates: set[str] = set()
     try:
         con = get_connection()
-        ensure_tick_logs_table(con)
-        # Fast: uses idx_tick_logs_source index instead of scanning all rows
-        rows = con.execute(
-            "SELECT DISTINCT source_file FROM tick_logs"
-        ).fetchall()
-        db_dates = {
-            r[0].replace("ticks_", "").replace(".jsonl", "")
-            for r in rows if r[0]
-        }
+        ensure_summary_table(con)
+        dates = set(get_summary_dates(con))
     except Exception:
         pass
-    # Also include JSONL-only dates not yet synced
+
+    # DuckDB tick_logs dates
+    try:
+        from pakfindata.db.connections import has_duckdb
+        if has_duckdb():
+            import duckdb as _duckdb
+            from pakfindata.db.duckdb_manager import DUCKDB_PATH
+            dcon = _duckdb.connect(str(DUCKDB_PATH), read_only=True)
+            rows = dcon.execute(
+                "SELECT DISTINCT REPLACE(source_file, 'ticks_', '') "
+                "FROM (SELECT REPLACE(source_file, '.jsonl', '') AS source_file FROM tick_logs)"
+            ).fetchall()
+            dcon.close()
+            dates |= {r[0] for r in rows if r[0]}
+    except Exception:
+        pass
+
+    # JSONL files on disk
     file_dates = {
         f.stem.replace("ticks_", "")
         for f in TICK_LOG_DIR.glob("ticks_*.jsonl")
     }
-    return sorted(db_dates | file_dates, reverse=True)
+    return sorted(dates | file_dates, reverse=True)
 
 
-def _enrich_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Add computed columns to a tick DataFrame."""
+def _enrich_bars_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Add computed columns to a bars DataFrame from tick_bars.db.
+
+    Derives fields expected by analytics tabs (changePercent, value, etc.)
+    from the raw 5-second OHLCV data.
+    """
     if df.empty:
         return df
-    if "_ts" in df.columns:
-        df["_ts"] = pd.to_datetime(df["_ts"], utc=True).dt.tz_convert("Asia/Karachi")
-    df["spread"] = df["ask"] - df["bid"]
-    df["spread_bps"] = np.where(
-        df["price"] > 0, df["spread"] / df["price"] * 10_000, 0
-    )
-    df["mid"] = (df["bid"] + df["ask"]) / 2
+    if "ts" in df.columns:
+        dt = pd.to_datetime(df["ts"])
+        if dt.dt.tz is not None:
+            # Already tz-aware (ISO with +05:00) — convert to PKT directly
+            df["_ts"] = dt.dt.tz_convert("Asia/Karachi")
+        else:
+            # Naive timestamps — assume PKT
+            df["_ts"] = dt.dt.tz_localize("Asia/Karachi")
+    # Rename ohlcv_5s columns to match analytics expectations
+    rename = {"o": "open", "h": "high", "l": "low", "c": "close", "v": "volume"}
+    df = df.rename(columns={k: v for k, v in rename.items() if k in df.columns})
+    if "close" in df.columns:
+        df["price"] = df["close"]
+
+    # Compute per-symbol derived fields that analytics tabs expect
+    # previousClose: first open of the day per symbol (proxy for prev close)
+    if "open" in df.columns:
+        first_open = df.groupby("symbol")["open"].transform("first")
+        df["previousClose"] = first_open
+        df["change"] = df["price"] - df["previousClose"]
+        df["changePercent"] = (df["change"] / df["previousClose"].replace(0, float("nan")) * 100).fillna(0)
+    else:
+        df["previousClose"] = 0
+        df["change"] = 0
+        df["changePercent"] = 0
+
+    # value: cumulative turnover proxy (price * volume)
+    if "price" in df.columns and "volume" in df.columns:
+        df["value"] = df["price"] * df["volume"]
+    else:
+        df["value"] = 0
+
+    # bid/ask placeholders (not available in ohlcv_5s; use raw_ticks for spread analysis)
+    for col in ("bid", "ask", "bidVol", "askVol"):
+        if col not in df.columns:
+            df[col] = 0.0
+    df["spread"] = 0.0
+    df["spread_bps"] = 0.0
+    df["mid"] = df["price"]
+
     return df
 
 
-@st.cache_data(ttl=120, show_spinner="Loading tick data…")
-def _load_ticks(date_str: str) -> pd.DataFrame:
-    """Load ticks from DB first, falling back to JSONL file."""
-    source_file = f"ticks_{date_str}.jsonl"
+def _enrich_ticks_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Add computed columns to a raw_ticks DataFrame."""
+    if df.empty:
+        return df
+    if "ts" in df.columns:
+        df["_ts"] = pd.to_datetime(df["ts"], unit="s", utc=True).dt.tz_convert("Asia/Karachi")
+    if "bid" in df.columns and "ask" in df.columns:
+        df["spread"] = df["ask"] - df["bid"]
+        df["spread_bps"] = np.where(
+            df["price"] > 0, df["spread"] / df["price"] * 10_000, 0
+        )
+        df["mid"] = (df["bid"] + df["ask"]) / 2
+    return df
 
-    # Try DB — query by indexed source_file column (fast)
+
+@st.cache_data(ttl=120, show_spinner="Loading summary…")
+def _load_ticks(date_str: str) -> pd.DataFrame:
+    """Load precomputed daily summary from tick_daily_summary.
+
+    Returns a DataFrame with one row per symbol — all daily metrics
+    precomputed (OHLCV, change%, vol, turnover, etc.). Instant read.
+    Auto-computes summary if missing but raw data exists.
+    """
     try:
         con = get_connection()
-        ensure_tick_logs_table(con)
-        df = pd.read_sql_query(
-            """SELECT symbol, market, timestamp, _ts, price, open, high, low,
-                      change, change_pct AS "changePercent",
-                      volume, value, trades,
-                      bid, ask, bid_vol AS "bidVol", ask_vol AS "askVol",
-                      prev_close AS "previousClose"
-               FROM tick_logs
-               WHERE source_file = ?
-               ORDER BY timestamp""",
-            con,
-            params=(source_file,),
-        )
+        ensure_summary_table(con)
+        df = get_daily_summary(con, date_str)
+        if df.empty:
+            # Auto-compute summary from raw tick data
+            computed = compute_daily_summary(con, date_str)
+            if computed > 0:
+                df = get_daily_summary(con, date_str)
         if not df.empty:
-            return _enrich_df(df)
+            # Rename for compatibility with existing analytics code
+            df["price"] = df["close"]
+            df["changePercent"] = df["change_pct"]
+            df["value"] = df["turnover"]
+            df["previousClose"] = df["open"]  # proxy
+            df["spread_bps"] = df["med_spread_bps"]
+            # Placeholders for bid/ask (not in summary)
+            for col in ("bid", "ask", "bidVol", "askVol", "mid"):
+                if col not in df.columns:
+                    df[col] = 0.0
+            df["spread"] = 0.0
+            return df
     except Exception:
         pass
 
-    # Fallback: JSONL file
-    path = TICK_LOG_DIR / source_file
-    if not path.exists():
-        return pd.DataFrame()
-    records = []
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    records.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-    df = pd.DataFrame(records)
-    return _enrich_df(df)
+    return pd.DataFrame()
+
+
+@st.cache_data(ttl=120, show_spinner="Loading 5s bars…")
+def _load_bars(date_str: str) -> pd.DataFrame:
+    """Load 5-second OHLCV bars for a trading date (for charting/resampling).
+
+    DuckDB first, SQLite fallback.
+    """
+    _lazy_imports()
+
+    ts_start = f"{date_str}T00:00:00"
+    ts_end = f"{date_str}T23:59:59+99:99"
+
+    # DuckDB: fast columnar scan
+    try:
+        import duckdb as _duckdb
+        from pakfindata.db.connections import has_duckdb
+        from pakfindata.db.duckdb_manager import DUCKDB_PATH
+        if has_duckdb():
+            con = _duckdb.connect(str(DUCKDB_PATH), read_only=True)
+            df = con.execute(
+                "SELECT * FROM ohlcv_5s WHERE ts >= ? AND ts <= ? ORDER BY symbol, ts",
+                [ts_start, ts_end],
+            ).df()
+            con.close()
+            if not df.empty:
+                return _enrich_bars_df(df)
+    except Exception:
+        pass
+
+    # SQLite fallback — range query uses idx_bar_sym_ts efficiently
+    if TICK_BARS_DB.exists():
+        try:
+            con = _tick_bars_con()
+            df = pd.read_sql_query(
+                "SELECT * FROM ohlcv_5s WHERE ts >= ? AND ts <= ? ORDER BY symbol, ts",
+                con, params=[ts_start, ts_end],
+            )
+            con.close()
+            if not df.empty:
+                return _enrich_bars_df(df)
+        except Exception:
+            pass
+
+    return pd.DataFrame()
+
+
+@st.cache_data(ttl=120, show_spinner="Loading raw ticks…")
+def _load_raw_ticks(date_str: str, symbol: str) -> pd.DataFrame:
+    """Load raw ticks — DuckDB JSONL (fast) with SQLite fallback."""
+    import duckdb as _duckdb
+    from datetime import timezone, timedelta
+
+    pkt = timezone(timedelta(hours=5))
+    day_start = datetime.strptime(date_str, "%Y-%m-%d").replace(
+        hour=0, minute=0, second=0, tzinfo=pkt
+    )
+    day_end = day_start.replace(hour=23, minute=59, second=59)
+    ts_start = day_start.timestamp()
+    ts_end = day_end.timestamp()
+
+    # Method 1: DuckDB direct JSONL query (50-100x faster than line-by-line)
+    cloud_path = Path(f"/mnt/e/psxdata/tick_logs_cloud/ticks_{date_str}.jsonl")
+    local_path = Path(f"/mnt/e/psxdata/tick_logs/ticks_{date_str}.jsonl")
+    jsonl_path = cloud_path if cloud_path.exists() else local_path
+
+    if jsonl_path.exists():
+        try:
+            con = _duckdb.connect()
+            df = con.execute(f"""
+                SELECT
+                    symbol, market, timestamp AS ts, price, volume,
+                    COALESCE(bid, 0) AS bid, COALESCE(ask, 0) AS ask,
+                    COALESCE("bidVol", 0) AS bid_vol, COALESCE("askVol", 0) AS ask_vol
+                FROM read_json_auto('{jsonl_path}',
+                     format='newline_delimited',
+                     maximum_object_size=10485760)
+                WHERE symbol = '{symbol}' AND market != 'IDX'
+                ORDER BY timestamp
+            """).df()
+            con.close()
+            if not df.empty:
+                return _enrich_ticks_df(df)
+        except Exception:
+            pass
+
+    # Method 2: Fallback to tick_bars.db raw_ticks table (legacy data)
+    if TICK_BARS_DB.exists():
+        try:
+            con = _tick_bars_con()
+            tables = [r[0] for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='raw_ticks'"
+            ).fetchall()]
+            if "raw_ticks" in tables:
+                df = pd.read_sql_query(
+                    """SELECT symbol, market, ts, price, volume, bid, ask, bid_vol, ask_vol
+                       FROM raw_ticks
+                       WHERE symbol = ? AND ts >= ? AND ts <= ?
+                       ORDER BY ts""",
+                    con,
+                    params=(symbol, ts_start, ts_end),
+                )
+                con.close()
+                if not df.empty:
+                    return _enrich_ticks_df(df)
+            else:
+                con.close()
+        except Exception:
+            pass
+
+    return pd.DataFrame()
 
 
 def _last_tick_per_symbol(df: pd.DataFrame, market: str = "REG") -> pd.DataFrame:
-    """Get the final tick for each symbol in a given market."""
-    mdf = df[df["market"] == market]
+    """Get the final bar for each symbol in a given market."""
+    if "market" in df.columns:
+        mdf = df[df["market"] == market]
+    else:
+        mdf = df
     return mdf.drop_duplicates("symbol", keep="last").copy()
 
 
 def _build_ohlcv_bars(df: pd.DataFrame, symbol: str, freq: str = "1min") -> pd.DataFrame:
-    """Build OHLCV bars for a single symbol from raw ticks."""
-    sdf = df[(df["symbol"] == symbol) & (df["market"] == "REG")].copy()
+    """Resample 5-second bars into larger bars for a single symbol.
+
+    Since tick_bars.db already has 5-second OHLCV, we just resample up.
+    """
+    if "market" in df.columns:
+        sdf = df[(df["symbol"] == symbol) & (df["market"] == "REG")].copy()
+    else:
+        sdf = df[df["symbol"] == symbol].copy()
     if sdf.empty:
         return pd.DataFrame()
     sdf = sdf.set_index("_ts")
-    bars = sdf["price"].resample(freq).ohlc()
-    bars.columns = ["open", "high", "low", "close"]
-    bars["volume"] = sdf["volume"].resample(freq).last().diff().fillna(0).clip(lower=0)
-    bars["trades"] = sdf["trades"].resample(freq).last().diff().fillna(0).clip(lower=0)
+    bars = pd.DataFrame()
+    bars["open"] = sdf["open"].resample(freq).first()
+    bars["high"] = sdf["high"].resample(freq).max()
+    bars["low"] = sdf["low"].resample(freq).min()
+    bars["close"] = sdf["close"].resample(freq).last()
+    bars["volume"] = sdf["volume"].resample(freq).sum()
+    if "trades" in sdf.columns:
+        bars["trades"] = sdf["trades"].resample(freq).sum()
+    # VWAP approximation from bar data
     bars["vwap"] = np.where(
         bars["volume"] > 0,
-        (sdf["value"].resample(freq).last().diff().fillna(0)) / bars["volume"].replace(0, np.nan),
+        (sdf["close"] * sdf["volume"]).resample(freq).sum() / bars["volume"].replace(0, np.nan),
         bars["close"],
     )
     bars = bars.dropna(subset=["close"])
@@ -769,21 +976,20 @@ def _render_futures_basis(df: pd.DataFrame):
 
 @st.cache_data(ttl=300, show_spinner="Building market overview…")
 def _build_daily_stats() -> pd.DataFrame:
-    """Compute per-date market-wide stats from tick_logs (all history)."""
+    """Per-date market-wide stats from tick_daily_summary (instant)."""
     try:
         con = get_connection()
-        ensure_tick_logs_table(con)
+        ensure_summary_table(con)
         df = pd.read_sql_query(
             """
-            SELECT
-                REPLACE(REPLACE(source_file, 'ticks_', ''), '.jsonl', '') AS date,
-                COUNT(*)                          AS total_ticks,
-                COUNT(DISTINCT symbol)            AS symbols,
-                SUM(CASE WHEN market='REG' THEN 1 ELSE 0 END) AS reg_ticks,
-                COUNT(DISTINCT CASE WHEN market='FUT' THEN symbol END) AS fut_symbols,
-                1                                 AS files
-            FROM tick_logs
-            GROUP BY source_file
+            SELECT date,
+                   SUM(bar_count) AS total_ticks,
+                   COUNT(DISTINCT symbol) AS symbols,
+                   SUM(CASE WHEN market='REG' THEN bar_count ELSE 0 END) AS reg_ticks,
+                   COUNT(DISTINCT CASE WHEN market='FUT' THEN symbol END) AS fut_symbols,
+                   1 AS files
+            FROM tick_daily_summary
+            GROUP BY date
             ORDER BY date
             """,
             con,
@@ -793,39 +999,19 @@ def _build_daily_stats() -> pd.DataFrame:
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=300, show_spinner="Loading daily snapshots…")
+@st.cache_data(ttl=300, show_spinner=False)
 def _build_daily_breadth() -> pd.DataFrame:
-    """Per-date breadth / volume / spread stats from last tick per symbol per day."""
+    """Per-date breadth / volume / spread stats from tick_daily_summary (instant)."""
     try:
         con = get_connection()
-        ensure_tick_logs_table(con)
-        # Get last tick per symbol per file (REG market only)
-        # Uses source_file + (symbol, market, timestamp) indices
+        ensure_summary_table(con)
         df = pd.read_sql_query(
-            """
-            WITH ranked AS (
-                SELECT *,
-                       REPLACE(REPLACE(source_file, 'ticks_', ''), '.jsonl', '') AS date,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY symbol, source_file
-                           ORDER BY timestamp DESC
-                       ) AS rn
-                FROM tick_logs
-                WHERE market = 'REG'
-            )
-            SELECT date, symbol, price, open, high, low,
-                   change, change_pct, volume, value, trades,
-                   bid, ask, bid_vol, ask_vol, prev_close
-            FROM ranked WHERE rn = 1
-            """,
+            "SELECT * FROM tick_daily_summary WHERE market = 'REG'",
             con,
         )
         if df.empty:
             return pd.DataFrame()
 
-        df["spread_bps"] = np.where(
-            df["price"] > 0, (df["ask"] - df["bid"]) / df["price"] * 10_000, 0
-        )
         df["intraday_range_pct"] = np.where(
             df["low"] > 0, (df["high"] - df["low"]) / df["low"] * 100, 0
         )
@@ -836,30 +1022,29 @@ def _build_daily_breadth() -> pd.DataFrame:
             decliners=("change_pct", lambda x: (x < 0).sum()),
             unchanged=("change_pct", lambda x: (x == 0).sum()),
             total_volume=("volume", "sum"),
-            total_turnover=("value", "sum"),
+            total_turnover=("turnover", "sum"),
             total_trades=("trades", "sum"),
-            median_spread_bps=("spread_bps", "median"),
-            mean_spread_bps=("spread_bps", "mean"),
-            p90_spread_bps=("spread_bps", lambda x: np.percentile(x, 90) if len(x) > 0 else 0),
+            median_spread_bps=("med_spread_bps", "median"),
+            mean_spread_bps=("avg_spread_bps", "mean"),
+            p90_spread_bps=("avg_spread_bps", lambda x: np.percentile(x, 90) if len(x) > 0 else 0),
             median_range_pct=("intraday_range_pct", "median"),
             mean_chg_pct=("change_pct", "mean"),
             std_chg_pct=("change_pct", "std"),
             max_gain=("change_pct", "max"),
             max_loss=("change_pct", "min"),
-            avg_depth=("bid_vol", lambda x: ((x + df.loc[x.index, "ask_vol"]) / 2).median()),
         ).reset_index()
 
         daily["ad_ratio"] = daily["advancers"] / daily["decliners"].replace(0, 1)
         daily["breadth_pct"] = (daily["advancers"] - daily["decliners"]) / daily["symbols"] * 100
+        daily["avg_depth"] = 0  # Not available in summary
 
         return daily.sort_values("date")
     except Exception:
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=120, show_spinner=False)
 def _load_today_snapshot(source_file: str) -> dict:
-    """Compute today's overview KPIs in SQL — no full tick load needed."""
+    """Load today's overview KPIs from tick_daily_summary (instant)."""
     defaults = dict(
         total_ticks=0, symbols_traded=0, adv=0, dec=0, unch=0,
         total_vol=0, total_val=0, total_trades=0, fut_count=0,
@@ -868,82 +1053,95 @@ def _load_today_snapshot(source_file: str) -> dict:
         tick_rate=0,
     )
     try:
+        # Extract date from source_file name
+        date_str = source_file.replace("ticks_", "").replace(".jsonl", "")
         con = get_connection()
-        # Total ticks + time range for tick rate
-        meta = con.execute(
-            "SELECT COUNT(*), MIN(timestamp), MAX(timestamp) FROM tick_logs WHERE source_file = ?",
-            (source_file,),
-        ).fetchone()
-        total_ticks = meta[0]
-        duration_min = max((meta[2] - meta[1]) / 60, 1) if meta[1] and meta[2] else 1
+        ensure_summary_table(con)
 
-        # Last tick per symbol (REG only) — lightweight via MAX(timestamp)
-        rows = con.execute(
-            """SELECT t.symbol, t.price, t.change_pct, t.volume, t.value, t.trades,
-                      t.bid, t.ask, t.bid_vol, t.ask_vol
-               FROM tick_logs t
-               INNER JOIN (
-                   SELECT symbol, MAX(timestamp) as max_ts
-                   FROM tick_logs
-                   WHERE source_file = ? AND market = 'REG'
-                   GROUP BY symbol
-               ) latest ON t.symbol = latest.symbol AND t.timestamp = latest.max_ts
-                       AND t.source_file = ? AND t.market = 'REG'""",
-            (source_file, source_file),
-        ).fetchall()
+        df = get_daily_summary(con, date_str)
+        if df.empty:
+            # Fallback: compute lightweight snapshot from DuckDB tick_logs
+            try:
+                from pakfindata.db.connections import duck
+                tl = duck(
+                    """SELECT symbol, market,
+                              COUNT(*) AS bar_count,
+                              MAX(volume) AS volume,
+                              MAX(value) AS turnover,
+                              MAX(trades) AS trades,
+                              (MAX(price) - MIN(price)) / NULLIF(AVG(price), 0) * 10000 AS med_spread_bps,
+                              ((LAST(price) - FIRST(price)) / NULLIF(FIRST(price), 0)) * 100 AS change_pct
+                       FROM tick_logs
+                       WHERE SUBSTR(_ts, 1, 10) = ? AND market IN ('REG', 'FUT')
+                       GROUP BY symbol, market""",
+                    [date_str],
+                )
+                if not tl.empty:
+                    df = tl
+                else:
+                    return defaults
+            except Exception:
+                return defaults
 
-        if not rows:
+        reg = df[df["market"] == "REG"] if "market" in df.columns else df
+        active = reg[reg["volume"] > 0]
+        if active.empty:
             return defaults
 
-        active = [r for r in rows if r[3] > 0]  # volume > 0
-        if not active:
-            return defaults
-
-        chg_pcts = [r[2] for r in active]
-        volumes = [r[3] for r in active]
-        values = [r[4] for r in active]
-        trades_list = [r[5] for r in active]
-        spreads_bps = [
-            (r[7] - r[6]) / r[1] * 10_000 if r[1] and r[1] > 0 else 0
-            for r in active
-        ]
-        depths = [(r[8] + r[9]) / 2 for r in active]
-
-        adv = sum(1 for c in chg_pcts if c > 0)
-        dec_ = sum(1 for c in chg_pcts if c < 0)
-        unch = sum(1 for c in chg_pcts if c == 0)
-        total_val = sum(values)
+        total_ticks = int(active["bar_count"].sum())
+        adv = int((active["change_pct"] > 0).sum())
+        dec_ = int((active["change_pct"] < 0).sum())
+        unch = int((active["change_pct"] == 0).sum())
+        total_val = float(active["turnover"].sum())
+        total_vol = float(active["volume"].sum())
+        total_trades = int(active["trades"].sum())
 
         # Top-10 concentration
-        top10_val = sum(sorted(values, reverse=True)[:10])
+        top10_val = float(active.nlargest(10, "turnover")["turnover"].sum())
 
-        sorted_spreads = sorted(spreads_bps)
+        sorted_spreads = sorted(active["med_spread_bps"].tolist())
         p90_idx = int(len(sorted_spreads) * 0.9)
+        chg_pcts = active["change_pct"].tolist()
 
-        fut_count = con.execute(
-            "SELECT COUNT(DISTINCT symbol) FROM tick_logs WHERE source_file = ? AND market = 'FUT'",
-            (source_file,),
-        ).fetchone()[0]
+        # Futures count from summary
+        fut_count = int((df["market"] == "FUT").sum()) if "market" in df.columns else 0
+
+        # Duration estimate (first_ts to last_ts)
+        duration_min = 330  # ~5.5h trading day default
+        if "first_ts" in active.columns and "last_ts" in active.columns:
+            try:
+                ft = str(active["first_ts"].min())
+                lt = str(active["last_ts"].max())
+                if ft and lt and len(ft) > 15 and len(lt) > 15:
+                    from datetime import datetime as _dt
+                    t1 = _dt.fromisoformat(ft)
+                    t2 = _dt.fromisoformat(lt)
+                    duration_min = max((t2 - t1).total_seconds() / 60, 1)
+            except Exception:
+                pass
 
         return dict(
             total_ticks=total_ticks,
             symbols_traded=len(active),
             adv=adv, dec=dec_, unch=unch,
-            total_vol=sum(volumes),
+            total_vol=total_vol,
             total_val=total_val,
-            total_trades=sum(trades_list),
+            total_trades=total_trades,
             fut_count=fut_count,
-            med_spread=statistics.median(spreads_bps) if spreads_bps else 0,
+            med_spread=float(active["med_spread_bps"].median()) if len(active) else 0,
             p90_spread=sorted_spreads[p90_idx] if sorted_spreads else 0,
             mean_chg=statistics.mean(chg_pcts) if chg_pcts else 0,
             cross_sec_vol=statistics.stdev(chg_pcts) if len(chg_pcts) > 1 else 0,
             max_gain=max(chg_pcts) if chg_pcts else 0,
             max_loss=min(chg_pcts) if chg_pcts else 0,
-            avg_depth=statistics.median(depths) if depths else 0,
+            avg_depth=0,
             top10_conc=top10_val / max(total_val, 1) * 100,
             tick_rate=total_ticks / duration_min,
         )
-    except Exception:
+    except Exception as e:
+        import traceback
+        print(f"[tick_analytics] _load_today_snapshot ERROR: {e}")
+        traceback.print_exc()
         return defaults
 
 
@@ -1245,135 +1443,367 @@ def _render_quant_overview(latest_date: str):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _render_tick_sync():
-    st.markdown("### Tick Log Sync")
-    st.caption("Sync JSONL tick files from `/mnt/e/psxdata/tick_logs/` into the database")
+    st.markdown("### Tick Data Sync")
+
+    from pakfindata.db.connections import has_duckdb, duck_write
+    from pakfindata.db.duckdb_manager import DUCKDB_PATH, JSONL_CLOUD_DIR, JSONL_LOCAL_DIR
 
     con = get_connection()
+    ensure_summary_table(con)
 
-    # Stats row
-    stats = get_tick_logs_stats(con)
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        _kpi("Total Ticks", f"{stats['total_ticks']:,}", color=_C["accent"])
-    with c2:
-        _kpi("Symbols", f"{stats['symbols']:,}", color=_C["cyan"])
-    with c3:
-        _kpi("Files Synced", f"{stats['files']:,}", color=_C["amber"])
-    with c4:
-        last = stats.get("last_tick") or "—"
-        _kpi("Latest Tick", str(last)[:19] if last != "—" else "—", color=_C["teal"])
+    _use_duck = has_duckdb()
 
-    st.markdown("---")
-
-    # Available files on disk
-    files_on_disk = sorted(TICK_LOG_DIR.glob("ticks_*.jsonl"), reverse=True)
-    if not files_on_disk:
-        st.warning("No JSONL files found in `/mnt/e/psxdata/tick_logs/`")
-        return
-
-    st.markdown(f"**{len(files_on_disk)} file(s) on disk** — latest: `{files_on_disk[0].name}`")
-
-    # Actions
-    col_sync, col_backfill = st.columns(2)
-
-    with col_sync:
-        st.markdown(f'<div style="background:{_C["card"]};padding:16px;border-radius:6px;'
-                    f'border-left:3px solid {_C["accent"]};font-family:monospace;">'
-                    f'<div style="color:{_C["text"]};font-size:1.1em;font-weight:700;">Sync Latest</div>'
-                    f'<div style="color:{_C["dim"]};font-size:0.85em;">Upsert the most recent file: '
-                    f'<code>{files_on_disk[0].name}</code></div></div>',
-                    unsafe_allow_html=True)
-        if st.button("Sync Latest File", type="primary", use_container_width=True):
-            with st.spinner(f"Syncing {files_on_disk[0].name}..."):
-                result = sync_latest_file(con)
-                st.cache_data.clear()
-            if result["status"] == "ok":
-                st.success(f"Synced **{result['ticks_synced']:,}** ticks from `{result['file']}`")
-                st.rerun()
-            else:
-                st.error(f"Sync failed: {result['status']}")
-
-    with col_backfill:
-        # Determine unsynced files
+    # ── KPI row: DuckDB primary, SQLite fallback ──
+    if _use_duck:
+        import duckdb as _duckdb
         try:
-            existing = set(
-                row[0]
-                for row in con.execute(
-                    "SELECT DISTINCT source_file FROM tick_logs"
-                ).fetchall()
-            )
+            dcon = _duckdb.connect(str(DUCKDB_PATH), read_only=True)
+            duck_tl_count = dcon.execute("SELECT COUNT(*) FROM tick_logs").fetchone()[0]
+            duck_tl_dates = dcon.execute(
+                "SELECT DISTINCT SUBSTR(_ts, 1, 10) AS d FROM tick_logs ORDER BY d DESC"
+            ).fetchall()
+            duck_first = duck_tl_dates[-1][0] if duck_tl_dates else "---"
+            duck_last = duck_tl_dates[0][0] if duck_tl_dates else "---"
+            duck_dates_set = {r[0] for r in duck_tl_dates}
+            dcon.close()
         except Exception:
-            existing = set()
+            duck_tl_count, duck_dates_set, duck_first, duck_last = 0, set(), "---", "---"
 
-        unsynced = [f for f in files_on_disk if f.name not in existing]
-        n_unsynced = len(unsynced)
-        bf_status = get_backfill_status()
-
-        st.markdown(f'<div style="background:{_C["card"]};padding:16px;border-radius:6px;'
-                    f'border-left:3px solid {_C["amber"]};font-family:monospace;">'
-                    f'<div style="color:{_C["text"]};font-size:1.1em;font-weight:700;">Backfill All</div>'
-                    f'<div style="color:{_C["dim"]};font-size:0.85em;">'
-                    f'{n_unsynced} unsynced / {len(files_on_disk)} total files '
-                    f'(background · non-blocking)</div></div>',
-                    unsafe_allow_html=True)
-
-        if bf_status.get("running"):
-            # Show live progress — auto-refresh every 2s
-            done = bf_status.get("files_done", 0)
-            total = bf_status.get("files_total", 1)
-            cur = bf_status.get("current_file", "")
-            ticks = bf_status.get("ticks_inserted", 0)
-            st.progress(
-                done / max(total, 1),
-                text=f"Inserting {cur} ({done}/{total} files · {ticks:,} ticks)"
-            )
-            import time
-            time.sleep(2)
-            st.rerun()
-        elif bf_status.get("error"):
-            st.error(f"Backfill failed: {bf_status['error']}")
-        elif n_unsynced == 0:
-            if bf_status.get("files_done", 0) > 0:
-                st.success(
-                    f"Backfill complete: {bf_status['files_done']} files, "
-                    f"{bf_status.get('ticks_inserted', 0):,} ticks inserted"
-                )
-            else:
-                st.info("All files already synced.")
-        elif st.button(f"Backfill {n_unsynced} Unsynced Files", type="secondary", use_container_width=True):
-            backfill_background(unsynced)
-            st.rerun()
-
-    # ── Clear table ──
-    st.markdown("---")
-    with st.expander("Danger Zone — Clear tick_logs table", expanded=False):
-        st.warning("This will **DELETE ALL rows** from tick_logs. You can refill using Backfill above.")
-        if st.button("Clear tick_logs table", type="secondary"):
-            st.session_state["_tick_clear_confirm"] = True
-        if st.session_state.get("_tick_clear_confirm"):
-            st.error("Are you sure? This cannot be undone.")
-            c_yes, c_no = st.columns(2)
-            with c_yes:
-                if st.button("Yes — DELETE ALL", type="primary"):
-                    con.execute("DELETE FROM tick_logs")
-                    con.commit()
-                    st.session_state.pop("_tick_clear_confirm", None)
-                    st.success("tick_logs table cleared.")
-                    st.rerun()
-            with c_no:
-                if st.button("Cancel"):
-                    st.session_state.pop("_tick_clear_confirm", None)
-                    st.rerun()
-
-    # Synced files table
-    st.markdown("---")
-    st.markdown("**Synced Files**")
-    synced_df = get_synced_files(con)
-    if synced_df.empty:
-        st.info("No files synced yet. Click **Backfill** above to import all dates.")
+        st.caption("Primary: DuckDB  |  Fallback: SQLite")
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            _kpi("DuckDB tick_logs", f"{duck_tl_count:,}", color=_C["accent"])
+        with c2:
+            _kpi("Dates", f"{len(duck_dates_set)}", color=_C["cyan"])
+        with c3:
+            _kpi("First Date", str(duck_first), color=_C["amber"])
+        with c4:
+            _kpi("Latest Date", str(duck_last), color=_C["teal"])
     else:
-        synced_df.columns = ["File", "Ticks", "Symbols", "First Tick", "Last Tick"]
-        st.dataframe(synced_df, hide_index=True, use_container_width=True)
+        st.caption("DuckDB not available — using SQLite only")
+        sum_stats = get_summary_stats(con)
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            _kpi("Summary Dates", f"{sum_stats['dates']}", color=_C["accent"])
+        with c2:
+            _kpi("Summary Rows", f"{sum_stats['total_rows']:,}", color=_C["cyan"])
+        with c3:
+            _kpi("First Date", str(sum_stats.get("first_date") or "---"), color=_C["amber"])
+        with c4:
+            _kpi("Latest Date", str(sum_stats.get("last_date") or "---"), color=_C["teal"])
+
+    # ── Daily Summary (SQLite — still needed for precomputed summaries) ──
+    st.markdown("---")
+    st.markdown("#### Daily Summary (tick_bars.db -> tick_daily_summary)")
+    st.caption("Precomputes per-symbol daily metrics from tick_bars.db. ~25s per date, runs once.")
+
+    avail = set(_summary_available_dates(con))
+    existing = set(get_summary_dates(con))
+    missing = sorted(avail - existing)
+
+    if missing:
+        st.info(f"**{len(missing)}** dates need summary computation: {', '.join(missing)}")
+        if st.button(f"Compute {len(missing)} Missing Summaries", type="primary"):
+            with st.spinner(f"Computing {len(missing)} date summaries..."):
+                result = compute_missing_summaries(con)
+                st.cache_data.clear()
+            st.success(f"Computed {result['dates_computed']} dates, {result['symbols_total']} symbol-rows")
+            st.rerun()
+    else:
+        st.success(f"All {len(existing)} dates have precomputed summaries.")
+
+    st.markdown("---")
+
+    # ═══════════════════════════════════════════════════════
+    # SYNC tick_bars.db → DuckDB (ohlcv_5s, index tables)
+    # ═══════════════════════════════════════════════════════
+    st.markdown("#### Sync tick_bars.db → DuckDB (via /tmp/)")
+    st.caption("Merges ohlcv_5s + index tables from tick_bars.db into DuckDB. ~10 seconds.")
+
+    _sync_col1, _sync_col2 = st.columns([1, 1])
+
+    with _sync_col1:
+        if st.button("🔄 Sync tick_bars.db → DuckDB", type="primary", key="_sync_tickbars_duck"):
+            with st.spinner("Copying to /tmp/ for fast sync..."):
+                try:
+                    from pakfindata.db.duckdb_manager import sync_sqlite_to_duckdb, DUCKDB_PATH as _DP
+                    results = sync_sqlite_to_duckdb(
+                        sqlite_path=str(TICK_BARS_DB),
+                        duckdb_path=str(_DP),
+                        tables=["ohlcv_5s", "index_ohlcv_5s", "index_raw_ticks"],
+                    )
+                    for table, added in results.items():
+                        if added > 0:
+                            st.success(f"✅ {table}: +{added:,} new rows")
+                        else:
+                            st.info(f"ℹ️ {table}: already up to date")
+                except Exception as e:
+                    st.error(f"Sync failed: {e}")
+
+    with _sync_col2:
+        try:
+            import duckdb as _ddb
+            import sqlite3 as _sql
+            from pakfindata.db.duckdb_manager import DUCKDB_PATH as _DP2
+            _dc = _ddb.connect(str(_DP2), read_only=True)
+            _sc = _sql.connect(str(TICK_BARS_DB))
+            for t in ["ohlcv_5s", "index_ohlcv_5s", "index_raw_ticks"]:
+                dc = _dc.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                sc = _sc.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                delta = sc - dc
+                if delta > 0:
+                    st.warning(f"{t}: DuckDB {dc:,} | SQLite {sc:,} (⚠️ {delta:,} behind)")
+                else:
+                    st.success(f"{t}: {dc:,} rows ✅")
+            _dc.close()
+            _sc.close()
+        except Exception as e:
+            st.caption(f"Could not compare: {e}")
+
+    st.markdown("---")
+
+    # ═══════════════════════════════════════════════════════
+    # JSONL → DuckDB tick_logs
+    # ═══════════════════════════════════════════════════════
+    st.markdown("#### JSONL -> DuckDB tick_logs (primary)")
+    st.caption("Import JSONL tick files directly into DuckDB — fast columnar import via read_json_auto.")
+
+    if not _use_duck:
+        st.warning("DuckDB not available. Using SQLite fallback below.")
+    else:
+        # Collect all JSONL files from cloud + local
+        cloud_files = sorted(JSONL_CLOUD_DIR.glob("ticks_*.jsonl"), reverse=True) if JSONL_CLOUD_DIR.exists() else []
+        local_files = sorted(JSONL_LOCAL_DIR.glob("ticks_*.jsonl"), reverse=True) if JSONL_LOCAL_DIR.exists() else []
+        all_jsonl = {f.stem.replace("ticks_", ""): f for f in local_files}
+        for f in cloud_files:
+            d = f.stem.replace("ticks_", "")
+            all_jsonl[d] = f  # cloud overrides local
+        jsonl_dates = sorted(all_jsonl.keys(), reverse=True)
+
+        # ── Single date import ──
+        st.markdown("**Import single date**")
+        if jsonl_dates:
+            not_imported = [d for d in jsonl_dates if d not in duck_dates_set]
+            import_choices = not_imported if not_imported else jsonl_dates
+            sel_import_date = st.selectbox(
+                "JSONL date", import_choices, index=0, key="_duck_import_date"
+            )
+            already = sel_import_date in duck_dates_set
+            if already:
+                st.info(f"{sel_import_date} already imported to DuckDB.")
+
+            if st.button(
+                f"Import {sel_import_date} -> DuckDB tick_logs",
+                key="_duck_import_single", type="primary",
+                disabled=already,
+            ):
+                jsonl_path = all_jsonl[sel_import_date]
+                with st.spinner(f"Importing {jsonl_path.name} via read_json_auto..."):
+                    try:
+                        wcon = duck_write()
+                        before_n = wcon.execute("SELECT COUNT(*) FROM tick_logs").fetchone()[0]
+                        wcon.execute(f"""
+                            INSERT OR IGNORE INTO tick_logs
+                            SELECT
+                                symbol, market, timestamp, "_ts",
+                                price, "open", high, low, change,
+                                "changePercent" AS change_pct,
+                                CAST(volume AS BIGINT) AS volume,
+                                value,
+                                CAST(trades AS INTEGER) AS trades,
+                                bid, ask,
+                                CAST("bidVol" AS BIGINT) AS bid_vol,
+                                CAST("askVol" AS BIGINT) AS ask_vol,
+                                "previousClose" AS prev_close,
+                                '{jsonl_path.name}' AS source_file,
+                                '{datetime.now().isoformat()}' AS ingested_at
+                            FROM read_json_auto('{jsonl_path}',
+                                 format='newline_delimited',
+                                 maximum_object_size=10485760)
+                        """)
+                        after_n = wcon.execute("SELECT COUNT(*) FROM tick_logs").fetchone()[0]
+                        wcon.close()
+                        st.success(f"Imported {after_n - before_n:,} ticks from {jsonl_path.name} (total: {after_n:,})")
+                        st.cache_data.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Import failed: {e}")
+        else:
+            st.info("No JSONL files found in tick_logs_cloud or tick_logs directories.")
+
+        # ── Bulk import all ──
+        st.markdown("---")
+        st.markdown("**Import ALL missing JSONL files**")
+        missing_dates = sorted(set(jsonl_dates) - duck_dates_set)
+        if not missing_dates:
+            st.success(f"All {len(jsonl_dates)} JSONL dates already imported to DuckDB.")
+        else:
+            st.info(f"**{len(missing_dates)}** dates not yet in DuckDB: {', '.join(missing_dates[:5])}{'...' if len(missing_dates) > 5 else ''}")
+            if st.button(
+                f"Import {len(missing_dates)} Missing Dates -> DuckDB",
+                key="_duck_import_all", type="primary",
+            ):
+                progress_bar = st.progress(0, text="Starting bulk import...")
+                imported_total = 0
+                for idx, d in enumerate(missing_dates):
+                    jsonl_path = all_jsonl[d]
+                    progress_bar.progress(
+                        (idx + 1) / len(missing_dates),
+                        text=f"Importing {d} ({idx + 1}/{len(missing_dates)})..."
+                    )
+                    try:
+                        wcon = duck_write()
+                        before_n = wcon.execute("SELECT COUNT(*) FROM tick_logs").fetchone()[0]
+                        wcon.execute(f"""
+                            INSERT OR IGNORE INTO tick_logs
+                            SELECT
+                                symbol, market, timestamp, "_ts",
+                                price, "open", high, low, change,
+                                "changePercent" AS change_pct,
+                                CAST(volume AS BIGINT) AS volume,
+                                value,
+                                CAST(trades AS INTEGER) AS trades,
+                                bid, ask,
+                                CAST("bidVol" AS BIGINT) AS bid_vol,
+                                CAST("askVol" AS BIGINT) AS ask_vol,
+                                "previousClose" AS prev_close,
+                                '{jsonl_path.name}' AS source_file,
+                                '{datetime.now().isoformat()}' AS ingested_at
+                            FROM read_json_auto('{jsonl_path}',
+                                 format='newline_delimited',
+                                 maximum_object_size=10485760)
+                        """)
+                        after_n = wcon.execute("SELECT COUNT(*) FROM tick_logs").fetchone()[0]
+                        wcon.close()
+                        imported_total += (after_n - before_n)
+                    except Exception as e:
+                        st.warning(f"Failed {d}: {e}")
+
+                progress_bar.progress(1.0, text="Done!")
+                st.success(f"Bulk import complete: {imported_total:,} ticks from {len(missing_dates)} dates")
+                st.cache_data.clear()
+                st.rerun()
+
+    st.markdown("---")
+
+    # ═══════════════════════════════════════════════════════
+    # FULL NIGHTLY SYNC (one-click)
+    # ═══════════════════════════════════════════════════════
+    st.markdown("#### 🚀 Full Nightly Sync")
+    st.caption("tick_bars.db → DuckDB + ALL JSONL → DuckDB in one click")
+
+    if st.button("🚀 Run Full Nightly Sync", type="primary", key="_full_nightly_sync"):
+        _nightly_progress = st.progress(0, text="Starting...")
+
+        # Part 1: tick_bars.db → DuckDB
+        _nightly_progress.progress(10, text="Syncing tick_bars.db → DuckDB (ohlcv_5s, index)...")
+        try:
+            from pakfindata.db.duckdb_manager import sync_sqlite_to_duckdb, DUCKDB_PATH as _NDP
+            tb_results = sync_sqlite_to_duckdb(
+                sqlite_path=str(TICK_BARS_DB),
+                duckdb_path=str(_NDP),
+                tables=["ohlcv_5s", "index_ohlcv_5s", "index_raw_ticks"],
+            )
+            for tbl, added in tb_results.items():
+                st.write(f"  {tbl}: +{added:,}")
+        except Exception as e:
+            st.warning(f"tick_bars.db sync: {e}")
+
+        # Part 2: JSONL → DuckDB tick_logs (import all missing)
+        _nightly_progress.progress(40, text="Importing JSONL → DuckDB tick_logs...")
+        try:
+            from pakfindata.db.connections import has_duckdb as _hd
+            from pakfindata.db.duckdb_manager import DUCKDB_PATH as _NDP2, JSONL_CLOUD_DIR as _JC, JSONL_LOCAL_DIR as _JL
+            import duckdb as _duckdb
+            if _hd():
+                # Collect JSONL files
+                cloud_files = sorted(_JC.glob("ticks_*.jsonl"), reverse=True) if _JC.exists() else []
+                local_files = sorted(_JL.glob("ticks_*.jsonl"), reverse=True) if _JL.exists() else []
+                all_jsonl = {f.stem.replace("ticks_", ""): f for f in local_files}
+                for f in cloud_files:
+                    d = f.stem.replace("ticks_", "")
+                    all_jsonl[d] = f
+
+                # Close cached read-only connection to allow read-write
+                try:
+                    from pakfindata.db.connections import _duck_con
+                    _duck_con().close()
+                    _duck_con.clear()
+                except Exception:
+                    pass
+                wcon = _duckdb.connect(str(_NDP2))
+                duck_dates = set()
+                try:
+                    duck_dates = set(
+                        r[0]
+                        for r in wcon.execute(
+                            "SELECT DISTINCT SUBSTR(source_file, 7, 10) "
+                            "FROM (SELECT REPLACE(source_file, '.jsonl', '') AS source_file FROM tick_logs)"
+                        ).fetchall()
+                    )
+                except Exception:
+                    pass
+
+                missing = sorted(set(all_jsonl.keys()) - duck_dates)
+                imported_n = 0
+                for i, d in enumerate(missing):
+                    pct = 40 + int(50 * (i + 1) / max(len(missing), 1))
+                    _nightly_progress.progress(pct, text=f"Importing {d}...")
+                    jpath = all_jsonl[d]
+                    try:
+                        before = wcon.execute("SELECT COUNT(*) FROM tick_logs").fetchone()[0]
+                        wcon.execute(f"""
+                            INSERT OR IGNORE INTO tick_logs
+                            SELECT
+                                symbol, market, timestamp, "_ts",
+                                price, "open", high, low, change,
+                                "changePercent" AS change_pct,
+                                CAST(volume AS BIGINT) AS volume,
+                                value,
+                                CAST(trades AS INTEGER) AS trades,
+                                bid, ask,
+                                CAST("bidVol" AS BIGINT) AS bid_vol,
+                                CAST("askVol" AS BIGINT) AS ask_vol,
+                                "previousClose" AS prev_close,
+                                '{jpath.name}' AS source_file,
+                                '{datetime.now().isoformat()}' AS ingested_at
+                            FROM read_json_auto('{jpath}',
+                                 format='newline_delimited', maximum_object_size=10485760)
+                        """)
+                        after = wcon.execute("SELECT COUNT(*) FROM tick_logs").fetchone()[0]
+                        imported_n += after - before
+                    except Exception:
+                        pass
+                wcon.close()
+                st.write(f"  tick_logs: +{imported_n:,} from {len(missing)} dates")
+        except Exception as e:
+            st.warning(f"JSONL import: {e}")
+
+        _nightly_progress.progress(100, text="✅ Full nightly sync complete!")
+        st.cache_data.clear()
+
+    st.markdown("---")
+
+    # ═══════════════════════════════════════════════════════
+    # FALLBACK: SQLite tick_logs sync (legacy — disabled)
+    # ═══════════════════════════════════════════════════════
+    with st.expander("JSONL -> SQLite tick_logs (legacy — slow, use DuckDB above)", expanded=False):
+        st.caption("SQLite tick_logs is deprecated. Use DuckDB import above for fast JSONL ingestion.")
+        files_on_disk = sorted(TICK_LOG_DIR.glob("ticks_*.jsonl"), reverse=True)
+        if not files_on_disk:
+            st.warning("No JSONL files found in `/mnt/e/psxdata/tick_logs/`")
+        else:
+            st.markdown(f"**{len(files_on_disk)} file(s) on disk** — latest: `{files_on_disk[0].name}`")
+
+            if st.button("Sync Latest File (SQLite)", type="secondary", use_container_width=True):
+                with st.spinner(f"Syncing {files_on_disk[0].name}..."):
+                    result = sync_latest_file(con)
+                    st.cache_data.clear()
+                if result["status"] == "ok":
+                    st.success(f"Synced **{result['ticks_synced']:,}** ticks from `{result['file']}`")
+                    st.rerun()
+                else:
+                    st.error(f"Sync failed: {result['status']}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1392,8 +1822,16 @@ def _render_intraday_controls_and_tabs(dates: list[str]):
         st.error(f"No data in tick log for {sel_date}.")
         return
 
-    reg_symbols = sorted(df[df["market"] == "REG"]["symbol"].unique())
-    top_sym = df[df["market"] == "REG"]["symbol"].value_counts().index[0] if reg_symbols else ""
+    if "market" in df.columns:
+        reg_df = df[df["market"] == "REG"]
+    else:
+        reg_df = df
+    reg_symbols = sorted(reg_df["symbol"].unique())
+    # Default to highest volume symbol
+    if len(reg_df) > 0 and "volume" in reg_df.columns:
+        top_sym = reg_df.nlargest(1, "volume")["symbol"].iloc[0]
+    else:
+        top_sym = reg_symbols[0] if reg_symbols else ""
 
     with col_sym:
         sel_sym = st.selectbox("Symbol", reg_symbols,
@@ -1403,17 +1841,17 @@ def _render_intraday_controls_and_tabs(dates: list[str]):
         sel_freq = st.selectbox("Bar Frequency", ["1min", "5min", "15min", "30min"], index=0)
 
     # Data info bar
-    fpath = TICK_LOG_DIR / f"ticks_{sel_date}.jsonl"
-    fsize_str = ""
-    if fpath.exists():
-        fsize_str = f" · {fpath.stat().st_size / (1024 * 1024):.1f} MB"
-    source_tag = "DB" if "source_file" not in df.columns else "JSONL"
-    ts_range = f"{df['_ts'].min().strftime('%H:%M')} → {df['_ts'].max().strftime('%H:%M')} PKT"
+    ts_range = ""
+    if "first_ts" in df.columns and not df.empty:
+        ft = str(df["first_ts"].iloc[0] or "")
+        lt = str(df["last_ts"].iloc[0] or "")
+        if ft and lt:
+            ts_range = f" · {ft[11:16]} → {lt[11:16]} PKT"
     st.markdown(
         f'<div style="background:{_C["card"]};padding:8px 14px;border-radius:4px;'
         f'font-family:monospace;font-size:0.8em;color:{_C["dim"]};">'
-        f'{len(df):,} ticks · {df["symbol"].nunique()} symbols'
-        f'{fsize_str} · {ts_range} · src: {source_tag}'
+        f'{len(df):,} symbols · src: tick_daily_summary'
+        f'{ts_range}'
         f'</div>',
         unsafe_allow_html=True,
     )
@@ -1434,20 +1872,26 @@ def _render_intraday_controls_and_tabs(dates: list[str]):
 
     if active_sub == "Market Snapshot":
         _render_market_overview(df)
-    elif active_sub == "Price & Returns":
-        _render_price_returns(df, sel_sym, sel_freq)
-    elif active_sub == "Volume Profile":
-        _render_volume_profile(df, sel_sym)
-    elif active_sub == "Spread & Liquidity":
-        _render_spread_liquidity(df, sel_sym)
-    elif active_sub == "Volatility":
-        _render_volatility(df, sel_sym, sel_freq)
-    elif active_sub == "Correlations":
-        _render_correlation(df)
-    elif active_sub == "Market Flow":
-        _render_market_flow(df)
-    elif active_sub == "Futures Basis":
-        _render_futures_basis(df)
+    else:
+        # All other tabs need 5-second bar data (not the summary)
+        bars_df = _load_bars(sel_date)
+        if bars_df.empty:
+            st.warning(f"No 5-second bar data for {sel_date}. Only Market Snapshot is available from the summary.")
+            return
+        if active_sub == "Price & Returns":
+            _render_price_returns(bars_df, sel_sym, sel_freq)
+        elif active_sub == "Volume Profile":
+            _render_volume_profile(bars_df, sel_sym)
+        elif active_sub == "Spread & Liquidity":
+            _render_spread_liquidity(bars_df, sel_sym)
+        elif active_sub == "Volatility":
+            _render_volatility(bars_df, sel_sym, sel_freq)
+        elif active_sub == "Correlations":
+            _render_correlation(bars_df)
+        elif active_sub == "Market Flow":
+            _render_market_flow(bars_df)
+        elif active_sub == "Futures Basis":
+            _render_futures_basis(bars_df)
 
 
 def render_tick_analytics():
@@ -1458,7 +1902,7 @@ def render_tick_analytics():
     TAB_NAMES = ["Overview", "Intraday Analytics", "Sync"]
     active = st.radio(
         "Section", TAB_NAMES,
-        index=TAB_NAMES.index(st.session_state.get("_tick_tab", "Sync")),
+        index=TAB_NAMES.index(st.session_state.get("_tick_tab", "Overview")),
         horizontal=True, label_visibility="collapsed",
         key="_tick_tab_radio",
     )

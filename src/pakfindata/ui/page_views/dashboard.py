@@ -70,10 +70,11 @@ def _sync_indices(con):
 
 
 def _sync_rates(con):
-    from pakfindata.sources.sbp_rates import SBPRatesScraper
+    from pakfindata.sources.sbp_easydata import sync_kibor_to_db, sync_policy_rate_to_db
     from pakfindata.sources.sbp_treasury import SBPTreasuryScraper
-    rates = SBPRatesScraper().sync_rates(con)
+    rates = sync_kibor_to_db(con)
     treas = SBPTreasuryScraper().sync_treasury(con)
+    sync_policy_rate_to_db(con)
     return rates, treas
 
 

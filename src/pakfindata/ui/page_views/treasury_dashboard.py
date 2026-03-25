@@ -1222,18 +1222,19 @@ def _render_sync(con):
     st.markdown("##### Historical Backfill (SBP PDFs)")
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        if st.button("Backfill SIR (T-Bill+PIB+KIBOR)", key="tsy_backfill_sir"):
-            with st.spinner("Downloading & parsing SIR PDF..."):
+        if st.button("Sync SBP EasyData (KIBOR+Policy)", key="tsy_backfill_sir"):
+            with st.spinner("Syncing from SBP EasyData CSVs..."):
                 try:
-                    from pakfindata.sources.sbp_sir import SBPSirScraper
-                    counts = SBPSirScraper().sync_sir(con)
+                    from pakfindata.sources.sbp_easydata import sync_kibor_to_db, sync_policy_rate_to_db
+                    r1 = sync_kibor_to_db(con)
+                    r2 = sync_policy_rate_to_db(con)
                     st.success(
-                        f"T-Bills: {counts['tbills']}, PIBs: {counts['pibs']}, "
-                        f"KIBOR: {counts['kibor']}, GIS: {counts['gis']}"
+                        f"KIBOR: {r1.get('kibor_rows', 0)} rows, "
+                        f"Policy: {r2.get('policy_rows', 0)} rows"
                     )
                     st.rerun()
                 except Exception as e:
-                    st.error(f"SIR backfill failed: {e}")
+                    st.error(f"EasyData sync failed: {e}")
     with c2:
         if st.button("Backfill PIB (2000-Present)", key="tsy_backfill_pib"):
             with st.spinner("Downloading PIB archive PDF..."):

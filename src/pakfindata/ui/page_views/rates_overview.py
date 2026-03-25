@@ -212,12 +212,12 @@ def render_rates_overview():
     with st.expander("Sync Rates Data"):
         col1, col2, col3 = st.columns(3)
         with col1:
-            if st.button("Sync KIBOR/KONIA", key="ro_rates"):
-                with st.spinner("Syncing rates from SBP..."):
+            if st.button("Sync KIBOR (EasyData)", key="ro_rates"):
+                with st.spinner("Syncing KIBOR from SBP EasyData..."):
                     try:
-                        from pakfindata.sources.sbp_rates import SBPRatesScraper
-                        result = SBPRatesScraper().sync_rates(con)
-                        st.success(f"Rates synced: {result}")
+                        from pakfindata.sources.sbp_easydata import sync_kibor_to_db
+                        result = sync_kibor_to_db(con)
+                        st.success(f"KIBOR synced: {result.get('kibor_rows', 0)} rows")
                     except Exception as e:
                         st.error(f"Failed: {e}")
         with col2:
