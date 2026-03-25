@@ -522,6 +522,11 @@ def strategy_vpin_page():
     render_page()
 
 
+def strategy_ofi_page():
+    from pakfindata.ui.page_views.strategy_ofi import render_page
+    render_page()
+
+
 def tick_analytics_page():
     from pakfindata.ui.page_views.tick_analytics import render_tick_analytics
     render_tick_analytics()
@@ -795,6 +800,7 @@ def main():
         "ML Predictions":    st.Page(ml_predictions_page,      title="ML Predictions",    url_path="ml-predictions"),
         # STRATEGIES
         "VPIN Strategy":     st.Page(strategy_vpin_page,       title="VPIN Strategy",     url_path="vpin-strategy"),
+        "OFI Alpha":         st.Page(strategy_ofi_page,        title="OFI Alpha",         url_path="ofi-alpha"),
         # ADMIN
         "Data Status":        st.Page(data_status_page,       title="Data Status",        url_path="data-status"),
         "Sync Center":        st.Page(sync_center_page,       title="Sync Center",        url_path="sync-center"),
@@ -817,7 +823,7 @@ def main():
         "FX & RATES":      ["Currency Dashboard", "FX Dashboard", "Interbank vs Open", "Rate History"],
         "COMMODITIES":     ["Commodities", "PMEX"],
         "RESEARCH":        ["Research", "Signal Analysis", "Microstructure", "Tick Analytics", "Tick Replay", "Quant Lab", "Macro Cycles", "Sector Breadth", "Market Research", "ML Predictions"],
-        "STRATEGIES":      ["VPIN Strategy"],
+        "STRATEGIES":      ["VPIN Strategy", "OFI Alpha"],
         "ADMIN":           ["Data Status", "Sync Center", "Schema Explorer"],
     }
 
