@@ -537,6 +537,16 @@ def strategy_basis_page():
     render_page()
 
 
+def strategy_oi_page():
+    from pakfindata.ui.page_views.strategy_oi import render_strategy_oi
+    render_strategy_oi()
+
+
+def strategy_pairs_page():
+    from pakfindata.ui.page_views.strategy_pairs import render_strategy_pairs
+    render_strategy_pairs()
+
+
 def strategy_vwap_page():
     from pakfindata.ui.page_views.strategy_vwap import render_page
     render_page()
@@ -549,6 +559,11 @@ def strategy_hmm_page():
 
 def strategy_sector_page():
     from pakfindata.ui.page_views.strategy_sector import render_page
+    render_page()
+
+
+def strategy_sentiment_page():
+    from pakfindata.ui.page_views.strategy_sentiment import render_page
     render_page()
 
 
@@ -841,6 +856,10 @@ def main():
         "VWAP Execution":    st.Page(strategy_vwap_page,       title="VWAP Execution",    url_path="vwap-execution"),
         "Macro Regime":      st.Page(strategy_hmm_page,        title="Macro Regime",      url_path="macro-regime-hmm"),
         "Sector Rotation":   st.Page(strategy_sector_page,     title="Sector Rotation",   url_path="sector-rotation"),
+        "LLM Sentiment":     st.Page(strategy_sentiment_page,  title="LLM Sentiment",     url_path="llm-sentiment"),
+        "OI Buildup/Unwind": st.Page(strategy_oi_page,          title="OI Buildup/Unwind", url_path="oi-buildup"),
+        "Pairs Trading":    st.Page(strategy_pairs_page,       title="Pairs Trading",     url_path="pairs-trading"),
+        "LLM Sentiment":    st.Page(strategy_sentiment_page,  title="LLM Sentiment",     url_path="llm-sentiment"),
         # ADMIN
         "Data Status":        st.Page(data_status_page,       title="Data Status",        url_path="data-status"),
         "Sync Center":        st.Page(sync_center_page,       title="Sync Center",        url_path="sync-center"),
@@ -865,7 +884,7 @@ def main():
         "FX & RATES":      ["Currency Dashboard", "FX Dashboard", "Interbank vs Open", "Rate History"],
         "COMMODITIES":     ["Commodities", "PMEX"],
         "RESEARCH":        ["Research", "Signal Analysis", "Microstructure", "Tick Analytics", "Tick Replay", "Quant Lab", "Macro Cycles", "Sector Breadth", "Market Research", "ML Predictions"],
-        "STRATEGIES":      ["VPIN Strategy", "OFI Alpha", "CVD Divergence", "Basis Arb", "VWAP Execution", "Macro Regime", "Sector Rotation"],
+        "STRATEGIES":      ["VPIN Strategy", "OFI Alpha", "CVD Divergence", "Basis Arb", "VWAP Execution", "Macro Regime", "Sector Rotation", "OI Buildup/Unwind", "Pairs Trading", "LLM Sentiment"],
         "ADMIN":           ["Data Status", "Sync Center", "Schema Explorer", "App Lineage", "SBP EasyData"],
     }
 
