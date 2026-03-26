@@ -77,9 +77,16 @@ def _start_fusion_api(engine, symbol: str, refresh_sec: int = 10):
     import logging
 
     app = Flask(__name__)
-    CORS(app)
+    CORS(app, resources={r"/*": {"origins": "*"}})
     log = logging.getLogger("werkzeug")
     log.setLevel(logging.ERROR)
+
+    @app.after_request
+    def add_cors_headers(response):
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        return response
 
     # Shared state
     state = {"last_computed": 0, "result": None, "symbol": symbol}
@@ -132,14 +139,14 @@ def _start_fusion_api(engine, symbol: str, refresh_sec: int = 10):
     def health():
         return jsonify({"status": "ok", "symbol": state["symbol"]})
 
-    app.run(host="127.0.0.1", port=API_PORT, threaded=True)
+    app.run(host="0.0.0.0", port=API_PORT, threaded=True)
 
 
 def _is_api_running() -> bool:
     """Check if fusion API is already running."""
     try:
         import urllib.request
-        resp = urllib.request.urlopen(f"http://127.0.0.1:{API_PORT}/health", timeout=1)
+        resp = urllib.request.urlopen(f"http://localhost:{API_PORT}/health", timeout=2)
         return resp.status == 200
     except Exception:
         return False
@@ -227,7 +234,7 @@ def render_page():
 
     # Show the real-time panel
     sym = st.session_state.get("fusion_symbol", symbol.upper())
-    api_url = f"http://127.0.0.1:{API_PORT}"
+    api_url = f"http://localhost:{API_PORT}"
 
     st.success(f"Simulator running: **{sym}** | API: `{api_url}` | Refresh: {refresh_sec}s")
 
