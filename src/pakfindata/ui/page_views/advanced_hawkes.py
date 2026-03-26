@@ -200,19 +200,65 @@ def render_page():
             bt_thresh = st.slider("Burst threshold", 2.0, 8.0, 3.0, 0.5, key="hawkes_bt_thresh")
 
         if st.button("Run Backtest", key="hawkes_bt_run"):
-            with st.spinner(f"Analyzing {bt_days} days of {bt_sym}..."):
-                try:
-                    from pakfindata.engine.hawkes_process import backtest_burst_signals
-                    result = backtest_burst_signals(
-                        bt_sym.upper(), lookback_days=bt_days,
-                        burst_threshold=bt_thresh,
-                    )
-                except Exception as e:
-                    st.error(f"Error: {e}")
+            try:
+                from pakfindata.engine.hawkes_process import analyze_symbol
+                import duckdb
+
+                sym_upper = bt_sym.upper()
+                con = duckdb.connect("/mnt/e/psxdata/pakfindata.duckdb", read_only=True)
+                dates = con.execute(f"""
+                    SELECT DISTINCT CAST(_ts AS DATE) as d
+                    FROM tick_logs WHERE symbol = '{sym_upper}'
+                    ORDER BY d DESC LIMIT {bt_days}
+                """).fetchall()
+                con.close()
+
+                all_bursts = []
+                progress = st.progress(0, text=f"Analyzing day 0/{len(dates)}...")
+                for i, (d,) in enumerate(dates):
+                    progress.progress((i + 1) / len(dates),
+                                      text=f"Fitting {sym_upper} on {d} ({i+1}/{len(dates)})...")
+                    analysis = analyze_symbol(sym_upper, str(d),
+                                              intensity_resolution=10.0,
+                                              burst_threshold=bt_thresh, fast=True)
+                    if "error" in analysis:
+                        continue
+                    for burst in analysis["bursts"]:
+                        burst["date"] = str(d)
+                        ticks = analysis["ticks"]
+                        t_start, t_end = burst["start_time"], burst["end_time"]
+                        pre = ticks[(ticks["ts_seconds"] >= t_start - 300) &
+                                    (ticks["ts_seconds"] < t_start)]
+                        post = ticks[(ticks["ts_seconds"] > t_end) &
+                                     (ticks["ts_seconds"] <= t_end + 300)]
+                        burst["pre_vol"] = float(pre["price"].pct_change().dropna().std() *
+                                                  np.sqrt(len(pre))) if len(pre) > 5 else 0
+                        burst["post_vol"] = float(post["price"].pct_change().dropna().std() *
+                                                   np.sqrt(len(post))) if len(post) > 5 else 0
+                        burst["vol_amplification"] = (burst["post_vol"] / burst["pre_vol"]
+                                                      if burst["pre_vol"] > 0 else 0)
+                        all_bursts.append(burst)
+                progress.empty()
+
+                if not all_bursts:
+                    st.warning(f"No bursts detected for {sym_upper} in {len(dates)} days.")
                     return
 
-            if "error" in result:
-                st.warning(result["error"])
+                bdf_raw = pd.DataFrame(all_bursts)
+                m = {
+                    "days_analyzed": len(dates),
+                    "total_bursts": len(bdf_raw),
+                    "bursts_per_day": len(bdf_raw) / len(dates) if dates else 0,
+                    "avg_duration_sec": float(bdf_raw["duration_seconds"].mean()),
+                    "avg_peak_ratio": float(bdf_raw["peak_ratio"].mean()),
+                    "avg_vol_amplification": float(bdf_raw["vol_amplification"].mean()),
+                    "pct_vol_increase": float((bdf_raw["vol_amplification"] > 1.0).mean() * 100),
+                    "avg_price_move_pct": float(bdf_raw["price_change_pct"].abs().mean()) if "price_change_pct" in bdf_raw.columns else 0,
+                }
+                result = {"metrics": m, "bursts": bdf_raw}
+
+            except Exception as e:
+                st.error(f"Error: {e}")
                 return
 
             m = result["metrics"]
@@ -281,18 +327,46 @@ def render_page():
 
         c1, c2 = st.columns(2)
         with c1:
-            scan_n = st.slider("Top N symbols (by tick count)", 10, 100, 30, key="hawkes_scan_n")
+            scan_n = st.slider("Top N symbols (by tick count)", 10, 100, 20, key="hawkes_scan_n")
         with c2:
             scan_btn = st.button("Scan Now", key="hawkes_scan_btn")
 
         if scan_btn:
-            with st.spinner(f"Fitting Hawkes for {scan_n} symbols..."):
-                try:
-                    from pakfindata.engine.hawkes_process import scan_symbols
-                    df = scan_symbols(top_n=scan_n)
-                except Exception as e:
-                    st.error(f"Error: {e}")
-                    return
+            try:
+                from pakfindata.engine.hawkes_process import analyze_symbol
+                import duckdb
+
+                con = duckdb.connect("/mnt/e/psxdata/pakfindata.duckdb", read_only=True)
+                date = str(con.execute("SELECT MAX(CAST(_ts AS DATE)) FROM tick_logs").fetchone()[0])
+                rows = con.execute(f"""
+                    SELECT symbol, COUNT(*) as n
+                    FROM tick_logs WHERE CAST(_ts AS DATE) = '{date}'
+                    GROUP BY symbol ORDER BY n DESC LIMIT {scan_n}
+                """).fetchall()
+                con.close()
+                symbols = [r[0] for r in rows]
+
+                results = []
+                progress = st.progress(0, text=f"Scanning 0/{len(symbols)}...")
+                for i, sym in enumerate(symbols):
+                    progress.progress((i + 1) / len(symbols),
+                                      text=f"Fitting {sym} ({i+1}/{len(symbols)})...")
+                    try:
+                        analysis = analyze_symbol(sym, date, intensity_resolution=5.0, fast=True)
+                        if "error" not in analysis:
+                            results.append(analysis["summary"])
+                    except Exception:
+                        continue
+                progress.empty()
+
+                if results:
+                    df = pd.DataFrame(results).sort_values("branching_ratio", ascending=False)
+                else:
+                    df = pd.DataFrame()
+
+            except Exception as e:
+                st.error(f"Error: {e}")
+                return
 
             if df.empty:
                 st.info("No results.")
