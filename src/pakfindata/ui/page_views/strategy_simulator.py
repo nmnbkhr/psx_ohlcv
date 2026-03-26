@@ -190,40 +190,31 @@ def render_page():
     with tab_live:
         # Price source depends on mode
         if mode == "Auto (Latest Tick)":
-            # Auto-fetch price from DuckDB
             latest_price = _fetch_latest_price(symbol.upper())
             if latest_price > 0:
-                st.markdown(f"**Latest tick price for {symbol.upper()}: Rs {latest_price:,.2f}**")
                 price_input = latest_price
+                st.markdown(f"**Latest tick: {symbol.upper()} = Rs {latest_price:,.2f}**")
             else:
-                st.warning(f"No price found for {symbol.upper()} in tick_logs or eod_ohlcv")
-                price_input = st.number_input("Enter Price Manually", 0.01, 100000.0, 100.0, 0.01, key="sim_price")
+                st.warning(f"No price found for {symbol.upper()}")
+                price_input = st.number_input("Enter Price", 0.01, 100000.0, 100.0, 0.01, key="sim_price")
 
-            c1, c2 = st.columns([1, 1])
-            with c1:
-                auto_refresh = st.checkbox("Auto-refresh (15s)", value=True, key="sim_auto")
-            with c2:
-                compute_btn = st.button("Compute Now", type="primary", key="sim_compute")
+            auto_refresh = st.checkbox("Auto-refresh (15s)", value=True, key="sim_auto")
+            if auto_refresh:
+                try:
+                    from streamlit_autorefresh import st_autorefresh
+                    st_autorefresh(interval=15000, limit=None, key="sim_autorefresh")
+                except ImportError:
+                    st.caption("`pip install streamlit-autorefresh`")
+
+            # In auto mode, ALWAYS compute when engine exists
+            should_compute = True
+
         else:
             # Manual mode
             price_input = st.number_input("Current Price", 0.01, 100000.0, 100.0, 0.01, key="sim_price")
-            c1, c2 = st.columns([1, 1])
-            with c1:
-                auto_refresh = st.checkbox("Auto-refresh (15s)", value=False, key="sim_auto")
-            with c2:
-                compute_btn = st.button("Compute Now", type="primary", key="sim_compute")
+            should_compute = st.button("Compute Now", type="primary", key="sim_compute")
 
-        # Auto-refresh
-        if auto_refresh:
-            try:
-                from streamlit_autorefresh import st_autorefresh
-                st_autorefresh(interval=15000, limit=None, key="sim_autorefresh")
-            except ImportError:
-                st.caption("Install for auto-refresh: `pip install streamlit-autorefresh`")
-
-        should_compute = compute_btn or (auto_refresh and "fusion_engine" in st.session_state)
-
-        if should_compute:
+        if should_compute and price_input > 0:
             with st.spinner("Computing fusion signal..."):
                 try:
                     decision = engine.compute(symbol.upper(), price_input)
