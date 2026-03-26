@@ -23,16 +23,16 @@ STRATEGIES = {
     "FLOW": [
         ("vpin", "VPIN Toxicity", True),
         ("ofi", "OFI Alpha", True),
-        ("cvd", "CVD Divergence", True),
+        ("cvd", "CVD Divergence", False),  # slow ~15s
         ("oi_buildup", "OI Buildup", True),
     ],
     "STRUCTURE": [
         ("basis_arb", "Basis Arb", True),
-        ("pairs_trading", "Pairs Trading", True),
+        ("pairs_trading", "Pairs Trading", False),  # slow ~11s
     ],
     "ALPHA": [
         ("ml_predictions", "ML Predictions", False),
-        ("sentiment", "LLM Sentiment", False),
+        ("sentiment", "LLM Sentiment", False),  # slow ~29s
     ],
     "RESEARCH": [
         ("hawkes", "Hawkes Process", False),
@@ -154,50 +154,55 @@ def render_page():
     ])
 
     with tab_live:
-        c1, c2 = st.columns([3, 1])
+        c1, c2, c3 = st.columns([2, 1, 1])
         with c1:
             price_input = st.number_input("Current Price", 0.01, 100000.0, 100.0, 0.01, key="sim_price")
         with c2:
-            st.write("")
-            st.write("")
-            compute_btn = st.button("Compute Fusion Signal", type="primary", key="sim_compute")
+            auto_refresh = st.checkbox("Auto-refresh (15s)", value=False, key="sim_auto")
+        with c3:
+            compute_btn = st.button("Compute Now", type="primary", key="sim_compute")
 
-        if compute_btn:
-            progress = st.progress(0, text="Gathering strategy votes...")
+        # Auto-refresh using st_autorefresh if checked
+        if auto_refresh:
             try:
-                decision = engine.compute(symbol.upper(), price_input)
-                progress.progress(80, text="Updating portfolio...")
-                engine.update_portfolio(decision)
-                progress.progress(100, text="Done!")
-                progress.empty()
+                from streamlit_autorefresh import st_autorefresh
+                st_autorefresh(interval=15000, limit=None, key="sim_autorefresh")
+            except ImportError:
+                st.caption("Auto-refresh needs: `pip install streamlit-autorefresh`")
 
-                if "fusion_decisions" not in st.session_state:
-                    st.session_state["fusion_decisions"] = []
-                st.session_state["fusion_decisions"].append(asdict(decision))
+        # Compute on button click OR on auto-refresh if enabled
+        should_compute = compute_btn or (auto_refresh and "fusion_engine" in st.session_state)
 
-            except Exception as e:
-                progress.empty()
-                st.error(f"Error: {e}")
-                return
+        if should_compute:
+            with st.spinner("Computing fusion signal..."):
+                try:
+                    decision = engine.compute(symbol.upper(), price_input)
+                    engine.update_portfolio(decision)
 
-            # Decision display
+                    if "fusion_decisions" not in st.session_state:
+                        st.session_state["fusion_decisions"] = []
+                    st.session_state["fusion_decisions"].append(asdict(decision))
+
+                except Exception as e:
+                    st.error(f"Error: {e}")
+                    return
+
             d = decision
             dec_color = _C["up"] if "BUY" in d.decision else (_C["down"] if "SELL" in d.decision else _C["dim"])
 
-            st.markdown(f"""
-            <div style="background:{_C['card']};padding:20px;border-radius:8px;text-align:center;margin:10px 0;">
-                <div style="color:{_C['dim']};font-size:0.8em;">FUSION DECISION</div>
-                <div style="color:{dec_color};font-size:2.5em;font-weight:900;letter-spacing:2px;">{d.decision}</div>
-                <div style="color:{_C['dim']};margin-top:4px;">
-                    Score: {d.raw_score*100:.1f} | {d.agreeing_count} agree, {d.conflicting_count} conflict
-                    {f' | VETOED: {d.veto_reason}' if d.vetoed else ''}
-                </div>
-                <div style="height:6px;background:#1E2530;border-radius:3px;margin-top:8px;">
-                    <div style="height:100%;width:{d.confidence:.0f}%;background:{dec_color};border-radius:3px;"></div>
-                </div>
-                <div style="color:{_C['dim']};font-size:0.7em;margin-top:4px;">Confidence: {d.confidence:.0f}%</div>
-            </div>
-            """, unsafe_allow_html=True)
+            # Decision panel — using st.columns for reliable rendering
+            st.markdown("---")
+            dc1, dc2, dc3 = st.columns([1, 2, 1])
+            with dc2:
+                st.markdown(f"<div style='text-align:center;color:{_C['dim']};font-size:0.8em;'>FUSION DECISION</div>",
+                            unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align:center;color:{dec_color};font-size:2.5em;font-weight:900;"
+                            f"letter-spacing:2px;'>{d.decision}</div>", unsafe_allow_html=True)
+                veto_str = f" | VETOED: {d.veto_reason}" if d.vetoed else ""
+                st.caption(f"Score: {d.raw_score*100:.1f} | {d.agreeing_count} agree, "
+                           f"{d.conflicting_count} conflict{veto_str}")
+                st.progress(int(min(d.confidence, 100)))
+                st.caption(f"Confidence: {d.confidence:.0f}%")
 
             # KPI row
             k1, k2, k3, k4, k5, k6 = st.columns(6)
