@@ -1,289 +1,304 @@
-"""Strategy Fusion Simulator -- real-time decision engine.
+"""Strategy Fusion Simulator -- reads fusion_state.json, renders with Plotly.
 
-Uses Streamlit's native rendering with st.empty() containers for
-live updates. No external API needed — computes directly in Python
-and updates containers in-place.
+Same pattern as live_ticker.py: file-based, no ports, no iframes.
 """
 
-import streamlit as st
-import pandas as pd
+import json
+import os
+import time as _time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from dataclasses import asdict
-import time
+
+import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import streamlit as st
+
+try:
+    from streamlit_autorefresh import st_autorefresh
+    HAS_AUTOREFRESH = True
+except ImportError:
+    HAS_AUTOREFRESH = False
+    st_autorefresh = None
 
 from pakfindata.ui.components.helpers import render_footer
 
+PKT = timezone(timedelta(hours=5))
 DATA_ROOT = Path("/mnt/e/psxdata")
-DUCKDB_PATH = "/mnt/e/psxdata/pakfindata.duckdb"
+FUSION_STATE = DATA_ROOT / "fusion_state.json"
 
-STRATEGIES = {
-    "REGIME": [
-        ("macro_hmm", "Macro Regime HMM", True),
-        ("sector_rotation", "Sector Rotation", True),
-    ],
-    "FLOW": [
-        ("vpin", "VPIN Toxicity", True),
-        ("ofi", "OFI Alpha", True),
-        ("cvd", "CVD Divergence", False),
-        ("oi_buildup", "OI Buildup", True),
-    ],
-    "STRUCTURE": [
-        ("basis_arb", "Basis Arb", True),
-        ("pairs_trading", "Pairs Trading", False),
-    ],
-    "ALPHA": [
-        ("ml_predictions", "ML Predictions", False),
-        ("sentiment", "LLM Sentiment", False),
-    ],
-    "RESEARCH": [
-        ("hawkes", "Hawkes Process", False),
-        ("vwap", "VWAP Context", False),
-    ],
+_C = {
+    "bg": "#0B0E11", "card": "#141820", "border": "#1E2530",
+    "text": "#E0E0E0", "dim": "#6B7280",
+    "up": "#00E676", "down": "#FF5252", "amber": "#FFB300",
+    "cyan": "#00BCD4", "blue": "#2196F3", "purple": "#BB86FC",
 }
 
-def _fetch_latest_price(symbol: str) -> float:
-    import duckdb
-    con = duckdb.connect(DUCKDB_PATH, read_only=True)
+
+def _load():
+    if not FUSION_STATE.exists():
+        return None
+    for _ in range(2):
+        try:
+            return json.loads(FUSION_STATE.read_text())
+        except (json.JSONDecodeError, IOError):
+            _time.sleep(0.3)
+    return None
+
+
+def _age():
     try:
-        row = con.execute(
-            "SELECT price FROM tick_logs WHERE symbol = ? AND price > 0 ORDER BY timestamp DESC LIMIT 1",
-            [symbol],
-        ).fetchone()
-        if row:
-            return float(row[0])
-        row = con.execute(
-            "SELECT close FROM eod_ohlcv WHERE symbol = ? AND close > 0 ORDER BY date DESC LIMIT 1",
-            [symbol],
-        ).fetchone()
-        if row:
-            return float(row[0])
-    finally:
-        con.close()
-    return 0.0
+        return _time.time() - os.path.getmtime(FUSION_STATE)
+    except OSError:
+        return 999
 
 
-def _render_decision(d, container):
-    """Render the full fusion decision into a container."""
-    with container:
-        dec_color = _C["up"] if "BUY" in d.decision else (_C["down"] if "SELL" in d.decision else _C["dim"])
-
-        # Decision header — no nested f-strings
-        veto_text = ""
-        if d.vetoed:
-            veto_text = " | VETOED: " + str(d.veto_reason)
-        score_text = "Score: {:.1f} | {} agree, {} conflict{}".format(
-            d.raw_score * 100, d.agreeing_count, d.conflicting_count, veto_text
+def _render_service_control():
+    """START/STOP buttons for fusion_service."""
+    try:
+        from pakfindata.services.fusion_service import (
+            is_fusion_running, start_fusion_background, stop_fusion_service,
         )
+    except ImportError:
+        st.caption("fusion_service not available")
+        return
 
-        st.markdown("#### " + d.decision)
-        st.caption(score_text)
-        st.progress(max(0, min(int(d.confidence), 100)))
+    running, pid = is_fusion_running()
 
-        # Category KPIs
-        k1, k2, k3, k4, k5, k6 = st.columns(6)
-        with k1:
-            st.metric("REGIME", f"{d.regime_score:+.2f}")
-        with k2:
-            st.metric("FLOW", f"{d.flow_score:+.2f}")
-        with k3:
-            st.metric("STRUCTURE", f"{d.structure_score:+.2f}")
-        with k4:
-            st.metric("ALPHA", f"{d.alpha_score:+.2f}")
-        with k5:
-            st.metric("SIZE", f"{d.suggested_size:,}")
-        with k6:
-            st.metric("PRICE", f"{d.price:,.2f}")
-
-        # Signal heatmap as dataframe (reliable rendering)
-        st.markdown("##### Strategy Votes")
-        vote_rows = []
-        for v in d.votes:
-            dir_map = {1: "LONG", -1: "SHORT", 0: "--"}
-            vote_rows.append({
-                "Strategy": v["name"].replace("_", " ").title(),
-                "Category": v["category"],
-                "Status": "ON" if v["enabled"] else "OFF",
-                "Direction": dir_map.get(v["direction"], "--"),
-                "Confidence": f"{v['confidence']*100:.0f}%",
-                "Signal": str(v["signal"])[:35],
-                "Weight": f"{v['weight']:.0%}",
-            })
-        st.dataframe(pd.DataFrame(vote_rows), use_container_width=True, hide_index=True)
-
-
-def _render_portfolio(engine, container):
-    """Render portfolio state."""
-    with container:
-        state = engine.get_state()
-        p = state["portfolio"]
-
-        st.markdown("---")
-        k1, k2, k3, k4, k5 = st.columns(5)
-        with k1:
-            st.metric("Total P&L", f"{p['total_pnl']:+,.0f}")
-        with k2:
-            st.metric("Realized", f"{p['realized_pnl']:+,.0f}")
-        with k3:
-            st.metric("Unrealized", f"{p['unrealized_pnl']:+,.0f}")
-        with k4:
-            st.metric("Trades", str(p["trade_count"]))
-        with k5:
-            st.metric("Win Rate", f"{p['win_rate']:.0f}%")
-
-        # Equity curve
-        if len(p["equity_curve"]) > 1:
-            eq = pd.DataFrame(p["equity_curve"])
-            st.line_chart(eq.set_index("timestamp")["pnl"], height=200)
-
-        # Positions and trades side by side
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            if p["positions"]:
-                st.markdown("##### Open Positions")
-                pos_df = pd.DataFrame(p["positions"])
-                show = [c for c in ["symbol", "side", "entry_price", "current_price",
-                                    "unrealized_pnl", "unrealized_pnl_pct"] if c in pos_df.columns]
-                st.dataframe(pos_df[show].round(2), use_container_width=True, hide_index=True)
+    if running:
+        if st.button(f"Stop (PID {pid})", key="fs_stop", type="secondary"):
+            ok, msg = stop_fusion_service()
+            if ok:
+                st.success(msg)
             else:
-                st.caption("No open positions")
-
-        with col2:
-            if state["trade_log"]:
-                st.markdown("##### Recent Trades")
-                log_df = pd.DataFrame(state["trade_log"][-10:])
-                show = [c for c in ["time", "action", "symbol", "shares", "price", "pnl"] if c in log_df.columns]
-                st.dataframe(log_df[show].round(2), use_container_width=True, hide_index=True)
+                st.error(msg)
+            st.rerun()
+    else:
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            sym = st.text_input("Symbol", "OGDC", key="fs_sym", label_visibility="collapsed")
+        with c2:
+            interval = st.selectbox("Interval", [5, 10, 15, 30], index=1, key="fs_int",
+                                    label_visibility="collapsed")
+        with c3:
+            if st.button("Start", key="fs_start", type="primary"):
+                ok, msg = start_fusion_background(symbol=sym, interval=interval)
+                if ok:
+                    st.success(msg)
+                else:
+                    st.error(msg)
+                st.rerun()
 
 
 def render_page():
-    st.markdown("### Strategy Fusion Simulator")
-    st.caption("All 14 strategies fused into one real-time decision engine")
+    age = _age()
+    if age < 30 and HAS_AUTOREFRESH and st_autorefresh:
+        st_autorefresh(interval=5000, limit=None, key="fusion_sim_refresh")
 
-    # Sidebar
-    with st.sidebar:
-        st.markdown("#### Simulator Config")
-        symbol = st.text_input("Symbol", "OGDC", key="sim_symbol")
-        capital = st.number_input("Capital (PKR)", 100_000, 10_000_000, 1_000_000, 100_000, key="sim_capital")
+    # Header + controls
+    h1, h2 = st.columns([3, 2])
+    with h1:
+        st.markdown("### Strategy Fusion Simulator")
+    with h2:
+        _render_service_control()
 
-        st.markdown("---")
-        st.markdown("#### Strategies")
+    data = _load()
 
-        enabled = {}
-        for category, strats in STRATEGIES.items():
-            st.markdown(f"**{category}**")
-            for key, label, default in strats:
-                enabled[key] = st.checkbox(label, value=default, key=f"sim_{key}")
-
-        st.markdown("---")
-
-        col1, col2 = st.columns(2)
-        with col1:
-            n_rounds = st.number_input("Rounds", 1, 100, 5, key="sim_rounds")
-        with col2:
-            interval = st.number_input("Interval (s)", 1, 60, 10, key="sim_interval")
-
-        start = st.button("RUN SIMULATOR", type="primary", use_container_width=True)
-
-    # Show info if not started
-    if not start and "fusion_results" not in st.session_state:
-        st.info("Configure in sidebar and click **RUN SIMULATOR**.")
+    if data is None:
+        st.info(
+            "Fusion service is not running. Click **Start** above, or run:\n\n"
+            "```\npython -m pakfindata.services.fusion_service --symbol OGDC\n```"
+        )
         st.markdown("""
         ---
-        #### How It Works
+        #### Architecture
 
-        1. Click **RUN** — simulator fetches latest tick price from DuckDB
-        2. Runs all enabled strategies, fuses votes into BUY/SELL/HOLD
-        3. Updates virtual portfolio (stop loss 2%, take profit 4%)
-        4. Repeats for N rounds, refreshing price each time
-        5. Shows live decision, signal heatmap, equity curve, positions
+        | Component | Role |
+        |-----------|------|
+        | **tick_service** | Writes `live_snapshot.json` (live prices from PSX) |
+        | **fusion_service** | Reads prices, runs strategies, writes `fusion_state.json` |
+        | **This page** | Reads `fusion_state.json`, renders charts (same as Live Ticker) |
 
-        | Category | Weight | Strategies |
-        |----------|--------|-----------|
-        | **REGIME** | 30% | Macro HMM, Sector Rotation |
-        | **FLOW** | 30% | VPIN, OFI, CVD, OI Buildup |
-        | **STRUCTURE** | 20% | Basis Arb, Pairs Trading |
-        | **ALPHA** | 15% | ML Predictions, LLM Sentiment |
-        | **RESEARCH** | 5% | Hawkes Process, VWAP Context |
+        No ports. No iframes. No WebSocket from JS. Just two JSON files on disk.
         """)
         render_footer()
         return
 
-    if start:
-        # Initialize engine
-        from pakfindata.engine.strategy_fusion import StrategyFusionEngine
-        engine = StrategyFusionEngine(capital=capital)
-        engine.set_enabled(enabled)
+    # Parse state
+    running = data.get("running", False)
+    symbol = data.get("symbol", "?")
+    decision = data.get("decision", {})
+    portfolio = data.get("portfolio", {})
+    votes = data.get("votes", [])
+    candles = data.get("candles", [])
+    score_history = data.get("score_history", [])
+    markers = data.get("markers", [])
 
-        sym = symbol.upper()
-        n_enabled = sum(enabled.values())
+    # Status
+    if running and age < 30:
+        status_text = "LIVE"
+    elif age < 60:
+        status_text = "STALE"
+    else:
+        status_text = "DOWN"
 
-        st.success(f"Running: **{sym}** | {n_enabled} strategies | {n_rounds} rounds @ {interval}s")
+    # Status bar — all native st.metric
+    s1, s2, s3, s4, s5, s6, s7 = st.columns(7)
+    s1.metric("Status", status_text)
+    s2.metric("Symbol", symbol)
+    s3.metric("Price", f"{decision.get('price', 0):,.2f}")
 
-        # Create placeholder containers
-        status_bar = st.empty()
-        decision_container = st.container()
-        portfolio_container = st.container()
+    dec = decision.get("decision", "HOLD")
+    s4.metric("Decision", dec)
+    s5.metric("Confidence", f"{decision.get('confidence', 0):.0f}%")
 
-        # Run simulation loop
-        for i in range(n_rounds):
-            # Status
-            status_bar.progress((i + 1) / n_rounds,
-                                text=f"Round {i+1}/{n_rounds} — fetching {sym} price & computing...")
+    pnl = portfolio.get("pnl", 0)
+    s6.metric("P&L", f"{pnl:+,.0f}")
+    s7.metric("Trades", portfolio.get("trades", 0))
 
-            # Fetch latest price
-            price = _fetch_latest_price(sym)
-            if price <= 0:
-                status_bar.warning(f"No price for {sym}")
-                break
+    if decision.get("vetoed"):
+        st.warning(f"VETOED: {decision.get('veto_reason', '')}")
 
-            # Compute fusion
-            decision = engine.compute(sym, price)
-            engine.update_portfolio(decision)
+    # Candlestick chart + signal sub-chart
+    if candles and len(candles) > 2:
+        fig = make_subplots(
+            rows=3, cols=1, shared_xaxes=True,
+            row_heights=[0.55, 0.20, 0.25],
+            vertical_spacing=0.03,
+        )
 
-            # Render decision (replaces previous content)
-            with decision_container:
-                _render_decision(decision, decision_container)
+        times = [datetime.fromtimestamp(c["time"], PKT) for c in candles]
 
-            # Render portfolio
-            with portfolio_container:
-                _render_portfolio(engine, portfolio_container)
+        # Row 1: Candlestick
+        fig.add_trace(go.Candlestick(
+            x=times,
+            open=[c["open"] for c in candles],
+            high=[c["high"] for c in candles],
+            low=[c["low"] for c in candles],
+            close=[c["close"] for c in candles],
+            increasing_line_color=_C["up"], decreasing_line_color=_C["down"],
+            increasing_fillcolor=_C["up"], decreasing_fillcolor=_C["down"],
+            name="Price",
+        ), row=1, col=1)
 
-            # Wait between rounds (except last)
-            if i < n_rounds - 1:
-                for sec in range(interval):
-                    status_bar.progress(
-                        (i + 1) / n_rounds,
-                        text=f"Round {i+1}/{n_rounds} done. Next in {interval - sec}s..."
-                    )
-                    time.sleep(1)
+        # Signal markers
+        buy_m = [m for m in markers if "BUY" in m.get("decision", "")]
+        sell_m = [m for m in markers if "SELL" in m.get("decision", "")]
 
-        status_bar.success(f"Simulation complete: {n_rounds} rounds")
+        if buy_m:
+            fig.add_trace(go.Scatter(
+                x=[datetime.fromtimestamp(m["time"], PKT) for m in buy_m],
+                y=[m["price"] * 0.998 for m in buy_m],
+                mode="markers", name="BUY",
+                marker=dict(symbol="triangle-up", size=12, color=_C["up"]),
+            ), row=1, col=1)
+        if sell_m:
+            fig.add_trace(go.Scatter(
+                x=[datetime.fromtimestamp(m["time"], PKT) for m in sell_m],
+                y=[m["price"] * 1.002 for m in sell_m],
+                mode="markers", name="SELL",
+                marker=dict(symbol="triangle-down", size=12, color=_C["down"]),
+            ), row=1, col=1)
 
-        # Save results for history tab
-        st.session_state["fusion_results"] = engine.get_state()
-        st.session_state["fusion_engine"] = engine
+        # Row 2: Volume
+        fig.add_trace(go.Bar(
+            x=times,
+            y=[c.get("volume", 0) for c in candles],
+            marker_color=[_C["up"] if c["close"] >= c["open"] else _C["down"] for c in candles],
+            opacity=0.4, name="Volume",
+        ), row=2, col=1)
 
-    # Show last results if available
-    elif "fusion_results" in st.session_state:
-        state = st.session_state["fusion_results"]
-        engine = st.session_state.get("fusion_engine")
+        # Row 3: Fusion score
+        if score_history:
+            sh_times = [datetime.fromtimestamp(s["time"], PKT) for s in score_history]
+            sh_scores = [s["score"] * 100 for s in score_history]
+            fig.add_trace(go.Scatter(
+                x=sh_times, y=sh_scores, mode="lines", name="Fusion Score",
+                line=dict(color=_C["cyan"], width=1.5),
+                fill="tozeroy", fillcolor="rgba(0,188,212,0.1)",
+            ), row=3, col=1)
+            fig.add_hline(y=15, line_dash="dot", line_color=_C["dim"], row=3, col=1)
+            fig.add_hline(y=-15, line_dash="dot", line_color=_C["dim"], row=3, col=1)
+            fig.add_hline(y=0, line_dash="solid", line_color="#333", row=3, col=1)
 
-        if state.get("decision"):
-            from pakfindata.engine.strategy_fusion import FusionDecision
-            d_dict = state["decision"]
+        fig.update_layout(
+            paper_bgcolor=_C["bg"], plot_bgcolor=_C["bg"],
+            font_color=_C["dim"], height=550,
+            margin=dict(l=10, r=10, t=10, b=10),
+            showlegend=False, xaxis_rangeslider_visible=False,
+        )
+        for ax in ["yaxis", "yaxis2", "yaxis3"]:
+            fig.update_layout(**{ax: dict(gridcolor=_C["border"])})
 
-            # Rebuild decision object for rendering
-            class _D:
-                pass
-            d = _D()
-            for k, v in d_dict.items():
-                setattr(d, k, v)
+        fig.update_yaxes(title_text=symbol, row=1, col=1)
+        fig.update_yaxes(title_text="Vol", row=2, col=1)
+        fig.update_yaxes(title_text="Score", row=3, col=1)
 
-            container = st.container()
-            _render_decision(d, container)
+        st.plotly_chart(fig, use_container_width=True, key="fusion_chart")
 
-        if engine:
-            container2 = st.container()
-            _render_portfolio(engine, container2)
+    st.divider()
+
+    # Strategy votes + Category scores
+    left, right = st.columns([3, 2])
+
+    with left:
+        st.markdown("**Strategy Signals**")
+        # Use st.dataframe — no HTML rendering issues
+        vote_rows = []
+        for v in votes:
+            dir_map = {1: "LONG", -1: "SHORT", 0: "--"}
+            vote_rows.append({
+                "Strategy": v.get("label", v.get("name", "?")),
+                "Category": v.get("cat", ""),
+                "Status": "ON" if v.get("enabled") else "OFF",
+                "Direction": dir_map.get(v.get("direction", 0), "--"),
+                "Confidence": f"{v.get('confidence', 0):.0%}",
+                "Signal": str(v.get("signal", ""))[:25],
+            })
+        if vote_rows:
+            st.dataframe(pd.DataFrame(vote_rows), use_container_width=True, hide_index=True)
+
+    with right:
+        st.markdown("**Category Scores**")
+        for label, key in [("REGIME", "regime"), ("FLOW", "flow"),
+                           ("STRUCTURE", "structure"), ("ALPHA", "alpha")]:
+            score = decision.get(key, 0)
+            st.metric(label, f"{score*100:+.0f}")
+
+        st.divider()
+        st.markdown("**Portfolio**")
+        pc1, pc2 = st.columns(2)
+        pc1.metric("Equity", f"{portfolio.get('equity', 0):,.0f}")
+        pc2.metric("Win Rate", f"{portfolio.get('win_rate', 0):.0f}%")
+        pc3, pc4 = st.columns(2)
+        pc3.metric("Drawdown", f"{portfolio.get('drawdown', 0):.1f}%")
+        pc4.metric("Positions", len(portfolio.get("positions", [])))
+
+    st.divider()
+
+    # Positions + Trades
+    p1, p2 = st.columns(2)
+
+    with p1:
+        st.markdown("**Open Positions**")
+        positions = portfolio.get("positions", [])
+        if positions:
+            pos_df = pd.DataFrame(positions)
+            show = [c for c in ["symbol", "side", "entry", "cur", "pnl", "pnl_pct", "shares"]
+                    if c in pos_df.columns]
+            st.dataframe(pos_df[show].round(2), use_container_width=True, hide_index=True)
+        else:
+            st.caption("No open positions")
+
+    with p2:
+        st.markdown("**Recent Trades**")
+        closed = portfolio.get("closed", [])
+        if closed:
+            trade_df = pd.DataFrame(closed[-10:])
+            show = [c for c in ["exit_time", "side", "symbol", "shares", "entry", "exit", "pnl", "exit_reason"]
+                    if c in trade_df.columns]
+            st.dataframe(trade_df[show].round(2), use_container_width=True, hide_index=True)
+        else:
+            st.caption("No trades yet")
 
     render_footer()
