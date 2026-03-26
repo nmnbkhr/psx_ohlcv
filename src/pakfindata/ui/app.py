@@ -567,6 +567,16 @@ def strategy_sentiment_page():
     render_page()
 
 
+def strategy_orderbook_page():
+    from pakfindata.ui.page_views.strategy_orderbook import render_page
+    render_page()
+
+
+def advanced_gnn_page():
+    from pakfindata.ui.page_views.advanced_gnn import render_page
+    render_page()
+
+
 def tick_analytics_page():
     from pakfindata.ui.page_views.tick_analytics import render_tick_analytics
     render_tick_analytics()
@@ -773,6 +783,11 @@ def sbp_easydata_page():
     render_sbp_easydata()
 
 
+def psx_scraper_page():
+    from pakfindata.ui.page_views.psx_scraper import render_psx_scraper
+    render_psx_scraper()
+
+
 # -----------------------------------------------------------------------------
 # Main App — st.navigation() for framework-guaranteed page isolation
 # -----------------------------------------------------------------------------
@@ -860,12 +875,16 @@ def main():
         "OI Buildup/Unwind": st.Page(strategy_oi_page,          title="OI Buildup/Unwind", url_path="oi-buildup"),
         "Pairs Trading":    st.Page(strategy_pairs_page,       title="Pairs Trading",     url_path="pairs-trading"),
         "LLM Sentiment":    st.Page(strategy_sentiment_page,  title="LLM Sentiment",     url_path="llm-sentiment"),
+        # ADVANCED
+        "Order Book Sim":   st.Page(strategy_orderbook_page, title="Order Book Sim",    url_path="orderbook-sim"),
+        "Stock Graph (GNN)": st.Page(advanced_gnn_page,      title="Stock Graph (GNN)", url_path="stock-graph-gnn"),
         # ADMIN
         "Data Status":        st.Page(data_status_page,       title="Data Status",        url_path="data-status"),
         "Sync Center":        st.Page(sync_center_page,       title="Sync Center",        url_path="sync-center"),
         "Schema Explorer":    st.Page(schema_page,            title="Schema Explorer",    url_path="schema"),
         "App Lineage":        st.Page(app_lineage_page,       title="App Lineage",        url_path="app-lineage"),
         "SBP EasyData":       st.Page(sbp_easydata_page,      title="SBP EasyData",       url_path="sbp-easydata"),
+        "PSX Scraper":        st.Page(psx_scraper_page,       title="PSX Scraper",        url_path="psx-scraper"),
     }
 
     # Navigation groups — 5-pillar blueprint structure
@@ -885,7 +904,8 @@ def main():
         "COMMODITIES":     ["Commodities", "PMEX"],
         "RESEARCH":        ["Research", "Signal Analysis", "Microstructure", "Tick Analytics", "Tick Replay", "Quant Lab", "Macro Cycles", "Sector Breadth", "Market Research", "ML Predictions"],
         "STRATEGIES":      ["VPIN Strategy", "OFI Alpha", "CVD Divergence", "Basis Arb", "VWAP Execution", "Macro Regime", "Sector Rotation", "OI Buildup/Unwind", "Pairs Trading", "LLM Sentiment"],
-        "ADMIN":           ["Data Status", "Sync Center", "Schema Explorer", "App Lineage", "SBP EasyData"],
+        "ADVANCED":        ["Order Book Sim", "Stock Graph (GNN)"],
+        "ADMIN":           ["Data Status", "Sync Center", "Schema Explorer", "App Lineage", "SBP EasyData", "PSX Scraper"],
     }
 
     # HIDDEN PAGES — registered for URL access but no sidebar button
