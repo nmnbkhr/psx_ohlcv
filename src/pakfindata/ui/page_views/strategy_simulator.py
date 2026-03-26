@@ -1,6 +1,6 @@
-"""Strategy Fusion Simulator -- reads fusion_state.json, renders with Plotly.
+"""Strategy Fusion Simulator -- reads fusion_state.json, renders with lightweight-charts.
 
-Same pattern as live_ticker.py: file-based, no ports, no iframes.
+Same pattern as live_ticker.py / tick_replay.py: file-based, data injected as JSON into HTML.
 """
 
 import json
@@ -10,9 +10,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import streamlit as st
+import streamlit.components.v1 as components
 
 try:
     from streamlit_autorefresh import st_autorefresh
@@ -51,6 +50,151 @@ def _age():
         return _time.time() - os.path.getmtime(FUSION_STATE)
     except OSError:
         return 999
+
+
+def _build_simulator_panel(data: dict) -> str:
+    """Build lightweight-charts HTML panel from fusion_state.json data."""
+    candles = data.get("candles", [])
+    mkrs = data.get("markers", [])
+    score_history = data.get("score_history", [])
+    decision = data.get("decision", {})
+    portfolio = data.get("portfolio", {})
+    votes = data.get("votes", [])
+    symbol = data.get("symbol", "?")
+    source = data.get("source", "?")
+    replay = data.get("replay", {})
+
+    candles_json = json.dumps(candles, default=str)
+    markers_json = json.dumps(mkrs, default=str)
+    scores_json = json.dumps(score_history, default=str)
+    votes_json = json.dumps(votes, default=str)
+    equity_curve = json.dumps(portfolio.get("equity_curve", [])[-200:], default=str)
+
+    dec = decision.get("decision", "HOLD")
+    conf = decision.get("confidence", 0)
+    price = decision.get("price", 0)
+    raw_score = decision.get("raw_score", 0)
+    pnl = portfolio.get("pnl", 0)
+    trades = portfolio.get("trades", 0)
+    win_rate = portfolio.get("win_rate", 0)
+
+    dec_color = "#00E676" if "BUY" in dec else "#FF5252" if "SELL" in dec else "#6B7280"
+    pnl_color = "#00E676" if pnl >= 0 else "#FF5252"
+    source_color = "#00BCD4" if source == "REPLAY" else "#00E676" if source == "LIVE" else "#6B7280"
+    source_label = "REPLAY (" + replay.get("replay_date", "?") + ")" if source == "REPLAY" else source
+    dec_bg = "rgba(0,230,118,0.15)" if "BUY" in dec else "rgba(255,82,82,0.15)" if "SELL" in dec else "rgba(107,114,128,0.1)"
+
+    return (
+        '<script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>'
+        "<style>"
+        "*{margin:0;padding:0;box-sizing:border-box}"
+        "body{background:#0B0E11;color:#E0E0E0;font-family:'JetBrains Mono','Courier New',monospace;overflow:hidden}"
+        ".header-bar{display:flex;align-items:center;gap:14px;padding:8px 12px;background:#141821;border-bottom:1px solid #1E2530}"
+        ".hdr-symbol{font-weight:800;font-size:16px;color:#C8A96E}"
+        ".hdr-price{font-size:15px;font-weight:700}"
+        ".hdr-decision{font-size:14px;font-weight:900;letter-spacing:1px;padding:3px 10px;border-radius:3px}"
+        ".hdr-stat{color:#6B7280;font-size:10px}.hdr-stat b{color:#E0E0E0;font-size:12px}"
+        ".hdr-source{font-size:10px;padding:2px 8px;border-radius:3px;border:1px solid}"
+        "#main-chart{width:100%;height:320px}"
+        "#score-chart{width:100%;height:100px;border-top:1px solid #1E2530}"
+        ".signal-strip{display:flex;gap:3px;padding:6px 12px;background:#0F1318;border-top:1px solid #1E2530;flex-wrap:wrap}"
+        ".sig-cell{padding:4px 6px;border-radius:3px;text-align:center;min-width:70px;font-size:9px}"
+        ".sig-long{background:rgba(0,230,118,0.2);border:1px solid rgba(0,230,118,0.4);color:#00E676}"
+        ".sig-short{background:rgba(255,82,82,0.2);border:1px solid rgba(255,82,82,0.4);color:#FF5252}"
+        ".sig-neutral{background:rgba(107,114,128,0.12);border:1px solid #1E2530;color:#6B7280}"
+        ".sig-off{background:#0B0E11;border:1px solid #111;color:#333}"
+        ".sig-name{font-weight:700;font-size:8px;text-transform:uppercase}"
+        ".sig-signal{font-size:7px;opacity:0.7;margin-top:1px}"
+        ".bottom-bar{display:flex;gap:16px;padding:6px 12px;background:#141821;border-top:1px solid #1E2530;font-size:11px}"
+        ".bb-stat{display:flex;flex-direction:column}.bb-label{color:#555;font-size:8px;text-transform:uppercase}.bb-value{font-weight:700}"
+        "</style>"
+        '<div class="header-bar">'
+        f'<span class="hdr-source" style="color:{source_color};border-color:{source_color}">{source_label}</span>'
+        f'<span class="hdr-symbol">{symbol}</span>'
+        f'<span class="hdr-price" style="color:{dec_color}">{price:,.2f}</span>'
+        f'<span class="hdr-decision" style="color:{dec_color};background:{dec_bg}">{dec}</span>'
+        f'<span class="hdr-stat">Conf <b>{conf:.0f}%</b></span>'
+        f'<span class="hdr-stat">Score <b>{raw_score*100:.0f}</b></span>'
+        '<span style="flex:1"></span>'
+        f'<span class="hdr-stat">P&L <b style="color:{pnl_color}">{"+" if pnl >= 0 else ""}{pnl:,.0f}</b></span>'
+        f'<span class="hdr-stat">Trades <b>{trades}</b></span>'
+        f'<span class="hdr-stat">Win <b>{win_rate:.0f}%</b></span>'
+        '</div>'
+        '<div id="main-chart"></div>'
+        '<div id="score-chart"></div>'
+        '<div class="signal-strip" id="signals"></div>'
+        '<div class="bottom-bar">'
+        f'<div class="bb-stat"><span class="bb-label">Regime</span><span class="bb-value" style="color:#2196F3">{decision.get("regime",0)*100:+.0f}</span></div>'
+        f'<div class="bb-stat"><span class="bb-label">Flow</span><span class="bb-value" style="color:#00BCD4">{decision.get("flow",0)*100:+.0f}</span></div>'
+        f'<div class="bb-stat"><span class="bb-label">Structure</span><span class="bb-value" style="color:#C8A96E">{decision.get("structure",0)*100:+.0f}</span></div>'
+        f'<div class="bb-stat"><span class="bb-label">Alpha</span><span class="bb-value" style="color:#BB86FC">{decision.get("alpha",0)*100:+.0f}</span></div>'
+        '<span style="flex:1"></span>'
+        f'<div class="bb-stat"><span class="bb-label">Equity</span><span class="bb-value">{portfolio.get("equity",0):,.0f}</span></div>'
+        f'<div class="bb-stat"><span class="bb-label">Drawdown</span><span class="bb-value">{portfolio.get("drawdown",0):.1f}%</span></div>'
+        f'<div class="bb-stat"><span class="bb-label">Positions</span><span class="bb-value">{len(portfolio.get("positions",[]))}</span></div>'
+        '</div>'
+        "<script>"
+        f"const candles={candles_json};"
+        f"const markers={markers_json};"
+        f"const scores={scores_json};"
+        f"const votes={votes_json};"
+        f"const equityCurve={equity_curve};"
+        "const mainEl=document.getElementById('main-chart');"
+        "const mainChart=LightweightCharts.createChart(mainEl,{"
+        "width:mainEl.clientWidth,height:mainEl.clientHeight,"
+        "layout:{background:{color:'#0B0E11'},textColor:'#6B7280'},"
+        "grid:{vertLines:{color:'#1E2530'},horzLines:{color:'#1E2530'}},"
+        "crosshair:{mode:LightweightCharts.CrosshairMode.Normal},"
+        "rightPriceScale:{borderColor:'#1E2530'},"
+        "timeScale:{borderColor:'#1E2530',timeVisible:true,secondsVisible:false},"
+        "});"
+        "if(candles.length>0){"
+        "const cs=mainChart.addCandlestickSeries({upColor:'#00E676',downColor:'#FF5252',borderUpColor:'#00E676',borderDownColor:'#FF5252',wickUpColor:'#00E676',wickDownColor:'#FF5252'});"
+        "cs.setData(candles.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close})));"
+        "const vs=mainChart.addHistogramSeries({priceScaleId:'vol',color:'#2A3445',priceFormat:{type:'volume'}});"
+        "mainChart.priceScale('vol').applyOptions({scaleMargins:{top:0.85,bottom:0}});"
+        "vs.setData(candles.map(c=>({time:c.time,value:c.volume||0,color:c.close>=c.open?'rgba(0,230,118,0.3)':'rgba(255,82,82,0.3)'})));"
+        "if(markers.length>0){"
+        "const cm=markers.map(m=>({time:m.time,position:m.decision&&m.decision.includes('BUY')?'belowBar':'aboveBar',color:m.decision&&m.decision.includes('BUY')?'#00E676':'#FF5252',shape:m.decision&&m.decision.includes('BUY')?'arrowUp':'arrowDown',text:(m.decision||'')+' '+(m.confidence?m.confidence.toFixed(0)+'%':'')})).sort((a,b)=>a.time-b.time);"
+        "cs.setMarkers(cm);}"
+        "if(equityCurve.length>2){"
+        "const eq=mainChart.addLineSeries({color:'#C8A96E',lineWidth:1,priceScaleId:'equity',lastValueVisible:false,priceLineVisible:false});"
+        "mainChart.priceScale('equity').applyOptions({scaleMargins:{top:0.05,bottom:0.6},visible:false});"
+        "eq.setData(equityCurve.map(e=>({time:e.time,value:e.pnl||0})));}"
+        "mainChart.timeScale().fitContent();}"
+        "const scoreEl=document.getElementById('score-chart');"
+        "const scoreChart=LightweightCharts.createChart(scoreEl,{"
+        "width:scoreEl.clientWidth,height:scoreEl.clientHeight,"
+        "layout:{background:{color:'#0B0E11'},textColor:'#555'},"
+        "grid:{vertLines:{color:'#0F1318'},horzLines:{color:'#0F1318'}},"
+        "rightPriceScale:{borderColor:'#1E2530'},"
+        "timeScale:{borderColor:'#1E2530',visible:false},"
+        "});"
+        "if(scores.length>0){"
+        "const ss=scoreChart.addAreaSeries({topColor:'rgba(0,188,212,0.3)',bottomColor:'rgba(0,188,212,0.0)',lineColor:'#00BCD4',lineWidth:1.5});"
+        "ss.setData(scores.map(s=>({time:s.time,value:(s.score||0)*100})));"
+        "const tR=scores.map(s=>s.time);"
+        "const bl=scoreChart.addLineSeries({color:'#00E67633',lineWidth:1,lineStyle:2});"
+        "bl.setData(tR.map(t=>({time:t,value:15})));"
+        "const sl=scoreChart.addLineSeries({color:'#FF525233',lineWidth:1,lineStyle:2});"
+        "sl.setData(tR.map(t=>({time:t,value:-15})));"
+        "const zl=scoreChart.addLineSeries({color:'#333',lineWidth:1});"
+        "zl.setData(tR.map(t=>({time:t,value:0})));"
+        "scoreChart.timeScale().fitContent();}"
+        "mainChart.timeScale().subscribeVisibleTimeRangeChange(r=>{if(r)scoreChart.timeScale().setVisibleRange(r);});"
+        "const sigEl=document.getElementById('signals');"
+        "votes.forEach(v=>{"
+        "const cls=!v.enabled?'sig-off':v.direction>0?'sig-long':v.direction<0?'sig-short':'sig-neutral';"
+        "const conf=v.enabled?(v.confidence*100).toFixed(0)+'%':'';"
+        "sigEl.innerHTML+='<div class=\"sig-cell '+cls+'\">'+"
+        "'<div class=\"sig-name\">'+(v.label||v.name||'?')+'</div>'+"
+        "'<div class=\"sig-signal\">'+(v.signal||'').substring(0,18)+'</div>'+"
+        "(conf?'<div style=\"font-size:7px;margin-top:1px\">'+conf+'</div>':'')+"
+        "'</div>';});"
+        "const ro=new ResizeObserver(()=>{mainChart.applyOptions({width:mainEl.clientWidth});scoreChart.applyOptions({width:scoreEl.clientWidth});});"
+        "ro.observe(mainEl);"
+        "</script>"
+    )
 
 
 def _render_service_control():
@@ -173,120 +317,12 @@ def render_page():
                     text=f"Replay: {replay.get('replay_date', '')} -- "
                     f"bar {replay.get('replay_idx', 0)}/{replay.get('replay_bars', 0)}")
 
-    # Candlestick chart + signal sub-chart
-    if candles and len(candles) > 0:
-        fig = make_subplots(
-            rows=3, cols=1, shared_xaxes=True,
-            row_heights=[0.55, 0.20, 0.25],
-            vertical_spacing=0.03,
-        )
-
-        times = [datetime.fromtimestamp(c["time"], PKT) for c in candles]
-
-        # Row 1: Candlestick
-        fig.add_trace(go.Candlestick(
-            x=times,
-            open=[c["open"] for c in candles],
-            high=[c["high"] for c in candles],
-            low=[c["low"] for c in candles],
-            close=[c["close"] for c in candles],
-            increasing_line_color=_C["up"], decreasing_line_color=_C["down"],
-            increasing_fillcolor=_C["up"], decreasing_fillcolor=_C["down"],
-            name="Price",
-        ), row=1, col=1)
-
-        # Signal markers
-        buy_m = [m for m in markers if "BUY" in m.get("decision", "")]
-        sell_m = [m for m in markers if "SELL" in m.get("decision", "")]
-
-        if buy_m:
-            fig.add_trace(go.Scatter(
-                x=[datetime.fromtimestamp(m["time"], PKT) for m in buy_m],
-                y=[m["price"] * 0.998 for m in buy_m],
-                mode="markers", name="BUY",
-                marker=dict(symbol="triangle-up", size=12, color=_C["up"]),
-            ), row=1, col=1)
-        if sell_m:
-            fig.add_trace(go.Scatter(
-                x=[datetime.fromtimestamp(m["time"], PKT) for m in sell_m],
-                y=[m["price"] * 1.002 for m in sell_m],
-                mode="markers", name="SELL",
-                marker=dict(symbol="triangle-down", size=12, color=_C["down"]),
-            ), row=1, col=1)
-
-        # Row 2: Volume
-        fig.add_trace(go.Bar(
-            x=times,
-            y=[c.get("volume", 0) for c in candles],
-            marker_color=[_C["up"] if c["close"] >= c["open"] else _C["down"] for c in candles],
-            opacity=0.4, name="Volume",
-        ), row=2, col=1)
-
-        # Row 3: Fusion score
-        if score_history:
-            sh_times = [datetime.fromtimestamp(s["time"], PKT) for s in score_history]
-            sh_scores = [s["score"] * 100 for s in score_history]
-            fig.add_trace(go.Scatter(
-                x=sh_times, y=sh_scores, mode="lines", name="Fusion Score",
-                line=dict(color=_C["cyan"], width=1.5),
-                fill="tozeroy", fillcolor="rgba(0,188,212,0.1)",
-            ), row=3, col=1)
-            fig.add_hline(y=15, line_dash="dot", line_color=_C["dim"], row=3, col=1)
-            fig.add_hline(y=-15, line_dash="dot", line_color=_C["dim"], row=3, col=1)
-            fig.add_hline(y=0, line_dash="solid", line_color="#333", row=3, col=1)
-
-        fig.update_layout(
-            paper_bgcolor=_C["bg"], plot_bgcolor=_C["bg"],
-            font_color=_C["dim"], height=550,
-            margin=dict(l=10, r=10, t=10, b=10),
-            showlegend=False, xaxis_rangeslider_visible=False,
-        )
-        for ax in ["yaxis", "yaxis2", "yaxis3"]:
-            fig.update_layout(**{ax: dict(gridcolor=_C["border"])})
-
-        fig.update_yaxes(title_text=symbol, row=1, col=1)
-        fig.update_yaxes(title_text="Vol", row=2, col=1)
-        fig.update_yaxes(title_text="Score", row=3, col=1)
-
-        st.plotly_chart(fig, use_container_width=True, key="fusion_chart")
-
-    st.divider()
-
-    # Strategy votes + Category scores
-    left, right = st.columns([3, 2])
-
-    with left:
-        st.markdown("**Strategy Signals**")
-        # Use st.dataframe — no HTML rendering issues
-        vote_rows = []
-        for v in votes:
-            dir_map = {1: "LONG", -1: "SHORT", 0: "--"}
-            vote_rows.append({
-                "Strategy": v.get("label", v.get("name", "?")),
-                "Category": v.get("cat", ""),
-                "Status": "ON" if v.get("enabled") else "OFF",
-                "Direction": dir_map.get(v.get("direction", 0), "--"),
-                "Confidence": f"{v.get('confidence', 0):.0%}",
-                "Signal": str(v.get("signal", ""))[:25],
-            })
-        if vote_rows:
-            st.dataframe(pd.DataFrame(vote_rows), use_container_width=True, hide_index=True)
-
-    with right:
-        st.markdown("**Category Scores**")
-        for label, key in [("REGIME", "regime"), ("FLOW", "flow"),
-                           ("STRUCTURE", "structure"), ("ALPHA", "alpha")]:
-            score = decision.get(key, 0)
-            st.metric(label, f"{score*100:+.0f}")
-
-        st.divider()
-        st.markdown("**Portfolio**")
-        pc1, pc2 = st.columns(2)
-        pc1.metric("Equity", f"{portfolio.get('equity', 0):,.0f}")
-        pc2.metric("Win Rate", f"{portfolio.get('win_rate', 0):.0f}%")
-        pc3, pc4 = st.columns(2)
-        pc3.metric("Drawdown", f"{portfolio.get('drawdown', 0):.1f}%")
-        pc4.metric("Positions", len(portfolio.get("positions", [])))
+    # Interactive panel (lightweight-charts, same tech as Tick Replay)
+    if candles or score_history or votes:
+        panel_html = _build_simulator_panel(data)
+        components.html(panel_html, height=560, scrolling=False)
+    else:
+        st.info("Waiting for data... fusion_service will populate candles after a few ticks.")
 
     st.divider()
 
