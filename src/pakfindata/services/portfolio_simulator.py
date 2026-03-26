@@ -357,20 +357,23 @@ class PortfolioSimulator:
         try:
             import duckdb
             con = duckdb.connect(str(DATA_ROOT / "pakfindata.duckdb"), read_only=True)
-            # Get latest price per symbol from today's ticks
+            # Get latest price per symbol — simple GROUP BY approach
+            max_ts = con.execute("SELECT MAX(CAST(_ts AS DATE)) FROM tick_logs").fetchone()[0]
             rows = con.execute("""
-                WITH today AS (
-                    SELECT symbol, price, volume, bid, ask, bid_vol, ask_vol,
-                           ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY timestamp DESC) as rn
-                    FROM tick_logs
-                    WHERE price > 0 AND volume > 0
-                    AND CAST(_ts AS DATE) = (SELECT MAX(CAST(_ts AS DATE)) FROM tick_logs)
-                )
-                SELECT symbol, price, volume, bid, ask, bid_vol, ask_vol
-                FROM today WHERE rn = 1
+                SELECT symbol,
+                       LAST(price ORDER BY timestamp) as price,
+                       MAX(volume) as volume,
+                       LAST(bid ORDER BY timestamp) as bid,
+                       LAST(ask ORDER BY timestamp) as ask,
+                       LAST(bid_vol ORDER BY timestamp) as bid_vol,
+                       LAST(ask_vol ORDER BY timestamp) as ask_vol
+                FROM tick_logs
+                WHERE price > 0 AND market = 'REG'
+                AND CAST(_ts AS DATE) = ?
+                GROUP BY symbol
                 ORDER BY volume DESC
                 LIMIT 100
-            """).fetchall()
+            """, [str(max_ts)]).fetchall()
             con.close()
             return [{"symbol": r[0], "price": r[1], "volume": r[2] or 0,
                      "bid": r[3] or 0, "ask": r[4] or 0,
