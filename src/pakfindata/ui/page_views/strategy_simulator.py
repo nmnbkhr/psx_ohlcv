@@ -7,7 +7,6 @@ and updates containers in-place.
 
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
 from pathlib import Path
 from dataclasses import asdict
 import time
@@ -42,15 +41,6 @@ STRATEGIES = {
     ],
 }
 
-_C = {
-    "bg": "#0B0E11", "card": "#141820",
-    "text": "#E0E0E0", "dim": "#6B7280",
-    "up": "#00E676", "down": "#FF5252", "amber": "#FFB300",
-    "cyan": "#00BCD4", "accent": "#2196F3", "gold": "#C8A96E",
-}
-DARK_BG = "rgba(0,0,0,0)"
-
-
 def _fetch_latest_price(symbol: str) -> float:
     import duckdb
     con = duckdb.connect(DUCKDB_PATH, read_only=True)
@@ -72,74 +62,53 @@ def _fetch_latest_price(symbol: str) -> float:
     return 0.0
 
 
-def _kpi_html(label, value, color=None):
-    c = color or _C["text"]
-    return f"""<div style="background:{_C['card']};padding:10px;border-radius:6px;text-align:center;">
-        <div style="color:{_C['dim']};font-size:0.65em;text-transform:uppercase;">{label}</div>
-        <div style="color:{c};font-size:1.1em;font-weight:700;">{value}</div>
-    </div>"""
-
-
 def _render_decision(d, container):
     """Render the full fusion decision into a container."""
     with container:
         dec_color = _C["up"] if "BUY" in d.decision else (_C["down"] if "SELL" in d.decision else _C["dim"])
 
-        # Decision header
-        st.markdown(f"""<div style="text-align:center;padding:15px 0;">
-            <div style="color:{_C['dim']};font-size:0.75em;text-transform:uppercase;">FUSION DECISION</div>
-            <div style="color:{dec_color};font-size:2.8em;font-weight:900;letter-spacing:3px;">{d.decision}</div>
-            <div style="color:{_C['dim']};font-size:0.8em;margin-top:4px;">
-                Score: {d.raw_score*100:.1f} | {d.agreeing_count} agree, {d.conflicting_count} conflict
-                {f' | VETOED: {d.veto_reason}' if d.vetoed else ''}
-            </div>
-        </div>""", unsafe_allow_html=True)
+        # Decision header — no nested f-strings
+        veto_text = ""
+        if d.vetoed:
+            veto_text = " | VETOED: " + str(d.veto_reason)
+        score_text = "Score: {:.1f} | {} agree, {} conflict{}".format(
+            d.raw_score * 100, d.agreeing_count, d.conflicting_count, veto_text
+        )
 
-        # Confidence bar
+        st.markdown("#### " + d.decision)
+        st.caption(score_text)
         st.progress(max(0, min(int(d.confidence), 100)))
 
         # Category KPIs
         k1, k2, k3, k4, k5, k6 = st.columns(6)
         with k1:
-            st.markdown(_kpi_html("Regime", f"{d.regime_score:+.2f}", _C["accent"]), unsafe_allow_html=True)
+            st.metric("REGIME", f"{d.regime_score:+.2f}")
         with k2:
-            st.markdown(_kpi_html("Flow", f"{d.flow_score:+.2f}", _C["cyan"]), unsafe_allow_html=True)
+            st.metric("FLOW", f"{d.flow_score:+.2f}")
         with k3:
-            st.markdown(_kpi_html("Structure", f"{d.structure_score:+.2f}", _C["gold"]), unsafe_allow_html=True)
+            st.metric("STRUCTURE", f"{d.structure_score:+.2f}")
         with k4:
-            st.markdown(_kpi_html("Alpha", f"{d.alpha_score:+.2f}", "#BB86FC"), unsafe_allow_html=True)
+            st.metric("ALPHA", f"{d.alpha_score:+.2f}")
         with k5:
-            st.markdown(_kpi_html("Size", f"{d.suggested_size:,}", _C["text"]), unsafe_allow_html=True)
+            st.metric("SIZE", f"{d.suggested_size:,}")
         with k6:
-            st.markdown(_kpi_html("Price", f"{d.price:,.2f}", _C["text"]), unsafe_allow_html=True)
+            st.metric("PRICE", f"{d.price:,.2f}")
 
-        # Signal heatmap
+        # Signal heatmap as dataframe (reliable rendering)
         st.markdown("##### Strategy Votes")
-        cols = st.columns(6)
-        for i, v in enumerate(d.votes):
-            with cols[i % 6]:
-                if not v["enabled"]:
-                    bg, border = "#0B0E11", "#1E2530"
-                    txt_color = "#374151"
-                elif v["direction"] > 0:
-                    bg, border = "rgba(0,230,118,0.2)", "#00E676"
-                    txt_color = "#00E676"
-                elif v["direction"] < 0:
-                    bg, border = "rgba(255,82,82,0.2)", "#FF5252"
-                    txt_color = "#FF5252"
-                else:
-                    bg, border = "rgba(107,114,128,0.15)", "#374151"
-                    txt_color = "#9CA3AF"
-
-                name = v["name"].replace("_", " ").upper()
-                sig = v["signal"][:25]
-                conf = f"{v['confidence']*100:.0f}%"
-                st.markdown(f"""<div style="background:{bg};border:1px solid {border};
-                    border-radius:4px;padding:6px;text-align:center;margin-bottom:4px;">
-                    <div style="color:{txt_color};font-size:0.7em;font-weight:700;">{name}</div>
-                    <div style="color:{_C['dim']};font-size:0.6em;margin-top:2px;">{sig}</div>
-                    <div style="color:{txt_color};font-size:0.6em;">{conf}</div>
-                </div>""", unsafe_allow_html=True)
+        vote_rows = []
+        for v in d.votes:
+            dir_map = {1: "LONG", -1: "SHORT", 0: "--"}
+            vote_rows.append({
+                "Strategy": v["name"].replace("_", " ").title(),
+                "Category": v["category"],
+                "Status": "ON" if v["enabled"] else "OFF",
+                "Direction": dir_map.get(v["direction"], "--"),
+                "Confidence": f"{v['confidence']*100:.0f}%",
+                "Signal": str(v["signal"])[:35],
+                "Weight": f"{v['weight']:.0%}",
+            })
+        st.dataframe(pd.DataFrame(vote_rows), use_container_width=True, hide_index=True)
 
 
 def _render_portfolio(engine, container):
@@ -148,38 +117,25 @@ def _render_portfolio(engine, container):
         state = engine.get_state()
         p = state["portfolio"]
 
+        st.markdown("---")
         k1, k2, k3, k4, k5 = st.columns(5)
-        pnl_c = _C["up"] if p["total_pnl"] > 0 else (_C["down"] if p["total_pnl"] < 0 else _C["dim"])
         with k1:
-            st.markdown(_kpi_html("Total P&L", f"{p['total_pnl']:+,.0f}", pnl_c), unsafe_allow_html=True)
+            st.metric("Total P&L", f"{p['total_pnl']:+,.0f}")
         with k2:
-            st.markdown(_kpi_html("Realized", f"{p['realized_pnl']:+,.0f}"), unsafe_allow_html=True)
+            st.metric("Realized", f"{p['realized_pnl']:+,.0f}")
         with k3:
-            st.markdown(_kpi_html("Unrealized", f"{p['unrealized_pnl']:+,.0f}"), unsafe_allow_html=True)
+            st.metric("Unrealized", f"{p['unrealized_pnl']:+,.0f}")
         with k4:
-            st.markdown(_kpi_html("Trades", str(p["trade_count"])), unsafe_allow_html=True)
+            st.metric("Trades", str(p["trade_count"]))
         with k5:
-            st.markdown(_kpi_html("Win Rate", f"{p['win_rate']:.0f}%"), unsafe_allow_html=True)
+            st.metric("Win Rate", f"{p['win_rate']:.0f}%")
 
         # Equity curve
-        if p["equity_curve"]:
+        if len(p["equity_curve"]) > 1:
             eq = pd.DataFrame(p["equity_curve"])
-            fig = go.Figure()
-            color = _C["up"] if eq["pnl"].iloc[-1] >= 0 else _C["down"]
-            fig.add_trace(go.Scatter(
-                x=eq["timestamp"], y=eq["pnl"], mode="lines",
-                line=dict(color=color, width=2),
-                fill="tozeroy", fillcolor=f"rgba({','.join(str(int(color.lstrip('#')[i:i+2], 16)) for i in (0,2,4))},0.1)",
-            ))
-            fig.update_layout(
-                paper_bgcolor=DARK_BG, plot_bgcolor=DARK_BG,
-                font_color="#c9d1d9", margin=dict(l=20, r=20, t=30, b=20),
-                height=200, title_text="Equity Curve (PKR)", title_font_size=11,
-                xaxis=dict(showgrid=False), yaxis=dict(gridcolor="#1E2530"),
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            st.line_chart(eq.set_index("timestamp")["pnl"], height=200)
 
-        # Positions
+        # Positions and trades side by side
         col1, col2 = st.columns([2, 1])
         with col1:
             if p["positions"]:
