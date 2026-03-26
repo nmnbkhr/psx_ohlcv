@@ -130,7 +130,9 @@
       "Bash(/usr/bin/head -10)",
       "Bash(PATH=\"/usr/bin:/usr/local/bin:/bin:$PATH\" /usr/bin/git -C /home/adnoman/pakfindata push)",
       "Bash(PATH=\"/usr/bin:/usr/local/bin:/bin:$PATH\" /usr/bin/git -C /home/adnoman/pakfindata status -s)",
-      "Bash(PATH=\"/usr/bin:/usr/local/bin:/bin:$PATH\" /usr/bin/git -C /home/adnoman/pakfindata add -A)"
+      "Bash(PATH=\"/usr/bin:/usr/local/bin:/bin:$PATH\" /usr/bin/git -C /home/adnoman/pakfindata add -A)",
+      "Bash(PATH=\"/usr/bin:/usr/local/bin:/bin:$PATH\" /usr/bin/git -C /home/adnoman/pakfindata diff --cached --stat)",
+      "Bash(PATH=\"/usr/bin:/usr/local/bin:/bin:$PATH\" /usr/bin/git -C /home/adnoman/pakfindata commit -m \"chore: commit all pending changes — strategies, engines, UI pages, prompts, and docs:*)"
     ],
     "additionalDirectories": [
       "/home/adnoman/.claude/shell-snapshots",
