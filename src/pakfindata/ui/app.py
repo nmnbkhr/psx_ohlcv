@@ -587,6 +587,11 @@ def advanced_rl_exec_page():
     render_page()
 
 
+def strategy_simulator_page():
+    from pakfindata.ui.page_views.strategy_simulator import render_page
+    render_page()
+
+
 def tick_analytics_page():
     from pakfindata.ui.page_views.tick_analytics import render_tick_analytics
     render_tick_analytics()
@@ -821,6 +826,8 @@ def main():
 
     # PRIMARY PAGES — shown in sidebar (the 5 pillars + admin)
     _pages = {
+        # SIMULATOR
+        "Strategy Simulator": st.Page(strategy_simulator_page, title="Strategy Simulator", url_path="simulator"),
         # MARKET OVERVIEW
         "Dashboard":          st.Page(dashboard,              title="Dashboard",          url_path="dashboard",          default=True),
         "Market Pulse":       st.Page(market_pulse_page,      title="Market Pulse",       url_path="market-pulse"),
@@ -900,6 +907,7 @@ def main():
 
     # Navigation groups — 5-pillar blueprint structure
     nav_groups = {
+        "SIMULATOR":       ["Strategy Simulator"],
         "MARKET OVERVIEW": ["Dashboard", "Market Pulse", "Index Monitor"],
         "EQUITIES":        ["Market Summary", "Stock Screener", "Company Profile",
                             "Sector Analysis", "Symbol Financials", "Factors",
