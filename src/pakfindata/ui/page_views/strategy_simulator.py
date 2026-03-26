@@ -294,19 +294,31 @@ def render_page():
     else:
         status_text = "DOWN"
 
-    # Status bar
-    s1, s2, s3, s4, s5, s6, s7 = st.columns(7)
-    s1.metric("Status", status_text)
-    s2.metric("Symbol", symbol)
-    s3.metric("Price", f"{decision.get('price', 0):,.2f}")
-
+    # Compact status bar — trading terminal style
     dec = decision.get("decision", "HOLD")
-    s4.metric("Decision", dec)
-    s5.metric("Confidence", f"{decision.get('confidence', 0):.0f}%")
-
     pnl = portfolio.get("pnl", 0)
-    s6.metric("P&L", f"{pnl:+,.0f}")
-    s7.metric("Trades", portfolio.get("trades", 0))
+    dec_c = "#00E676" if "BUY" in dec else "#FF5252" if "SELL" in dec else "#6B7280"
+    pnl_c = "#00E676" if pnl >= 0 else "#FF5252"
+    status_c = "#00BCD4" if source == "REPLAY" else "#00E676" if status_text == "LIVE" else "#FFB300" if status_text == "STALE" else "#FF5252"
+
+    st.markdown(
+        '<div style="display:flex;align-items:center;gap:16px;padding:6px 12px;'
+        'background:#141821;border-radius:4px;border:1px solid #1E2530;font-family:monospace;font-size:12px;">'
+        f'<span style="color:{status_c};font-weight:700">{status_text}</span>'
+        f'<span style="color:#C8A96E;font-weight:800;font-size:14px">{symbol}</span>'
+        f'<span style="color:#E0E0E0;font-weight:700">{decision.get("price",0):,.2f}</span>'
+        f'<span style="color:{dec_c};font-weight:900;font-size:13px;padding:2px 8px;'
+        f'background:{"rgba(0,230,118,0.12)" if "BUY" in dec else "rgba(255,82,82,0.12)" if "SELL" in dec else "rgba(107,114,128,0.08)"};'
+        f'border-radius:3px">{dec}</span>'
+        f'<span style="color:#6B7280">Conf <b style="color:#E0E0E0">{decision.get("confidence",0):.0f}%</b></span>'
+        '<span style="flex:1"></span>'
+        f'<span style="color:#6B7280">P&L <b style="color:{pnl_c}">{"+" if pnl >= 0 else ""}{pnl:,.0f}</b></span>'
+        f'<span style="color:#6B7280">Trades <b style="color:#E0E0E0">{portfolio.get("trades",0)}</b></span>'
+        f'<span style="color:#6B7280">Win <b style="color:#E0E0E0">{portfolio.get("win_rate",0):.0f}%</b></span>'
+        f'<span style="color:#6B7280">DD <b style="color:#FFB300">{portfolio.get("drawdown",0):.1f}%</b></span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
     if decision.get("vetoed"):
         st.warning(f"VETOED: {decision.get('veto_reason', '')}")
