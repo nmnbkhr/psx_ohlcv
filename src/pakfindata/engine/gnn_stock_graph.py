@@ -935,7 +935,7 @@ def get_available_symbols() -> list[str]:
     con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
     syms = [r[0] for r in con.execute("""
         SELECT DISTINCT symbol FROM eod_ohlcv
-        WHERE date >= CURRENT_DATE - INTERVAL '90 days'
+        WHERE CAST(date AS DATE) >= CURRENT_DATE - INTERVAL '90 days'
         ORDER BY symbol
     """).fetchall()]
     con.close()
@@ -959,7 +959,7 @@ def get_symbols_by_sector(sector_name: str) -> list[str]:
     syms = [r[0] for r in con.execute(f"""
         SELECT DISTINCT symbol FROM eod_ohlcv
         WHERE sector_code IN ({placeholders})
-        AND date >= CURRENT_DATE - INTERVAL '90 days'
+        AND CAST(date AS DATE) >= CURRENT_DATE - INTERVAL '90 days'
         ORDER BY symbol
     """).fetchall()]
     con.close()

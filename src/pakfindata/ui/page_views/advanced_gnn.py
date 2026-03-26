@@ -448,7 +448,7 @@ def _render_build_your_own():
         con = duckdb.connect("/mnt/e/psxdata/pakfindata.duckdb", read_only=True)
         rows = con.execute(f"""
             SELECT symbol, AVG(volume) as avg_vol FROM eod_ohlcv
-            WHERE date >= CURRENT_DATE - INTERVAL '30 days'
+            WHERE CAST(date AS DATE) >= CURRENT_DATE - INTERVAL '30 days'
             GROUP BY symbol ORDER BY avg_vol DESC LIMIT {top_n}
         """).fetchall()
         con.close()
