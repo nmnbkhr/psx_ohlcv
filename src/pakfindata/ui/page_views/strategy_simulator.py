@@ -97,14 +97,14 @@ def _build_simulator_panel(data: dict) -> str:
         ".hdr-source{font-size:10px;padding:2px 8px;border-radius:3px;border:1px solid}"
         "#main-chart{width:100%;height:320px}"
         "#score-chart{width:100%;height:100px;border-top:1px solid #1E2530}"
-        ".signal-strip{display:flex;gap:3px;padding:6px 12px;background:#0F1318;border-top:1px solid #1E2530;flex-wrap:wrap}"
-        ".sig-cell{padding:4px 6px;border-radius:3px;text-align:center;min-width:70px;font-size:9px}"
+        ".signal-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;padding:8px 12px;background:#0F1318;border-top:1px solid #1E2530}"
+        ".sig-cell{padding:8px 6px;border-radius:4px;text-align:center;font-size:11px}"
         ".sig-long{background:rgba(0,230,118,0.2);border:1px solid rgba(0,230,118,0.4);color:#00E676}"
         ".sig-short{background:rgba(255,82,82,0.2);border:1px solid rgba(255,82,82,0.4);color:#FF5252}"
         ".sig-neutral{background:rgba(107,114,128,0.12);border:1px solid #1E2530;color:#6B7280}"
         ".sig-off{background:#0B0E11;border:1px solid #111;color:#333}"
-        ".sig-name{font-weight:700;font-size:8px;text-transform:uppercase}"
-        ".sig-signal{font-size:7px;opacity:0.7;margin-top:1px}"
+        ".sig-name{font-weight:700;font-size:11px;text-transform:uppercase}"
+        ".sig-signal{font-size:9px;opacity:0.8;margin-top:2px}"
         ".bottom-bar{display:flex;gap:16px;padding:6px 12px;background:#141821;border-top:1px solid #1E2530;font-size:11px}"
         ".bb-stat{display:flex;flex-direction:column}.bb-label{color:#555;font-size:8px;text-transform:uppercase}.bb-value{font-weight:700}"
         "</style>"
@@ -188,8 +188,8 @@ def _build_simulator_panel(data: dict) -> str:
         "const conf=v.enabled?(v.confidence*100).toFixed(0)+'%':'';"
         "sigEl.innerHTML+='<div class=\"sig-cell '+cls+'\">'+"
         "'<div class=\"sig-name\">'+(v.label||v.name||'?')+'</div>'+"
-        "'<div class=\"sig-signal\">'+(v.signal||'').substring(0,18)+'</div>'+"
-        "(conf?'<div style=\"font-size:7px;margin-top:1px\">'+conf+'</div>':'')+"
+        "'<div class=\"sig-signal\">'+(v.signal||'').substring(0,25)+'</div>'+"
+        "(conf?'<div style=\"font-size:10px;font-weight:600;margin-top:2px\">'+conf+'</div>':'')+"
         "'</div>';});"
         "const ro=new ResizeObserver(()=>{mainChart.applyOptions({width:mainEl.clientWidth});scoreChart.applyOptions({width:scoreEl.clientWidth});});"
         "ro.observe(mainEl);"
@@ -320,7 +320,7 @@ def render_page():
     # Interactive panel (lightweight-charts, same tech as Tick Replay)
     if candles or score_history or votes:
         panel_html = _build_simulator_panel(data)
-        components.html(panel_html, height=560, scrolling=False)
+        components.html(panel_html, height=700, scrolling=False)
     else:
         st.info("Waiting for data... fusion_service will populate candles after a few ticks.")
 
