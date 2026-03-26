@@ -592,6 +592,11 @@ def strategy_simulator_page():
     render_page()
 
 
+def portfolio_scanner_page():
+    from pakfindata.ui.page_views.portfolio_scanner import render_page
+    render_page()
+
+
 def tick_analytics_page():
     from pakfindata.ui.page_views.tick_analytics import render_tick_analytics
     render_tick_analytics()
@@ -828,6 +833,7 @@ def main():
     _pages = {
         # SIMULATOR
         "Strategy Simulator": st.Page(strategy_simulator_page, title="Strategy Simulator", url_path="simulator"),
+        "Portfolio Scanner":  st.Page(portfolio_scanner_page,  title="Portfolio Scanner",  url_path="portfolio-scanner"),
         # MARKET OVERVIEW
         "Dashboard":          st.Page(dashboard,              title="Dashboard",          url_path="dashboard",          default=True),
         "Market Pulse":       st.Page(market_pulse_page,      title="Market Pulse",       url_path="market-pulse"),
@@ -907,7 +913,7 @@ def main():
 
     # Navigation groups — 5-pillar blueprint structure
     nav_groups = {
-        "SIMULATOR":       ["Strategy Simulator"],
+        "SIMULATOR":       ["Strategy Simulator", "Portfolio Scanner"],
         "MARKET OVERVIEW": ["Dashboard", "Market Pulse", "Index Monitor"],
         "EQUITIES":        ["Market Summary", "Stock Screener", "Company Profile",
                             "Sector Analysis", "Symbol Financials", "Factors",
