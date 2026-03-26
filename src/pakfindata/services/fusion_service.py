@@ -298,43 +298,103 @@ class Portfolio:
 
 
 # ═══════════════════════════════════════════════════════
+# REPLAY ENGINE
+# ═══════════════════════════════════════════════════════
+
+class ReplayEngine:
+    """Replays historical ohlcv_5s bars when live data is unavailable."""
+
+    def __init__(self, symbol: str, mode: str = "auto"):
+        self.symbol = symbol
+        self.mode = mode
+        self._replay_bars: list[dict] = []
+        self._replay_idx: int = 0
+        self._replay_date: str = ""
+        self._replay_loaded = False
+
+    def _load_replay_data(self):
+        try:
+            import duckdb
+            con = duckdb.connect(str(DATA_ROOT / "pakfindata.duckdb"), read_only=True)
+            row = con.execute(
+                "SELECT MAX(SUBSTR(ts,1,10)) FROM ohlcv_5s WHERE symbol=?",
+                [self.symbol]).fetchone()
+            if not row or not row[0]:
+                con.close()
+                return
+            self._replay_date = row[0]
+            df = con.execute(
+                "SELECT ts, o, h, l, c, v FROM ohlcv_5s WHERE symbol=? AND SUBSTR(ts,1,10)=? ORDER BY ts",
+                [self.symbol, self._replay_date]).df()
+            con.close()
+            if df.empty:
+                return
+            self._replay_bars = df.to_dict("records")
+            self._replay_idx = 0
+            self._replay_loaded = True
+            logger.info("Replay loaded: %s %s — %d bars", self.symbol, self._replay_date, len(self._replay_bars))
+        except Exception as e:
+            logger.warning("Replay load failed: %s", e)
+
+    def _live_price(self):
+        try:
+            age = time.time() - os.path.getmtime(LIVE_SNAPSHOT)
+            if age > 30:
+                return 0, 0, False
+            data = json.loads(LIVE_SNAPSHOT.read_text())
+            for sym in data.get("symbols", []):
+                if sym.get("symbol") == self.symbol:
+                    return float(sym.get("price", 0)), int(sym.get("volume", 0)), True
+        except (json.JSONDecodeError, IOError, OSError):
+            pass
+        return 0, 0, False
+
+    def next_price(self):
+        """Returns (price, volume, source). source: LIVE, REPLAY, NONE."""
+        if self.mode in ("live", "auto"):
+            price, vol, fresh = self._live_price()
+            if fresh and price > 0:
+                return price, vol, "LIVE"
+
+        if self.mode in ("replay", "auto"):
+            if not self._replay_loaded:
+                self._load_replay_data()
+            if self._replay_bars:
+                bar = self._replay_bars[self._replay_idx]
+                self._replay_idx = (self._replay_idx + 1) % len(self._replay_bars)
+                if self._replay_idx == 0:
+                    logger.info("Replay wrapped — restarting %s %s", self.symbol, self._replay_date)
+                return float(bar["c"]), int(bar.get("v", 0)), "REPLAY"
+
+        return 0, 0, "NONE"
+
+    @property
+    def replay_info(self):
+        return {
+            "mode": self.mode,
+            "replay_date": self._replay_date,
+            "replay_bars": len(self._replay_bars),
+            "replay_idx": self._replay_idx,
+            "replay_progress": round(self._replay_idx / max(len(self._replay_bars), 1) * 100, 1),
+        }
+
+
+# ═══════════════════════════════════════════════════════
 # MAIN SERVICE
 # ═══════════════════════════════════════════════════════
 
 class FusionService:
-    def __init__(self, symbol, interval, capital, enabled):
+    def __init__(self, symbol, interval, capital, enabled, mode="auto"):
         self.symbol = symbol.upper()
         self.interval = interval
         self.enabled = enabled
         self.portfolio = Portfolio(capital)
         self.candles = CandleBuilder()
         self.running = False
+        self.mode = mode
+        self.price_source = ReplayEngine(self.symbol, mode=mode)
         self.score_history: list[dict] = []
         self.markers: list[dict] = []
-
-    def read_price(self):
-        """Read price from live_snapshot.json. Falls back to DuckDB."""
-        try:
-            data = json.loads(LIVE_SNAPSHOT.read_text())
-            for sym in data.get("symbols", []):
-                if sym.get("symbol") == self.symbol:
-                    return float(sym.get("price", 0)), int(sym.get("volume", 0))
-        except Exception:
-            pass
-
-        # Fallback: DuckDB
-        try:
-            import duckdb
-            con = duckdb.connect(str(DATA_ROOT / "pakfindata.duckdb"), read_only=True)
-            row = con.execute(
-                "SELECT price FROM tick_logs WHERE symbol = ? AND price > 0 ORDER BY timestamp DESC LIMIT 1",
-                [self.symbol]).fetchone()
-            con.close()
-            if row:
-                return float(row[0]), 0
-        except Exception:
-            pass
-        return 0, 0
 
     def run_strategies(self):
         votes = []
@@ -416,12 +476,14 @@ class FusionService:
             if (not existing or existing["side"] == "LONG") and len(self.portfolio.positions) < 10:
                 self.portfolio.open_pos(self.symbol, "SHORT", price, shares, d)
 
-    def write_state(self, votes, decision):
+    def write_state(self, votes, decision, source="LIVE"):
         state = {
             "timestamp": datetime.now(PKT).isoformat(),
             "symbol": self.symbol,
             "running": self.running,
             "interval": self.interval,
+            "source": source,
+            "replay": self.price_source.replay_info,
             "decision": decision,
             "votes": votes,
             "portfolio": self.portfolio.to_dict(),
@@ -441,7 +503,7 @@ class FusionService:
             logger.warning("Write failed: %s", e)
 
     def tick(self):
-        price, volume = self.read_price()
+        price, volume, source = self.price_source.next_price()
         if price <= 0:
             return
         self.candles.update(price, volume)
@@ -462,12 +524,13 @@ class FusionService:
 
         self.execute(decision, price)
         self.portfolio.record()
-        self.write_state(votes, decision)
+        self.write_state(votes, decision, source)
 
         pnl = self.portfolio.pnl()
         pnl_str = f"+{pnl:,.0f}" if pnl >= 0 else f"{pnl:,.0f}"
         now = datetime.now(PKT).strftime("%H:%M:%S")
-        print(f"  {now} | {self.symbol} {price:,.2f} | {decision['decision']:12s} "
+        src_tag = f" [{source}]" if source != "LIVE" else ""
+        print(f"  {now} | {self.symbol} {price:,.2f}{src_tag} | {decision['decision']:12s} "
               f"({decision['confidence']:.0f}%) | P&L {pnl_str} | "
               f"{sum(1 for v in votes if v['enabled'])} strats in {elapsed:.1f}s")
 
@@ -530,20 +593,21 @@ def stop_fusion_service():
     except Exception as e:
         return False, str(e)
 
-def start_fusion_background(symbol=DEFAULT_SYMBOL, interval=DEFAULT_INTERVAL, capital=DEFAULT_CAPITAL):
+def start_fusion_background(symbol=DEFAULT_SYMBOL, interval=DEFAULT_INTERVAL,
+                            capital=DEFAULT_CAPITAL, mode="auto"):
     running, pid = is_fusion_running()
     if running:
         return False, f"Already running (PID {pid})"
     import subprocess
     cmd = [sys.executable, "-m", "pakfindata.services.fusion_service",
            "--symbol", symbol, "--interval", str(interval),
-           "--capital", str(int(capital)), "--daemon"]
+           "--capital", str(int(capital)), "--mode", mode, "--daemon"]
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             start_new_session=True)
     time.sleep(1)
     if proc.poll() is None:
         _write_pid(proc.pid)
-        return True, f"Started (PID {proc.pid})"
+        return True, f"Started (PID {proc.pid}) mode={mode}"
     return False, "Failed to start"
 
 
@@ -552,6 +616,8 @@ def main():
     parser.add_argument("--symbol", default=DEFAULT_SYMBOL)
     parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL)
     parser.add_argument("--capital", type=float, default=DEFAULT_CAPITAL)
+    parser.add_argument("--mode", choices=["live", "replay", "auto"], default="auto",
+                        help="Price source: live, replay (DuckDB history), auto (try live, fallback replay)")
     parser.add_argument("--daemon", action="store_true")
     args = parser.parse_args()
 
@@ -569,7 +635,7 @@ def main():
     _signal.signal(_signal.SIGINT, _shutdown)
 
     enabled = {k: v["on"] for k, v in STRATEGY_CATALOG.items()}
-    svc = FusionService(args.symbol, args.interval, args.capital, enabled)
+    svc = FusionService(args.symbol, args.interval, args.capital, enabled, mode=args.mode)
 
     try:
         svc.run()

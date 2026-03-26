@@ -74,15 +74,18 @@ def _render_service_control():
                 st.error(msg)
             st.rerun()
     else:
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         with c1:
             sym = st.text_input("Symbol", "OGDC", key="fs_sym", label_visibility="collapsed")
         with c2:
             interval = st.selectbox("Interval", [5, 10, 15, 30], index=1, key="fs_int",
                                     label_visibility="collapsed")
         with c3:
+            mode = st.selectbox("Mode", ["auto", "replay", "live"], index=0, key="fs_mode",
+                                label_visibility="collapsed")
+        with c4:
             if st.button("Start", key="fs_start", type="primary"):
-                ok, msg = start_fusion_background(symbol=sym, interval=interval)
+                ok, msg = start_fusion_background(symbol=sym, interval=interval, mode=mode)
                 if ok:
                     st.success(msg)
                 else:
@@ -135,14 +138,19 @@ def render_page():
     markers = data.get("markers", [])
 
     # Status
-    if running and age < 30:
+    source = data.get("source", "?")
+    replay = data.get("replay", {})
+
+    if source == "REPLAY":
+        status_text = f"REPLAY ({replay.get('replay_date', '?')})"
+    elif running and age < 30:
         status_text = "LIVE"
     elif age < 60:
         status_text = "STALE"
     else:
         status_text = "DOWN"
 
-    # Status bar — all native st.metric
+    # Status bar
     s1, s2, s3, s4, s5, s6, s7 = st.columns(7)
     s1.metric("Status", status_text)
     s2.metric("Symbol", symbol)
@@ -159,8 +167,14 @@ def render_page():
     if decision.get("vetoed"):
         st.warning(f"VETOED: {decision.get('veto_reason', '')}")
 
+    if source == "REPLAY":
+        progress = replay.get("replay_progress", 0)
+        st.progress(int(min(progress, 100)),
+                    text=f"Replay: {replay.get('replay_date', '')} -- "
+                    f"bar {replay.get('replay_idx', 0)}/{replay.get('replay_bars', 0)}")
+
     # Candlestick chart + signal sub-chart
-    if candles and len(candles) > 2:
+    if candles and len(candles) > 0:
         fig = make_subplots(
             rows=3, cols=1, shared_xaxes=True,
             row_heights=[0.55, 0.20, 0.25],
