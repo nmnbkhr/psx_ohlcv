@@ -1,6 +1,12 @@
 """Futures, contracts, and odd-lot data page."""
 
+import calendar
+from datetime import datetime, timedelta
+
+import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 
 from pakfindata.ui.components.helpers import get_connection, render_footer
@@ -99,8 +105,9 @@ def _render_futures_impl():
     stats = _cached_futures_stats(_DB_KEY)
     dates = _cached_futures_dates(_DB_KEY)
 
-    tab_overview, tab_compare, tab_odl, tab_sync = st.tabs([
-        "Overview", "Contract Comparison", "Odd-Lot Bonds", "Sync & Migrate"
+    tab_overview, tab_compare, tab_deriv, tab_odl, tab_sync = st.tabs([
+        "Overview", "Contract Comparison", "Derivatives Analytics",
+        "Odd-Lot Bonds", "Sync & Migrate",
     ])
 
     with tab_overview:
@@ -109,6 +116,9 @@ def _render_futures_impl():
 
     with tab_compare:
         _render_comparison(con, dates, get_contract_comparison)
+
+    with tab_deriv:
+        _render_derivatives_analytics(con, dates)
 
     with tab_odl:
         _render_odd_lot(con, dates, get_futures_eod, get_odl_history)
@@ -541,6 +551,501 @@ def _build_auction_yield_map(con) -> dict:
         pass  # Auction data may not exist yet
 
     return yield_map
+
+
+# ---------------------------------------------------------------------------
+# Tab 3: Derivatives Analytics (OI proxy, Basis, Buildup, Rollover)
+# ---------------------------------------------------------------------------
+
+_CHART_LAYOUT = dict(
+    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+    font=dict(color="#e0e0e0", size=11, family="JetBrains Mono, monospace"),
+    xaxis=dict(gridcolor="#2d2d3d", zeroline=False),
+    yaxis=dict(gridcolor="#2d2d3d", zeroline=False),
+    legend=dict(bgcolor="rgba(0,0,0,0)"),
+    margin=dict(l=10, r=10, t=40, b=10),
+)
+
+
+def _get_expiry_date(year: int, month: int) -> datetime:
+    """PSX futures expiry — last Thursday of the month."""
+    last_day = calendar.monthrange(year, month)[1]
+    dt = datetime(year, month, last_day)
+    while dt.weekday() != 3:  # Thursday
+        dt -= timedelta(days=1)
+    return dt
+
+
+def _month_num(abbr: str) -> int:
+    """Convert 'MAR' → 3, 'APR' → 4, etc."""
+    months = {"JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+              "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12}
+    return months.get(abbr.upper(), 0)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_oi_from_xls(_db_key: str, date: str) -> pd.DataFrame:
+    """Load real OI data from PSX DFC XLS file (second sheet)."""
+    import glob as _glob
+    pattern = f"/mnt/e/psxdata/downloads/daily/{date}/futures/futures_oi_dfc_*.xls"
+    files = _glob.glob(pattern)
+    if not files:
+        return pd.DataFrame()
+
+    try:
+        xls = pd.ExcelFile(files[0], engine="xlrd")
+        # Data is in the second sheet (name like '202619mar_opn_int')
+        if len(xls.sheet_names) < 2:
+            return pd.DataFrame()
+
+        df = pd.read_excel(files[0], engine="xlrd", sheet_name=xls.sheet_names[1], header=None, skiprows=6)
+        if df.empty or len(df.columns) < 8:
+            return pd.DataFrame()
+
+        df.columns = ["sr", "name", "category", "oi_contracts", "oi_volume", "oi_value",
+                       "free_float_volume", "pct_free_float"]
+        # Drop total/nan rows
+        df = df.dropna(subset=["name"])
+        df = df[~df["name"].astype(str).str.startswith("Total")]
+        df = df[df["oi_contracts"].apply(lambda x: str(x).replace(",", "").strip().isdigit() if pd.notna(x) else False)]
+
+        # Parse name → base_symbol + contract_month (e.g. AGHA-APR → AGHA, APR)
+        df["name"] = df["name"].astype(str).str.strip()
+        parts = df["name"].str.rsplit("-", n=1, expand=True)
+        df["base_symbol"] = parts[0]
+        df["contract_month"] = parts[1].str.upper() if 1 in parts.columns else ""
+
+        # Numeric columns
+        for col in ["oi_contracts", "oi_volume", "oi_value", "free_float_volume", "pct_free_float"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+        df["pct_free_float"] = (df["pct_free_float"] * 100).round(3)  # convert decimal to %
+
+        return df[["base_symbol", "contract_month", "category", "oi_contracts",
+                    "oi_volume", "oi_value", "free_float_volume", "pct_free_float"]].reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_futures_snapshot(_db_key: str, date: str) -> pd.DataFrame:
+    """Load futures + spot for a given date, compute basis."""
+    con = get_connection()
+    # Futures (near-month only = smallest contract_month for the date)
+    fut = pd.read_sql_query(
+        """SELECT f.base_symbol, f.contract_month, f.close as fut_close,
+                  f.volume as fut_volume, f.prev_close as fut_prev_close,
+                  f.change_pct as fut_change_pct
+           FROM futures_eod f
+           WHERE f.date = ? AND f.market_type IN ('FUT', 'CONT')
+             AND f.close > 0 AND f.contract_month IS NOT NULL
+           ORDER BY f.base_symbol, f.contract_month""",
+        con, params=(date,),
+    )
+    if fut.empty:
+        return pd.DataFrame()
+
+    # Keep near-month contract per symbol
+    near = fut.drop_duplicates("base_symbol", keep="first")
+
+    # Spot prices
+    spot = pd.read_sql_query(
+        "SELECT symbol, close as spot_close, prev_close as spot_prev, volume as spot_volume "
+        "FROM eod_ohlcv WHERE date = ? AND close > 0",
+        con, params=(date,),
+    )
+
+    merged = near.merge(spot, left_on="base_symbol", right_on="symbol", how="left")
+    merged["basis"] = merged["fut_close"] - merged["spot_close"]
+    merged["basis_pct"] = (merged["basis"] / merged["spot_close"] * 100).round(3)
+
+    # Days to expiry
+    try:
+        dt = datetime.strptime(date, "%Y-%m-%d")
+        near_month = merged["contract_month"].iloc[0] if not merged.empty else "MAR"
+        mn = _month_num(near_month)
+        yr = dt.year if mn >= dt.month else dt.year + 1
+        expiry = _get_expiry_date(yr, mn)
+        merged["days_to_expiry"] = max(0, (expiry - dt).days)
+        merged["ann_basis_pct"] = (merged["basis_pct"] * 365 / merged["days_to_expiry"].clip(lower=1)).round(2)
+    except Exception:
+        merged["days_to_expiry"] = 0
+        merged["ann_basis_pct"] = 0.0
+
+    return merged
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_futures_history(_db_key: str, symbol: str, days: int = 30) -> pd.DataFrame:
+    """Load futures + spot price history for a symbol."""
+    con = get_connection()
+    fut = pd.read_sql_query(
+        """SELECT date, close as fut_close, volume as fut_volume, contract_month
+           FROM futures_eod
+           WHERE base_symbol = ? AND market_type IN ('FUT', 'CONT')
+             AND close > 0 AND contract_month IS NOT NULL
+           ORDER BY date DESC, contract_month
+           LIMIT ?""",
+        con, params=(symbol, days * 5),
+    )
+    if fut.empty:
+        return pd.DataFrame()
+    # Keep near-month per date
+    fut = fut.drop_duplicates("date", keep="first")
+
+    spot = pd.read_sql_query(
+        "SELECT date, close as spot_close, volume as spot_volume "
+        "FROM eod_ohlcv WHERE symbol = ? ORDER BY date DESC LIMIT ?",
+        con, params=(symbol, days),
+    )
+
+    merged = fut.merge(spot, on="date", how="inner").sort_values("date")
+    merged["basis"] = merged["fut_close"] - merged["spot_close"]
+    merged["basis_pct"] = (merged["basis"] / merged["spot_close"] * 100).round(3)
+    return merged
+
+
+def _render_derivatives_analytics(con, dates):
+    """Full derivatives analytics — OI concentration, basis, buildup, rollover."""
+    if not dates:
+        st.info("No futures data available.")
+        return
+
+    sel_date = st.selectbox("Date", dates, key="deriv_date")
+    df = _load_futures_snapshot(_DB_KEY, sel_date)
+
+    if df.empty:
+        st.warning(f"No futures data for {sel_date}")
+        return
+
+    # ── Section 1: Open Interest (from PSX XLS) ──
+    oi_df = _load_oi_from_xls(_DB_KEY, sel_date)
+
+    if not oi_df.empty:
+        st.markdown("### Open Interest (DFC)")
+        st.caption("Real OI data from PSX — Deliverable Futures Contracts")
+
+        total_oi = oi_df["oi_volume"].sum()
+        total_contracts = oi_df["oi_contracts"].sum()
+        total_value = oi_df["oi_value"].sum()
+        unique_syms = oi_df["base_symbol"].nunique()
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total OI (Volume)", f"{total_oi:,.0f}")
+        c2.metric("Total Contracts", f"{total_contracts:,.0f}")
+        c3.metric("Total OI Value", f"₨{total_value/1e9:.1f}B")
+        c4.metric("Symbols", unique_syms)
+
+        # Aggregate by base_symbol (sum across months)
+        oi_agg = oi_df.groupby("base_symbol").agg(
+            oi_contracts=("oi_contracts", "sum"),
+            oi_volume=("oi_volume", "sum"),
+            oi_value=("oi_value", "sum"),
+            pct_free_float=("pct_free_float", "max"),
+        ).reset_index().sort_values("oi_volume", ascending=False)
+
+        oi_agg["oi_share_pct"] = (oi_agg["oi_volume"] / total_oi * 100).round(2)
+
+        # Top 10 bar chart
+        top10 = oi_agg.head(10)
+        fig = go.Figure(go.Bar(
+            y=top10["base_symbol"], x=top10["oi_share_pct"],
+            orientation="h",
+            marker_color=["#C8A96E" if i == 0 else "#00D4AA" for i in range(len(top10))],
+            text=[f"{v:.1f}%" for v in top10["oi_share_pct"]],
+            textposition="outside",
+        ))
+        layout = {**_CHART_LAYOUT, "height": 350}
+        layout["yaxis"] = dict(autorange="reversed", gridcolor="#2d2d3d")
+        fig.update_layout(**layout, title="Top 10 by OI Concentration",
+                          xaxis_title="% of Total OI Volume")
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Full OI table with contract details
+        oi_display = oi_df[["base_symbol", "contract_month", "oi_contracts",
+                            "oi_volume", "oi_value", "pct_free_float"]].copy()
+        oi_display.columns = ["Symbol", "Month", "Contracts", "OI Volume", "OI Value (₨)", "% Free Float"]
+        oi_display["OI Volume"] = oi_display["OI Volume"].apply(lambda x: f"{x:,.0f}")
+        oi_display["OI Value (₨)"] = oi_display["OI Value (₨)"].apply(lambda x: f"{x/1e6:.1f}M")
+        oi_display["% Free Float"] = oi_display["% Free Float"].round(2)
+        st.dataframe(oi_display, use_container_width=True, hide_index=True)
+    else:
+        st.markdown("### Futures Volume Concentration")
+        st.caption("No OI XLS data found — showing volume as proxy")
+
+        vol_df = df[df["fut_volume"] > 0].nlargest(20, "fut_volume").copy()
+        if not vol_df.empty:
+            total_vol = df["fut_volume"].sum()
+            vol_df["vol_share_pct"] = (vol_df["fut_volume"] / total_vol * 100).round(2)
+
+            top10 = vol_df.head(10)
+            fig = go.Figure(go.Bar(
+                y=top10["base_symbol"], x=top10["vol_share_pct"],
+                orientation="h",
+                marker_color=["#C8A96E" if i == 0 else "#00D4AA" for i in range(len(top10))],
+                text=[f"{v:.1f}%" for v in top10["vol_share_pct"]],
+                textposition="outside",
+            ))
+            layout = {**_CHART_LAYOUT, "height": 350}
+            layout["yaxis"] = dict(autorange="reversed", gridcolor="#2d2d3d")
+            fig.update_layout(**layout, title="Top 10 Futures by Volume Share",
+                              xaxis_title="% of Total Futures Volume")
+            st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("---")
+
+    # ── Section 2: Basis Analysis ──
+    st.markdown("### Futures Basis Analysis")
+    st.caption("Premium (+) = bullish positioning · Discount (−) = bearish")
+
+    basis_df = df[df["spot_close"].notna() & (df["spot_close"] > 0)].copy()
+    if not basis_df.empty:
+        basis_df = basis_df.sort_values("basis_pct", ascending=False)
+
+        c1, c2, c3 = st.columns(3)
+        premium = (basis_df["basis_pct"] > 0).sum()
+        discount = (basis_df["basis_pct"] < 0).sum()
+        avg_basis = basis_df["basis_pct"].mean()
+        c1.metric("Premium (Bullish)", premium)
+        c2.metric("Discount (Bearish)", discount)
+        c3.metric("Avg Basis %", f"{avg_basis:.3f}%")
+
+        # Top premium / discount
+        col_prem, col_disc = st.columns(2)
+        with col_prem:
+            st.markdown("**Top Premium (Bullish)**")
+            top_prem = basis_df.nlargest(10, "basis_pct")[
+                ["base_symbol", "spot_close", "fut_close", "basis", "basis_pct"]
+            ].copy()
+            top_prem.columns = ["Symbol", "Spot", "Futures", "Basis", "Basis %"]
+            st.dataframe(top_prem, hide_index=True, use_container_width=True)
+        with col_disc:
+            st.markdown("**Top Discount (Bearish)**")
+            top_disc = basis_df.nsmallest(10, "basis_pct")[
+                ["base_symbol", "spot_close", "fut_close", "basis", "basis_pct"]
+            ].copy()
+            top_disc.columns = ["Symbol", "Spot", "Futures", "Basis", "Basis %"]
+            st.dataframe(top_disc, hide_index=True, use_container_width=True)
+
+    st.markdown("---")
+
+    # ── Section 3: OI vs Price (dual-axis chart) ──
+    st.markdown("### Futures Volume vs Price History")
+    base_syms = sorted(df["base_symbol"].dropna().unique().tolist())
+    if base_syms:
+        sel_sym = st.selectbox("Symbol", base_syms, key="deriv_sym_chart")
+        lookback = st.slider("Lookback (days)", 10, 90, 30, key="deriv_lookback")
+
+        hist = _load_futures_history(_DB_KEY, sel_sym, days=lookback)
+        if not hist.empty and len(hist) >= 2:
+            fig = make_subplots(specs=[[{"secondary_y": True}]])
+            fig.add_trace(
+                go.Scatter(x=hist["date"], y=hist["spot_close"],
+                           name="Spot", line=dict(color="#00D4AA", width=2)),
+                secondary_y=False,
+            )
+            fig.add_trace(
+                go.Scatter(x=hist["date"], y=hist["fut_close"],
+                           name="Futures", line=dict(color="#C8A96E", width=2, dash="dot")),
+                secondary_y=False,
+            )
+            fig.add_trace(
+                go.Bar(x=hist["date"], y=hist["fut_volume"],
+                       name="Fut Volume", marker_color="rgba(200,169,110,0.3)"),
+                secondary_y=True,
+            )
+            fig.update_layout(
+                **_CHART_LAYOUT, height=450,
+                title=f"{sel_sym} — Spot vs Futures vs Volume",
+            )
+            fig.update_yaxes(title_text="Price", secondary_y=False)
+            fig.update_yaxes(title_text="Volume", secondary_y=True)
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Basis history
+            fig2 = go.Figure()
+            fig2.add_trace(go.Scatter(
+                x=hist["date"], y=hist["basis_pct"],
+                fill="tozeroy", name="Basis %",
+                line=dict(color="#FFD600"),
+                fillcolor="rgba(255,214,0,0.1)",
+            ))
+            fig2.add_hline(y=0, line_dash="dash", line_color="#888")
+            fig2.update_layout(**_CHART_LAYOUT, height=250, title=f"{sel_sym} — Basis % History")
+            st.plotly_chart(fig2, use_container_width=True)
+        else:
+            st.info(f"Not enough history for {sel_sym}")
+
+    st.markdown("---")
+
+    # ── Section 4: OI Buildup/Unwind Matrix ──
+    st.markdown("### OI Buildup/Unwind")
+    st.caption("↑Price + ↑OI = Long Buildup · ↓Price + ↑OI = Short Buildup · "
+               "↑Price + ↓OI = Short Covering · ↓Price + ↓OI = Long Liquidation")
+
+    # Need prev day OI data
+    if len(dates) >= 2:
+        prev_date = dates[1]  # dates are sorted DESC
+        prev_oi = _load_oi_from_xls(_DB_KEY, prev_date)
+        prev_df = _load_futures_snapshot(_DB_KEY, prev_date)
+
+        # Use real OI if available, else fall back to volume
+        if not oi_df.empty and not prev_oi.empty:
+            # Aggregate OI by base_symbol
+            curr_oi_agg = oi_df.groupby("base_symbol")["oi_volume"].sum().reset_index()
+            curr_oi_agg.columns = ["base_symbol", "curr_oi"]
+            prev_oi_agg = prev_oi.groupby("base_symbol")["oi_volume"].sum().reset_index()
+            prev_oi_agg.columns = ["base_symbol", "prev_oi"]
+
+            bu = curr_oi_agg.merge(prev_oi_agg, on="base_symbol", how="inner")
+
+            # Get price change from futures_eod
+            price_curr = df[["base_symbol", "fut_close"]].drop_duplicates("base_symbol")
+            price_prev = prev_df[["base_symbol", "fut_close"]].drop_duplicates("base_symbol")
+            price_prev.columns = ["base_symbol", "prev_fut_close"]
+            bu = bu.merge(price_curr, on="base_symbol", how="left")
+            bu = bu.merge(price_prev, on="base_symbol", how="left")
+
+            bu["price_chg"] = bu["fut_close"] - bu["prev_fut_close"]
+            bu["oi_chg"] = bu["curr_oi"] - bu["prev_oi"]
+            use_oi_label = True
+        elif not prev_df.empty:
+            # Fallback to volume
+            curr_v = df[["base_symbol", "fut_close", "fut_volume"]].copy()
+            prev_v = prev_df[["base_symbol", "fut_close", "fut_volume"]].copy()
+            prev_v.columns = ["base_symbol", "prev_fut_close", "prev_fut_vol"]
+            bu = curr_v.merge(prev_v, on="base_symbol", how="inner")
+            bu["price_chg"] = bu["fut_close"] - bu["prev_fut_close"]
+            bu["oi_chg"] = bu["fut_volume"] - bu["prev_fut_vol"]
+            bu["curr_oi"] = bu["fut_volume"]
+            use_oi_label = False
+        else:
+            bu = pd.DataFrame()
+            use_oi_label = False
+
+        if not bu.empty:
+            bu["signal"] = bu.apply(lambda r:
+                "🟢 Long Buildup" if r["price_chg"] > 0 and r["oi_chg"] > 0 else
+                "🔴 Short Buildup" if r["price_chg"] < 0 and r["oi_chg"] > 0 else
+                "🟡 Short Covering" if r["price_chg"] > 0 and r["oi_chg"] < 0 else
+                "⚪ Long Liquidation" if r["price_chg"] < 0 and r["oi_chg"] < 0 else
+                "—", axis=1)
+
+            bu = bu[bu.get("curr_oi", bu.get("fut_volume", pd.Series(0))) > 0].copy()
+
+            # Summary counts
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("🟢 Long Buildup", (bu["signal"].str.contains("Long Buildup")).sum())
+            c2.metric("🔴 Short Buildup", (bu["signal"].str.contains("Short Buildup")).sum())
+            c3.metric("🟡 Short Covering", (bu["signal"].str.contains("Short Covering")).sum())
+            c4.metric("⚪ Long Liquidation", (bu["signal"].str.contains("Long Liquidation")).sum())
+
+            # Tables per quadrant
+            oi_col = "curr_oi" if "curr_oi" in bu.columns else "fut_volume"
+            oi_chg_col = "oi_chg"
+            oi_label = "OI" if use_oi_label else "Volume"
+
+            for label in ["🟢 Long Buildup", "🔴 Short Buildup", "🟡 Short Covering", "⚪ Long Liquidation"]:
+                subset = bu[bu["signal"] == label].nlargest(10, oi_col)
+                if not subset.empty:
+                    with st.expander(f"{label} — Top {len(subset)}", expanded=label in ["🟢 Long Buildup", "🔴 Short Buildup"]):
+                        show = subset[["base_symbol", "fut_close", "price_chg", oi_col, oi_chg_col]].copy()
+                        show.columns = ["Symbol", "Price", "Price Δ", oi_label, f"{oi_label} Δ"]
+                        show[oi_label] = show[oi_label].apply(lambda x: f"{x:,.0f}")
+                        show[f"{oi_label} Δ"] = show[f"{oi_label} Δ"].apply(lambda x: f"{x:+,.0f}")
+                        show["Price Δ"] = show["Price Δ"].round(2)
+                        st.dataframe(show, hide_index=True, use_container_width=True)
+    else:
+        st.info("Need at least 2 trading dates for buildup analysis.")
+
+    st.markdown("---")
+
+    # ── Section 5: Rollover Tracker ──
+    st.markdown("### Rollover Tracker")
+
+    try:
+        now = datetime.strptime(sel_date, "%Y-%m-%d")
+        curr_expiry = _get_expiry_date(now.year, now.month)
+        if curr_expiry < now:
+            next_m = now.month + 1 if now.month < 12 else 1
+            next_y = now.year if now.month < 12 else now.year + 1
+            curr_expiry = _get_expiry_date(next_y, next_m)
+
+        days_left = (curr_expiry - now).days
+        st.info(f"Current expiry: **{curr_expiry.strftime('%b %d, %Y')}** ({days_left} days remaining)")
+
+        # Use real OI for rollover if available
+        if not oi_df.empty:
+            multi = oi_df.groupby("base_symbol").filter(lambda g: len(g) >= 2)
+            if not multi.empty:
+                rollover_rows = []
+                for sym, grp in multi.groupby("base_symbol"):
+                    grp = grp.sort_values("contract_month")
+                    curr_c = grp.iloc[0]
+                    nxt_c = grp.iloc[1]
+                    total_oi = curr_c["oi_volume"] + nxt_c["oi_volume"]
+                    rolled_pct = (nxt_c["oi_volume"] / total_oi * 100) if total_oi > 0 else 0
+                    rollover_rows.append({
+                        "Symbol": sym,
+                        "Curr Month": curr_c["contract_month"],
+                        "Curr OI": curr_c["oi_volume"],
+                        "Next Month": nxt_c["contract_month"],
+                        "Next OI": nxt_c["oi_volume"],
+                        "Rolled %": round(rolled_pct, 1),
+                        "Curr Contracts": curr_c["oi_contracts"],
+                        "Next Contracts": nxt_c["oi_contracts"],
+                    })
+
+                roll_df = pd.DataFrame(rollover_rows)
+                roll_df = roll_df[roll_df["Curr OI"] + roll_df["Next OI"] > 0]
+                roll_df = roll_df.sort_values("Rolled %", ascending=False)
+
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Symbols with 2+ months", len(roll_df))
+                avg_rolled = roll_df["Rolled %"].mean()
+                c2.metric("Avg Rolled %", f"{avg_rolled:.1f}%")
+                high_roll = (roll_df["Rolled %"] > 50).sum()
+                c3.metric("Heavily Rolled (>50%)", high_roll)
+
+                roll_df["Curr OI"] = roll_df["Curr OI"].apply(lambda x: f"{x:,.0f}")
+                roll_df["Next OI"] = roll_df["Next OI"].apply(lambda x: f"{x:,.0f}")
+                st.dataframe(roll_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("No symbols with multiple contract months in OI data.")
+        else:
+            # Fallback to futures_eod volume
+            all_fut = pd.read_sql_query(
+                """SELECT base_symbol, contract_month, close, volume
+                   FROM futures_eod
+                   WHERE date = ? AND market_type IN ('FUT', 'CONT')
+                     AND close > 0 AND contract_month IS NOT NULL
+                   ORDER BY base_symbol, contract_month""",
+                con, params=(sel_date,),
+            )
+            if not all_fut.empty:
+                multi = all_fut.groupby("base_symbol").filter(lambda g: len(g) >= 2)
+                if not multi.empty:
+                    rollover_rows = []
+                    for sym, grp in multi.groupby("base_symbol"):
+                        grp = grp.sort_values("contract_month")
+                        curr_c = grp.iloc[0]
+                        nxt_c = grp.iloc[1]
+                        total_vol = curr_c["volume"] + nxt_c["volume"]
+                        rolled_pct = (nxt_c["volume"] / total_vol * 100) if total_vol > 0 else 0
+                        rollover_rows.append({
+                            "Symbol": sym, "Curr Month": curr_c["contract_month"],
+                            "Curr OI": curr_c["volume"], "Next Month": nxt_c["contract_month"],
+                            "Next OI": nxt_c["volume"], "Rolled %": round(rolled_pct, 1),
+                        })
+                    roll_df = pd.DataFrame(rollover_rows)
+                    roll_df = roll_df[roll_df["Curr OI"] + roll_df["Next OI"] > 0]
+                    roll_df = roll_df.sort_values("Rolled %", ascending=False)
+                    st.caption("Using volume as OI proxy (no OI XLS for this date)")
+                    roll_df["Curr OI"] = roll_df["Curr OI"].apply(lambda x: f"{x:,.0f}")
+                    roll_df["Next OI"] = roll_df["Next OI"].apply(lambda x: f"{x:,.0f}")
+                    st.dataframe(roll_df, use_container_width=True, hide_index=True)
+    except Exception as e:
+        st.error(f"Rollover calculation failed: {e}")
 
 
 # ---------------------------------------------------------------------------

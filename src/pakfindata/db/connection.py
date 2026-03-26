@@ -83,7 +83,10 @@ def init_schema(con: sqlite3.Connection) -> None:
     Creates all tables if they don't exist, and runs migrations
     to add any new columns to existing tables.
     """
-    con.executescript(SCHEMA_SQL)
+    for stmt in SCHEMA_SQL.split(";"):
+        stmt = stmt.strip()
+        if stmt:
+            con.execute(stmt)
     con.commit()
 
     # Run migrations for new columns in existing tables

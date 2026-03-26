@@ -160,6 +160,30 @@ def insert_ticks_from_file(con: sqlite3.Connection, path: Path) -> int:
 
     after = wcon.execute("SELECT COUNT(*) FROM tick_logs").fetchone()[0]
     wcon.close()
+
+    # Dual-write to DuckDB
+    try:
+        from pakfindata.db.connections import has_duckdb, duck_write
+        if has_duckdb() and rows:
+            import pandas as _pd
+            duck_df = _pd.DataFrame(rows, columns=[
+                "symbol", "market", "timestamp", "_ts", "price",
+                "open", "high", "low", "change", "change_pct",
+                "volume", "value", "trades", "bid", "ask",
+                "bid_vol", "ask_vol", "prev_close", "source_file"])
+            duck_df["ingested_at"] = _pd.Timestamp.now().isoformat()
+            dcon = duck_write()
+            dcon.register("_tl_df", duck_df)
+            for i in range(0, len(duck_df), BATCH_SIZE):
+                dcon.execute(f"""
+                    INSERT OR IGNORE INTO tick_logs
+                    SELECT * FROM _tl_df LIMIT {BATCH_SIZE} OFFSET {i}
+                """)
+            dcon.unregister("_tl_df")
+            dcon.close()
+    except Exception:
+        pass
+
     return after - before
 
 
@@ -340,53 +364,99 @@ def get_tick_logs(
 
 
 def get_synced_files(con: sqlite3.Connection) -> pd.DataFrame:
-    """Get summary of synced files in tick_logs."""
+    """Get summary of synced files in tick_logs.
+
+    Uses lightweight per-file queries instead of a single GROUP BY
+    that triggers a full table scan on large tables.
+    """
     ensure_tick_logs_table(con)
     try:
-        return pd.read_sql_query(
-            """SELECT source_file,
-                      COUNT(*) as tick_count,
-                      COUNT(DISTINCT symbol) as symbols,
-                      MIN(_ts) as first_tick,
-                      MAX(_ts) as last_tick
-               FROM tick_logs
-               GROUP BY source_file
-               ORDER BY source_file DESC""",
-            con,
-        )
+        files = con.execute(
+            "SELECT DISTINCT source_file FROM tick_logs ORDER BY source_file DESC"
+        ).fetchall()
+        if not files:
+            return pd.DataFrame()
+
+        rows = []
+        for (sf,) in files:
+            r = con.execute(
+                "SELECT MIN(_ts), MAX(_ts) FROM tick_logs WHERE source_file = ?",
+                (sf,),
+            ).fetchone()
+            rows.append({
+                "source_file": sf,
+                "tick_count": "—",  # Skip COUNT(*) — too slow
+                "symbols": "—",
+                "first_tick": r[0] if r else None,
+                "last_tick": r[1] if r else None,
+            })
+        return pd.DataFrame(rows)
     except Exception:
         return pd.DataFrame()
 
 
 def get_tick_logs_stats(con: sqlite3.Connection) -> dict:
-    """Get overall stats for tick_logs table (uses fast per-file aggregation)."""
+    """Get overall stats for tick_logs table — fast, index-only queries.
+
+    On a 4 GB+ table, COUNT(*) and COUNT(DISTINCT symbol) cause full scans
+    that freeze the UI for 30+ seconds.  Instead we:
+      - Use the source_file index for file count + date range.
+      - Estimate total ticks from sqlite_stat1 if available, else skip.
+      - Skip the expensive symbol count entirely (use file count instead).
+    """
     ensure_tick_logs_table(con)
     try:
-        # Aggregate per source_file first, then roll up — avoids full table scan
-        row = con.execute(
-            """SELECT COALESCE(SUM(cnt), 0),
-                      COUNT(*),
-                      MIN(first_tick),
-                      MAX(last_tick)
-               FROM (
-                   SELECT source_file,
-                          COUNT(*) as cnt,
-                          MIN(_ts) as first_tick,
-                          MAX(_ts) as last_tick
-                   FROM tick_logs
-                   GROUP BY source_file
-               )"""
-        ).fetchone()
-        # Symbol count — uses idx_tick_logs_sym_market
-        sym_count = con.execute(
-            "SELECT COUNT(DISTINCT symbol) FROM tick_logs"
-        ).fetchone()[0]
+        # Fast: distinct source_files via index
+        files = con.execute(
+            "SELECT DISTINCT source_file FROM tick_logs"
+        ).fetchall()
+        file_count = len(files)
+
+        # Fast: min/max _ts from first and last file (index-assisted)
+        first_tick = None
+        last_tick = None
+        if files:
+            # Latest file → last tick
+            r = con.execute(
+                "SELECT MAX(_ts) FROM tick_logs WHERE source_file = ?",
+                (files[-1][0],),
+            ).fetchone()
+            last_tick = r[0] if r else None
+            # Earliest file → first tick
+            r = con.execute(
+                "SELECT MIN(_ts) FROM tick_logs WHERE source_file = ?",
+                (files[0][0],),
+            ).fetchone()
+            first_tick = r[0] if r else None
+
+        # Estimate total ticks cheaply — try sqlite_stat1 first
+        total_ticks = 0
+        try:
+            r = con.execute(
+                "SELECT stat FROM sqlite_stat1 WHERE tbl='tick_logs' AND idx='sqlite_autoindex_tick_logs_1'"
+            ).fetchone()
+            if r:
+                total_ticks = int(r[0].split()[0])
+        except Exception:
+            pass
+
+        if total_ticks == 0:
+            # Fallback: page_count * page_size / avg_row_size (very rough)
+            try:
+                pc = con.execute("PRAGMA page_count").fetchone()[0]
+                ps = con.execute("PRAGMA page_size").fetchone()[0]
+                # Estimate: tick_logs is the dominant table in this DB
+                # ~200 bytes per row is typical for this schema
+                total_ticks = (pc * ps) // 200
+            except Exception:
+                total_ticks = 0
+
         return {
-            "total_ticks": row[0],
-            "symbols": sym_count,
-            "files": row[1],
-            "first_tick": row[2],
-            "last_tick": row[3],
+            "total_ticks": total_ticks,
+            "symbols": 0,  # Skip — too expensive on large tables
+            "files": file_count,
+            "first_tick": first_tick,
+            "last_tick": last_tick,
         }
     except Exception:
         return {"total_ticks": 0, "symbols": 0, "files": 0, "first_tick": None, "last_tick": None}

@@ -62,7 +62,7 @@ class IntradayAnchor:
 # ─── PSX Auction Periods ─────────────────────────────────────────────────────
 
 PSX_OPEN_AUCTION = (9 * 60 + 15, 9 * 60 + 30)  # 09:15-09:30
-PSX_CLOSE_AUCTION = (15 * 60 + 28, 15 * 60 + 30)  # 15:28-15:30
+PSX_CLOSE_AUCTION = (15 * 60 + 28, 15 * 60 + 30)  # 15:28-15:30 (Ramadan hours)
 
 
 def filter_auction_periods(df: pd.DataFrame, dt_col: str = "datetime") -> pd.DataFrame:

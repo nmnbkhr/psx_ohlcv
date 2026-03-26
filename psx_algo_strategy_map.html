@@ -1,0 +1,118 @@
+
+<div style="padding: 1rem 0; max-width: 900px;">
+<h2 style="font-weight: 500; font-size: 22px;">Algorithmic strategies mapped to your PSX data</h2>
+<p style="font-size: 14px; color: var(--color-text-secondary); margin-bottom: 1.5rem;">Ranked by feasibility with your current infrastructure: 4.6M ticks, 539 symbols, DuckDB, Oracle Cloud VM, RTX 4080 GPU</p>
+
+<div style="display: flex; gap: 8px; margin-bottom: 1rem; font-size: 12px;">
+<span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:#1D9E75"></span>Ready now</span>
+<span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:#378ADD"></span>Needs 1-2 weeks</span>
+<span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:#D85A30"></span>Research phase</span>
+</div>
+
+<div id="strategies"></div>
+</div>
+
+<style>
+.strat-card{background:var(--color-background-secondary);border-radius:var(--border-radius-lg);padding:16px 20px;margin-bottom:10px;border-left:4px solid #888}
+.strat-card.ready{border-left-color:#1D9E75}
+.strat-card.build{border-left-color:#378ADD}
+.strat-card.research{border-left-color:#D85A30}
+.strat-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.strat-name{font-weight:500;font-size:15px}
+.strat-score{font-size:13px;font-weight:500;padding:2px 10px;border-radius:var(--border-radius-md)}
+.strat-score.high{background:#1D9E7522;color:#1D9E75}
+.strat-score.med{background:#378ADD22;color:#378ADD}
+.strat-score.low{background:#D85A3022;color:#D85A30}
+.strat-desc{font-size:13px;color:var(--color-text-secondary);margin-bottom:8px;line-height:1.5}
+.strat-tags{display:flex;flex-wrap:wrap;gap:6px}
+.strat-tag{font-size:11px;padding:2px 8px;border-radius:var(--border-radius-md);background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);color:var(--color-text-secondary)}
+.strat-tag.data{color:#1D9E75;border-color:#1D9E7544}
+.strat-section{font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:20px 0 8px;text-transform:uppercase;letter-spacing:1px}
+</style>
+
+<script>
+const strategies = [
+{section:"Tier 1 — Build now (you have all the data)"},
+{name:"VPIN regime-switching signals",score:"Ready",level:"high",cls:"ready",
+desc:"Your VPIN is already computed. When VPIN > 0.7 → reduce position size. When VPIN drops from high to low → entry signal (toxic flow clearing). Combine with Hurst regime for momentum/mean-reversion switching.",
+tags:["VPIN ✓","tick_logs 4.6M ✓","Hurst ✓","signal_score ✓"]},
+
+{name:"Order flow imbalance (OFI) alpha",score:"Ready",level:"high",cls:"ready",
+desc:"You have bid/ask/bidVol/askVol in every tick. Compute OFI = Σ(bidVol changes) - Σ(askVol changes). 15-min OFI predicts next-bar returns. Already showing in Layer 3 as 'Recent OFI'. Build a systematic backtest.",
+tags:["bid/ask ticks ✓","OFI computed ✓","DuckDB ✓","Layer 3 ✓"]},
+
+{name:"CVD divergence strategy",score:"Ready",level:"high",cls:"ready",
+desc:"Cumulative Volume Delta already computed in Layer 3. When price makes new high but CVD makes lower high → bearish divergence (distribution). When price new low but CVD higher low → bullish (accumulation). Classic Wyckoff in quant form.",
+tags:["CVD ✓","tick_logs ✓","price data ✓","signal_score ✓"]},
+
+{name:"Futures basis mean-reversion",score:"Ready",level:"high",cls:"ready",
+desc:"You have real OI + spot + futures prices. Basis = (futures - spot) / spot. When basis exceeds 2σ → mean-revert (sell futures, buy spot). PSX DFC basis is volatile enough to trade. Your Derivatives page already computes this.",
+tags:["real OI ✓","basis computed ✓","350K futures records ✓","DFC data ✓"]},
+
+{name:"VWAP execution optimizer",score:"Ready",level:"high",cls:"ready",
+desc:"You have intraday volume profiles. Build a TWAP/VWAP execution algo that slices orders proportionally to historical volume curve. Reduces slippage for large orders. Your POC and Value Area are already computed.",
+tags:["volume profile ✓","VWAP ✓","POC ✓","5s bars ✓"]},
+
+{section:"Tier 2 — Build in 1-2 weeks"},
+
+{name:"ML price prediction (XGBoost/LightGBM)",score:"2 weeks",level:"med",cls:"build",
+desc:"Features you already have: Hurst, VPIN, OFI, CVD slope, bid-ask spread, volume ratio, sector breadth, KIBOR rate, futures basis. Target: next-day return direction. Train on DuckDB data, predict on RTX 4080. XGBoost handles tabular data better than neural nets for this.",
+tags:["RTX 4080 GPU","DuckDB features","539 symbols","scikit-learn/XGBoost"]},
+
+{name:"Cross-asset macro regime model",score:"2 weeks",level:"med",cls:"build",
+desc:"Combine: KSE-100 momentum + KIBOR direction + PKR trend + oil price + SBP rate cycle. Use Hidden Markov Model to identify 3-4 regimes (risk-on, risk-off, transition, crisis). You have 20 years of SBP data + 5 years of EOD.",
+tags:["SBP 195 datasets ✓","KIBOR ✓","FX rates ✓","index data ✓"]},
+
+{name:"Sector rotation momentum",score:"1 week",level:"med",cls:"build",
+desc:"Monthly rebalance: go long top 3 sectors by 1M momentum, short bottom 3. You have per-sector breadth already. Backtest with 5 years of sector-level EOD data. Pakistan cycles are pronounced — banking → cement → pharma rotation is tradeable.",
+tags:["sector breadth ✓","18 indices ✓","5yr EOD ✓","index weights ✓"]},
+
+{name:"OI buildup/unwind trading",score:"1 week",level:"med",cls:"build",
+desc:"When OI rises + price rises → long buildup → go long. When OI rises + price drops → short buildup → go short. You have the matrix already. Automate entry/exit rules. Track rollover dates for month-end positioning.",
+tags:["real OI ✓","buildup matrix ✓","rollover tracker ✓","DFC XLS ✓"]},
+
+{name:"Pairs trading (stat arb)",score:"2 weeks",level:"med",cls:"build",
+desc:"Find cointegrated pairs among PSX stocks (e.g., OGDC/PPL, HBL/UBL, LUCK/DGKC). Trade the spread mean-reversion. Your 5-year EOD + DuckDB makes cointegration testing fast. Johansen test + Kalman filter for dynamic hedge ratio.",
+tags:["598K EOD bars ✓","DuckDB 104x ✓","numpy/scipy ✓","539 symbols"]},
+
+{name:"Sentiment-driven signals (LLM)",score:"2 weeks",level:"med",cls:"build",
+desc:"Feed PSX announcements + news to GPT-4o/Claude for sentiment scoring. You already scrape company announcements. NLP pipeline: announcement → sentiment score (-1 to +1) → combine with technical signal → trade.",
+tags:["announcements scraped ✓","GPT-4o API ✓","564 companies ✓","FinBERT option"]},
+
+{section:"Tier 3 — Research & advanced"},
+
+{name:"Deep order book simulation",score:"Research",level:"low",cls:"research",
+desc:"Use raw WebSocket data (raw_ws JSONL) to reconstruct order book snapshots. Build agent-based simulation of PSX market makers. Train RL agent to optimize limit order placement. Needs: order book depth data (not currently available from PSX WebSocket — only top-of-book).",
+tags:["raw_ws JSONL ✓","top-of-book only","RL/PyTorch","needs L2 data"]},
+
+{name:"Graph neural network (GNN) for stock relationships",score:"Research",level:"low",cls:"research",
+desc:"Build a graph of PSX stocks connected by: sector, supply chain, common directors, correlation. GNN learns which connections predict price co-movement. Use sector + company data you already have. Research-grade — published in top ML conferences.",
+tags:["company profiles ✓","sector data ✓","PyTorch Geometric","academic"]},
+
+{name:"Hawkes process for event clustering",score:"Research",level:"low",cls:"research",
+desc:"Model tick arrivals as a self-exciting Hawkes process. High-activity bursts predict short-term volatility spikes. Your 4.6M ticks have exact timestamps. Academic strategy — computationally intensive but your RTX 4080 can handle it.",
+tags:["4.6M ticks ✓","timestamps ✓","RTX 4080 GPU","tick_arrivals library"]},
+
+{name:"Reinforcement learning execution agent",score:"Research",level:"low",cls:"research",
+desc:"Train an RL agent (PPO/SAC) to minimize execution cost. State: VWAP distance, time remaining, volume profile, spread. Action: order size and limit price. Reward: negative slippage. Train on historical tick replay data.",
+tags:["tick replay ✓","VWAP ✓","PyTorch","Gymnasium/Stable-Baselines3"]}
+];
+
+const container = document.getElementById('strategies');
+let html = '';
+strategies.forEach(s => {
+  if (s.section) {
+    html += `<div class="strat-section">${s.section}</div>`;
+    return;
+  }
+  html += `<div class="strat-card ${s.cls}">
+    <div class="strat-head">
+      <span class="strat-name">${s.name}</span>
+      <span class="strat-score ${s.level}">${s.score}</span>
+    </div>
+    <div class="strat-desc">${s.desc}</div>
+    <div class="strat-tags">${s.tags.map(t => `<span class="strat-tag ${t.includes('✓')?'data':''}">${t}</span>`).join('')}</div>
+  </div>`;
+});
+container.innerHTML = html;
+</script>

@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pakfindata — Bloomberg Terminal for Pakistan</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@300;400;600;700;900&display=swap');
+  
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  
+  :root {
+    --bg: #0B0E11;
+    --bg2: #141821;
+    --card: #1E2530;
+    --gold: #C8A96E;
+    --white: #E0E0E0;
+    --gray: #888888;
+    --green: #22C55E;
+    --red: #EF4444;
+    --blue: #3B82F6;
+  }
+  
+  body {
+    background: var(--bg);
+    color: var(--white);
+    font-family: 'Inter', sans-serif;
+    line-height: 1.6;
+  }
+  
+  .container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+  
+  /* Hero */
+  .hero {
+    padding: 80px 0 60px;
+    text-align: center;
+    background: linear-gradient(180deg, #0B0E11 0%, #141821 100%);
+    border-bottom: 1px solid #1E2530;
+  }
+  .hero-logo {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 56px;
+    font-weight: 700;
+    margin-bottom: 12px;
+  }
+  .hero-logo .pak { color: var(--blue); }
+  .hero-logo .fin { color: var(--green); }
+  .hero-logo .data { color: var(--white); }
+  .hero-tagline {
+    font-size: 22px;
+    color: var(--gold);
+    margin-bottom: 8px;
+    font-weight: 300;
+  }
+  .hero-sub {
+    font-size: 14px;
+    color: var(--gray);
+    max-width: 600px;
+    margin: 0 auto 32px;
+  }
+  .hero-badge {
+    display: inline-block;
+    background: var(--card);
+    border: 1px solid var(--gold);
+    border-radius: 20px;
+    padding: 8px 24px;
+    font-size: 13px;
+    color: var(--gold);
+    font-weight: 600;
+  }
+  
+  /* Stats Bar */
+  .stats-bar {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    padding: 40px 0;
+  }
+  .stat-card {
+    background: var(--card);
+    border-radius: 12px;
+    padding: 24px;
+    text-align: center;
+    border: 1px solid #2A3445;
+  }
+  .stat-num {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 36px;
+    font-weight: 700;
+    color: var(--gold);
+  }
+  .stat-label {
+    font-size: 12px;
+    color: var(--gray);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-top: 4px;
+  }
+  
+  /* Section */
+  .section {
+    padding: 48px 0;
+    border-top: 1px solid #1E2530;
+  }
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .section-badge {
+    background: var(--gold);
+    color: var(--bg);
+    font-size: 11px;
+    font-weight: 700;
+    padding: 4px 12px;
+    border-radius: 4px;
+    letter-spacing: 1px;
+  }
+  .section-title {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--white);
+  }
+  
+  /* Page Cards */
+  .page-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 16px;
+  }
+  .page-card {
+    background: var(--card);
+    border-radius: 10px;
+    padding: 20px;
+    border: 1px solid #2A3445;
+    transition: border-color 0.2s;
+  }
+  .page-card:hover { border-color: var(--gold); }
+  .page-name {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--gold);
+    margin-bottom: 6px;
+  }
+  .page-desc {
+    font-size: 13px;
+    color: var(--gray);
+    line-height: 1.5;
+  }
+  .page-tag {
+    display: inline-block;
+    background: var(--bg);
+    color: var(--green);
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-top: 8px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  
+  /* Highlight Box */
+  .highlight {
+    background: linear-gradient(135deg, #1E2530 0%, #141821 100%);
+    border: 1px solid var(--gold);
+    border-radius: 16px;
+    padding: 32px;
+    margin: 32px 0;
+  }
+  .highlight-title {
+    font-size: 22px;
+    color: var(--gold);
+    font-weight: 700;
+    margin-bottom: 16px;
+  }
+  .highlight-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+  .h-card {
+    background: var(--bg);
+    border-radius: 8px;
+    padding: 16px;
+    text-align: center;
+  }
+  .h-score {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 28px;
+    font-weight: 700;
+  }
+  .h-label { font-size: 11px; color: var(--gray); margin-top: 4px; }
+  
+  /* Comparison Table */
+  .comp-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 13px;
+  }
+  .comp-table th {
+    background: var(--gold);
+    color: var(--bg);
+    padding: 10px 16px;
+    text-align: center;
+    font-weight: 700;
+  }
+  .comp-table th:first-child { text-align: left; border-radius: 8px 0 0 0; }
+  .comp-table th:last-child { border-radius: 0 8px 0 0; }
+  .comp-table td {
+    padding: 10px 16px;
+    text-align: center;
+    border-bottom: 1px solid #1E2530;
+  }
+  .comp-table td:first-child { text-align: left; color: var(--white); font-weight: 600; }
+  .comp-table tr:nth-child(even) { background: var(--bg2); }
+  .comp-table tr:nth-child(odd) { background: var(--card); }
+  .yes { color: var(--green); font-weight: 700; }
+  .no { color: var(--red); }
+  .cost { color: var(--red); font-weight: 600; }
+  .free { color: var(--green); font-weight: 700; }
+  
+  /* Differentiators */
+  .diff-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+  .diff-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--card);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .diff-num {
+    background: var(--gold);
+    color: var(--bg);
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 13px;
+    flex-shrink: 0;
+  }
+  .diff-text { font-size: 13px; color: var(--white); }
+  
+  /* Footer */
+  .footer {
+    padding: 48px 0;
+    border-top: 1px solid #1E2530;
+    text-align: center;
+  }
+  .footer-logo {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 24px;
+    margin-bottom: 8px;
+  }
+  .footer-tagline {
+    color: var(--gold);
+    font-style: italic;
+    font-size: 14px;
+    margin-bottom: 16px;
+  }
+  .footer-info { color: var(--gray); font-size: 12px; }
+  
+  @media (max-width: 768px) {
+    .stats-bar { grid-template-columns: repeat(2, 1fr); }
+    .page-grid { grid-template-columns: 1fr; }
+    .highlight-grid { grid-template-columns: 1fr; }
+    .diff-grid { grid-template-columns: 1fr; }
+    .hero-logo { font-size: 36px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Hero -->
+<div class="hero">
+  <div class="container">
+    <div class="hero-logo"><span class="pak">pak</span> <span class="fin">fin</span> <span class="data">data</span></div>
+    <div class="hero-tagline">Bloomberg Terminal for Pakistan Stock Exchange</div>
+    <div class="hero-sub">Institutional-grade analytics for equities, fixed income, FX, commodities & derivatives. 34+ pages covering every aspect of Pakistan's financial markets.</div>
+    <div class="hero-badge">Built by Godaitec — godai.tech</div>
+  </div>
+</div>
+
+<!-- Stats -->
+<div class="container">
+  <div class="stats-bar">
+    <div class="stat-card"><div class="stat-num">34+</div><div class="stat-label">Analytics Pages</div></div>
+    <div class="stat-card"><div class="stat-num">539</div><div class="stat-label">PSX Symbols</div></div>
+    <div class="stat-card"><div class="stat-num">4.6M+</div><div class="stat-label">Tick Data Records</div></div>
+    <div class="stat-card"><div class="stat-num">104x</div><div class="stat-label">DuckDB Speedup</div></div>
+  </div>
+</div>
+
+<!-- Market Overview -->
+<div class="section"><div class="container">
+  <div class="section-header"><span class="section-badge">SECTION 1</span><span class="section-title">Market Overview</span></div>
+  <div class="page-grid">
+    <div class="page-card">
+      <div class="page-name">Market Dashboard</div>
+      <div class="page-desc">KSE-100 index, market breadth (201 gainers / 318 losers), top gainers/losers charts, sector performance, macro ticker (SBP 10.5%, KIBOR, FX rates), data freshness badges</div>
+      <span class="page-tag">Saves 15-20 min/day</span>
+    </div>
+    <div class="page-card">
+      <div class="page-name">Market Pulse</div>
+      <div class="page-desc">End-of-day tables: gainers, losers, volume leaders (KEL 35.8M), value leaders (LUCK Rs.1.58B turnover), return distribution histogram, circuit breaker detection</div>
+      <span class="page-tag">Auto-generates daily reports</span>
+    </div>
+    <div class="page-card">
+      <div class="page-name">Index Analytics</div>
+      <div class="page-desc">18 PSX indices with 1D/1W/1M/3M returns. Banking -15% 1M vs KMI30 -5% reveals sector rotation. Index detail charts with time range selector</div>
+      <span class="page-tag">18 indices × 5 time periods</span>
+    </div>
+  </div>
+</div></div>
+
+<!-- Equities -->
+<div class="section"><div class="container">
+  <div class="section-header"><span class="section-badge">SECTION 2</span><span class="section-title">Equities — 9 Pages</span></div>
+  <div class="page-grid">
+    <div class="page-card"><div class="page-name">Stock Screener</div><div class="page-desc">Filter by sector, P/E, market cap, volume. 19 banking stocks filtered in 2 seconds. CSV export.</div></div>
+    <div class="page-card"><div class="page-name">Company Profile</div><div class="page-desc">564 companies — financials, ratios, announcements from PSX DPS. Batch deep scrape all symbols.</div></div>
+    <div class="page-card"><div class="page-name">Sector Analysis</div><div class="page-desc">Treemap by index weight + per-sector breadth chart (gainers vs losers per sector).</div></div>
+    <div class="page-card"><div class="page-name">Factor Analysis</div><div class="page-desc">Value, Momentum, Quality, Volatility — adjustable weights. ITANZ #1 at 0.88 composite.</div></div>
+    <div class="page-card"><div class="page-name">Intraday Terminal</div><div class="page-desc">8 tabs: Dashboard, Charts, Pulse, Volume, Movers, Index overlay. 5-second bar resolution.</div></div>
+    <div class="page-card"><div class="page-name">Futures & Open Interest</div><div class="page-desc">REAL OI from PSX XLS files. Basis analysis, buildup/unwind matrix, rollover tracker. 350,828 records.</div><span class="page-tag">Only free OI analytics in Pakistan</span></div>
+  </div>
+</div></div>
+
+<!-- Fixed Income -->
+<div class="section"><div class="container">
+  <div class="section-header"><span class="section-badge">SECTION 3</span><span class="section-title">Fixed Income — 5 Pages</span></div>
+  <div class="page-grid">
+    <div class="page-card"><div class="page-name">Rates Overview</div><div class="page-desc">SBP corridor (10.5%), KIBOR bid/offer (3M: 11.09/11.34%), T-Bill cutoffs (11.50%), PIB rates (2Y-15Y).</div></div>
+    <div class="page-card"><div class="page-name">Yield Curve</div><div class="page-desc">PKRV term structure — inverted at 3Y (10.2%). Short 11.49%, Medium 10.70%, Long 11.16%. Spread: -33 bps.</div><span class="page-tag">Market pricing 25+ bps of cuts</span></div>
+    <div class="page-card"><div class="page-name">Treasury Terminal</div><div class="page-desc">20-year rate history: Policy Rate, KIBOR 3M, KONIA, T-Bill. SBP timeline with basis point annotations.</div></div>
+    <div class="page-card"><div class="page-name">OTC Bond Market</div><div class="page-desc">Sovereign curve: MTB + PIB + PKRV combined. Policy rate corridor visualization.</div></div>
+    <div class="page-card"><div class="page-name">Debt Intelligence Terminal</div><div class="page-desc">160 securities — YTM, I-Spread, modified duration, CHEAP/RICH signals. Islamic + SLR filters. Treasury/Investor/Quant views.</div><span class="page-tag">Bloomberg PORT equivalent</span></div>
+  </div>
+</div></div>
+
+<!-- Signal Analysis Highlight -->
+<div class="container">
+  <div class="highlight">
+    <div class="highlight-title">★ Signal Analysis — 3-Layer Composite Scoring</div>
+    <div class="highlight-grid">
+      <div class="h-card"><div class="h-score" style="color:var(--blue)">27/33</div><div class="h-label">Layer 1: Macro Regime<br>Hurst exponent, volatility, SMA-200</div></div>
+      <div class="h-card"><div class="h-score" style="color:var(--green)">33/33</div><div class="h-label">Layer 2: Intraday Anchor<br>VWAP bands, POC, Value Area</div></div>
+      <div class="h-card"><div class="h-score" style="color:var(--gold)">19/33</div><div class="h-label">Layer 3: Execution DNA<br>VPIN, CVD, order flow, blocks</div></div>
+    </div>
+    <p style="text-align:center;margin-top:20px;color:var(--gray);font-size:13px">Batch scan 500+ symbols → ranked by composite score → drill into any signal. Nothing like this exists for PSX at any price.</p>
+  </div>
+</div>
+
+<!-- FX + Commodities + Funds -->
+<div class="section"><div class="container">
+  <div class="section-header"><span class="section-badge">SECTIONS 4-6</span><span class="section-title">FX, Commodities & Funds</span></div>
+  <div class="page-grid">
+    <div class="page-card"><div class="page-name">FX Rates Terminal</div><div class="page-desc">5 currency pairs × 3 markets (Interbank/Open/Kerb). Spread monitoring. 7 tabs: Charts, Spreads, Volatility, Carry, FX Signals.</div></div>
+    <div class="page-card"><div class="page-name">Commodities Terminal</div><div class="page-desc">Gold $4,474, Brent $100, Cotton, Wheat, NatGas, Sugar, Copper. PKR conversion. PMEX Portal. Sector performance.</div></div>
+    <div class="page-card"><div class="page-name">Fund & ETF Explorer</div><div class="page-desc">1,208 mutual funds + 68 VPS pension schemes. Shariah filter (425 Islamic). NAV tracking, risk analytics, fund comparison.</div><span class="page-tag">1,208 funds searchable</span></div>
+  </div>
+</div></div>
+
+<!-- Competitive Comparison -->
+<div class="section"><div class="container">
+  <div class="section-header"><span class="section-badge">VS</span><span class="section-title">Competitive Positioning</span></div>
+  <table class="comp-table">
+    <tr><th>Feature</th><th>Bloomberg</th><th>Reuters</th><th>PSX Website</th><th>pakfindata</th></tr>
+    <tr><td>Annual Cost</td><td class="cost">$24,000+</td><td class="cost">$15,000+</td><td class="free">Free</td><td class="free">Self-hosted</td></tr>
+    <tr><td>PSX Tick Data</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">✗</td><td class="yes">✓</td></tr>
+    <tr><td>VPIN Toxicity</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="yes">✓</td></tr>
+    <tr><td>Composite Signals</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td class="yes">✓ Unique</td></tr>
+    <tr><td>SBP Macro (195 sets)</td><td class="no">✗</td><td class="no">Partial</td><td class="no">✗</td><td class="yes">✓</td></tr>
+    <tr><td>60fps Tick Replay</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td class="yes">✓ Unique</td></tr>
+    <tr><td>Bond CHEAP/RICH</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">✗</td><td class="yes">✓</td></tr>
+    <tr><td>Real OI Analytics</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">✗</td><td class="yes">✓</td></tr>
+  </table>
+</div></div>
+
+<!-- 10 Differentiators -->
+<div class="section"><div class="container">
+  <div class="section-header"><span class="section-badge">TOP 10</span><span class="section-title">Unique Differentiators</span></div>
+  <div class="diff-grid">
+    <div class="diff-item"><div class="diff-num">1</div><div class="diff-text">3-layer composite signal scoring — unique to PSX</div></div>
+    <div class="diff-item"><div class="diff-num">2</div><div class="diff-text">VPIN toxicity monitoring — exchange-grade microstructure</div></div>
+    <div class="diff-item"><div class="diff-num">3</div><div class="diff-text">60fps tick replay with TradingView charts</div></div>
+    <div class="diff-item"><div class="diff-num">4</div><div class="diff-text">CHEAP/RICH bond signals for 160 debt securities</div></div>
+    <div class="diff-item"><div class="diff-num">5</div><div class="diff-text">Real OI + derivatives buildup/unwind matrix</div></div>
+    <div class="diff-item"><div class="diff-num">6</div><div class="diff-text">20-year SBP rate history with bp annotations</div></div>
+    <div class="diff-item"><div class="diff-num">7</div><div class="diff-text">1,208 mutual funds with Shariah compliance filter</div></div>
+    <div class="diff-item"><div class="diff-num">8</div><div class="diff-text">FX spread monitoring across 3 market layers</div></div>
+    <div class="diff-item"><div class="diff-num">9</div><div class="diff-text">Commodity PKR conversion + PMEX portal</div></div>
+    <div class="diff-item"><div class="diff-num">10</div><div class="diff-text">DuckDB analytics — 104x faster than SQLite</div></div>
+  </div>
+</div></div>
+
+<!-- Footer -->
+<div class="footer">
+  <div class="container">
+    <div class="footer-logo"><span style="color:var(--blue)">pak</span> <span style="color:var(--green)">fin</span> <span style="color:var(--white)">data</span></div>
+    <div class="footer-tagline">Where Pakistan's markets meet institutional-grade analytics.</div>
+    <div class="footer-info">Built by Godaitec (godai.tech) — Karachi, Pakistan — info@godai.tech</div>
+  </div>
+</div>
+
+</body>
+</html>

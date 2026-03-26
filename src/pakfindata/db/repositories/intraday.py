@@ -102,6 +102,28 @@ def upsert_intraday(con: sqlite3.Connection, df: pd.DataFrame) -> int:
         count += cur.rowcount
 
     con.commit()
+
+    # Dual-write to DuckDB
+    try:
+        from pakfindata.db.connections import has_duckdb, duck_insert
+        if has_duckdb():
+            duck_df = df.copy()
+            if "ts_epoch" not in duck_df.columns:
+                duck_df["ts_epoch"] = duck_df["ts"].apply(_parse_ts_to_epoch)
+            duck_df["ts_epoch"] = duck_df["ts_epoch"].astype(int)
+            duck_df["interval"] = "int"
+            duck_df["ingested_at"] = now
+            duck_df["operation"] = "insert"
+            duck_df["process_ts"] = ""
+            cols = ["symbol", "ts", "ts_epoch", "open", "high", "low", "close",
+                    "volume", "interval", "ingested_at", "operation", "process_ts"]
+            for c in cols:
+                if c not in duck_df.columns:
+                    duck_df[c] = None
+            duck_insert("intraday_bars", duck_df[cols])
+    except Exception:
+        pass
+
     return count
 
 
@@ -416,6 +438,44 @@ def promote_intraday_to_eod(
         count += 1
 
     con.commit()
+
+    # Dual-write aggregated EOD to DuckDB
+    try:
+        from pakfindata.db.connections import has_duckdb, duck_write
+        if has_duckdb() and rows:
+            import pandas as _pd
+            eod_rows = []
+            for r in rows:
+                sym = r["symbol"]
+                eod_rows.append({
+                    "symbol": sym, "date": date,
+                    "open": r["open"], "high": r["high"], "low": r["low"],
+                    "close": r["close"], "volume": r["volume"],
+                    "prev_close": prev_close_map.get(sym),
+                    "sector_code": sector_map.get(sym),
+                    "company_name": name_map.get(sym),
+                    "ingested_at": now, "source": "intraday_aggregation",
+                    "processname": "sync_timeseries", "turnover": None,
+                })
+            eod_df = _pd.DataFrame(eod_rows)
+            dcon = duck_write()
+            dcon.register("_eod_agg", eod_df)
+            dcon.execute("""
+                INSERT INTO eod_ohlcv SELECT * FROM _eod_agg
+                ON CONFLICT (symbol, date) DO UPDATE SET
+                    open = excluded.open, high = excluded.high,
+                    low = excluded.low, close = excluded.close,
+                    volume = excluded.volume, prev_close = excluded.prev_close,
+                    sector_code = COALESCE(excluded.sector_code, eod_ohlcv.sector_code),
+                    company_name = COALESCE(excluded.company_name, eod_ohlcv.company_name),
+                    ingested_at = excluded.ingested_at, source = excluded.source,
+                    processname = excluded.processname
+            """)
+            dcon.unregister("_eod_agg")
+            dcon.close()
+    except Exception:
+        pass
+
     con.row_factory = old_factory
     return count
 

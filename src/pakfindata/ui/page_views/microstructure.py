@@ -366,6 +366,230 @@ Combine Step 1 and Step 2 into the **Expected Value (EV) Matrix**:
 """
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# VOLUME PROFILE (Price vs Volume horizontal bars)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _render_volume_profile(df: pd.DataFrame):
+    """Horizontal bar chart — volume at each price level."""
+    prices = df["price"].dropna()
+    volumes = df["volume"].dropna()
+    if prices.empty or len(prices) < 10:
+        st.info("Not enough price data for volume profile.")
+        return
+
+    # Compute per-tick volume (diff cumulative)
+    tick_vol = volumes.diff().fillna(0).clip(lower=0)
+
+    # Bin prices into levels
+    price_range = prices.max() - prices.min()
+    if price_range <= 0:
+        st.info("No price variation for volume profile.")
+        return
+
+    n_bins = min(50, max(15, int(price_range / 0.05)))
+    bins = pd.cut(prices, bins=n_bins)
+    profile = pd.DataFrame({"price_bin": bins, "vol": tick_vol})
+    profile = profile.groupby("price_bin", observed=True)["vol"].sum().reset_index()
+    profile = profile[profile["vol"] > 0].copy()
+
+    if profile.empty:
+        st.info("No volume data for profile.")
+        return
+
+    profile["mid"] = profile["price_bin"].apply(lambda x: x.mid)
+    profile = profile.sort_values("mid")
+
+    # Point of Control (POC) — price with max volume
+    poc_idx = profile["vol"].idxmax()
+    poc_price = profile.loc[poc_idx, "mid"]
+
+    # Value Area — 70% of total volume around POC
+    total_vol = profile["vol"].sum()
+    sorted_by_vol = profile.sort_values("vol", ascending=False)
+    cum = 0
+    va_prices = set()
+    for _, row in sorted_by_vol.iterrows():
+        cum += row["vol"]
+        va_prices.add(row["mid"])
+        if cum >= total_vol * 0.7:
+            break
+
+    colors = [
+        _COLORS["accent"] if mid in va_prices else _COLORS["text_dim"]
+        for mid in profile["mid"]
+    ]
+
+    fig = go.Figure(go.Bar(
+        y=profile["mid"],
+        x=profile["vol"],
+        orientation="h",
+        marker_color=colors,
+        hovertemplate="Price: %{y:.2f}<br>Volume: %{x:,.0f}<extra></extra>",
+    ))
+    fig.add_hline(
+        y=poc_price,
+        line_dash="dash", line_color=_COLORS["warning"], line_width=2,
+        annotation_text=f"POC: {poc_price:.2f}",
+        annotation_font_color=_COLORS["warning"],
+    )
+    fig.update_layout(
+        **_CHART_LAYOUT, height=500,
+        title="Volume Profile (70% Value Area highlighted)",
+        xaxis_title="Volume", yaxis_title="Price",
+        yaxis_tickformat=".2f",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("POC (Point of Control)", f"{poc_price:.2f}")
+    c2.metric("Value Area High", f"{max(va_prices):.2f}")
+    c3.metric("Value Area Low", f"{min(va_prices):.2f}")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TRADE SIZE DISTRIBUTION
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _render_trade_size_distribution(df: pd.DataFrame):
+    """Histogram of per-tick trade sizes with retail vs institutional breakdown."""
+    volumes = df["volume"].dropna()
+    if volumes.empty:
+        st.info("No volume data available.")
+        return
+
+    # Compute per-tick volume (diff cumulative)
+    tick_vol = volumes.diff().fillna(0).clip(lower=0)
+    tick_vol = tick_vol[tick_vol > 0]
+
+    if tick_vol.empty or len(tick_vol) < 5:
+        st.info("Not enough trade data for size distribution.")
+        return
+
+    # Buckets
+    bins = [0, 100, 500, 1000, 5000, 50000, float("inf")]
+    labels = ["1–100", "101–500", "501–1K", "1K–5K", "5K–50K", "50K+"]
+    cats = pd.cut(tick_vol, bins=bins, labels=labels)
+    dist = cats.value_counts().reindex(labels, fill_value=0)
+
+    fig = go.Figure(go.Bar(
+        x=dist.index.tolist(),
+        y=dist.values,
+        marker_color=[_COLORS["safe"], _COLORS["accent"], _COLORS["vpin_line"],
+                      _COLORS["warning"], _COLORS["toxic"], _COLORS["down"]],
+        text=[f"{v:,}" for v in dist.values],
+        textposition="outside",
+    ))
+    fig.update_layout(
+        **_CHART_LAYOUT, height=350,
+        title="Trade Size Distribution",
+        xaxis_title="Trade Size (shares)", yaxis_title="Count",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Retail vs institutional
+    total_trades = len(tick_vol)
+    retail = (tick_vol <= 500).sum()
+    institutional = (tick_vol > 5000).sum()
+    mid = total_trades - retail - institutional
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total Trades", f"{total_trades:,}")
+    c2.metric("Retail (≤500)", f"{retail/total_trades*100:.1f}%")
+    c3.metric("Mid (500–5K)", f"{mid/total_trades*100:.1f}%")
+    c4.metric("Institutional (>5K)", f"{institutional/total_trades*100:.1f}%")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TICK-BY-TICK TABLE
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _render_tick_table(df: pd.DataFrame):
+    """Last N trades with side classification (Lee-Ready tick rule)."""
+    show_n = st.slider("Show last N ticks", 20, 500, 100, step=20, key="tick_table_n")
+
+    tdf = df.tail(show_n).copy()
+    tdf = tdf.reset_index(drop=True)
+
+    # Per-tick volume
+    if "volume" in tdf.columns:
+        tdf["tick_vol"] = tdf["volume"].diff().fillna(0).clip(lower=0).astype(int)
+    else:
+        tdf["tick_vol"] = 0
+
+    # Tick rule: classify buy/sell
+    tdf["side"] = "—"
+    if "price" in tdf.columns:
+        price_diff = tdf["price"].diff()
+        last_side = "—"
+        sides = []
+        for d in price_diff:
+            if pd.isna(d) or d == 0:
+                sides.append(last_side)
+            elif d > 0:
+                last_side = "BUY"
+                sides.append("BUY")
+            else:
+                last_side = "SELL"
+                sides.append("SELL")
+        tdf["side"] = sides
+
+    # Spread
+    if "bid" in tdf.columns and "ask" in tdf.columns:
+        tdf["spread"] = (tdf["ask"] - tdf["bid"]).round(2)
+    else:
+        tdf["spread"] = 0.0
+
+    # Time column
+    time_col = None
+    for c in ["datetime", "_ts", "ts"]:
+        if c in tdf.columns:
+            time_col = c
+            break
+
+    cols_display = []
+    if time_col:
+        tdf["Time"] = tdf[time_col].astype(str).str[-8:]
+        cols_display.append("Time")
+
+    rename = {}
+    if "price" in tdf.columns:
+        rename["price"] = "Price"
+    if "tick_vol" in tdf.columns:
+        rename["tick_vol"] = "Vol"
+    if "bid" in tdf.columns:
+        rename["bid"] = "Bid"
+    if "ask" in tdf.columns:
+        rename["ask"] = "Ask"
+    rename["spread"] = "Spread"
+    rename["side"] = "Side"
+
+    tdf = tdf.rename(columns=rename)
+    cols_display += [v for v in rename.values() if v in tdf.columns]
+
+    display_df = tdf[cols_display].iloc[::-1]  # newest first
+
+    def _color_side(val):
+        if val == "BUY":
+            return f"color: {_COLORS['buy']}"
+        elif val == "SELL":
+            return f"color: {_COLORS['down']}"
+        return ""
+
+    styled = display_df.style.applymap(_color_side, subset=["Side"])
+    st.dataframe(styled, use_container_width=True, height=400)
+
+    # Summary
+    buys = (display_df["Side"] == "BUY").sum()
+    sells = (display_df["Side"] == "SELL").sum()
+    total = buys + sells
+    if total > 0:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Buy Trades", f"{buys} ({buys/total*100:.0f}%)")
+        c2.metric("Sell Trades", f"{sells} ({sells/total*100:.0f}%)")
+        c3.metric("Net Pressure", f"{'BUY' if buys > sells else 'SELL'} +{abs(buys-sells)}")
+
+
 def render_microstructure():
     """Main entry point for the Market Microstructure & Risk page."""
     st.markdown("## Market Microstructure & Risk")
@@ -548,5 +772,25 @@ def render_microstructure():
                 else:
                     from pakfindata.ui.components.commentary_renderer import render_styled_commentary
                     render_styled_commentary(ai_text, "Microstructure Analysis")
+
+    # Normalize: ensure "price" column exists (some sources use "close")
+    if tick_df is not None and "price" not in tick_df.columns and "close" in tick_df.columns:
+        tick_df = tick_df.copy()
+        tick_df["price"] = tick_df["close"]
+
+    # ── SECTION 5: Volume Profile ──────────────────────────────────────────
+    if tick_df is not None and "price" in tick_df.columns and len(tick_df) > 10:
+        st.markdown("### Volume Profile")
+        _render_volume_profile(tick_df)
+
+    # ── SECTION 6: Trade Size Distribution ─────────────────────────────────
+    if tick_df is not None and "volume" in tick_df.columns and len(tick_df) > 10:
+        st.markdown("### Trade Size Distribution")
+        _render_trade_size_distribution(tick_df)
+
+    # ── SECTION 7: Tick-by-Tick Table ──────────────────────────────────────
+    if tick_df is not None and "price" in tick_df.columns and len(tick_df) > 5:
+        st.markdown("### Tick-by-Tick Table")
+        _render_tick_table(tick_df)
 
     render_footer()

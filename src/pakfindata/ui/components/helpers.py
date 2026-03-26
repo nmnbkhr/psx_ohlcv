@@ -322,7 +322,7 @@ values, consider premium data providers.
 
 # PSX market hours (Pakistan Standard Time)
 MARKET_OPEN_HOUR = 9
-MARKET_CLOSE_HOUR = 15
+MARKET_CLOSE_HOUR = 16  # Ramadan 2026: continuous 09:30-15:30, post-close till ~16:10
 MARKET_DAYS = [0, 1, 2, 3, 4]  # Monday to Friday
 
 

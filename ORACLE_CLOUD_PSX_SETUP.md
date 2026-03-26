@@ -400,13 +400,13 @@ TimeoutStopSec=120
 WantedBy=multi-user.target
 EOF
 
-# Timer — 9:10 AM PKT = 4:10 AM UTC, Mon-Fri
+# Timer — 9:05 AM PKT = 4:05 AM UTC, Mon-Fri
 sudo cat > /etc/systemd/system/psx-collector.timer << EOF
 [Unit]
-Description=PSX Collector Timer — 9:10 AM PKT Mon-Fri
+Description=PSX Collector Timer — 9:05 AM PKT Mon-Fri
 
 [Timer]
-OnCalendar=Mon..Fri *-*-* 04:10:00 UTC
+OnCalendar=Mon..Fri *-*-* 04:05:00 UTC
 Persistent=true
 
 [Install]
@@ -684,7 +684,7 @@ In OCI Console → Billing → Cost Analysis → verify $0.00
 
 | What | Where | Auto? |
 |------|-------|-------|
-| Tick collection (WebSocket) | Oracle VM | ✅ systemd timer, 9:10-15:45 PKT |
+| Tick collection (WebSocket) | Oracle VM | ✅ systemd timer, 9:05-17:45 PKT |
 | Checkpoint saves | Oracle VM | ✅ every 30 min |
 | EOD flush to SQLite | Oracle VM | ✅ at 15:35 PKT |
 | DPS tick backup | Oracle VM | ✅ after market close |

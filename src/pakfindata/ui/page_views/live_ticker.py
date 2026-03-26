@@ -126,7 +126,7 @@ def render_live_ticker():
     cols[1].metric("Symbols", data.get("symbol_count", 0))
     cols[2].metric("Ticks", f"{data.get('tick_count', 0):,}")
     cols[3].metric("Bars (mem)", f"{data.get('bars_in_memory', 0):,}")
-    cols[4].metric("Raw ticks", f"{data.get('raw_ticks_in_memory', 0):,}")
+    cols[4].metric("Data source", "☁️ Cloud" if Path("/mnt/e/psxdata/tick_logs_cloud").exists() else "Local")
     cols[5].metric("RAM", f"{data.get('ram_mb', 0):.0f} MB")
     last_tick = data.get("timestamp", "")
     cols[6].metric("Updated", last_tick[11:19] if len(last_tick) > 19 else "--")

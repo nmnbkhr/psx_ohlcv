@@ -593,19 +593,46 @@ def render_company_deep():
 
     # ----- Company Profile -----
     profile = data.get("profile_data", {})
-    if profile or data.get("company_name"):
+
+    # Enrich with company_profile table from SQLite (deep-scraped data)
+    db_profile = {}
+    key_people = []
+    try:
+        import sqlite3 as _sqlite3
+        _pcon = _sqlite3.connect("/mnt/e/psxdata/psx.sqlite")
+        _pcon.execute("PRAGMA journal_mode=WAL")
+        _pcon.execute("PRAGMA busy_timeout=30000")
+        _pcon.row_factory = _sqlite3.Row
+        row = _pcon.execute(
+            "SELECT * FROM company_profile WHERE symbol = ?", (symbol,)
+        ).fetchone()
+        if row:
+            db_profile = dict(row)
+        kp_rows = _pcon.execute(
+            "SELECT name, role FROM company_key_people WHERE symbol = ? ORDER BY rowid",
+            (symbol,),
+        ).fetchall()
+        key_people = [dict(r) for r in kp_rows]
+        _pcon.close()
+    except Exception:
+        pass
+
+    if profile or data.get("company_name") or db_profile:
         st.subheader("🏢 Company Profile")
 
         profile_cols = st.columns(2)
         with profile_cols[0]:
-            st.markdown(f"**Company Name:** {data.get('company_name') or profile.get('company_name', 'N/A')}")
-            st.markdown(f"**Sector:** {data.get('sector_name') or profile.get('sector', 'N/A')}")
+            st.markdown(f"**Company Name:** {data.get('company_name') or db_profile.get('company_name') or profile.get('company_name', 'N/A')}")
+            st.markdown(f"**Sector:** {data.get('sector_name') or db_profile.get('sector_name') or profile.get('sector', 'N/A')}")
             st.markdown(f"**Listed In:** {profile.get('listed_in', 'N/A')}")
             shares = data.get("total_shares") or profile.get("shares_outstanding")
             if shares:
                 st.markdown(f"**Shares Outstanding:** {shares:,}")
             else:
                 st.markdown("**Shares Outstanding:** N/A")
+            website = db_profile.get("website", "")
+            if website:
+                st.markdown(f"**Website:** [{website}]({website})")
 
         with profile_cols[1]:
             paid_up = profile.get("paid_up_capital")
@@ -616,11 +643,35 @@ def render_company_deep():
             st.markdown(f"**Face Value:** {profile.get('face_value', 'N/A')}")
             st.markdown(f"**Market Lot:** {profile.get('market_lot', 'N/A')}")
             st.markdown(f"**Fiscal Year End:** {profile.get('fiscal_year_end', 'N/A')}")
+            auditor = db_profile.get("auditor", "")
+            if auditor:
+                st.markdown(f"**Auditor:** {auditor}")
+            registrar = db_profile.get("registrar") or profile.get("registrar", "")
+            if registrar:
+                st.markdown(f"**Registrar:** {registrar}")
 
-        # Additional info in expander
+        # Business description
+        desc = db_profile.get("business_description") or db_profile.get("description", "")
+        if desc and len(desc) > 10:
+            with st.expander("Business Description", expanded=False):
+                st.markdown(desc)
+
+        # Key people
+        if key_people:
+            with st.expander(f"Key People ({len(key_people)})", expanded=False):
+                kp_df = pd.DataFrame(key_people)
+                st.dataframe(kp_df, use_container_width=True, hide_index=True)
+
+        # More details
         with st.expander("More Details"):
-            st.markdown(f"**Registrar:** {profile.get('registrar', 'N/A')}")
-            st.markdown(f"**Last Updated:** {data.get('scraped_at', 'N/A')}")
+            address = db_profile.get("address", "")
+            if address:
+                st.markdown(f"**Address:** {address}")
+            phone = db_profile.get("phone", "")
+            if phone:
+                st.markdown(f"**Phone:** {phone}")
+            updated = db_profile.get("updated_at") or data.get("scraped_at", "N/A")
+            st.markdown(f"**Last Updated:** {updated}")
 
     # ----- Trading Sessions (Multi-Market) -----
     trading_sessions = data.get("trading_sessions", {})
@@ -659,25 +710,51 @@ def render_company_deep():
         else:
             st.info("No trading session data available.")
 
-    # ----- Recent Announcements -----
+    # ----- Recent Announcements (enriched from corporate_announcements table) -----
     announcements = data.get("announcements", [])
-    if announcements:
+    # Enrich with corporate_announcements from SQLite
+    db_announcements = []
+    try:
+        import sqlite3 as _sqlite3
+        _acon = _sqlite3.connect("/mnt/e/psxdata/psx.sqlite")
+        _acon.execute("PRAGMA journal_mode=WAL")
+        _acon.execute("PRAGMA busy_timeout=30000")
+        _acon.row_factory = _sqlite3.Row
+        db_ann_rows = _acon.execute(
+            "SELECT announcement_date, title, document_url "
+            "FROM corporate_announcements WHERE symbol = ? "
+            "ORDER BY announcement_date DESC LIMIT 30",
+            (symbol,),
+        ).fetchall()
+        db_announcements = [dict(r) for r in db_ann_rows]
+        _acon.close()
+    except Exception:
+        pass
+
+    all_announcements = announcements or db_announcements
+    if all_announcements:
         st.markdown("---")
         st.subheader("📣 Recent Announcements")
 
         # Show count
-        st.caption(f"Showing {len(announcements)} most recent announcements")
+        st.caption(f"Showing {len(all_announcements)} most recent announcements")
 
-        for ann in announcements[:5]:
-            with st.expander(f"{ann.get('announcement_date', 'N/A')} - {ann.get('announcement_type', 'News')}"):
-                st.markdown(f"**{ann.get('title', 'No title')}**")
+        for ann in all_announcements[:5]:
+            date_str = ann.get("announcement_date", "N/A")
+            title = ann.get("title", ann.get("subject", "No title"))
+            ann_type = ann.get("announcement_type", "News")
+            doc_url = ann.get("document_url", "")
+            with st.expander(f"{date_str} - {ann_type}"):
+                st.markdown(f"**{title}**")
                 if ann.get("content"):
-                    st.markdown(ann.get("content", "")[:500] + "..." if len(ann.get("content", "")) > 500 else ann.get("content", ""))
+                    st.markdown(ann["content"][:500] + "..." if len(ann["content"]) > 500 else ann["content"])
+                if doc_url:
+                    st.markdown(f"[View Document]({doc_url})")
 
-        if len(announcements) > 5:
-            with st.expander(f"View all {len(announcements)} announcements"):
-                ann_df = pd.DataFrame(announcements)
-                display_cols = ["announcement_date", "announcement_type", "title"]
+        if len(all_announcements) > 5:
+            with st.expander(f"View all {len(all_announcements)} announcements"):
+                ann_df = pd.DataFrame(all_announcements)
+                display_cols = ["announcement_date", "announcement_type", "title", "document_url"]
                 available_cols = [c for c in display_cols if c in ann_df.columns]
                 if available_cols:
                     st.dataframe(ann_df[available_cols], use_container_width=True, hide_index=True)
@@ -1133,7 +1210,27 @@ def render_company_deep():
                 with payout_cols[2]:
                     st.metric("Bonus Issues", bonus_count)
             else:
-                st.info("No payout history available.")
+                # Fallback: try dividend_payouts from global scraper
+                try:
+                    import sqlite3 as _sqlite3
+                    _dcon = _sqlite3.connect("/mnt/e/psxdata/psx.sqlite")
+                    _dcon.execute("PRAGMA journal_mode=WAL")
+                    _dcon.execute("PRAGMA busy_timeout=30000")
+                    div_df = pd.read_sql_query(
+                        "SELECT announcement_date, dividend_percent, dividend_type, "
+                        "dividend_number, book_closure_from, book_closure_to "
+                        "FROM dividend_payouts WHERE symbol = ? "
+                        "ORDER BY announcement_date DESC LIMIT 20",
+                        _dcon, params=(symbol,),
+                    )
+                    _dcon.close()
+                    if not div_df.empty:
+                        st.markdown("**Dividend / Payout History** *(from global scrape)*")
+                        st.dataframe(div_df, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("No payout history available.")
+                except Exception:
+                    st.info("No payout history available.")
     else:
         st.info(
             "No financial data available yet. "

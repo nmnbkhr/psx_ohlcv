@@ -1,4 +1,7 @@
-"""Sector Analysis — sector rotation, relative performance."""
+"""Sector Analysis — sector rotation, relative performance, index weights."""
+
+import glob
+from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -32,6 +35,11 @@ def render_sector_analysis():
 
     # ── Sector Returns Heatmap ───────────────────────────────────
     _render_sector_heatmap()
+
+    st.divider()
+
+    # ── Index Weights Treemap ─────────────────────────────────────
+    _render_index_weights()
 
     render_footer()
 
@@ -189,3 +197,102 @@ def _render_sector_heatmap():
             st.dataframe(df, use_container_width=True, hide_index=True)
     except Exception as e:
         st.error(f"Error loading heatmap: {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Index Weights
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CONSTITUENT_DIR = Path("/mnt/e/psxdata/downloads/daily")
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_index_weights() -> pd.DataFrame:
+    """Load latest constituent_data XLS with index weights."""
+    files = sorted(glob.glob(str(_CONSTITUENT_DIR / "*/indices/constituent_data_*.xls")))
+    if not files:
+        return pd.DataFrame()
+
+    latest = files[-1]
+    try:
+        df = pd.read_excel(latest, engine="xlrd")
+    except Exception:
+        return pd.DataFrame()
+
+    if "IDX WT %" not in df.columns or "SYMBOL" not in df.columns:
+        return pd.DataFrame()
+
+    df = df[df["IDX WT %"] > 0].copy()
+    df["_file"] = Path(latest).stem
+    return df
+
+
+def _render_index_weights():
+    """KSE-100 index weights treemap + top constituents table."""
+    st.subheader("KSE-100 Index Weights")
+
+    df = _load_index_weights()
+    if df.empty:
+        st.info(
+            "No constituent data found. "
+            "Download from PSX DPS → `/mnt/e/psxdata/downloads/daily/{date}/indices/constituent_data_*.xls`"
+        )
+        return
+
+    file_label = df["_file"].iloc[0].replace("constituent_data_", "")
+    st.caption(f"Source: PSX constituent data ({file_label})")
+
+    # Join with eod_ohlcv for sector info
+    con = get_connection()
+    if con:
+        try:
+            sectors = pd.read_sql_query(
+                """SELECT e.symbol, COALESCE(s.sector_name, e.sector_code) as sector
+                   FROM eod_ohlcv e
+                   LEFT JOIN sectors s ON s.sector_code =
+                       CASE WHEN LENGTH(e.sector_code) < 4 THEN '0' || e.sector_code ELSE e.sector_code END
+                   WHERE e.date = (SELECT MAX(date) FROM eod_ohlcv)
+                   GROUP BY e.symbol""",
+                con,
+            )
+            df = df.merge(sectors, left_on="SYMBOL", right_on="symbol", how="left")
+            df["sector"] = df["sector"].fillna("Other")
+        except Exception:
+            df["sector"] = "Unknown"
+    else:
+        df["sector"] = "Unknown"
+
+    # Treemap
+    try:
+        import plotly.express as px
+
+        tree_df = df[["SYMBOL", "sector", "IDX WT %", "FF BASED MCAP"]].copy()
+        tree_df = tree_df[tree_df["IDX WT %"] > 0.01]
+        tree_df["label"] = tree_df["SYMBOL"] + " (" + tree_df["IDX WT %"].round(2).astype(str) + "%)"
+
+        fig = px.treemap(
+            tree_df,
+            path=["sector", "label"],
+            values="IDX WT %",
+            color="IDX WT %",
+            color_continuous_scale="YlOrRd",
+            title="KSE-100 Index Weight Treemap",
+        )
+        fig.update_layout(
+            height=600,
+            margin=dict(t=40, l=0, r=0, b=0),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    except Exception as e:
+        st.warning(f"Treemap rendering failed: {e}")
+
+    # Top 20 table
+    top = df.nlargest(20, "IDX WT %")[["SYMBOL", "COMPANY", "PRICE", "IDX WT %", "FF BASED MCAP", "sector"]].copy()
+    top.columns = ["Symbol", "Company", "Price", "Weight %", "FF MCap", "Sector"]
+    top["FF MCap"] = (top["FF MCap"] / 1e9).round(2).astype(str) + "B"
+    top["Weight %"] = top["Weight %"].round(3)
+    top = top.reset_index(drop=True)
+    top.index += 1
+
+    st.markdown("**Top 20 Constituents by Weight**")
+    st.dataframe(top, use_container_width=True)

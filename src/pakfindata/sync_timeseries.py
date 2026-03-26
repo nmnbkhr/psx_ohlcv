@@ -102,6 +102,30 @@ def _upsert_intraday(con: sqlite3.Connection, symbol: str, records: list) -> int
         rows,
     )
     con.commit()
+
+    # Dual-write to DuckDB
+    try:
+        from pakfindata.db.connections import has_duckdb, duck_write
+        if has_duckdb() and rows:
+            import pandas as _pd
+            duck_df = _pd.DataFrame(rows, columns=[
+                "symbol", "ts", "ts_epoch", "open", "high", "low",
+                "close", "volume", "interval", "operation"])
+            duck_df["ingested_at"] = datetime.now().isoformat()
+            duck_df["process_ts"] = ""
+            dcon = duck_write()
+            dcon.register("_intra_df", duck_df)
+            dcon.execute("""
+                INSERT OR IGNORE INTO intraday_bars
+                SELECT symbol, ts, ts_epoch, "open", high, low, close,
+                       volume, interval, ingested_at, operation, process_ts
+                FROM _intra_df
+            """)
+            dcon.unregister("_intra_df")
+            dcon.close()
+    except Exception:
+        pass
+
     return len(rows)
 
 

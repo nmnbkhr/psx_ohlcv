@@ -76,66 +76,39 @@ def render_fund_explorer():
     except Exception:
         pass
 
-    tab_mf, tab_etf, tab_vps, tab_top, tab_compare, tab_risk, tab_factors, tab_llm, tab_sync = st.tabs([
+    TAB_NAMES = [
         "Mutual Funds", "ETFs", "VPS Pension", "Top Performers",
         "Compare Funds", "Risk Analytics", "Factor Analysis", "LLM Analysis",
         "Sync & Tools",
-    ])
+    ]
+    TAB_RENDERERS = [
+        lambda c: (_render_category_summary(c), _render_fund_directory(c)),
+        _render_etf_section,
+        _render_vps_section,
+        _render_top_performers,
+        _render_fund_comparison,
+        _render_risk_analytics,
+        _render_factor_analysis,
+        _render_llm_analysis,
+        _render_sync_tools,
+    ]
 
-    with tab_mf:
-        try:
-            _render_category_summary(con)
-            _render_fund_directory(con)
-        except Exception as e:
-            st.error(f"Error loading mutual funds: {e}")
+    # Use selectbox for true lazy tab selection — only selected tab renders
+    if "fexp_tab" not in st.session_state:
+        st.session_state.fexp_tab = "Mutual Funds"
 
-    with tab_etf:
-        try:
-            _render_etf_section(con)
-        except Exception as e:
-            st.error(f"Error loading ETFs: {e}")
+    selected = st.radio(
+        "Section", TAB_NAMES, horizontal=True, label_visibility="collapsed",
+        index=TAB_NAMES.index(st.session_state.fexp_tab),
+        key="fexp_tab_radio",
+    )
+    st.session_state.fexp_tab = selected
 
-    with tab_vps:
-        try:
-            _render_vps_section(con)
-        except Exception as e:
-            st.error(f"Error loading VPS data: {e}")
-
-    with tab_top:
-        try:
-            _render_top_performers(con)
-        except Exception as e:
-            st.error(f"Error loading top performers: {e}")
-
-    with tab_compare:
-        try:
-            _render_fund_comparison(con)
-        except Exception as e:
-            st.error(f"Error loading comparison: {e}")
-
-    with tab_risk:
-        try:
-            _render_risk_analytics(con)
-        except Exception as e:
-            st.error(f"Error loading risk analytics: {e}")
-
-    with tab_factors:
-        try:
-            _render_factor_analysis(con)
-        except Exception as e:
-            st.error(f"Error loading factor analysis: {e}")
-
-    with tab_llm:
-        try:
-            _render_llm_analysis(con)
-        except Exception as e:
-            st.error(f"Error loading LLM analysis: {e}")
-
-    with tab_sync:
-        try:
-            _render_sync_tools(con)
-        except Exception as e:
-            st.error(f"Error loading sync tools: {e}")
+    idx = TAB_NAMES.index(selected)
+    try:
+        TAB_RENDERERS[idx](con)
+    except Exception as e:
+        st.error(f"Error loading {selected}: {e}")
 
     # AI Commentary (after sync buttons so buttons always render)
     try:
@@ -178,7 +151,6 @@ def _render_sync_tools(con):
                         f"Seeded {result.get('inserted', 0)} funds "
                         f"(Failed: {result.get('failed', 0)})"
                     )
-                    st.rerun()
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
 
@@ -196,7 +168,6 @@ def _render_sync_tools(con):
                         f"{summary.rows_upserted} NAV rows "
                         f"({summary.no_data} unmatched)"
                     )
-                    st.rerun()
                 except Exception as e:
                     st.error(f"Daily sync failed: {e}")
 
@@ -222,7 +193,6 @@ def _render_sync_tools(con):
                     f"{summary.rows_upserted} NAV records "
                     f"(skipped {summary.no_data} up-to-date)"
                 )
-                st.rerun()
             except Exception as e:
                 st.error(f"Sync failed: {e}")
 
@@ -242,7 +212,6 @@ def _render_sync_tools(con):
                         )
                     else:
                         st.error(result.get("error", "Unknown error"))
-                    st.rerun()
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
 
@@ -256,7 +225,6 @@ def _render_sync_tools(con):
                         st.success(f"Updated {result['updated']} funds")
                     else:
                         st.error(result.get("error", "Unknown error"))
-                    st.rerun()
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
 
@@ -270,7 +238,6 @@ def _render_sync_tools(con):
                         f"ETFs: {result.get('ok', 0)} synced, "
                         f"{result.get('failed', 0)} failed"
                     )
-                    st.rerun()
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
 
@@ -285,7 +252,6 @@ def _render_sync_tools(con):
                     from pakfindata.engine.compute_risk_batch import run_batch
                     run_batch()
                     st.success("Risk metrics recomputed for all funds")
-                    st.rerun()
                 except Exception as e:
                     st.error(f"Risk batch failed: {e}")
     with rm_c2:

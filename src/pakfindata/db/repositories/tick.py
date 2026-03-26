@@ -263,6 +263,37 @@ def promote_tick_ohlcv_to_eod(
         (now, date),
     )
     con.commit()
+
+    # Dual-write to DuckDB: read promoted rows from SQLite tick_ohlcv
+    try:
+        from pakfindata.db.connections import has_duckdb, duck_write
+        import pandas as _pd
+        if has_duckdb() and cur.rowcount > 0:
+            promoted = _pd.read_sql_query(
+                "SELECT symbol, date, open, high, low, close, volume FROM tick_ohlcv WHERE date = ?",
+                con, params=[date],
+            )
+            if not promoted.empty:
+                promoted["ingested_at"] = now
+                promoted["source"] = "tick_aggregation"
+                promoted["processname"] = "tick_collector"
+                for c in ("prev_close", "sector_code", "company_name", "turnover"):
+                    promoted[c] = None
+                dcon = duck_write()
+                dcon.register("_tick_eod", promoted)
+                dcon.execute("""
+                    INSERT INTO eod_ohlcv SELECT * FROM _tick_eod
+                    ON CONFLICT (symbol, date) DO UPDATE SET
+                        open = excluded.open, high = excluded.high,
+                        low = excluded.low, close = excluded.close,
+                        volume = excluded.volume, ingested_at = excluded.ingested_at,
+                        source = excluded.source, processname = excluded.processname
+                """)
+                dcon.unregister("_tick_eod")
+                dcon.close()
+    except Exception:
+        pass
+
     return cur.rowcount
 
 

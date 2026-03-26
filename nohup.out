@@ -1,0 +1,53 @@
+[2026-03-18 05:46:27] 
+[2026-03-18 05:46:27] ============================================================
+[2026-03-18 05:46:27] PSX MARKET SCHEDULER
+[2026-03-18 05:46:27] ============================================================
+[2026-03-18 05:46:27]   Script:    /home/adnoman/pakfindata/start_psx.sh
+[2026-03-18 05:46:27]   Trigger:   09:15 AM PKT, Mon-Fri
+[2026-03-18 05:46:27]   Sched log: /home/adnoman/psxdata/scheduler.log
+[2026-03-18 05:46:27]   PSX log:   /home/adnoman/psxdata/scheduler_psx_output.log
+[2026-03-18 05:46:27] 
+[2026-03-18 05:46:27] WAITING for Wednesday 2026-03-18 at 09:15 PKT
+[2026-03-18 05:46:27]   Time now:  05:46:27
+[2026-03-18 05:46:27]   Fires in:  3h 28m
+[2026-03-18 05:46:27]   Status:    SLEEPING (safe to close terminal if using nohup)
+[2026-03-18 05:46:27] 
+[2026-03-18 05:46:27]   ... 3h 28m remaining until Wednesday 09:15
+[2026-03-18 06:15:25]   ... 2h 59m remaining until Wednesday 09:15
+[2026-03-18 06:44:22]   ... 2h 30m remaining until Wednesday 09:15
+[2026-03-18 07:13:33]   ... 2h 1m remaining until Wednesday 09:15
+[2026-03-18 07:42:44]   ... 1h 32m remaining until Wednesday 09:15
+[2026-03-18 08:11:53]   ... 1h 3m remaining until Wednesday 09:15
+[2026-03-18 08:41:03]   ... 34m remaining until Wednesday 09:15
+[2026-03-18 09:10:14]   ... 5m remaining
+[2026-03-18 09:15:00] 
+[2026-03-18 09:15:00] ************************************************************
+[2026-03-18 09:15:00] MARKET OPEN — Wednesday 2026-03-18 09:15:00
+[2026-03-18 09:15:00] ************************************************************
+[2026-03-18 09:15:00] >>> FIRING start_psx.sh
+[2026-03-18 09:15:00] >>> start_psx.sh is now running as independent process
+[2026-03-18 09:15:00]     PSX output log: /home/adnoman/psxdata/scheduler_psx_output.log
+[2026-03-18 09:15:00] 
+[2026-03-18 09:15:00] Services launched. Scheduler will now wait for next trading day.
+[2026-03-18 09:15:00] 
+[2026-03-18 09:16:00] WAITING for Thursday 2026-03-19 at 09:15 PKT
+[2026-03-18 09:16:00]   Time now:  09:16:00
+[2026-03-18 09:16:00]   Fires in:  23h 58m
+[2026-03-18 09:16:00]   Status:    SLEEPING (safe to close terminal if using nohup)
+[2026-03-18 09:16:00] 
+[2026-03-18 09:16:00]   ... 23h 58m remaining until Thursday 09:15
+[2026-03-18 09:45:12]   ... 23h 29m remaining until Thursday 09:15
+[2026-03-18 10:14:35]   ... 23h 0m remaining until Thursday 09:15
+[2026-03-18 10:43:43]   ... 22h 31m remaining until Thursday 09:15
+[2026-03-18 11:12:54]   ... 22h 2m remaining until Thursday 09:15
+[2026-03-18 11:42:19]   ... 21h 32m remaining until Thursday 09:15
+[2026-03-18 12:11:48]   ... 21h 3m remaining until Thursday 09:15
+[2026-03-18 12:41:16]   ... 20h 33m remaining until Thursday 09:15
+[2026-03-18 13:10:46]   ... 20h 4m remaining until Thursday 09:15
+[2026-03-18 13:40:21]   ... 19h 34m remaining until Thursday 09:15
+[2026-03-18 14:09:47]   ... 19h 5m remaining until Thursday 09:15
+[2026-03-18 14:39:18]   ... 18h 35m remaining until Thursday 09:15
+[2026-03-18 15:08:51]   ... 18h 6m remaining until Thursday 09:15
+[2026-03-18 15:38:16]   ... 17h 36m remaining until Thursday 09:15
+[2026-03-18 16:07:49]   ... 17h 7m remaining until Thursday 09:15
+[2026-03-18 16:37:23]   ... 16h 37m remaining until Thursday 09:15

@@ -1,7 +1,7 @@
 """PSX Live Tick Service — connects to psxterminal.com WebSocket,
 builds 5-second OHLCV bars, writes live snapshot for Streamlit.
 
-MEMORY-ONLY during market hours. Single EOD flush to SQLite at 17:00 PKT.
+MEMORY-ONLY during market hours. Single EOD flush to SQLite at 17:35 PKT.
 Zero DB writes during trading.
 
 Usage:
@@ -59,6 +59,81 @@ STATUS_FILE = SERVICE_DIR / "tick_service_status.json"
 SNAPSHOT_PATH = DATA_ROOT / "live_snapshot.json"
 TICK_LOG_DIR = Path.home() / "psxdata" / "tick_logs"
 EOD_DB_PATH = DATA_ROOT / "tick_bars.db"
+
+
+# =========================================================================
+# Raw WebSocket message writer — saves every ws.recv() as-is
+# =========================================================================
+
+_raw_ws_queue: queue.Queue[str | None] = queue.Queue(maxsize=50000)
+_raw_ws_running = False
+
+
+def _raw_ws_writer_thread():
+    """Background thread: drains _raw_ws_queue → raw_ws_YYYY-MM-DD.jsonl"""
+    global _raw_ws_running
+    _raw_ws_running = True
+
+    current_date: str | None = None
+    fh = None
+
+    while _raw_ws_running:
+        try:
+            batch: list[str] = []
+            try:
+                msg = _raw_ws_queue.get(timeout=1.0)
+                if msg is None:  # shutdown sentinel
+                    break
+                batch.append(msg)
+                while len(batch) < 500:
+                    try:
+                        msg = _raw_ws_queue.get_nowait()
+                        if msg is None:
+                            break
+                        batch.append(msg)
+                    except queue.Empty:
+                        break
+            except queue.Empty:
+                continue
+
+            if not batch:
+                continue
+
+            today = datetime.now(PKT).strftime("%Y-%m-%d")
+            if today != current_date:
+                if fh:
+                    fh.close()
+                TICK_LOG_DIR.mkdir(parents=True, exist_ok=True)
+                fh = open(str(TICK_LOG_DIR / f"raw_ws_{today}.jsonl"), "a", buffering=8192)
+                current_date = today
+
+            for raw_msg in batch:
+                fh.write(raw_msg)
+                fh.write("\n")
+            fh.flush()
+
+        except Exception:
+            pass  # never crash the writer thread
+
+    if fh:
+        fh.close()
+
+
+def _start_raw_ws_writer() -> threading.Thread:
+    """Start the raw WS message writer thread."""
+    t = threading.Thread(target=_raw_ws_writer_thread, daemon=True, name="raw-ws-writer")
+    t.start()
+    return t
+
+
+def _stop_raw_ws_writer():
+    """Signal the raw writer to stop."""
+    global _raw_ws_running
+    _raw_ws_running = False
+    try:
+        _raw_ws_queue.put_nowait(None)  # sentinel to unblock
+    except queue.Full:
+        pass
 
 
 # =========================================================================
@@ -788,11 +863,68 @@ class TickService:
         con.close()
 
         print(
-            f"✅ EOD complete: {len(stock_bars):,} stock bars, "
+            f"EOD complete: {len(stock_bars):,} stock bars, "
             f"{len(index_bars):,} index bars, "
             f"{total_ticks:,} stock ticks, "
-            f"{total_idx_ticks:,} index ticks → {self.db_path}"
+            f"{total_idx_ticks:,} index ticks -> {self.db_path}"
         )
+
+        # Dual-write to DuckDB
+        try:
+            from pakfindata.db.connections import has_duckdb, duck_write
+            import pandas as _pd
+            if has_duckdb():
+                dcon = duck_write()
+                if stock_bars:
+                    sdf = _pd.DataFrame([
+                        (b["symbol"], b["market"], b["timestamp"],
+                         b["open"], b["high"], b["low"], b["close"],
+                         b["volume"], b["trades"])
+                        for b in stock_bars
+                    ], columns=["symbol", "market", "ts", "o", "h", "l", "c", "v", "trades"])
+                    dcon.register("_sb", sdf)
+                    dcon.execute("INSERT OR IGNORE INTO ohlcv_5s SELECT * FROM _sb")
+                    dcon.unregister("_sb")
+
+                if index_bars:
+                    idf = _pd.DataFrame([
+                        (b["symbol"], b["timestamp"],
+                         b["open"], b["high"], b["low"], b["close"],
+                         b.get("volume", 0), b.get("turnover", 0))
+                        for b in index_bars
+                    ], columns=["symbol", "ts", "o", "h", "l", "c", "v", "turnover"])
+                    dcon.register("_ib", idf)
+                    dcon.execute("INSERT OR IGNORE INTO index_ohlcv_5s SELECT * FROM _ib")
+                    dcon.unregister("_ib")
+
+                if self.index_ticks:
+                    itdf = _pd.DataFrame([
+                        (t.get("symbol", ""), t.get("timestamp", 0),
+                         t.get("price", t.get("value", 0)),
+                         t.get("change", 0), t.get("changePercent", 0),
+                         t.get("volume", 0),
+                         t.get("turnover", t.get("value", 0)))
+                        for t in self.index_ticks
+                    ], columns=["symbol", "ts", "value", "change", "change_pct", "volume", "turnover"])
+                    dcon.register("_it", itdf)
+                    dcon.execute("INSERT OR IGNORE INTO index_raw_ticks SELECT * FROM _it")
+                    dcon.unregister("_it")
+
+                dcon.close()
+                print(f"DuckDB dual-write done")
+        except Exception as e:
+            print(f"DuckDB dual-write failed: {e}")
+
+        # Compute daily summary for today (tick_bars.db -> psx.sqlite)
+        try:
+            from pakfindata.db.repositories.tick_summary import compute_missing_summaries
+            from pakfindata.db import connect
+            psx_con = connect()
+            result = compute_missing_summaries(psx_con)
+            psx_con.close()
+            print(f"📊 Daily summary: {result['dates_computed']} dates, {result['symbols_total']} symbols")
+        except Exception as e:
+            print(f"⚠️ Daily summary failed: {e}")
 
         # Clear ALL memory for next day
         self.completed_bars = []
@@ -806,7 +938,7 @@ class TickService:
         self.index_ticks = []
 
     def _sleep_until_next_session(self):
-        """Sleep until 9:15 AM PKT next trading day."""
+        """Sleep until 9:14 AM PKT next trading day."""
         now = datetime.now(PKT)
 
         # Find next trading day (skip weekends)
@@ -814,8 +946,8 @@ class TickService:
         while next_day.weekday() >= 5:  # 5=Sat, 6=Sun
             next_day += timedelta(days=1)
 
-        # Target: 9:15 AM PKT on next trading day
-        target = next_day.replace(hour=9, minute=15, second=0, microsecond=0)
+        # Target: 9:14 AM PKT on next trading day
+        target = next_day.replace(hour=9, minute=14, second=0, microsecond=0)
         sleep_seconds = (target - now).total_seconds()
 
         if sleep_seconds > 0:
@@ -826,12 +958,12 @@ class TickService:
             time.sleep(sleep_seconds)
 
     def _is_market_hours(self) -> bool:
-        """True if current time is within PSX trading hours (Mon-Fri 9:00-17:00)."""
+        """True if current time is within PSX trading hours (Mon-Fri 9:00-17:30)."""
         now = datetime.now(PKT)
         return (
             now.weekday() < 5
             and now.hour >= 9
-            and now.hour < 17
+            and (now.hour < 17 or (now.hour == 17 and now.minute < 30))
         )
 
     def get_status_line(self) -> str:
@@ -1101,7 +1233,7 @@ async def main(db_path: Path | None = None):
     print(f"  Snapshot: {SNAPSHOT_PATH}")
     print(f"  EOD target: {service.db_path}")
     print(f"  Bars: {BAR_INTERVAL}s | Markets: {', '.join(MARKETS)}")
-    print(f"  Zero DB writes during trading. Single EOD flush at 17:00 PKT.")
+    print(f"  Zero DB writes during trading. Single EOD flush at 17:35 PKT.")
 
     # Start WebSocket relay (same process, background thread)
     if HAS_RELAY:
@@ -1112,6 +1244,10 @@ async def main(db_path: Path | None = None):
         print(f"  Docs: http://localhost:{relay_port}/docs")
     else:
         print("  WS relay not available (pip install fastapi uvicorn)")
+
+    # Start raw WS message writer
+    _start_raw_ws_writer()
+    print(f"  📝 Raw WS logger → {TICK_LOG_DIR}/raw_ws_*.jsonl")
     print()
 
     while not shutdown.is_set():
@@ -1147,12 +1283,12 @@ async def main(db_path: Path | None = None):
                         raw = await asyncio.wait_for(ws.recv(), timeout=15)
                     except asyncio.TimeoutError:
                         now = datetime.now(PKT)
-                        # Smart EOD: after 2 PM, if no ticks for 30 min → market closed
+                        # Smart EOD: after 4 PM, if no ticks for 30 min → market closed
                         silence = time.time() - service._last_tick_ts
-                        if (now.hour >= 14 and silence >= 1800
+                        if (now.hour >= 16 and silence >= 1800
                                 and not post_market_done
                                 and service.tick_count > 0):
-                            print(f"🔔 Market closed (no ticks for {silence/60:.0f} min after 14:00)")
+                            print(f"🔔 Market closed (no ticks for {silence/60:.0f} min after 16:00)")
                             service.eod_flush()
                             service.connected = False
                             service.write_snapshot()
@@ -1171,6 +1307,12 @@ async def main(db_path: Path | None = None):
 
                         service.write_snapshot()
                         continue
+
+                    # Save raw WS message (non-blocking)
+                    try:
+                        _raw_ws_queue.put_nowait(raw)
+                    except queue.Full:
+                        pass
 
                     # Debug: print first 10 raw messages
                     if service._raw_msg_count < 10:
@@ -1244,6 +1386,7 @@ async def main(db_path: Path | None = None):
         print("Flushing remaining data to DB before exit...")
         service.eod_flush()
     service.write_snapshot()
+    _stop_raw_ws_writer()
     status.running = False
     status.connected = False
     write_status(status)

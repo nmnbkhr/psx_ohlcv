@@ -233,15 +233,55 @@ def _get_intraday_data(symbol: str, limit: int = 5000) -> pd.DataFrame:
 def _get_tick_data(
     symbol: str, market: str = "REG", days: int = 3
 ) -> pd.DataFrame:
-    """Query tick logs from tick_logs table (cached)."""
+    """Query tick logs — DuckDB primary, SQLite fallback.
+
+    If no data within `days`, auto-finds the most recent date with data.
+    """
+    cutoff = (
+        datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5)))
+        - datetime.timedelta(days=days)
+    )
+    cutoff_ts = cutoff.timestamp()
+
+    # DuckDB columns: prev_close, change_pct, bid_vol, ask_vol (no camelCase)
+    _TICK_COLS_DUCK = """symbol, market, timestamp, _ts, price, volume,
+                      change, high, low, open, prev_close,
+                      bid, ask, bid_vol, ask_vol, trades"""
+
+    # DuckDB primary (faster, more data)
+    try:
+        from pakfindata.db.connections import duck, duck_fetchone
+        df = duck(
+            f"SELECT {_TICK_COLS_DUCK} FROM tick_logs "
+            "WHERE symbol = ? AND market = ? AND timestamp >= ? "
+            "ORDER BY timestamp ASC",
+            [symbol, market, cutoff_ts],
+        )
+        if not df.empty:
+            return df
+
+        # Fallback: find most recent date that HAS data for this symbol
+        # (no 'date' column — derive from _ts)
+        row = duck_fetchone(
+            "SELECT MAX(SUBSTR(_ts, 1, 10)) FROM tick_logs "
+            "WHERE symbol = ? AND market = ?",
+            [symbol, market],
+        )
+        if row and row[0]:
+            df = duck(
+                f"SELECT {_TICK_COLS_DUCK} FROM tick_logs "
+                "WHERE symbol = ? AND market = ? AND SUBSTR(_ts, 1, 10) = ? "
+                "ORDER BY timestamp ASC",
+                [symbol, market, row[0]],
+            )
+            if not df.empty:
+                return df
+    except Exception:
+        pass
+
+    # SQLite fallback
     try:
         con = get_connection()
-        cutoff = (
-            datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5)))
-            - datetime.timedelta(days=days)
-        )
-        cutoff_ts = cutoff.timestamp()
-
         return pd.read_sql_query(
             """SELECT symbol, market, timestamp, _ts, price, volume,
                       change, high, low, open, prev_close,
@@ -258,7 +298,14 @@ def _get_tick_data(
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _check_tick_table_exists() -> bool:
-    """Check if tick_logs table exists and has data (cached)."""
+    """Check if tick_logs table exists and has data — DuckDB primary."""
+    try:
+        from pakfindata.db.connections import duck_fetchone
+        row = duck_fetchone("SELECT COUNT(*) FROM tick_logs LIMIT 1")
+        if row and row[0] > 0:
+            return True
+    except Exception:
+        pass
     try:
         con = get_connection()
         row = con.execute(
@@ -568,8 +615,8 @@ def _render_layer3(execution: ExecutionDNA):
 
     if not execution.has_tick_data:
         st.info(
-            "Layer 3 requires tick data. Sync tick logs from the Tick Analytics page, "
-            "or start the tick collector during market hours."
+            "📊 No tick data available for this symbol yet. "
+            "Layer 3 scores will update after market sync."
         )
         return
 
@@ -1154,6 +1201,110 @@ def _render_batch_scanner(results: list[BatchScanResult], top_n: int):
     st.caption("Select a specific symbol from the dropdown for full 3-layer deep analysis.")
 
 
+def _render_intelligence_brief(symbol: str, con):
+    """Cross-data intelligence brief — combines all data sources for a symbol."""
+    from datetime import datetime, timedelta, timezone
+
+    pkt = timezone(timedelta(hours=5))
+    today = datetime.now(pkt).strftime("%Y-%m-%d")
+
+    # Price action
+    try:
+        eod = con.execute(
+            "SELECT close, prev_close, volume, high, low, open FROM eod_ohlcv "
+            "WHERE symbol = ? ORDER BY date DESC LIMIT 1",
+            (symbol,),
+        ).fetchone()
+    except Exception:
+        eod = None
+
+    col_price, col_micro = st.columns(2)
+
+    with col_price:
+        st.markdown("**Price Action**")
+        if eod:
+            close, prev, vol, high, low, opn = eod
+            chg = close - prev if prev else 0
+            chg_pct = (chg / prev * 100) if prev else 0
+            st.markdown(
+                f"Close: **{close:.2f}** ({chg:+.2f}, {chg_pct:+.2f}%)  \n"
+                f"Range: {low:.2f} — {high:.2f}  \n"
+                f"Volume: {vol:,}"
+            )
+        else:
+            st.caption("No EOD data")
+
+    with col_micro:
+        st.markdown("**Microstructure**")
+        try:
+            from pakfindata.engine.block_trades import load_off_market, get_available_dates
+            block_dates = get_available_dates()
+            if block_dates:
+                bdf = load_off_market(block_dates[0])
+                sym_blocks = bdf[bdf["symbol"] == symbol] if not bdf.empty else pd.DataFrame()
+                if not sym_blocks.empty:
+                    block_vol = sym_blocks["turnover"].sum()
+                    block_val = sym_blocks["value"].sum()
+                    st.markdown(
+                        f"Block trades: **{len(sym_blocks)}** ({block_vol:,} shares)  \n"
+                        f"Block value: PKR {block_val/1e6:.1f}M"
+                    )
+                else:
+                    st.caption("No block trades")
+            else:
+                st.caption("No off-market data")
+        except Exception:
+            st.caption("Block trade data unavailable")
+
+    col_deriv, col_inst = st.columns(2)
+
+    with col_deriv:
+        st.markdown("**Derivatives**")
+        try:
+            fut = con.execute(
+                """SELECT close, volume, contract_month FROM futures_eod
+                   WHERE base_symbol = ? AND market_type IN ('FUT', 'CONT')
+                     AND close > 0 AND contract_month IS NOT NULL
+                   ORDER BY date DESC, contract_month LIMIT 1""",
+                (symbol,),
+            ).fetchone()
+            if fut and eod:
+                fut_close, fut_vol, month = fut
+                basis = fut_close - eod[0]
+                basis_pct = (basis / eod[0] * 100) if eod[0] else 0
+                signal = "Premium (Bullish)" if basis > 0 else "Discount (Bearish)"
+                st.markdown(
+                    f"Futures: **{fut_close:.2f}** ({month})  \n"
+                    f"Basis: {basis:+.2f} ({basis_pct:+.3f}%) — {signal}  \n"
+                    f"Fut Volume: {fut_vol:,}"
+                )
+            else:
+                st.caption("No futures data")
+        except Exception:
+            st.caption("Futures data unavailable")
+
+    with col_inst:
+        st.markdown("**Institutional**")
+        try:
+            # Index weight
+            import glob
+            from pathlib import Path
+            weight_files = sorted(glob.glob("/mnt/e/psxdata/downloads/daily/*/indices/constituent_data_*.xls"))
+            if weight_files:
+                import pandas as _pd
+                wdf = _pd.read_excel(weight_files[-1], engine="xlrd")
+                sym_row = wdf[wdf["SYMBOL"] == symbol]
+                if not sym_row.empty:
+                    wt = sym_row["IDX WT %"].iloc[0]
+                    st.markdown(f"Index weight: **{wt:.3f}%**")
+                else:
+                    st.caption("Not in KSE-100")
+            else:
+                st.caption("No index weight data")
+        except Exception:
+            st.caption("Index weight unavailable")
+
+
 def render_signal_dashboard():
     """Main entry point for the Signal Analysis page."""
     st.markdown(_PAGE_CSS, unsafe_allow_html=True)
@@ -1223,27 +1374,26 @@ def render_signal_dashboard():
 
         sec_val = "" if sector_filter == "All Sectors" else sector_filter
 
-        last_mode = st.session_state.get("signal_mode_last")
         cached_results: list[BatchScanResult] | None = st.session_state.get(
             "signal_batch_results"
         )
         cached_params = st.session_state.get("signal_batch_params")
         current_params = (sec_val, min_volume)
 
-        need_run = (
-            run_btn
-            or last_mode != "batch"
-            or cached_results is None
-            or cached_params != current_params
-        )
-
-        if need_run:
+        if run_btn:
+            # User clicked Run Analysis — compute fresh
             results = _run_batch_scan(con, symbols, min_volume, sec_val)
             st.session_state["signal_batch_results"] = results
             st.session_state["signal_batch_params"] = current_params
             st.session_state["signal_mode_last"] = "batch"
-        else:
+        elif cached_results is not None and cached_params == current_params:
+            # Show cached results
             results = cached_results
+        else:
+            # First visit or params changed — show prompt instead of auto-running
+            st.info("Click **Run Analysis** to scan all symbols. Previous results will be shown if available.")
+            render_footer()
+            return
 
         _render_batch_scanner(results, top_n)
         render_footer()
@@ -1309,6 +1459,10 @@ def render_signal_dashboard():
     # ── Layer 3 ──
     if report.execution:
         _render_layer3(report.execution)
+
+    # ── Intelligence Brief ──
+    with st.expander("Intelligence Brief — Cross-Data Summary", expanded=False):
+        _render_intelligence_brief(symbol, con)
 
     # ── AI Commentary ──
     _render_signal_commentary(report, symbol)

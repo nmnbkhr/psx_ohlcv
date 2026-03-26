@@ -56,7 +56,10 @@ CREATE INDEX IF NOT EXISTS idx_forex_kerb_date ON forex_kerb(date);
 
 def init_fx_extended_schema(con: sqlite3.Connection) -> None:
     """Create extended FX tables."""
-    con.executescript(FX_EXTENDED_SCHEMA_SQL)
+    for stmt in FX_EXTENDED_SCHEMA_SQL.split(";"):
+        stmt = stmt.strip()
+        if stmt:
+            con.execute(stmt)
     con.commit()
 
 
