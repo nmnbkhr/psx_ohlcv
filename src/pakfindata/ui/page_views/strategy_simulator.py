@@ -41,6 +41,33 @@ STRATEGIES = {
 }
 
 PANEL_HTML = Path(__file__).parent / "simulator_panel.html"
+DUCKDB_PATH = "/mnt/e/psxdata/pakfindata.duckdb"
+
+
+def _fetch_latest_price(symbol: str) -> float:
+    """Fetch latest price from tick_logs or eod_ohlcv."""
+    import duckdb
+    con = duckdb.connect(DUCKDB_PATH, read_only=True)
+    try:
+        # Try tick_logs first (most recent)
+        row = con.execute("""
+            SELECT price FROM tick_logs
+            WHERE symbol = ? AND price > 0
+            ORDER BY timestamp DESC LIMIT 1
+        """, [symbol]).fetchone()
+        if row:
+            return float(row[0])
+        # Fallback to eod_ohlcv
+        row = con.execute("""
+            SELECT close FROM eod_ohlcv
+            WHERE symbol = ? AND close > 0
+            ORDER BY date DESC LIMIT 1
+        """, [symbol]).fetchone()
+        if row:
+            return float(row[0])
+    finally:
+        con.close()
+    return 0.0
 
 _C = {
     "bg": "#0B0E11", "card": "#141820", "grid": "#1a1f2e",
@@ -69,7 +96,11 @@ def render_page():
         st.markdown("#### Simulator Config")
         symbol = st.text_input("Symbol", "OGDC", key="sim_symbol")
         capital = st.number_input("Capital (PKR)", 100_000, 10_000_000, 1_000_000, 100_000, key="sim_capital")
-        mode = st.selectbox("Mode", ["Streamlit (Manual)", "Live (WebSocket)"], key="sim_mode")
+        mode = st.selectbox("Mode", [
+            "Auto (Latest Tick)",
+            "Manual (Enter Price)",
+            "Live (WebSocket)",
+        ], key="sim_mode")
 
         if mode == "Live (WebSocket)":
             ws_host = st.text_input("WS Relay", "ws://localhost:8765", key="sim_ws")
@@ -101,13 +132,16 @@ def render_page():
 
     engine = st.session_state.get("fusion_engine")
 
-    # Live mode: embedded HTML panel
-    if mode == "Live (WebSocket)" and PANEL_HTML.exists() and engine:
-        html = PANEL_HTML.read_text()
-        html = html.replace("WS_URL_PLACEHOLDER", ws_host)
-        html = html.replace("API_URL_PLACEHOLDER", api_host)
-        html = html.replace("SYMBOL_PLACEHOLDER", symbol.upper())
-        components.html(html, height=900, scrolling=False)
+    # Live WebSocket mode: embedded HTML panel
+    if mode == "Live (WebSocket)" and engine:
+        if PANEL_HTML.exists():
+            html = PANEL_HTML.read_text()
+            html = html.replace("WS_URL_PLACEHOLDER", ws_host)
+            html = html.replace("API_URL_PLACEHOLDER", api_host)
+            html = html.replace("SYMBOL_PLACEHOLDER", symbol.upper())
+            components.html(html, height=900, scrolling=False)
+        else:
+            st.error("simulator_panel.html not found")
         render_footer()
         return
 
@@ -154,23 +188,39 @@ def render_page():
     ])
 
     with tab_live:
-        c1, c2, c3 = st.columns([2, 1, 1])
-        with c1:
-            price_input = st.number_input("Current Price", 0.01, 100000.0, 100.0, 0.01, key="sim_price")
-        with c2:
-            auto_refresh = st.checkbox("Auto-refresh (15s)", value=False, key="sim_auto")
-        with c3:
-            compute_btn = st.button("Compute Now", type="primary", key="sim_compute")
+        # Price source depends on mode
+        if mode == "Auto (Latest Tick)":
+            # Auto-fetch price from DuckDB
+            latest_price = _fetch_latest_price(symbol.upper())
+            if latest_price > 0:
+                st.markdown(f"**Latest tick price for {symbol.upper()}: Rs {latest_price:,.2f}**")
+                price_input = latest_price
+            else:
+                st.warning(f"No price found for {symbol.upper()} in tick_logs or eod_ohlcv")
+                price_input = st.number_input("Enter Price Manually", 0.01, 100000.0, 100.0, 0.01, key="sim_price")
 
-        # Auto-refresh using st_autorefresh if checked
+            c1, c2 = st.columns([1, 1])
+            with c1:
+                auto_refresh = st.checkbox("Auto-refresh (15s)", value=True, key="sim_auto")
+            with c2:
+                compute_btn = st.button("Compute Now", type="primary", key="sim_compute")
+        else:
+            # Manual mode
+            price_input = st.number_input("Current Price", 0.01, 100000.0, 100.0, 0.01, key="sim_price")
+            c1, c2 = st.columns([1, 1])
+            with c1:
+                auto_refresh = st.checkbox("Auto-refresh (15s)", value=False, key="sim_auto")
+            with c2:
+                compute_btn = st.button("Compute Now", type="primary", key="sim_compute")
+
+        # Auto-refresh
         if auto_refresh:
             try:
                 from streamlit_autorefresh import st_autorefresh
                 st_autorefresh(interval=15000, limit=None, key="sim_autorefresh")
             except ImportError:
-                st.caption("Auto-refresh needs: `pip install streamlit-autorefresh`")
+                st.caption("Install for auto-refresh: `pip install streamlit-autorefresh`")
 
-        # Compute on button click OR on auto-refresh if enabled
         should_compute = compute_btn or (auto_refresh and "fusion_engine" in st.session_state)
 
         if should_compute:
