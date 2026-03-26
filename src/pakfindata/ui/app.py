@@ -577,6 +577,11 @@ def advanced_gnn_page():
     render_page()
 
 
+def advanced_hawkes_page():
+    from pakfindata.ui.page_views.advanced_hawkes import render_page
+    render_page()
+
+
 def tick_analytics_page():
     from pakfindata.ui.page_views.tick_analytics import render_tick_analytics
     render_tick_analytics()
@@ -877,6 +882,7 @@ def main():
         # ADVANCED
         "Order Book Sim":   st.Page(strategy_orderbook_page, title="Order Book Sim",    url_path="orderbook-sim"),
         "Stock Graph (GNN)": st.Page(advanced_gnn_page,      title="Stock Graph (GNN)", url_path="stock-graph-gnn"),
+        "Hawkes Process":    st.Page(advanced_hawkes_page,   title="Hawkes Process",    url_path="hawkes-process"),
         # ADMIN
         "Data Status":        st.Page(data_status_page,       title="Data Status",        url_path="data-status"),
         "Sync Center":        st.Page(sync_center_page,       title="Sync Center",        url_path="sync-center"),
@@ -903,7 +909,7 @@ def main():
         "COMMODITIES":     ["Commodities", "PMEX"],
         "RESEARCH":        ["Research", "Signal Analysis", "Microstructure", "Tick Analytics", "Tick Replay", "Quant Lab", "Macro Cycles", "Sector Breadth", "Market Research", "ML Predictions"],
         "STRATEGIES":      ["VPIN Strategy", "OFI Alpha", "CVD Divergence", "Basis Arb", "VWAP Execution", "Macro Regime", "Sector Rotation", "OI Buildup/Unwind", "Pairs Trading", "LLM Sentiment"],
-        "ADVANCED":        ["Order Book Sim", "Stock Graph (GNN)"],
+        "ADVANCED":        ["Order Book Sim", "Stock Graph (GNN)", "Hawkes Process"],
         "ADMIN":           ["Data Status", "Sync Center", "Schema Explorer", "App Lineage", "SBP EasyData", "PSX Scraper"],
     }
 
