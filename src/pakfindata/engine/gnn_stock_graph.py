@@ -924,3 +924,406 @@ def propagation_analysis(nodes, edges, source_symbol: str, hops: int = 3) -> dic
         current_level = [s["symbol"] for s in next_level]
 
     return result
+
+
+# ═══════════════════════════════════════════
+# PHASE 4: CUSTOM GRAPH BUILDER
+# ═══════════════════════════════════════════
+
+def get_available_symbols() -> list[str]:
+    """Get all symbols with recent EOD data."""
+    con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    syms = [r[0] for r in con.execute("""
+        SELECT DISTINCT symbol FROM eod_ohlcv
+        WHERE date >= CURRENT_DATE - INTERVAL '90 days'
+        ORDER BY symbol
+    """).fetchall()]
+    con.close()
+    return syms
+
+
+def get_available_sectors() -> dict[str, str]:
+    """Get sector_code -> sector_name mapping."""
+    return _load_sector_names()
+
+
+def get_symbols_by_sector(sector_name: str) -> list[str]:
+    """Get all symbols in a given sector."""
+    sector_map = _load_sector_names()
+    codes = [code for code, name in sector_map.items() if name == sector_name]
+    if not codes:
+        return []
+
+    con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    placeholders = ",".join(f"'{c}'" for c in codes)
+    syms = [r[0] for r in con.execute(f"""
+        SELECT DISTINCT symbol FROM eod_ohlcv
+        WHERE sector_code IN ({placeholders})
+        AND date >= CURRENT_DATE - INTERVAL '90 days'
+        ORDER BY symbol
+    """).fetchall()]
+    con.close()
+    return syms
+
+
+def build_custom_graph(
+    symbols: list[str],
+    edge_types: list[str] = None,
+    correlation_threshold: float = 0.7,
+    correlation_window: int = 60,
+    feature_window: int = 20,
+    feature_set: str = "full",
+) -> Tuple[list[StockNode], list[StockEdge]]:
+    """
+    Build a custom graph from user-selected symbols and edge types.
+
+    Args:
+        symbols: list of PSX symbols to include as nodes
+        edge_types: which edges to build ["SECTOR", "SUPPLY_CHAIN", "COMMON_DIRECTORS", "CORRELATION"]
+        correlation_threshold: min abs correlation to create CORRELATION edge
+        correlation_window: days for correlation computation
+        feature_set: "full" (20 dims), "price_only" (7 dims), "momentum" (10 dims)
+    """
+    if edge_types is None:
+        edge_types = ["SECTOR", "SUPPLY_CHAIN", "COMMON_DIRECTORS", "CORRELATION"]
+
+    con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+
+    cutoff_days = max(correlation_window, feature_window) * 2
+    cutoff = (datetime.now() - timedelta(days=cutoff_days)).strftime("%Y-%m-%d")
+
+    placeholders = ",".join(f"'{s}'" for s in symbols)
+    eod = con.execute(f"""
+        SELECT date, symbol, close, volume, sector_code AS sector
+        FROM eod_ohlcv
+        WHERE symbol IN ({placeholders})
+        AND date >= '{cutoff}'
+        ORDER BY date, symbol
+    """).df()
+    con.close()
+
+    if eod.empty:
+        return [], []
+
+    sector_names = _load_sector_names()
+    valid_symbols = sorted(eod["symbol"].unique())
+
+    nodes = []
+    returns_matrix = {}
+
+    for sym in valid_symbols:
+        sdf = eod[eod["symbol"] == sym].sort_values("date")
+        if len(sdf) < feature_window:
+            continue
+
+        close = sdf["close"].values
+        volume = sdf["volume"].values
+        sector_code = sdf["sector"].iloc[-1] if "sector" in sdf.columns else ""
+        sector = sector_names.get(str(sector_code),
+                                  sector_names.get(str(sector_code).lstrip("0"), str(sector_code)))
+
+        rets = np.diff(close) / close[:-1]
+        returns_matrix[sym] = rets[-correlation_window:]
+
+        recent = close[-feature_window:]
+        recent_vol = volume[-feature_window:]
+        recent_rets = rets[-feature_window:] if len(rets) >= feature_window else rets
+
+        if feature_set == "price_only":
+            features = np.array([
+                recent[-1],
+                np.mean(recent_rets) * TRADING_DAYS,
+                np.std(recent_rets) * np.sqrt(TRADING_DAYS),
+                recent[-1] / np.mean(recent) - 1,
+                recent[-1] / recent[0] - 1,
+                recent_vol[-1] / np.mean(recent_vol) if np.mean(recent_vol) > 0 else 1,
+                np.log(np.mean(recent_vol) + 1),
+            ], dtype=np.float32)
+        elif feature_set == "momentum":
+            features = np.array([
+                recent[-1],
+                np.mean(recent_rets) * TRADING_DAYS,
+                np.std(recent_rets) * np.sqrt(TRADING_DAYS),
+                recent[-1] / np.mean(recent) - 1,
+                recent[-1] / recent[0] - 1,
+                (recent[-1] / recent[-5] - 1) if len(recent) >= 5 else 0,
+                (recent[-1] / recent[-10] - 1) if len(recent) >= 10 else 0,
+                len(recent_rets[recent_rets > 0]) / len(recent_rets) if len(recent_rets) > 0 else 0.5,
+                np.mean(np.abs(recent_rets)),
+                np.mean(recent_rets[-5:]) / np.std(recent_rets[-5:]) if np.std(recent_rets[-5:]) > 0 else 0,
+            ], dtype=np.float32)
+        else:  # full
+            features = np.array([
+                recent[-1],
+                np.mean(recent_rets) * TRADING_DAYS,
+                np.std(recent_rets) * np.sqrt(TRADING_DAYS),
+                recent[-1] / np.mean(recent) - 1,
+                recent[-1] / recent[0] - 1,
+                recent_vol[-1] / np.mean(recent_vol) if np.mean(recent_vol) > 0 else 1,
+                np.log(np.mean(recent_vol) + 1),
+                np.std(recent_rets[-5:]) / np.std(recent_rets) if np.std(recent_rets) > 0 else 1,
+                max(recent) / min(recent) - 1 if min(recent) > 0 else 0,
+                (recent[-1] / recent[-5] - 1) if len(recent) >= 5 else 0,
+                (recent[-1] / recent[-10] - 1) if len(recent) >= 10 else 0,
+                np.mean(np.abs(recent_rets)),
+                np.max(recent_rets) if len(recent_rets) > 0 else 0,
+                np.min(recent_rets) if len(recent_rets) > 0 else 0,
+                len(recent_rets[recent_rets > 0]) / len(recent_rets) if len(recent_rets) > 0 else 0.5,
+                float(pd.Series(recent_rets).skew()) if len(recent_rets) > 2 else 0,
+                float(pd.Series(recent_rets).kurtosis()) if len(recent_rets) > 3 else 0,
+                np.mean(recent_rets[-5:]) / np.std(recent_rets[-5:]) if np.std(recent_rets[-5:]) > 0 else 0,
+                0, 0,
+            ], dtype=np.float32)
+
+        features = np.nan_to_num(features, nan=0, posinf=0, neginf=0)
+        all_rets = np.diff(close) / close[:-1]
+        label = float(all_rets[-1]) if len(all_rets) > 0 else 0
+
+        nodes.append(StockNode(symbol=sym, sector=sector, features=features, label=label))
+
+    node_symbols = {n.symbol for n in nodes}
+    edges = []
+
+    if "SECTOR" in edge_types:
+        sector_groups = defaultdict(list)
+        for n in nodes:
+            sector_groups[n.sector].append(n.symbol)
+        for sector, syms in sector_groups.items():
+            if sector == "Unknown":
+                continue
+            for i in range(len(syms)):
+                for j in range(i + 1, len(syms)):
+                    edges.append(StockEdge(source=syms[i], target=syms[j],
+                                           edge_type="SECTOR", weight=1.0))
+
+    if "SUPPLY_CHAIN" in edge_types:
+        sym_sectors = {n.symbol: n.sector.upper() for n in nodes}
+        sector_syms = defaultdict(list)
+        for sym, sec in sym_sectors.items():
+            sector_syms[sec].append(sym)
+        for downstream, upstreams in PSX_SUPPLY_CHAIN.items():
+            for upstream in upstreams:
+                for d_sym in sector_syms.get(downstream, []):
+                    for u_sym in sector_syms.get(upstream, []):
+                        if d_sym in node_symbols and u_sym in node_symbols:
+                            edges.append(StockEdge(source=u_sym, target=d_sym,
+                                                   edge_type="SUPPLY_CHAIN", weight=0.7))
+
+    if "COMMON_DIRECTORS" in edge_types:
+        for group_name, group_syms in PSX_BUSINESS_GROUPS.items():
+            valid_syms = [s for s in group_syms if s in node_symbols]
+            for i in range(len(valid_syms)):
+                for j in range(i + 1, len(valid_syms)):
+                    edges.append(StockEdge(source=valid_syms[i], target=valid_syms[j],
+                                           edge_type="COMMON_DIRECTORS", weight=0.8))
+        try:
+            scon = sqlite3.connect(str(PSX_SQLITE))
+            rows = scon.execute(
+                "SELECT symbol, key_people FROM company_profiles WHERE key_people IS NOT NULL"
+            ).fetchall()
+            scon.close()
+            director_companies = defaultdict(set)
+            for sym, kp_json in rows:
+                if sym not in node_symbols:
+                    continue
+                try:
+                    people = json.loads(kp_json) if kp_json else []
+                    for p in people:
+                        name = p.get("name", "").strip().upper()
+                        if len(name) > 3:
+                            director_companies[name].add(sym)
+                except Exception:
+                    continue
+            for director, companies in director_companies.items():
+                companies = list(companies)
+                if len(companies) >= 2:
+                    for i in range(len(companies)):
+                        for j in range(i + 1, len(companies)):
+                            edges.append(StockEdge(source=companies[i], target=companies[j],
+                                                   edge_type="COMMON_DIRECTORS",
+                                                   weight=1.0 / len(companies)))
+        except Exception:
+            pass
+
+    if "CORRELATION" in edge_types:
+        corr_syms = [s for s in node_symbols if s in returns_matrix and len(returns_matrix[s]) >= 20]
+        if len(corr_syms) > 1:
+            ret_df = pd.DataFrame({
+                s: returns_matrix[s][-correlation_window:]
+                for s in corr_syms if len(returns_matrix[s]) >= correlation_window
+            })
+            if not ret_df.empty:
+                corr_matrix = ret_df.corr()
+                for i, sym_a in enumerate(corr_matrix.columns):
+                    for j, sym_b in enumerate(corr_matrix.columns):
+                        if i < j and abs(corr_matrix.iloc[i, j]) > correlation_threshold:
+                            edges.append(StockEdge(source=sym_a, target=sym_b,
+                                                   edge_type="CORRELATION",
+                                                   weight=float(corr_matrix.iloc[i, j])))
+
+    # Deduplicate
+    seen = set()
+    unique_edges = []
+    for e in edges:
+        key = tuple(sorted([e.source, e.target])) + (e.edge_type,)
+        if key not in seen:
+            seen.add(key)
+            unique_edges.append(e)
+
+    return nodes, unique_edges
+
+
+def train_custom_gnn(
+    symbols: list[str],
+    edge_types: list[str],
+    model_type: str = "GAT",
+    feature_set: str = "full",
+    correlation_threshold: float = 0.7,
+    epochs: int = 50,
+    lr: float = 0.001,
+    hidden_dim: int = 64,
+    task: str = "classification",
+    lookback_days: int = 500,
+    train_ratio: float = 0.7,
+    val_ratio: float = 0.15,
+) -> dict:
+    """Train a GNN on a custom-selected graph."""
+    try:
+        import torch
+    except ImportError:
+        return {"error": "PyTorch not installed"}
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    cutoff = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+    dates = [r[0] for r in con.execute(f"""
+        SELECT DISTINCT date FROM eod_ohlcv WHERE date >= '{cutoff}' ORDER BY date
+    """).fetchall()]
+    con.close()
+
+    if len(dates) < 60:
+        return {"error": f"Only {len(dates)} dates -- need at least 60"}
+
+    sample_dates = dates[30::5]
+    feat_dims = {"full": 20, "price_only": 7, "momentum": 10}
+    num_features = feat_dims.get(feature_set, 20)
+
+    graphs = []
+    for dt in sample_dates:
+        nodes, edges = build_custom_graph(
+            symbols=symbols, edge_types=edge_types,
+            correlation_threshold=correlation_threshold,
+            feature_set=feature_set,
+        )
+        if len(nodes) < 5:
+            continue
+        pyg_data = graph_to_pyg(nodes, edges)
+        if pyg_data is not None:
+            if task == "classification":
+                pyg_data.y = (pyg_data.y > 0).float()
+            graphs.append(pyg_data)
+
+    if len(graphs) < 5:
+        return {"error": f"Only {len(graphs)} valid snapshots (need 5+). Try more symbols or longer lookback."}
+
+    n = len(graphs)
+    train_end = int(n * train_ratio)
+    val_end = int(n * (train_ratio + val_ratio))
+    train_graphs = graphs[:train_end]
+    val_graphs = graphs[train_end:val_end]
+    test_graphs = graphs[val_end:]
+
+    if not train_graphs or not val_graphs or not test_graphs:
+        return {"error": "Not enough data for train/val/test split. Try longer lookback."}
+
+    model = build_gnn_model(
+        num_features=num_features, hidden_dim=hidden_dim,
+        num_classes=1, model_type=model_type,
+    )
+    if model is None:
+        return {"error": "Failed to build model -- check PyG installation"}
+
+    model = model.to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
+    criterion = (torch.nn.BCEWithLogitsLoss() if task == "classification"
+                 else torch.nn.MSELoss())
+
+    train_losses, val_accuracies = [], []
+
+    for epoch in range(epochs):
+        model.train()
+        epoch_loss = 0
+        for data in train_graphs:
+            data = data.to(device)
+            optimizer.zero_grad()
+            out = model(data)
+            loss = criterion(out, data.y)
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item()
+        epoch_loss /= len(train_graphs)
+        train_losses.append(epoch_loss)
+
+        if (epoch + 1) % 10 == 0:
+            model.eval()
+            correct = total = 0
+            with torch.no_grad():
+                for data in val_graphs:
+                    data = data.to(device)
+                    out = model(data)
+                    pred = (out > 0).float()
+                    target = data.y if task == "classification" else (data.y > 0).float()
+                    correct += (pred == target).sum().item()
+                    total += len(data.y)
+            val_accuracies.append(correct / total if total > 0 else 0)
+
+    # Test
+    model.eval()
+    test_correct = test_total = 0
+    test_predictions = []
+    with torch.no_grad():
+        for data in test_graphs:
+            data = data.to(device)
+            out = model(data)
+            pred = (out > 0).float()
+            target = data.y if task == "classification" else (data.y > 0).float()
+            test_correct += (pred == target).sum().item()
+            test_total += len(data.y)
+            for i, sym in enumerate(data.symbols):
+                test_predictions.append({
+                    "symbol": sym,
+                    "predicted": float(out[i].cpu()),
+                    "actual": float(data.y[i].cpu()),
+                    "correct": bool((out[i] > 0) == (data.y[i] > 0)),
+                })
+
+    test_acc = test_correct / test_total if test_total > 0 else 0
+
+    model_path = Path.home() / "pakfindata" / "models" / f"gnn_custom_{model_type}_{task}.pt"
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(model.state_dict(), model_path)
+
+    pred_df = pd.DataFrame(test_predictions)
+    sector_acc = {}
+    if not pred_df.empty:
+        sym_sector = {}
+        for g in test_graphs:
+            for s, sec in zip(g.symbols, g.sectors):
+                sym_sector[s] = sec
+        pred_df["sector"] = pred_df["symbol"].map(sym_sector)
+        sector_acc = pred_df.groupby("sector")["correct"].mean().to_dict()
+
+    result = {
+        "model_type": model_type, "task": task, "feature_set": feature_set,
+        "edge_types": edge_types, "custom_symbols": len(symbols),
+        "train_graphs": len(train_graphs), "val_graphs": len(val_graphs),
+        "test_graphs": len(test_graphs), "epochs": epochs,
+        "final_train_loss": train_losses[-1], "test_accuracy": test_acc,
+        "val_accuracies": val_accuracies, "train_losses": train_losses,
+        "model_path": str(model_path), "num_nodes": graphs[0].x.shape[0],
+        "num_features": num_features, "num_edges": graphs[0].edge_index.shape[1],
+        "sector_accuracy": sector_acc, "predictions_sample": test_predictions[:30],
+    }
+    _save_gnn_history(result)
+    return result

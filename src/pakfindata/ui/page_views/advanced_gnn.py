@@ -405,6 +405,284 @@ def _render_research():
 
 
 # ---------------------------------------------------------------------------
+# Tab 5: Build Your Own
+# ---------------------------------------------------------------------------
+
+def _render_build_your_own():
+    st.subheader("Build Your Own GNN")
+    st.caption("Select stocks, edges, features -- build a custom graph and train your model")
+
+    from pakfindata.engine.gnn_stock_graph import (
+        get_available_symbols, get_available_sectors, get_symbols_by_sector,
+        build_custom_graph, graph_to_networkx, graph_statistics,
+        train_custom_gnn,
+    )
+
+    # --- Step 1: Select Stocks ---
+    st.markdown("#### Step 1: Select Stocks")
+
+    select_mode = st.radio("Selection method", ["By Sector", "Manual Pick", "Top N by Volume"],
+                           horizontal=True, key="byo_mode")
+
+    selected_symbols = []
+
+    if select_mode == "By Sector":
+        sector_map = get_available_sectors()
+        sector_names = sorted(set(sector_map.values()))
+        chosen_sectors = st.multiselect("Pick sectors", sector_names,
+                                        default=["CEMENT", "COMMERCIAL BANKS"] if "CEMENT" in sector_names else sector_names[:2],
+                                        key="byo_sectors")
+        for sec in chosen_sectors:
+            selected_symbols.extend(get_symbols_by_sector(sec))
+        selected_symbols = sorted(set(selected_symbols))
+
+    elif select_mode == "Manual Pick":
+        all_syms = get_available_symbols()
+        selected_symbols = st.multiselect("Pick symbols (min 5)", all_syms,
+                                          default=["OGDC", "PPL", "LUCK", "DGKC", "HBL", "MCB", "ENGRO", "FFC", "PSO", "HUBC"],
+                                          key="byo_manual")
+
+    else:  # Top N by Volume
+        top_n = st.slider("Number of stocks", 10, 100, 30, 5, key="byo_topn")
+        import duckdb
+        con = duckdb.connect("/mnt/e/psxdata/pakfindata.duckdb", read_only=True)
+        rows = con.execute(f"""
+            SELECT symbol, AVG(volume) as avg_vol FROM eod_ohlcv
+            WHERE date >= CURRENT_DATE - INTERVAL '30 days'
+            GROUP BY symbol ORDER BY avg_vol DESC LIMIT {top_n}
+        """).fetchall()
+        con.close()
+        selected_symbols = [r[0] for r in rows]
+
+    if selected_symbols:
+        st.success(f"**{len(selected_symbols)} stocks selected:** {', '.join(selected_symbols[:15])}{'...' if len(selected_symbols) > 15 else ''}")
+    else:
+        st.warning("Select at least 5 stocks to build a graph.")
+        return
+
+    if len(selected_symbols) < 5:
+        st.warning(f"Only {len(selected_symbols)} stocks -- need at least 5.")
+        return
+
+    # --- Step 2: Configure Edges ---
+    st.markdown("#### Step 2: Choose Edge Types")
+    st.caption("Edges define HOW stocks are connected in your graph")
+
+    ec1, ec2, ec3, ec4 = st.columns(4)
+    with ec1:
+        use_sector = st.checkbox("Sector", value=True, key="byo_e_sector",
+                                 help="Same sector = connected")
+    with ec2:
+        use_supply = st.checkbox("Supply Chain", value=True, key="byo_e_supply",
+                                 help="Upstream/downstream industry links")
+    with ec3:
+        use_directors = st.checkbox("Common Directors", value=True, key="byo_e_dirs",
+                                    help="Shared board members & business groups")
+    with ec4:
+        use_corr = st.checkbox("Correlation", value=True, key="byo_e_corr",
+                               help="Price co-movement above threshold")
+
+    edge_types = []
+    if use_sector:
+        edge_types.append("SECTOR")
+    if use_supply:
+        edge_types.append("SUPPLY_CHAIN")
+    if use_directors:
+        edge_types.append("COMMON_DIRECTORS")
+    if use_corr:
+        edge_types.append("CORRELATION")
+
+    if not edge_types:
+        st.warning("Select at least one edge type.")
+        return
+
+    corr_thresh = 0.7
+    if use_corr:
+        corr_thresh = st.slider("Correlation threshold", 0.3, 0.95, 0.7, 0.05, key="byo_corr")
+
+    # --- Step 3: Features & Model ---
+    st.markdown("#### Step 3: Configure Features & Model")
+
+    fc1, fc2, fc3 = st.columns(3)
+    with fc1:
+        feature_set = st.selectbox("Feature set", ["full (20 dims)", "momentum (10 dims)", "price_only (7 dims)"],
+                                   key="byo_feat")
+        feature_set_key = feature_set.split(" ")[0]
+    with fc2:
+        model_type = st.selectbox("GNN Architecture", ["GAT", "GCN", "GraphSAGE"], key="byo_arch")
+        hidden_dim = st.selectbox("Hidden dimensions", [32, 64, 128], index=1, key="byo_hdim")
+    with fc3:
+        task = st.selectbox("Prediction task", ["classification", "regression"], key="byo_task")
+        epochs = st.select_slider("Training epochs", [20, 50, 100, 200], value=50, key="byo_epochs")
+
+    mc1, mc2 = st.columns(2)
+    with mc1:
+        lr = st.select_slider("Learning rate", [0.0001, 0.0005, 0.001, 0.005], value=0.001, key="byo_lr")
+    with mc2:
+        lookback = st.select_slider("Lookback (days)", [120, 250, 500, 750], value=250, key="byo_lb")
+
+    # --- Step 4: Preview Graph ---
+    st.markdown("---")
+
+    col_preview, col_train = st.columns(2)
+
+    with col_preview:
+        if st.button("Preview Graph", type="secondary", key="byo_preview"):
+            with st.spinner("Building custom graph..."):
+                nodes, edges = build_custom_graph(
+                    symbols=selected_symbols, edge_types=edge_types,
+                    correlation_threshold=corr_thresh, feature_set=feature_set_key,
+                )
+            if not nodes:
+                st.error("No valid nodes. Check symbol selection.")
+                return
+
+            st.session_state["byo_nodes"] = nodes
+            st.session_state["byo_edges"] = edges
+
+    if "byo_nodes" in st.session_state:
+        nodes = st.session_state["byo_nodes"]
+        edges = st.session_state["byo_edges"]
+
+        stats = graph_statistics(nodes, edges)
+
+        k1, k2, k3, k4 = st.columns(4)
+        with k1:
+            _kpi("Nodes", f"{stats['num_nodes']}", _C["cyan"])
+        with k2:
+            _kpi("Edges", f"{stats['num_edges']:,}", _C["accent"])
+        with k3:
+            _kpi("Avg Degree", f"{stats['avg_degree']:.1f}", _C["amber"])
+        with k4:
+            _kpi("Clustering", f"{stats['avg_clustering']:.3f}", _C["gold"])
+
+        # Edge type breakdown
+        et = stats["edge_types"]
+        if et:
+            fig = go.Figure(data=[go.Bar(
+                x=list(et.keys()), y=list(et.values()),
+                marker_color=[EDGE_COLORS.get(k, "#888") for k in et.keys()],
+            )])
+            fig.update_layout(**PLOT_LAYOUT, height=250, title_text="Edges by Type")
+            st.plotly_chart(fig, use_container_width=True)
+
+        # Mini network viz
+        import networkx as nx
+        G = graph_to_networkx(nodes, edges)
+        pos = nx.spring_layout(G, k=0.5, iterations=50, seed=42)
+
+        fig = go.Figure()
+        for edge_type, color in EDGE_COLORS.items():
+            ex, ey = [], []
+            for u, v, d in G.edges(data=True):
+                if d.get("edge_type") == edge_type:
+                    x0, y0 = pos[u]
+                    x1, y1 = pos[v]
+                    ex.extend([x0, x1, None])
+                    ey.extend([y0, y1, None])
+            if ex:
+                fig.add_trace(go.Scatter(x=ex, y=ey, mode="lines",
+                                         line=dict(width=0.5, color=color),
+                                         name=edge_type, opacity=0.4))
+
+        sectors = list(set(n.sector for n in nodes))
+        sector_colors = {s: f"hsl({i * 360 // max(len(sectors), 1)}, 70%, 50%)" for i, s in enumerate(sectors)}
+
+        fig.add_trace(go.Scatter(
+            x=[pos[n.symbol][0] for n in nodes if n.symbol in pos],
+            y=[pos[n.symbol][1] for n in nodes if n.symbol in pos],
+            mode="markers+text",
+            marker=dict(
+                size=[max(6, G.degree(n.symbol) * 2) for n in nodes if n.symbol in pos],
+                color=[sector_colors.get(n.sector, "#888") for n in nodes if n.symbol in pos],
+                line=dict(width=0.5, color="#333"),
+            ),
+            text=[n.symbol for n in nodes if n.symbol in pos],
+            textposition="top center", textfont=dict(size=7),
+            name="Stocks",
+            hovertext=[f"{n.symbol} ({n.sector})" for n in nodes if n.symbol in pos],
+        ))
+
+        fig.update_layout(**PLOT_LAYOUT, height=500, showlegend=True,
+                          title_text="Your Custom Graph",
+                          xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+                          yaxis=dict(showgrid=False, zeroline=False, showticklabels=False))
+        st.plotly_chart(fig, use_container_width=True)
+
+    # --- Step 5: Train ---
+    st.markdown("---")
+    st.markdown("#### Step 5: Train Your Model")
+
+    if st.button("Train Custom GNN", type="primary", key="byo_train"):
+        with st.spinner(f"Training {model_type} on {len(selected_symbols)} stocks for {epochs} epochs..."):
+            try:
+                result = train_custom_gnn(
+                    symbols=selected_symbols, edge_types=edge_types,
+                    model_type=model_type, feature_set=feature_set_key,
+                    correlation_threshold=corr_thresh, epochs=epochs,
+                    lr=lr, hidden_dim=hidden_dim, task=task,
+                    lookback_days=lookback,
+                )
+            except Exception as e:
+                st.error(f"Training failed: {e}")
+                return
+
+        if "error" in result:
+            st.error(result["error"])
+            return
+
+        st.success(f"Done! Model saved to `{result.get('model_path', 'models/')}`")
+
+        # Results
+        r1, r2, r3, r4 = st.columns(4)
+        with r1:
+            acc = result["test_accuracy"]
+            _kpi("Test Accuracy", f"{acc:.1%}", _C["up"] if acc > 0.52 else _C["down"])
+        with r2:
+            _kpi("Train Loss", f"{result['final_train_loss']:.4f}")
+        with r3:
+            _kpi("Graph Snapshots", f"{result['train_graphs']}+{result['val_graphs']}+{result['test_graphs']}")
+        with r4:
+            _kpi("Features", f"{result['num_features']}d")
+
+        # Training curves
+        col1, col2 = st.columns(2)
+        with col1:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(y=result["train_losses"], mode="lines",
+                                     line=dict(color=_C["accent"], width=1.5), name="Train Loss"))
+            fig.update_layout(**PLOT_LAYOUT, height=300, title_text="Training Loss")
+            st.plotly_chart(fig, use_container_width=True)
+        with col2:
+            if result["val_accuracies"]:
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(y=result["val_accuracies"], mode="lines+markers",
+                                         line=dict(color=_C["up"], width=1.5), name="Val Accuracy"))
+                fig.add_hline(y=0.5, line_dash="dash", line_color=_C["dim"],
+                              annotation_text="Random baseline")
+                fig.update_layout(**PLOT_LAYOUT, height=300, title_text="Validation Accuracy")
+                st.plotly_chart(fig, use_container_width=True)
+
+        # Sector accuracy
+        if result.get("sector_accuracy"):
+            st.markdown("##### Per-Sector Accuracy")
+            sa = sorted(result["sector_accuracy"].items(), key=lambda x: -x[1])
+            fig = go.Figure(data=[go.Bar(
+                x=[s[0][:25] for s in sa], y=[s[1] for s in sa],
+                marker_color=[_C["up"] if s[1] > 0.5 else _C["down"] for s in sa],
+            )])
+            fig.add_hline(y=0.5, line_dash="dash", line_color=_C["dim"])
+            fig.update_layout(**PLOT_LAYOUT, height=300, title_text="Accuracy by Sector")
+            st.plotly_chart(fig, use_container_width=True)
+
+        # Predictions table
+        if result.get("predictions_sample"):
+            with st.expander("Sample Predictions"):
+                st.dataframe(pd.DataFrame(result["predictions_sample"]),
+                             use_container_width=True, hide_index=True)
+
+
+# ---------------------------------------------------------------------------
 # Main render
 # ---------------------------------------------------------------------------
 
@@ -412,8 +690,8 @@ def render_page():
     st.markdown("### Stock Graph (GNN)")
     st.caption("Graph Neural Network for PSX stock relationships -- sector, supply chain, directors, correlation")
 
-    tab_graph, tab_train, tab_influence, tab_research = st.tabs([
-        "Graph Explorer", "GNN Training", "Influence Analysis", "Research"
+    tab_graph, tab_train, tab_influence, tab_build, tab_research = st.tabs([
+        "Graph Explorer", "GNN Training", "Influence Analysis", "Build Your Own", "Research"
     ])
 
     with tab_graph:
@@ -422,6 +700,8 @@ def render_page():
         _render_gnn_training()
     with tab_influence:
         _render_influence()
+    with tab_build:
+        _render_build_your_own()
     with tab_research:
         _render_research()
 
