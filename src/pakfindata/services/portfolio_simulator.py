@@ -357,14 +357,17 @@ class PortfolioSimulator:
         try:
             import duckdb
             con = duckdb.connect(str(DATA_ROOT / "pakfindata.duckdb"), read_only=True)
+            # Get latest price per symbol from today's ticks
             rows = con.execute("""
-                WITH latest AS (
+                WITH today AS (
                     SELECT symbol, price, volume, bid, ask, bid_vol, ask_vol,
                            ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY timestamp DESC) as rn
-                    FROM tick_logs WHERE price > 0
+                    FROM tick_logs
+                    WHERE price > 0 AND volume > 0
+                    AND CAST(_ts AS DATE) = (SELECT MAX(CAST(_ts AS DATE)) FROM tick_logs)
                 )
                 SELECT symbol, price, volume, bid, ask, bid_vol, ask_vol
-                FROM latest WHERE rn = 1
+                FROM today WHERE rn = 1
                 ORDER BY volume DESC
                 LIMIT 100
             """).fetchall()
@@ -379,8 +382,14 @@ class PortfolioSimulator:
         return []
 
     def filter_tradeable(self, symbols):
-        return [s for s in symbols if s.get("market") == "REG"
-                and s.get("price", 0) > 0 and s.get("volume", 0) > 10000]
+        skip_prefixes = ("ALL", "KSE", "KMI", "P0", "P1", "P2", "P3")
+        return [s for s in symbols
+                if s.get("price", 0) > 0
+                and s.get("price", 0) < 50000  # skip indices (price > 50K)
+                and s.get("volume", 0) > 10000
+                and not s.get("symbol", "").startswith(skip_prefixes)
+                and "-" not in s.get("symbol", "")  # skip futures
+                ]
 
     def scan_and_rank(self, symbols):
         by_vol = sorted(symbols, key=lambda s: s.get("volume", 0), reverse=True)
