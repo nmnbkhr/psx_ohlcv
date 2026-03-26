@@ -344,11 +344,39 @@ class PortfolioSimulator:
         self.capital_per_trade = capital / max_positions
 
     def read_snapshot(self):
+        """Read symbols from live_snapshot.json. Falls back to DuckDB tick_logs."""
         try:
             data = json.loads(LIVE_SNAPSHOT.read_text())
-            return data.get("symbols", [])
+            syms = data.get("symbols", [])
+            if syms:
+                return syms
         except (json.JSONDecodeError, IOError):
-            return []
+            pass
+
+        # Fallback: build synthetic snapshot from DuckDB tick_logs
+        try:
+            import duckdb
+            con = duckdb.connect(str(DATA_ROOT / "pakfindata.duckdb"), read_only=True)
+            rows = con.execute("""
+                WITH latest AS (
+                    SELECT symbol, price, volume, bid, ask, bid_vol, ask_vol,
+                           ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY timestamp DESC) as rn
+                    FROM tick_logs WHERE price > 0
+                )
+                SELECT symbol, price, volume, bid, ask, bid_vol, ask_vol
+                FROM latest WHERE rn = 1
+                ORDER BY volume DESC
+                LIMIT 100
+            """).fetchall()
+            con.close()
+            return [{"symbol": r[0], "price": r[1], "volume": r[2] or 0,
+                     "bid": r[3] or 0, "ask": r[4] or 0,
+                     "bidVol": r[5] or 0, "askVol": r[6] or 0,
+                     "market": "REG", "changePercent": 0}
+                    for r in rows if r[1] > 0]
+        except Exception:
+            pass
+        return []
 
     def filter_tradeable(self, symbols):
         return [s for s in symbols if s.get("market") == "REG"
