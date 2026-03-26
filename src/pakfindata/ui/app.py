@@ -874,7 +874,6 @@ def main():
         "LLM Sentiment":     st.Page(strategy_sentiment_page,  title="LLM Sentiment",     url_path="llm-sentiment"),
         "OI Buildup/Unwind": st.Page(strategy_oi_page,          title="OI Buildup/Unwind", url_path="oi-buildup"),
         "Pairs Trading":    st.Page(strategy_pairs_page,       title="Pairs Trading",     url_path="pairs-trading"),
-        "LLM Sentiment":    st.Page(strategy_sentiment_page,  title="LLM Sentiment",     url_path="llm-sentiment"),
         # ADVANCED
         "Order Book Sim":   st.Page(strategy_orderbook_page, title="Order Book Sim",    url_path="orderbook-sim"),
         "Stock Graph (GNN)": st.Page(advanced_gnn_page,      title="Stock Graph (GNN)", url_path="stock-graph-gnn"),
