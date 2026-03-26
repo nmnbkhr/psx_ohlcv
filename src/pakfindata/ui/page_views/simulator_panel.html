@@ -109,24 +109,60 @@ const equityChart = new Chart(ctx, {
   options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { grid: { color: '#1E2530' }, ticks: { color: '#6B7280', font: { size: 9 } } } } }
 });
 
-let ws = null, lastPrice = 0;
+let lastPrice = 0;
+let tickCount = 0;
+
+// Fetch latest price from API (which reads DuckDB)
+async function fetchPrice() {
+  if (!API_URL || API_URL.includes('PLACEHOLDER')) return;
+  try {
+    const resp = await fetch(API_URL + '/fusion/price?symbol=' + SYMBOL);
+    const data = await resp.json();
+    if (data.price > 0) lastPrice = data.price;
+  } catch(e) {}
+}
+
+// Try WebSocket if available, otherwise use API price polling
 function connectWS() {
-  if (!WS_URL || WS_URL.includes('PLACEHOLDER')) return;
-  ws = new WebSocket(WS_URL + '/ws/symbol/' + SYMBOL);
-  ws.onopen = () => { document.getElementById('status-dot').className = 'status-dot dot-live'; };
-  ws.onmessage = (event) => { try { const msg = JSON.parse(event.data); if (msg.data && msg.data.price) lastPrice = msg.data.price; } catch(e) {} };
-  ws.onclose = () => { document.getElementById('status-dot').className = 'status-dot dot-stale'; setTimeout(connectWS, 3000); };
-  ws.onerror = () => { document.getElementById('status-dot').className = 'status-dot dot-dead'; };
+  if (!WS_URL || !WS_URL.length || WS_URL.includes('PLACEHOLDER')) {
+    // No WebSocket — use API price polling
+    document.getElementById('status-dot').className = 'status-dot dot-live';
+    return;
+  }
+  try {
+    const ws = new WebSocket(WS_URL + '/ws/symbol/' + SYMBOL);
+    ws.onopen = () => { document.getElementById('status-dot').className = 'status-dot dot-live'; };
+    ws.onmessage = (event) => { try { const msg = JSON.parse(event.data); if (msg.data && msg.data.price) lastPrice = msg.data.price; } catch(e) {} };
+    ws.onclose = () => { document.getElementById('status-dot').className = 'status-dot dot-stale'; setTimeout(connectWS, 5000); };
+    ws.onerror = () => { document.getElementById('status-dot').className = 'status-dot dot-dead'; };
+  } catch(e) {
+    document.getElementById('status-dot').className = 'status-dot dot-live';
+  }
 }
 
 async function fetchFusionState() {
   if (!API_URL || API_URL.includes('PLACEHOLDER')) return;
   try {
-    if (lastPrice > 0) await fetch(API_URL + '/fusion/compute?symbol=' + SYMBOL + '&price=' + lastPrice, { method: 'POST' });
+    // Fetch fresh price first
+    await fetchPrice();
+
+    // Trigger computation
+    await fetch(API_URL + '/fusion/compute?symbol=' + SYMBOL + (lastPrice > 0 ? '&price=' + lastPrice : ''), { method: 'POST' });
+
+    // Get state
     const resp = await fetch(API_URL + '/fusion/state');
     const state = await resp.json();
-    if (!state.error) updateUI(state);
-  } catch(e) { console.error('Fusion fetch:', e); }
+    if (state.error) {
+      document.getElementById('status-dot').className = 'status-dot dot-stale';
+      return;
+    }
+    document.getElementById('status-dot').className = 'status-dot dot-live';
+    tickCount++;
+    updateUI(state);
+  } catch(e) {
+    console.error('Fusion fetch:', e);
+    document.getElementById('status-dot').className = 'status-dot dot-dead';
+  }
 }
 
 function updateUI(state) {

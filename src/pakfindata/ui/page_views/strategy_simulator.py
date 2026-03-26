@@ -1,19 +1,26 @@
-"""Strategy Fusion Simulator -- unified real-time decision engine.
+"""Strategy Fusion Simulator -- real-time decision engine.
 
-Embeds a JS panel that connects to ws_relay for real-time ticks
-and fetches fusion signals from the FastAPI endpoint.
-Fallback: Streamlit-only mode with manual compute button.
+Architecture:
+  - Streamlit sidebar: controls (symbol, capital, strategy toggles, START)
+  - On START: launches a background micro-API (Flask, port 8766) that runs
+    the fusion engine and serves results as JSON
+  - Main area: embedded HTML panel that polls the API every 5-10s
+  - Panel renders at 60fps with Chart.js — no Streamlit reruns needed
 """
 
 import streamlit as st
 import streamlit.components.v1 as components
-import pandas as pd
 from pathlib import Path
-from dataclasses import asdict
+import threading
+import json
+import time
 
 from pakfindata.ui.components.helpers import render_footer
 
 DATA_ROOT = Path("/mnt/e/psxdata")
+DUCKDB_PATH = "/mnt/e/psxdata/pakfindata.duckdb"
+PANEL_HTML = Path(__file__).parent / "simulator_panel.html"
+API_PORT = 8766
 
 STRATEGIES = {
     "REGIME": [
@@ -23,16 +30,16 @@ STRATEGIES = {
     "FLOW": [
         ("vpin", "VPIN Toxicity", True),
         ("ofi", "OFI Alpha", True),
-        ("cvd", "CVD Divergence", False),  # slow ~15s
+        ("cvd", "CVD Divergence", False),
         ("oi_buildup", "OI Buildup", True),
     ],
     "STRUCTURE": [
         ("basis_arb", "Basis Arb", True),
-        ("pairs_trading", "Pairs Trading", False),  # slow ~11s
+        ("pairs_trading", "Pairs Trading", False),
     ],
     "ALPHA": [
         ("ml_predictions", "ML Predictions", False),
-        ("sentiment", "LLM Sentiment", False),  # slow ~29s
+        ("sentiment", "LLM Sentiment", False),
     ],
     "RESEARCH": [
         ("hawkes", "Hawkes Process", False),
@@ -40,71 +47,114 @@ STRATEGIES = {
     ],
 }
 
-PANEL_HTML = Path(__file__).parent / "simulator_panel.html"
-DUCKDB_PATH = "/mnt/e/psxdata/pakfindata.duckdb"
-
 
 def _fetch_latest_price(symbol: str) -> float:
     """Fetch latest price from tick_logs or eod_ohlcv."""
     import duckdb
     con = duckdb.connect(DUCKDB_PATH, read_only=True)
     try:
-        # Try tick_logs first (most recent)
-        row = con.execute("""
-            SELECT price FROM tick_logs
-            WHERE symbol = ? AND price > 0
-            ORDER BY timestamp DESC LIMIT 1
-        """, [symbol]).fetchone()
+        row = con.execute(
+            "SELECT price FROM tick_logs WHERE symbol = ? AND price > 0 ORDER BY timestamp DESC LIMIT 1",
+            [symbol],
+        ).fetchone()
         if row:
             return float(row[0])
-        # Fallback to eod_ohlcv
-        row = con.execute("""
-            SELECT close FROM eod_ohlcv
-            WHERE symbol = ? AND close > 0
-            ORDER BY date DESC LIMIT 1
-        """, [symbol]).fetchone()
+        row = con.execute(
+            "SELECT close FROM eod_ohlcv WHERE symbol = ? AND close > 0 ORDER BY date DESC LIMIT 1",
+            [symbol],
+        ).fetchone()
         if row:
             return float(row[0])
     finally:
         con.close()
     return 0.0
 
-_C = {
-    "bg": "#0B0E11", "card": "#141820", "grid": "#1a1f2e",
-    "text": "#E0E0E0", "dim": "#6B7280",
-    "up": "#00E676", "down": "#FF5252", "amber": "#FFB300",
-    "cyan": "#00BCD4", "accent": "#2196F3", "gold": "#C8A96E",
-}
+
+def _start_fusion_api(engine, symbol: str, refresh_sec: int = 10):
+    """Start a background Flask micro-API that the HTML panel polls."""
+    from flask import Flask, jsonify, request
+    from flask_cors import CORS
+    import logging
+
+    app = Flask(__name__)
+    CORS(app)
+    log = logging.getLogger("werkzeug")
+    log.setLevel(logging.ERROR)
+
+    # Shared state
+    state = {"last_computed": 0, "result": None, "symbol": symbol}
+
+    @app.route("/fusion/state")
+    def get_state():
+        return jsonify(engine.get_state())
+
+    @app.route("/fusion/compute", methods=["POST", "GET"])
+    def compute():
+        sym = request.args.get("symbol", state["symbol"])
+        price_arg = request.args.get("price", None)
+
+        if price_arg:
+            price = float(price_arg)
+        else:
+            price = _fetch_latest_price(sym)
+
+        if price <= 0:
+            return jsonify({"error": "no price"})
+
+        now = time.time()
+        # Rate-limit: at most once per 5 seconds
+        if now - state["last_computed"] < 5:
+            return jsonify(engine.get_state())
+
+        from dataclasses import asdict
+        decision = engine.compute(sym, price)
+        engine.update_portfolio(decision)
+        state["last_computed"] = now
+        state["result"] = asdict(decision)
+        return jsonify(engine.get_state())
+
+    @app.route("/fusion/toggle", methods=["POST"])
+    def toggle():
+        data = request.get_json() or {}
+        strategy = data.get("strategy")
+        enabled = data.get("enabled", True)
+        if strategy:
+            engine.set_enabled({strategy: enabled})
+        return jsonify({"ok": True})
+
+    @app.route("/fusion/price")
+    def get_price():
+        sym = request.args.get("symbol", state["symbol"])
+        price = _fetch_latest_price(sym)
+        return jsonify({"symbol": sym, "price": price})
+
+    @app.route("/health")
+    def health():
+        return jsonify({"status": "ok", "symbol": state["symbol"]})
+
+    app.run(host="127.0.0.1", port=API_PORT, threaded=True)
 
 
-def _kpi(label, value, color=None):
-    c = color or _C["text"]
-    st.markdown(f"""
-    <div style="background:{_C['card']};padding:10px;border-radius:6px;text-align:center;">
-        <div style="color:{_C['dim']};font-size:0.65em;text-transform:uppercase;">{label}</div>
-        <div style="color:{c};font-size:1.2em;font-weight:700;">{value}</div>
-    </div>
-    """, unsafe_allow_html=True)
+def _is_api_running() -> bool:
+    """Check if fusion API is already running."""
+    try:
+        import urllib.request
+        resp = urllib.request.urlopen(f"http://127.0.0.1:{API_PORT}/health", timeout=1)
+        return resp.status == 200
+    except Exception:
+        return False
 
 
 def render_page():
     st.markdown("### Strategy Fusion Simulator")
-    st.caption("All strategies -> one decision. Real-time virtual portfolio.")
+    st.caption("All 14 strategies fused into one real-time decision engine")
 
     # Sidebar controls
     with st.sidebar:
         st.markdown("#### Simulator Config")
         symbol = st.text_input("Symbol", "OGDC", key="sim_symbol")
         capital = st.number_input("Capital (PKR)", 100_000, 10_000_000, 1_000_000, 100_000, key="sim_capital")
-        mode = st.selectbox("Mode", [
-            "Auto (Latest Tick)",
-            "Manual (Enter Price)",
-            "Live (WebSocket)",
-        ], key="sim_mode")
-
-        if mode == "Live (WebSocket)":
-            ws_host = st.text_input("WS Relay", "ws://localhost:8765", key="sim_ws")
-            api_host = st.text_input("API URL", "http://localhost:8765", key="sim_api")
+        refresh_sec = st.select_slider("Refresh (sec)", [5, 10, 15, 30], value=10, key="sim_refresh")
 
         st.markdown("---")
         st.markdown("#### Enable Strategies")
@@ -116,45 +166,53 @@ def render_page():
                 enabled[key] = st.checkbox(label, value=default, key=f"sim_{key}")
 
         st.markdown("---")
-        start = st.button("START", type="primary", use_container_width=True)
+        start = st.button("START SIMULATOR", type="primary", use_container_width=True)
 
-    # Initialize engine
+    # On START: init engine + launch background API
     if start:
         try:
+            # Check flask-cors is available
+            try:
+                import flask_cors  # noqa
+            except ImportError:
+                st.error("Need flask-cors: `pip install flask flask-cors`")
+                return
+
             from pakfindata.engine.strategy_fusion import StrategyFusionEngine
             engine = StrategyFusionEngine(capital=capital)
             engine.set_enabled(enabled)
             st.session_state["fusion_engine"] = engine
-            st.session_state["fusion_decisions"] = []
+            st.session_state["fusion_symbol"] = symbol.upper()
+
+            # Kill existing API if running
+            if not _is_api_running():
+                t = threading.Thread(
+                    target=_start_fusion_api,
+                    args=(engine, symbol.upper(), refresh_sec),
+                    daemon=True,
+                )
+                t.start()
+                time.sleep(1.5)  # wait for server to start
+
+            st.session_state["fusion_api_running"] = True
+
         except Exception as e:
-            st.error(f"Failed to init engine: {e}")
+            st.error(f"Failed: {e}")
             return
 
-    engine = st.session_state.get("fusion_engine")
+    # Check if API is running
+    api_running = st.session_state.get("fusion_api_running", False) or _is_api_running()
 
-    # Live WebSocket mode: embedded HTML panel
-    if mode == "Live (WebSocket)" and engine:
-        if PANEL_HTML.exists():
-            html = PANEL_HTML.read_text()
-            html = html.replace("WS_URL_PLACEHOLDER", ws_host)
-            html = html.replace("API_URL_PLACEHOLDER", api_host)
-            html = html.replace("SYMBOL_PLACEHOLDER", symbol.upper())
-            components.html(html, height=900, scrolling=False)
-        else:
-            st.error("simulator_panel.html not found")
-        render_footer()
-        return
-
-    # Streamlit-only mode
-    if not engine:
-        st.info("Configure settings in the sidebar and click **START** to initialize the simulator.")
-
-        # Show architecture overview
+    if not api_running:
+        st.info("Configure settings in the sidebar and click **START SIMULATOR**.")
         st.markdown("""
         ---
         #### How It Works
 
-        The Strategy Fusion Simulator orchestrates **all 14 strategy engines** into a single decision:
+        1. Click **START** -- this launches a background micro-API
+        2. An embedded real-time panel appears (HTML/JS, no Streamlit reruns)
+        3. The panel auto-fetches the latest tick price from DuckDB
+        4. Every 5-10s it calls the fusion engine and updates all panels smoothly
 
         | Category | Weight | Strategies |
         |----------|--------|-----------|
@@ -163,225 +221,25 @@ def render_page():
         | **STRUCTURE** | 20% | Basis Arb, Pairs Trading |
         | **ALPHA** | 15% | ML Predictions, LLM Sentiment |
         | **RESEARCH** | 5% | Hawkes Process, VWAP Context |
-
-        **Decision Logic:**
-        1. Each enabled strategy votes: direction (-1/0/+1) x confidence x weight
-        2. Weighted votes summed and normalized
-        3. Score > +0.15 = BUY, > +0.30 = STRONG_BUY
-        4. VPIN TOXIC vetoes all buy signals
-        5. Hawkes BURST halves position size
-
-        **Virtual Portfolio:**
-        - Stop loss: 2%, Take profit: 4%
-        - Max 10 concurrent positions
-        - Max 5% capital per position
         """)
         render_footer()
         return
 
-    # Active simulator
-    n_enabled = sum(enabled.values())
-    st.success(f"Simulator active: **{symbol}** | {n_enabled} strategies enabled | Capital: {capital:,.0f} PKR")
+    # Show the real-time panel
+    sym = st.session_state.get("fusion_symbol", symbol.upper())
+    api_url = f"http://127.0.0.1:{API_PORT}"
 
-    tab_live, tab_history, tab_portfolio, tab_methodology = st.tabs([
-        "Live Signals", "Decision History", "Portfolio", "Methodology"
-    ])
+    st.success(f"Simulator running: **{sym}** | API: `{api_url}` | Refresh: {refresh_sec}s")
 
-    with tab_live:
-        # Price source depends on mode
-        if mode == "Auto (Latest Tick)":
-            latest_price = _fetch_latest_price(symbol.upper())
-            if latest_price > 0:
-                price_input = latest_price
-                st.markdown(f"**Latest tick: {symbol.upper()} = Rs {latest_price:,.2f}**")
-            else:
-                st.warning(f"No price found for {symbol.upper()}")
-                price_input = st.number_input("Enter Price", 0.01, 100000.0, 100.0, 0.01, key="sim_price")
-
-            auto_refresh = st.checkbox("Auto-refresh (15s)", value=True, key="sim_auto")
-            if auto_refresh:
-                try:
-                    from streamlit_autorefresh import st_autorefresh
-                    st_autorefresh(interval=15000, limit=None, key="sim_autorefresh")
-                except ImportError:
-                    st.caption("`pip install streamlit-autorefresh`")
-
-            # In auto mode, ALWAYS compute when engine exists
-            should_compute = True
-
-        else:
-            # Manual mode
-            price_input = st.number_input("Current Price", 0.01, 100000.0, 100.0, 0.01, key="sim_price")
-            should_compute = st.button("Compute Now", type="primary", key="sim_compute")
-
-        if should_compute and price_input > 0:
-            with st.spinner("Computing fusion signal..."):
-                try:
-                    decision = engine.compute(symbol.upper(), price_input)
-                    engine.update_portfolio(decision)
-
-                    if "fusion_decisions" not in st.session_state:
-                        st.session_state["fusion_decisions"] = []
-                    st.session_state["fusion_decisions"].append(asdict(decision))
-
-                except Exception as e:
-                    st.error(f"Error: {e}")
-                    return
-
-            d = decision
-            dec_color = _C["up"] if "BUY" in d.decision else (_C["down"] if "SELL" in d.decision else _C["dim"])
-
-            # Decision panel — using st.columns for reliable rendering
-            st.markdown("---")
-            dc1, dc2, dc3 = st.columns([1, 2, 1])
-            with dc2:
-                st.markdown(f"<div style='text-align:center;color:{_C['dim']};font-size:0.8em;'>FUSION DECISION</div>",
-                            unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align:center;color:{dec_color};font-size:2.5em;font-weight:900;"
-                            f"letter-spacing:2px;'>{d.decision}</div>", unsafe_allow_html=True)
-                veto_str = f" | VETOED: {d.veto_reason}" if d.vetoed else ""
-                st.caption(f"Score: {d.raw_score*100:.1f} | {d.agreeing_count} agree, "
-                           f"{d.conflicting_count} conflict{veto_str}")
-                st.progress(int(min(d.confidence, 100)))
-                st.caption(f"Confidence: {d.confidence:.0f}%")
-
-            # KPI row
-            k1, k2, k3, k4, k5, k6 = st.columns(6)
-            with k1:
-                _kpi("Regime", f"{d.regime_score:+.2f}", _C["accent"])
-            with k2:
-                _kpi("Flow", f"{d.flow_score:+.2f}", _C["cyan"])
-            with k3:
-                _kpi("Structure", f"{d.structure_score:+.2f}", _C["gold"])
-            with k4:
-                _kpi("Alpha", f"{d.alpha_score:+.2f}", "#BB86FC")
-            with k5:
-                _kpi("Size", f"{d.suggested_size:,} sh")
-            with k6:
-                _kpi("Size %", f"{d.suggested_size_pct:.1f}%")
-
-            # Signal heatmap
-            st.markdown("#### Strategy Votes")
-            vote_data = []
-            for v in d.votes:
-                dir_str = "LONG" if v["direction"] > 0 else ("SHORT" if v["direction"] < 0 else "--")
-                status = "ON" if v["enabled"] else "OFF"
-                vote_data.append({
-                    "Strategy": v["name"],
-                    "Category": v["category"],
-                    "Status": status,
-                    "Direction": dir_str,
-                    "Confidence": f"{v['confidence']:.0%}",
-                    "Signal": v["signal"][:40],
-                    "Weight": f"{v['weight']:.0%}",
-                })
-            st.dataframe(pd.DataFrame(vote_data), use_container_width=True, hide_index=True)
-
-    with tab_history:
-        decisions = st.session_state.get("fusion_decisions", [])
-        if decisions:
-            st.markdown(f"**{len(decisions)} decisions computed this session**")
-            hist_df = pd.DataFrame([{
-                "Time": d["timestamp"],
-                "Symbol": d["symbol"],
-                "Price": d["price"],
-                "Decision": d["decision"],
-                "Score": f"{d['raw_score']:.3f}",
-                "Confidence": f"{d['confidence']:.0f}%",
-                "Agree/Conflict": f"{d['agreeing_count']}/{d['conflicting_count']}",
-                "Vetoed": "Yes" if d["vetoed"] else "",
-            } for d in decisions])
-            st.dataframe(hist_df, use_container_width=True, hide_index=True)
-        else:
-            st.info("No decisions yet. Compute a signal in the Live Signals tab.")
-
-    with tab_portfolio:
-        state = engine.get_state()
-        p = state["portfolio"]
-
-        k1, k2, k3, k4, k5 = st.columns(5)
-        with k1:
-            pnl_c = _C["up"] if p["total_pnl"] > 0 else (_C["down"] if p["total_pnl"] < 0 else _C["dim"])
-            _kpi("Total P&L", f"{p['total_pnl']:+,.0f}", pnl_c)
-        with k2:
-            _kpi("Realized", f"{p['realized_pnl']:+,.0f}")
-        with k3:
-            _kpi("Unrealized", f"{p['unrealized_pnl']:+,.0f}")
-        with k4:
-            _kpi("Trades", str(p["trade_count"]))
-        with k5:
-            _kpi("Win Rate", f"{p['win_rate']:.0f}%")
-
-        if p["positions"]:
-            st.markdown("#### Open Positions")
-            pos_df = pd.DataFrame(p["positions"])
-            display = [c for c in ["symbol", "side", "entry_price", "current_price",
-                                    "unrealized_pnl", "unrealized_pnl_pct", "shares"] if c in pos_df.columns]
-            st.dataframe(pos_df[display], use_container_width=True, hide_index=True)
-
-        if p["equity_curve"]:
-            st.markdown("#### Equity Curve")
-            import plotly.graph_objects as go
-            eq = pd.DataFrame(p["equity_curve"])
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=eq["timestamp"], y=eq["pnl"], mode="lines",
-                line=dict(color=_C["cyan"], width=2),
-                fill="tozeroy", fillcolor="rgba(0,188,212,0.1)",
-            ))
-            fig.update_layout(
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font_color="#c9d1d9", margin=dict(l=20, r=20, t=20, b=20),
-                height=300, yaxis_title="P&L (PKR)",
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-        if state["trade_log"]:
-            st.markdown("#### Trade Log")
-            st.dataframe(pd.DataFrame(state["trade_log"]), use_container_width=True, hide_index=True)
-
-    with tab_methodology:
-        st.markdown("""
-        ### Strategy Fusion Architecture
-
-        **Weighted Majority Voting** with conflict resolution and veto system.
-
-        | Category | Weight | Strategies | Role |
-        |----------|--------|-----------|------|
-        | **REGIME** | 30% | Macro HMM, Sector Rotation | Market environment context |
-        | **FLOW** | 30% | VPIN, OFI, CVD, OI Buildup | Order flow signals |
-        | **STRUCTURE** | 20% | Basis Arb, Pairs Trading | Relative value |
-        | **ALPHA** | 15% | ML Predictions, LLM Sentiment | Predictive signals |
-        | **RESEARCH** | 5% | Hawkes, VWAP | Risk/execution context |
-
-        ---
-
-        ### Decision Thresholds
-
-        | Score Range | Decision |
-        |-------------|----------|
-        | > +0.30 | STRONG_BUY |
-        | +0.15 to +0.30 | BUY |
-        | -0.15 to +0.15 | HOLD |
-        | -0.30 to -0.15 | SELL |
-        | < -0.30 | STRONG_SELL |
-
-        ---
-
-        ### Veto System
-
-        - **VPIN TOXIC**: Vetoes ALL buy signals when informed flow is detected
-        - **Hawkes BURST**: Halves position size during activity bursts (does not veto)
-
-        ---
-
-        ### Virtual Portfolio Rules
-
-        - **Position sizing**: |score| x 5% of capital
-        - **Stop loss**: 2% (automatic)
-        - **Take profit**: 4% (automatic)
-        - **Max positions**: 10 concurrent
-        - **No real money** -- simulation only
-        """)
+    if PANEL_HTML.exists():
+        html = PANEL_HTML.read_text()
+        # The panel connects to our local micro-API, not ws_relay
+        html = html.replace("WS_URL_PLACEHOLDER", "")  # no websocket needed
+        html = html.replace("API_URL_PLACEHOLDER", api_url)
+        html = html.replace("SYMBOL_PLACEHOLDER", sym)
+        html = html.replace("const REFRESH_MS = 5000;", f"const REFRESH_MS = {refresh_sec * 1000};")
+        components.html(html, height=900, scrolling=True)
+    else:
+        st.error("simulator_panel.html not found")
 
     render_footer()
