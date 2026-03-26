@@ -150,9 +150,7 @@ def hawkes_log_likelihood(
     """
     Negative log-likelihood for univariate Hawkes process.
 
-    Uses recursive O(n) algorithm (not naive O(n^2)).
-
-    L = SUM log(lambda(t_i)) - integral_0^T lambda(t) dt
+    Uses vectorized recursive O(n) algorithm.
     """
     mu, alpha, beta = params
 
@@ -165,25 +163,24 @@ def hawkes_log_likelihood(
     if n == 0:
         return mu * T
 
-    # Recursive: A(i) = SUM_{j<i} exp(-beta*(t_i - t_j))
-    # A(i) = exp(-beta*dt) * (1 + A(i-1))
-    A = 0.0
-    log_lik = 0.0
+    # Vectorized inter-arrival times
+    dt = np.diff(times)
 
-    for i in range(n):
-        lam = mu + alpha * A
-        if lam <= 0:
-            return 1e10
-        log_lik += np.log(lam)
+    # Recursive A(i) computation — vectorized via loop (unavoidable for recursion)
+    # but with minimal Python overhead
+    A_vals = np.zeros(n)
+    for i in range(1, n):
+        A_vals[i] = np.exp(-beta * dt[i - 1]) * (1.0 + A_vals[i - 1])
 
-        if i < n - 1:
-            dt = times[i + 1] - times[i]
-            A = np.exp(-beta * dt) * (1.0 + A)
+    # lambda(t_i) = mu + alpha * A(i)
+    intensities = mu + alpha * A_vals
+    if np.any(intensities <= 0):
+        return 1e10
+
+    log_lik = np.sum(np.log(intensities))
 
     # Integral: mu*T + (alpha/beta) * SUM (1 - exp(-beta*(T - t_i)))
-    integral = mu * T
-    for i in range(n):
-        integral += (alpha / beta) * (1.0 - np.exp(-beta * (T - times[i])))
+    integral = mu * T + (alpha / beta) * np.sum(1.0 - np.exp(-beta * (T - times)))
 
     return -(log_lik - integral)
 
@@ -191,19 +188,28 @@ def hawkes_log_likelihood(
 def fit_hawkes(
     times: np.ndarray,
     T: float = None,
+    fast: bool = False,
 ) -> HawkesParams:
     """
     Fit univariate Hawkes process via MLE with multiple restarts.
 
     times: sorted event times in seconds
     T: observation window length
+    fast: if True, use fewer restarts (for backtest/scanner speed)
     """
     if len(times) < 10:
         rate = len(times) / T if T and T > 0 else 0.1
         return HawkesParams(mu=rate, alpha=0.01, beta=1.0)
 
-    t0 = times[0]
-    t_norm = times - t0
+    # Subsample for speed if very large and in fast mode
+    if fast and len(times) > 5000:
+        step = len(times) // 4000
+        times_fit = times[::step]
+    else:
+        times_fit = times
+
+    t0 = times_fit[0]
+    t_norm = times_fit - t0
     if T is None:
         T = t_norm[-1] - t_norm[0]
     else:
@@ -218,9 +224,12 @@ def fit_hawkes(
     best_nll = float('inf')
     best_params = HawkesParams(mu=mu0, alpha=0.5, beta=1.0)
 
-    for mu_init in [mu0 * 0.3, mu0, mu0 * 2.0]:
-        for alpha_init in [0.2, 0.5, 0.8]:
-            for beta_init in [0.5, 1.0, 2.0, 5.0]:
+    if fast:
+        grid = [(mu0, 0.5, 1.0), (mu0 * 0.5, 0.3, 2.0), (mu0, 0.7, 0.5)]
+    else:
+        grid = [(mu0 * m, a, b) for m in [0.5, 1.0] for a in [0.3, 0.6] for b in [0.5, 1.0, 3.0]]
+
+    for mu_init, alpha_init, beta_init in grid:
                 try:
                     result = minimize(
                         hawkes_log_likelihood,
@@ -256,39 +265,40 @@ def compute_intensity(
     if eval_times is None:
         eval_times = np.arange(times[0], times[-1], resolution)
 
-    intensities = []
+    mu = params.mu
+    alpha = params.alpha
+    beta = params.beta
+    hl_cutoff = max(10 * params.half_life, 60.0)
 
-    for t in eval_times:
-        past = times[times < t]
-        if len(past) == 0:
-            lam = params.mu
-        else:
-            cutoff = t - 10 * params.half_life
-            recent = past[past > cutoff]
-            excitation = params.alpha * np.sum(np.exp(-params.beta * (t - recent)))
-            lam = params.mu + excitation
+    n_eval = len(eval_times)
+    lam_arr = np.full(n_eval, mu)
 
-        ratio = lam / params.mu if params.mu > 0 else 0
+    # Use searchsorted for efficient event window lookup
+    sorted_times = np.sort(times)
 
-        if ratio > 5.0:
-            regime = "EXPLOSIVE"
-        elif ratio > 3.0:
-            regime = "BURST"
-        elif ratio > 1.5:
-            regime = "ELEVATED"
-        else:
-            regime = "CALM"
+    for i in range(n_eval):
+        t = eval_times[i]
+        # Binary search for events in [t - hl_cutoff, t)
+        lo = np.searchsorted(sorted_times, t - hl_cutoff, side='left')
+        hi = np.searchsorted(sorted_times, t, side='left')
+        if hi > lo:
+            recent = sorted_times[lo:hi]
+            lam_arr[i] = mu + alpha * np.sum(np.exp(-beta * (t - recent)))
 
-        intensities.append({
-            "time": t,
-            "intensity": lam,
-            "baseline": params.mu,
-            "excitation": lam - params.mu,
-            "ratio": ratio,
-            "regime": regime,
-        })
+    ratios = lam_arr / mu if mu > 0 else np.zeros_like(lam_arr)
 
-    return pd.DataFrame(intensities)
+    regimes = np.where(ratios > 5.0, "EXPLOSIVE",
+              np.where(ratios > 3.0, "BURST",
+              np.where(ratios > 1.5, "ELEVATED", "CALM")))
+
+    return pd.DataFrame({
+        "time": eval_times,
+        "intensity": lam_arr,
+        "baseline": mu,
+        "excitation": lam_arr - mu,
+        "ratio": ratios,
+        "regime": regimes,
+    })
 
 
 def detect_bursts(
@@ -360,6 +370,7 @@ def analyze_symbol(
     date: str = None,
     intensity_resolution: float = 1.0,
     burst_threshold: float = 3.0,
+    fast: bool = False,
 ) -> dict:
     """
     Full Hawkes analysis for a symbol on a given date.
@@ -378,7 +389,7 @@ def analyze_symbol(
         return {"error": f"Zero time range for {symbol}"}
 
     # Fit Hawkes
-    params = fit_hawkes(times, T)
+    params = fit_hawkes(times, T, fast=fast)
 
     # Compute intensity
     intensity = compute_intensity(times, params, resolution=intensity_resolution)
@@ -446,7 +457,7 @@ def scan_symbols(
     results = []
     for sym in symbols:
         try:
-            analysis = analyze_symbol(sym, date)
+            analysis = analyze_symbol(sym, date, intensity_resolution=5.0, fast=True)
             if "error" in analysis:
                 continue
             results.append(analysis["summary"])
@@ -483,7 +494,10 @@ def backtest_burst_signals(
     all_bursts = []
 
     for (d,) in dates:
-        analysis = analyze_symbol(symbol, str(d), burst_threshold=burst_threshold)
+        analysis = analyze_symbol(symbol, str(d),
+                                  intensity_resolution=10.0,
+                                  burst_threshold=burst_threshold,
+                                  fast=True)
         if "error" in analysis:
             continue
 
