@@ -84,12 +84,30 @@ def _call_regime_once():
     return macro, sector
 
 
+import signal as _sig
+
+def _with_timeout(fn, timeout=10):
+    """Run fn with a timeout. Returns None if it hangs."""
+    def _handler(signum, frame):
+        raise TimeoutError()
+    old = _sig.signal(_sig.SIGALRM, _handler)
+    _sig.alarm(timeout)
+    try:
+        return fn()
+    except TimeoutError:
+        logger.warning("Strategy call timed out after %ds", timeout)
+        return None
+    finally:
+        _sig.alarm(0)
+        _sig.signal(_sig.SIGALRM, old)
+
+
 def _call_fast(name, symbol):
-    """Call a FAST per-symbol strategy. Skip slow ones entirely."""
+    """Call a FAST per-symbol strategy with 10s timeout."""
     try:
         if name == "ofi":
             from pakfindata.engine.ofi_strategy import scan_current_ofi
-            df = scan_current_ofi([symbol])
+            df = _with_timeout(lambda: scan_current_ofi([symbol]), timeout=10)
             if df is not None and not df.empty:
                 row = df.iloc[0]
                 d = {"LONG": 1, "SHORT": -1, "FLAT": 0}
@@ -99,7 +117,7 @@ def _call_fast(name, symbol):
 
         elif name == "oi_buildup":
             from pakfindata.engine.oi_strategy import scan_oi_signals
-            df = scan_oi_signals([symbol])
+            df = _with_timeout(lambda: scan_oi_signals([symbol]), timeout=10)
             if df is not None and not df.empty:
                 row = df.iloc[0]
                 d = {"BUY": 1, "SELL": -1}
@@ -109,7 +127,7 @@ def _call_fast(name, symbol):
 
         elif name == "vpin":
             from pakfindata.engine.vpin_strategy import compute_live_signal
-            r = compute_live_signal(symbol)
+            r = _with_timeout(lambda: compute_live_signal(symbol), timeout=10)
             if r:
                 d = {"BUY": 1, "SELL": -1, "EXIT": -1, "REDUCE": 0, "HOLD": 0}
                 return {"direction": d.get(r.signal, 0), "confidence": r.confidence,
