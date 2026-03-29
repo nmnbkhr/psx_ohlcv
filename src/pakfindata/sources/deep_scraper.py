@@ -409,6 +409,16 @@ def parse_financials_data(tree: html.HtmlElement) -> dict[str, Any]:
                 key = "gross_profit"  # Non-banks: sales minus COGS
             elif "OPERATING" in metric and "MARGIN" not in metric:
                 key = "operating_profit"
+            elif "TOTAL ASSETS" in metric or "TOTAL ASSET" in metric:
+                key = "total_assets"
+            elif "TOTAL LIABILIT" in metric:
+                key = "total_liabilities"
+            elif ("TOTAL EQUITY" in metric or "SHAREHOLDERS" in metric
+                  or ("EQUITY" in metric and "RETURN" not in metric
+                      and "DEBT" not in metric)):
+                key = "total_equity"
+            elif "BOOK VALUE" in metric or "NAV PER" in metric:
+                key = "book_value_per_share"
 
             if key:
                 for idx, period, ptype in period_cols:
@@ -484,6 +494,18 @@ def parse_ratios_data(tree: html.HtmlElement) -> dict[str, Any]:
                 key = "eps_growth"
             elif "PEG" in metric:
                 key = "peg_ratio"
+            elif ("P/E" in metric or "PRICE" in metric and "EARNING" in metric
+                  or "PE RATIO" in metric or "PRICE/EARNINGS" in metric):
+                key = "pe_ratio"
+            elif ("P/B" in metric or "PRICE" in metric and "BOOK" in metric
+                  or "PB RATIO" in metric or "PRICE/BOOK" in metric):
+                key = "pb_ratio"
+            elif "DIVIDEND YIELD" in metric:
+                key = "dividend_yield"
+            elif "CURRENT RATIO" in metric:
+                key = "current_ratio"
+            elif "DEBT" in metric and "EQUITY" in metric:
+                key = "debt_to_equity"
 
             if key:
                 for idx, period, ptype in period_cols:
@@ -1033,6 +1055,92 @@ def save_company_snapshot(
     if all_ratios:
         ratios_saved = upsert_company_ratios(con, symbol, all_ratios)
         result["ratios_saved"] = ratios_saved
+
+    # Compute derived ratios (PE, PB) from price + EPS + equity
+    try:
+        price = quote_data.get("close")
+        if price and all_financials:
+            # Find most recent annual EPS
+            annual_fin = sorted(
+                [f for f in all_financials if f.get("period_type") == "annual" and f.get("eps")],
+                key=lambda x: x.get("period_end", ""),
+                reverse=True,
+            )
+            if annual_fin:
+                eps = annual_fin[0]["eps"]
+                period = annual_fin[0]["period_end"]
+                if eps and eps != 0:
+                    pe = round(price / eps, 2)
+                    # Find or create matching ratio period
+                    matched = False
+                    for r in all_ratios:
+                        if r.get("period_end") == period:
+                            r["pe_ratio"] = pe
+                            matched = True
+                            break
+                    if not matched:
+                        all_ratios.append({"period_end": period, "period_type": "annual", "pe_ratio": pe})
+
+                # Compute PB from book value or equity/shares
+                bvps = annual_fin[0].get("book_value_per_share")
+                if not bvps:
+                    total_eq = annual_fin[0].get("total_equity")
+                    shares = equity_data.get("outstanding_shares")
+                    if total_eq and shares and shares > 0:
+                        bvps = total_eq / shares
+                if bvps and bvps != 0:
+                    pb = round(price / bvps, 2)
+                    for r in all_ratios:
+                        if r.get("period_end") == period:
+                            r["pb_ratio"] = pb
+                            break
+
+            # Re-save ratios with computed PE/PB
+            if all_ratios:
+                upsert_company_ratios(con, symbol, all_ratios)
+    except Exception:
+        pass
+
+    # Save fundamentals (combined quote + profile + equity data)
+    try:
+        from ..db import upsert_company_fundamentals
+
+        profile_data = data.get("profile_data", {})
+        fundamentals = {
+            "company_name": profile_data.get("company_name"),
+            "sector_name": profile_data.get("sector"),
+            "price": quote_data.get("close"),
+            "change": quote_data.get("change"),
+            "change_pct": quote_data.get("change_pct"),
+            "open": reg_data.get("open"),
+            "high": reg_data.get("high"),
+            "low": reg_data.get("low"),
+            "volume": reg_data.get("volume"),
+            "ldcp": quote_data.get("ldcp"),
+            "pe_ratio": quote_data.get("pe_ratio_ttm"),
+            "market_cap": quote_data.get("market_cap"),
+            "total_shares": equity_data.get("total_shares"),
+            "free_float_shares": equity_data.get("free_float_shares"),
+            "free_float_pct": equity_data.get("free_float_pct"),
+            "wk52_low": quote_data.get("week52_low"),
+            "wk52_high": quote_data.get("week52_high"),
+            "business_description": profile_data.get("description"),
+            "address": profile_data.get("address"),
+            "website": profile_data.get("website"),
+            "registrar": profile_data.get("registrar"),
+            "auditor": profile_data.get("auditor"),
+            "fiscal_year_end": profile_data.get("fiscal_year_end"),
+            "listed_in": profile_data.get("listed_in"),
+            "as_of": snapshot_date,
+            "source_url": f"https://dps.psx.com.pk/company/{symbol}",
+        }
+        # Remove None values
+        fundamentals = {k: v for k, v in fundamentals.items() if v is not None}
+        if len(fundamentals) > 3:  # symbol + at least some data
+            upsert_company_fundamentals(con, symbol, fundamentals)
+            result["fundamentals_saved"] = True
+    except Exception:
+        pass  # Non-critical — don't fail the whole scrape
 
     return result
 
