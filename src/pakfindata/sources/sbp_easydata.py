@@ -32,7 +32,7 @@ from typing import Optional
 API_BASE = "https://easydata.sbp.org.pk/api/v1"
 
 # ⚠️ UPDATE THIS — generate at: My Data Basket → My Account → Generate API Key
-API_KEY ="38181E447386BBD36429D936DF60F09F272341DC"
+API_KEY = "BC24A1EF473A212EE9DDA932D65D1F648627EC60"
 OUTPUT_DIR = Path("/mnt/e/psxdata/sbp_easydata")
 RAW_DIR = OUTPUT_DIR / "raw"          # Raw JSON responses
 DATASETS_DIR = OUTPUT_DIR / "datasets"  # Dataset metadata
@@ -101,6 +101,9 @@ def api_get(endpoint: str, params: dict = None) -> dict | None:
 
         if r.status_code == 200:
             return r.json()
+        elif r.status_code == 401:
+            print(f"  ❌ API key rejected (401). Regenerate at easydata.sbp.org.pk → My Account")
+            return None
         elif r.status_code == 429:
             print(f"  ⏳ Rate limited — waiting 60s...")
             time.sleep(60)
@@ -141,17 +144,18 @@ def get_dataset_meta(dataset_code: str) -> dict | None:
 
 # Priority datasets — verified working codes from easydata.sbp.org.pk
 PRIORITY_DATASETS = {
-    # Interest Rates
-    "TS_GP_BAM_SIRKIBOR_D": "KIBOR Daily",
-    "TS_GP_IR_SIRPR_AH": "SBP Policy Rate (Ad-hoc)",
-    "TS_GP_BAM_WALDR_M": "Weighted Avg Lending/Deposit Rates Monthly",
+    # Interest Rates (3 datasets, 166 series)
+    "TS_GP_BAM_SIRKIBOR_D": "KIBOR Daily (18 series)",
+    "TS_GP_IR_SIRPR_AH": "SBP Policy Rate (3 series)",
+    "TS_GP_BAM_WALDR_M": "Weighted Avg Lending/Deposit Rates Monthly (145 series)",
+    # NOTE: PKRV/KONIA/PKISRV are NOT on EasyData API — use MUFAP/SBP scrapers
 
-    # Exchange Rates
-    "TS_GP_ER_FAERPKR_M": "Exchange Rates Monthly (PKR)",
-    "TS_GP_ER_FAERUSD_M": "Exchange Rates Monthly (USD)",
-    "TS_GP_ER_FMEERPKR_M": "Open Market Exchange Rates (PKR)",
-    "TS_GP_ER_REERNEER_M": "REER/NEER Indices",
-    "TS_GP_ES_FADERPKR_M": "Daily Average Exchange Rates (PKR)",
+    # Exchange Rates (6 datasets, 223 series)
+    "TS_GP_ER_FAERPKR_M": "FX Avg Rates Monthly PKR (48 series)",
+    "TS_GP_ER_FAERUSD_M": "FX Avg Rates Monthly USD (50 series)",
+    "TS_GP_ER_FMEERPKR_M": "FX Month-End Rates PKR (48 series)",
+    "TS_GP_ER_REERNEER_M": "REER/NEER Indices (4 series)",
+    "TS_GP_ES_FADERPKR_M": "FX Daily Average Rates PKR (23 series)",
 
     # External Sector / Balance of Payments
     "TS_GP_BOP_WR_M": "Workers Remittances Monthly",
@@ -161,6 +165,7 @@ PRIORITY_DATASETS = {
     "TS_GP_BOP_FCD_M": "Foreign Currency Deposits Monthly",
     "TS_GP_EXT_PAKRES_M": "Gold & Forex Reserves Monthly",
     "TS_GP_ES_KSORDA_M": "Roshan Digital Account Monthly",
+    "TS_GP_BOP_SCRA_D": "SCRA Position by Country (Daily)",
 
     # Foreign Investment
     "TS_GP_FI_SUMFIPK_M": "Foreign Investment Summary Monthly",
@@ -552,6 +557,32 @@ def get_policy_rate(start_date: str = "2020-01-01") -> list:
     return []
 
 
+def get_daily_fx(currency: str = "USD", start_date: str = "2020-01-01") -> list:
+    """Quick helper: get daily average FX rate from TS_GP_ES_FADERPKR_M."""
+    # Reverse lookup: find suffix for currency
+    suffix = None
+    for s, c in _DAILY_FX_MAP.items():
+        if c == currency.upper():
+            suffix = s
+            break
+    if not suffix:
+        return []
+    series_key = f"TS_GP_ES_FADERPKR_M.{suffix}"
+    data = get_series_data(series_key, start_date=start_date)
+    if data and data.get("rows"):
+        return [(row[3], float(row[4])) for row in data["rows"]]
+    return []
+
+
+def get_walr(start_date: str = "2020-01-01") -> list:
+    """Quick helper: get weighted average lending rate history."""
+    series_key = "TS_GP_BAM_WALDR_M.WALD00010000"
+    data = get_series_data(series_key, start_date=start_date)
+    if data and data.get("rows"):
+        return [(row[3], float(row[4])) for row in data["rows"]]
+    return []
+
+
 # ═══════════════════════════════════════════════════════
 # READER — Load downloaded EasyData CSVs into DataFrames
 # ═══════════════════════════════════════════════════════
@@ -628,6 +659,22 @@ _FX_MAP = {
     "E00170": "SAR", "E00180": "THB", "E00190": "TRY", "E00200": "AED",
     "E00210": "GBP", "E00220": "USD", "E00230": "EUR", "E00240": "SDR",
 }
+
+# Daily FX currency mapping: TS_GP_ES_FADERPKR_M series suffix → ISO code
+_DAILY_FX_MAP = {
+    "XRDAVG0010": "USD", "XRDAVG0020": "EUR", "XRDAVG0030": "GBP",
+    "XRDAVG0040": "JPY", "XRDAVG0050": "CHF", "XRDAVG0060": "CAD",
+    "XRDAVG0070": "AUD", "XRDAVG0080": "SAR", "XRDAVG0090": "AED",
+    "XRDAVG0100": "CNY", "XRDAVG0110": "KWD", "XRDAVG0120": "BHD",
+    "XRDAVG0130": "QAR", "XRDAVG0140": "OMR", "XRDAVG0150": "MYR",
+    "XRDAVG0160": "SGD", "XRDAVG0170": "HKD", "XRDAVG0180": "NZD",
+    "XRDAVG0190": "SEK", "XRDAVG0200": "NOK", "XRDAVG0210": "DKK",
+    "XRDAVG0220": "THB", "XRDAVG0230": "TRY",
+}
+
+# NOTE: PKRV, KONIA, PKISRV are NOT available on SBP EasyData API.
+# Use MUFAP (mufap_rates.py) and SBP web scrapers (sbp_rates.py,
+# sbp_konia_history.py, sbp_kibor_history.py) for those datasets.
 
 
 def sync_kibor_to_db(con, since: str = "") -> dict:
@@ -731,11 +778,45 @@ def sync_policy_rate_to_db(con, since: str = "") -> dict:
     return {"policy_rows": inserted}
 
 
+def sync_daily_fx_to_db(con, since: str = "") -> dict:
+    """Load daily average FX rates from EasyData CSVs into sbp_fx_interbank table."""
+    import sqlite3
+    con.execute("""CREATE TABLE IF NOT EXISTS sbp_fx_interbank (
+        date TEXT, currency TEXT, buying REAL, selling REAL, mid REAL, scraped_at TEXT,
+        PRIMARY KEY (date, currency)
+    )""")
+
+    all_series = read_dataset_series("TS_GP_ES_FADERPKR_M")
+    inserted = 0
+    for sk, rows in all_series.items():
+        suffix = sk.split(".")[-1] if "." in sk else sk.rsplit("_", 1)[-1]
+        currency = _DAILY_FX_MAP.get(suffix)
+        if not currency:
+            continue
+        for r in rows:
+            if since and r["date"] < since:
+                continue
+            mid = r["value"]
+            try:
+                con.execute("""
+                    INSERT INTO sbp_fx_interbank (date, currency, buying, selling, mid, scraped_at)
+                    VALUES (?, ?, ?, ?, ?, 'easydata-daily')
+                    ON CONFLICT(date, currency) DO UPDATE SET
+                        mid=excluded.mid, scraped_at='easydata-daily'
+                """, (r["date"], currency, mid, mid, mid))
+                inserted += 1
+            except sqlite3.IntegrityError:
+                pass
+    con.commit()
+    return {"daily_fx_rows": inserted}
+
+
 def sync_all_to_db(con) -> dict:
     """Sync all available EasyData series to local DB tables."""
     results = {}
     results.update(sync_kibor_to_db(con))
     results.update(sync_fx_to_db(con))
+    results.update(sync_daily_fx_to_db(con))
     results.update(sync_policy_rate_to_db(con))
     return results
 

@@ -1219,23 +1219,32 @@ def _render_sync(con):
             except Exception as e:
                 st.error(f"MUFAP sync failed: {e}")
 
-    st.markdown("##### Historical Backfill (SBP PDFs)")
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        if st.button("Sync SBP EasyData (KIBOR+Policy)", key="tsy_backfill_sir"):
-            with st.spinner("Syncing from SBP EasyData CSVs..."):
+    st.markdown("##### SBP EasyData (KIBOR, Policy Rate, FX, BoP, CPI, Reserves)")
+    ec1, ec2 = st.columns(2)
+    with ec1:
+        if st.button("Fetch Fresh Data from API", type="primary", key="tsy_easydata_fetch"):
+            with st.spinner("Fetching priority datasets from SBP EasyData API (250/hr limit)..."):
                 try:
-                    from pakfindata.sources.sbp_easydata import sync_kibor_to_db, sync_policy_rate_to_db
-                    r1 = sync_kibor_to_db(con)
-                    r2 = sync_policy_rate_to_db(con)
-                    st.success(
-                        f"KIBOR: {r1.get('kibor_rows', 0)} rows, "
-                        f"Policy: {r2.get('policy_rows', 0)} rows"
-                    )
+                    from pakfindata.sources.sbp_easydata import cmd_fetch_priority
+                    cmd_fetch_priority()
+                    st.success("Fetched priority datasets — now click 'Sync to DB'")
+                except Exception as e:
+                    st.error(f"EasyData fetch failed: {e}")
+    with ec2:
+        if st.button("Sync CSVs to DB", key="tsy_easydata_sync"):
+            with st.spinner("Syncing EasyData CSVs to local DB tables..."):
+                try:
+                    from pakfindata.sources.sbp_easydata import sync_all_to_db
+                    result = sync_all_to_db(con)
+                    parts = [f"{k}: {v}" for k, v in result.items()]
+                    st.success(" | ".join(parts))
                     st.rerun()
                 except Exception as e:
                     st.error(f"EasyData sync failed: {e}")
-    with c2:
+
+    st.markdown("##### Historical Backfill (SBP PDFs)")
+    c1, c2, c3 = st.columns(3)
+    with c1:
         if st.button("Backfill PIB (2000-Present)", key="tsy_backfill_pib"):
             with st.spinner("Downloading PIB archive PDF..."):
                 try:
@@ -1245,9 +1254,9 @@ def _render_sync(con):
                     st.rerun()
                 except Exception as e:
                     st.error(f"PIB backfill failed: {e}")
-    with c3:
+    with c2:
         _render_kibor_backfill_button()
-    with c4:
+    with c3:
         _render_konia_backfill_button()
 
 

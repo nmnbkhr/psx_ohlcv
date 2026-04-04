@@ -7,7 +7,7 @@ import streamlit as st
 from pakfindata.ui.components.helpers import get_connection, render_footer
 
 
-_KEY_CURRENCIES = ["USD", "EUR", "GBP", "SAR", "AED"]
+_KEY_CURRENCIES = ["USD", "EUR", "GBP", "SAR", "AED", "CNY"]
 
 _FX_TABLES = {
     "Interbank": "sbp_fx_interbank",

@@ -246,9 +246,8 @@ def _render_predictions_tab():
         if sym_input.strip():
             symbols = [s.strip().upper() for s in sym_input.split(",") if s.strip()]
         else:
-            import duckdb
-            from pakfindata.engine.ml_features import DUCKDB_PATH
-            con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+            from pakfindata.db.connections import _duck_con
+            con = _duck_con()
             symbols = [r[0] for r in con.execute("""
                 SELECT symbol FROM eod_ohlcv
                 WHERE CAST(date AS DATE) >= CAST((SELECT MAX(date) FROM eod_ohlcv) AS DATE) - INTERVAL '5 days'
@@ -256,7 +255,6 @@ def _render_predictions_tab():
                 ORDER BY SUM(volume) DESC
                 LIMIT 30
             """).fetchall()]
-            con.close()
 
         rows = []
         progress = st.progress(0)
@@ -266,8 +264,8 @@ def _render_predictions_tab():
             if df.empty or len(df) < 50:
                 continue
 
-            avail = [c for c in feature_cols if c in df.columns]
-            latest = df.iloc[[-1]][avail].replace([np.inf, -np.inf], np.nan).fillna(0)
+            latest = df.iloc[[-1]].reindex(columns=feature_cols, fill_value=0)
+            latest = latest.replace([np.inf, -np.inf], np.nan).fillna(0)
             X = scaler.transform(latest)
 
             pred = model.predict(X)[0]
@@ -313,9 +311,9 @@ def _render_predictions_tab():
                 return "color: #f85149"
             return "color: #8b949e"
 
-        styled = pred_df.style.applymap(
+        styled = pred_df.style.map(
             _color_direction, subset=["Direction"]
-        ).applymap(
+        ).map(
             _color_prob, subset=["Probability"]
         ).format({
             "Probability": "{:.1%}",
