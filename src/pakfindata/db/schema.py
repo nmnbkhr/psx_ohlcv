@@ -13,6 +13,54 @@ CREATE TABLE IF NOT EXISTS symbols (
     updated_at         TEXT NOT NULL
 );
 
+-- Status definitions — labels and descriptions for each status code.
+-- DB-driven so new statuses from PSX can be added without code changes.
+CREATE TABLE IF NOT EXISTS symbol_status_definitions (
+    status          TEXT PRIMARY KEY,
+    label           TEXT NOT NULL,
+    description     TEXT,
+    is_suffix       INTEGER DEFAULT 1,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- SCD2: tracks every status transition for each base symbol.
+-- Written only on CHANGE — enables as-is and as-was queries.
+CREATE TABLE IF NOT EXISTS symbol_status_history (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol          TEXT NOT NULL,           -- base symbol (HBL, not HBLXD)
+    status          TEXT NOT NULL,           -- NORMAL, XD, XB, XR, XA, XI, XW, NC, WU
+    start_date      TEXT NOT NULL,           -- date this status period started (YYYY-MM-DD)
+    end_date        TEXT,                    -- date this status ended (NULL = still active)
+    is_current      INTEGER DEFAULT 1,       -- 1 if active now, 0 if closed
+    source_symbol   TEXT NOT NULL,           -- symbol as seen on market watch (HBLXD or HBL)
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(symbol, status, start_date)
+);
+CREATE INDEX IF NOT EXISTS idx_ssh_symbol ON symbol_status_history(symbol);
+CREATE INDEX IF NOT EXISTS idx_ssh_current ON symbol_status_history(is_current) WHERE is_current = 1;
+
+-- Company listing status from PSX company page (SUSPENDED, WINDING-UP, DEFAULTER, etc.)
+-- Separate from trading statuses (XD/XB/XR) which are per-day market events.
+-- This tracks the company's overall listing/regulatory status on the exchange.
+CREATE TABLE IF NOT EXISTS company_listing_status (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol          TEXT NOT NULL,
+    status          TEXT NOT NULL,           -- SUSPENDED, WINDING-UP, DEFAULTER, DELISTED, etc.
+    is_current      INTEGER DEFAULT 1,       -- 1 if still active
+    first_seen      TEXT NOT NULL,           -- when we first detected this status
+    last_seen       TEXT NOT NULL,           -- last time we confirmed this status
+    removed_at      TEXT,                    -- when status was no longer on the page (NULL = still active)
+    source          TEXT DEFAULT 'PSX_DPS',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(symbol, status, first_seen)
+);
+CREATE INDEX IF NOT EXISTS idx_cls_symbol ON company_listing_status(symbol);
+CREATE INDEX IF NOT EXISTS idx_cls_current ON company_listing_status(is_current) WHERE is_current = 1;
+CREATE INDEX IF NOT EXISTS idx_cls_status ON company_listing_status(status);
+
 CREATE TABLE IF NOT EXISTS eod_ohlcv (
     symbol       TEXT NOT NULL,
     date         TEXT NOT NULL,
@@ -70,26 +118,34 @@ CREATE TABLE IF NOT EXISTS data_freshness (
     status         TEXT DEFAULT 'unknown'
 );
 
--- Intraday bars table for storing intraday time series data
+-- Intraday bars (v3 schema): market-aware, multi-resolution OHLCV
+-- market: REG | ODL | FUT | CONT | IDX_FUT — prevents REG/ODL collision for dual-market ETFs
+-- interval: '1s' | '5s' | '1m' | '5m' — lets one table hold multiple resolutions
 CREATE TABLE IF NOT EXISTS intraday_bars (
-    symbol      TEXT NOT NULL,
-    ts          TEXT NOT NULL,
-    ts_epoch    INTEGER NOT NULL,
-    open        REAL NULL,
-    high        REAL NULL,
-    low         REAL NULL,
-    close       REAL NULL,
-    volume      REAL NULL,
-    interval    TEXT NOT NULL DEFAULT 'int',
-    operation   TEXT NOT NULL DEFAULT 'insert',
-    process_ts  TEXT NOT NULL DEFAULT (datetime('now')),
-    ingested_at TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (symbol, ts, close)
+    symbol       TEXT NOT NULL,
+    market       TEXT NOT NULL DEFAULT 'REG',
+    date         TEXT NOT NULL,
+    ts           TEXT NOT NULL,
+    ts_epoch     INTEGER NOT NULL,
+    interval     TEXT NOT NULL DEFAULT '1s',
+    open         REAL,
+    high         REAL,
+    low          REAL,
+    close        REAL,
+    volume       REAL DEFAULT 0,
+    value        REAL DEFAULT 0,
+    trade_count  INTEGER DEFAULT 0,
+    vwap         REAL,
+    source       TEXT DEFAULT 'legacy',
+    ingested_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (symbol, market, ts_epoch, interval)
 );
 
-CREATE INDEX IF NOT EXISTS idx_intraday_bars_symbol ON intraday_bars(symbol);
-CREATE INDEX IF NOT EXISTS idx_intraday_bars_ts ON intraday_bars(ts);
+CREATE INDEX IF NOT EXISTS idx_ib_date_symbol     ON intraday_bars(date, symbol);
+CREATE INDEX IF NOT EXISTS idx_ib_symbol_ts       ON intraday_bars(symbol, ts_epoch);
+CREATE INDEX IF NOT EXISTS idx_ib_market_date     ON intraday_bars(market, date);
 CREATE INDEX IF NOT EXISTS idx_intraday_bars_ts_epoch ON intraday_bars(ts_epoch);
+CREATE INDEX IF NOT EXISTS idx_ib_symbol_interval ON intraday_bars(symbol, interval, ts_epoch);
 
 -- Intraday sync state tracking
 CREATE TABLE IF NOT EXISTS intraday_sync_state (
@@ -112,6 +168,7 @@ CREATE TABLE IF NOT EXISTS company_profile (
     symbol              TEXT PRIMARY KEY,
     company_name        TEXT NULL,
     sector_name         TEXT NULL,
+    listing_status      TEXT NULL,           -- e.g. 'SUSPENDED,WINDING-UP' or NULL for normal
     business_description TEXT NULL,
     address             TEXT NULL,
     website             TEXT NULL,
@@ -1034,6 +1091,34 @@ CREATE TABLE IF NOT EXISTS instruments_sync_runs (
 );
 
 -- =============================================================================
+-- INSTRUMENT REGISTRY — Universal lookup across all asset classes
+-- Thin reference layer: one row per instrument, points to operational tables
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS instrument_registry (
+    registry_id     TEXT PRIMARY KEY,
+    symbol          TEXT NOT NULL,
+    name            TEXT,
+    asset_class     TEXT NOT NULL,
+    instrument_type TEXT NOT NULL,
+    source          TEXT NOT NULL,
+    source_table    TEXT,
+    source_id       TEXT,
+    isin            TEXT,
+    currency        TEXT DEFAULT 'PKR',
+    sector          TEXT,
+    is_active       INTEGER DEFAULT 1,
+    discovered_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ir_asset_class ON instrument_registry(asset_class);
+CREATE INDEX IF NOT EXISTS idx_ir_type ON instrument_registry(instrument_type);
+CREATE INDEX IF NOT EXISTS idx_ir_source ON instrument_registry(source);
+CREATE INDEX IF NOT EXISTS idx_ir_symbol ON instrument_registry(symbol);
+CREATE INDEX IF NOT EXISTS idx_ir_active ON instrument_registry(is_active) WHERE is_active = 1;
+
+-- =============================================================================
 -- Phase 2: FX Analytics Tables
 -- =============================================================================
 
@@ -1838,7 +1923,7 @@ CREATE TABLE IF NOT EXISTS tick_logs (
     prev_close     REAL,
     source_file    TEXT,
     ingested_at    TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (symbol, market, timestamp, price)
+    PRIMARY KEY (symbol, market, timestamp, price, volume, trades)
 );
 
 -- _load_ticks: WHERE _ts LIKE '2026-03-13%' ORDER BY timestamp

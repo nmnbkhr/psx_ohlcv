@@ -127,6 +127,22 @@ def init_schema(con: sqlite3.Connection) -> None:
     from pakfindata.commodities.models import init_commodity_schema
     init_commodity_schema(con)
 
+    # SCD2 symbol status history (XD/XB/XR/NC/WU tracking)
+    from .repositories.symbols import init_status_history_schema
+    init_status_history_schema(con)
+
+    # Unified instrument registry (all asset classes)
+    from .repositories.instrument_registry import init_registry_schema
+    init_registry_schema(con)
+
+    # NCCPL flow intelligence tables (FIPI/LIPI/sector/derived)
+    from .repositories.nccpl_flows import init_nccpl_schema
+    init_nccpl_schema(con)
+
+    # Fund performance + latest snapshot (referenced by migration v2 index)
+    from .repositories.fixed_income import init_fund_performance_schema
+    init_fund_performance_schema(con)
+
     _migrate_intraday_operation_cols(con)
     _migrate_turnover_col(con)
 
@@ -166,7 +182,7 @@ def _get_migrations() -> list[tuple[int, str, str]]:
             INSERT OR IGNORE INTO data_freshness (domain, display_name, source_table, date_column)
             VALUES
                 ('equity_eod', 'Equity EOD', 'eod_ohlcv', 'date'),
-                ('intraday', 'Intraday Ticks', 'intraday_bars', 'ts'),
+                ('intraday', 'Intraday Ticks', 'intraday_bars', 'date'),
                 ('indices', 'PSX Indices', 'psx_indices', 'index_date'),
                 ('mutual_funds', 'Mutual Funds', 'mutual_fund_nav', 'date'),
                 ('treasury', 'Treasury Auctions', 'tbill_auctions', 'auction_date'),
