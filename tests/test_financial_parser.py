@@ -182,10 +182,14 @@ class TestLabelMatching:
     def test_pl_sales_regex(self):
         from pakfindata.sources.financial_parser import PL_LABELS
 
-        sales_pat = next(p for p, n in PL_LABELS if n == "sales")
-        assert sales_pat.search("NET SALES")
-        assert sales_pat.search("Revenue from operations")
-        assert sales_pat.search("TURNOVER")
+        # PL_LABELS may contain multiple regexes for "sales" (e.g. one for
+        # "TURNOVER - NET" and one for "NET SALES / REVENUE"). _extract_line_items
+        # iterates them all and uses the first match per line. The test should
+        # mirror that semantics: at least one "sales" pattern matches each input.
+        sales_pats = [p for p, n in PL_LABELS if n == "sales"]
+        assert any(p.search("NET SALES") for p in sales_pats)
+        assert any(p.search("Revenue from operations") for p in sales_pats)
+        assert any(p.search("TURNOVER") for p in sales_pats)
         # Note: "COST OF SALES" matches the regex, but _extract_line_items
         # has an exclusion: if field_name == "sales" and "COST" in line_upper
 

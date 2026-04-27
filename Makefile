@@ -1,4 +1,4 @@
-.PHONY: install install-ui test lint run-demo ui verify format clean
+.PHONY: install install-ui test lint run-demo ui scraper verify format clean
 
 install:
 	pip install -e ".[dev]"
@@ -17,6 +17,9 @@ run-demo:
 
 ui:
 	streamlit run src/psx_ohlcv/ui/app.py
+
+scraper:
+	streamlit run src/pakfindata/fin_scraper_app.py --server.port 8502
 
 verify:
 	python scripts/verify_features.py

@@ -7,8 +7,8 @@
 #   bash ~/pakfindata/scripts/fetch_market_data.sh status    # coverage report
 
 set -e
-export PATH="/opt/miniconda/envs/psx/bin:$PATH"
-cd /home/adnoman/pakfindata
+export PATH="/home/smnb/miniforge3/envs/psx/bin:$PATH"
+cd /home/smnb/projects/pakfindata
 
 CMD="${1:-all}"
 
@@ -47,5 +47,5 @@ esac
 echo ""
 echo "════════════════════════════════════════"
 echo "  Done — $(date '+%H:%M:%S')"
-echo "  Files: ~/psxdata/intraday/"
+echo "  Files: ~/psxdata/intraday/$(date '+%Y-%m-%d')/"
 echo "════════════════════════════════════════"

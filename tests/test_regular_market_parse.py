@@ -192,13 +192,15 @@ class TestParseRegularMarketHtml:
 
     def test_status_extraction(self):
         """Status markers should be extracted."""
+        import pandas as pd
         df = parse_regular_market_html(SAMPLE_HTML)
 
         hbl = df[df["symbol"] == "HBL"].iloc[0]
         ogdc = df[df["symbol"] == "OGDC"].iloc[0]
         mcb = df[df["symbol"] == "MCB"].iloc[0]
 
-        assert hbl["status"] is None
+        # pandas may surface a missing string as NaN (float) instead of None.
+        assert pd.isna(hbl["status"]) or hbl["status"] is None
         assert ogdc["status"] == "NC"
         assert mcb["status"] == "XD"
 

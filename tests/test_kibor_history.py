@@ -59,11 +59,13 @@ class TestParsePdf:
         # We can't easily create a real PDF in tests, so test the parse
         # logic indirectly via the tenor map
         from pakfindata.sources.sbp_kibor_history import TENOR_MAP
+        # Year tenors are normalized to months ("12M"/"24M"/"36M") to stay
+        # consistent with PKRV/PKISRV tables, which use month tenors throughout.
         assert TENOR_MAP["1 - Week"] == "1W"
         assert TENOR_MAP["3 - Month"] == "3M"
-        assert TENOR_MAP["1 - Year"] == "1Y"
-        assert TENOR_MAP["2 - Year"] == "2Y"
-        assert TENOR_MAP["3- Year"] == "3Y"
+        assert TENOR_MAP["1 - Year"] == "12M"
+        assert TENOR_MAP["2 - Year"] == "24M"
+        assert TENOR_MAP["3- Year"] == "36M"
 
     def test_empty_pdf_returns_empty(self):
         """Garbage bytes should return empty list."""
@@ -155,7 +157,9 @@ class TestTenorMapCompleteness:
 
     def test_standard_tenors(self):
         from pakfindata.sources.sbp_kibor_history import TENOR_MAP
-        expected = {"1W", "2W", "1M", "3M", "6M", "9M", "1Y", "2Y", "3Y"}
+        # Year tenors normalize to months ("12M"/"24M"/"36M") for consistency
+        # with PKRV/PKISRV tenor conventions used elsewhere in the codebase.
+        expected = {"1W", "2W", "1M", "3M", "6M", "9M", "12M", "24M", "36M"}
         actual = set(TENOR_MAP.values())
         assert expected == actual
 

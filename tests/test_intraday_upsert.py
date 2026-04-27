@@ -70,8 +70,12 @@ class TestUpsertIntraday:
         cur = db.execute("SELECT COUNT(*) as cnt FROM intraday_bars")
         assert cur.fetchone()["cnt"] == 2
 
-    def test_different_close_creates_new_row(self, db):
-        """Same (symbol, ts) with different close should create separate rows."""
+    def test_same_second_bar_semantics(self, db):
+        """v3 schema: PK (symbol, market, ts_epoch, interval) → one bar per second.
+
+        Same (symbol, ts_epoch) inserts are silently ignored. Callers aggregate
+        multiple ticks into a single bar BEFORE calling upsert_intraday.
+        """
         df1 = pd.DataFrame([
             {
                 "symbol": "ABOT",
@@ -85,7 +89,7 @@ class TestUpsertIntraday:
         ])
         upsert_intraday(db, df1)
 
-        # Insert with different close price (same-second multi-price trade)
+        # Second insert at same second — INSERT OR IGNORE → ignored
         df2 = pd.DataFrame([
             {
                 "symbol": "ABOT",
@@ -93,23 +97,42 @@ class TestUpsertIntraday:
                 "open": 100.0,
                 "high": 102.0,
                 "low": 99.0,
-                "close": 101.0,  # Different close → different PK
+                "close": 101.0,
                 "volume": 1200,
             },
         ])
         upsert_intraday(db, df2)
 
-        # Should have two rows (PK is symbol, ts, close)
+        # Bar semantics: exactly 1 row per (symbol, market, ts_epoch, interval)
         cur = db.execute("SELECT COUNT(*) as cnt FROM intraday_bars")
-        assert cur.fetchone()["cnt"] == 2
+        assert cur.fetchone()["cnt"] == 1
 
-        # Both prices preserved
-        rows = db.execute(
+        # First insert wins (INSERT OR IGNORE)
+        row = db.execute(
             "SELECT close FROM intraday_bars "
-            "WHERE symbol='ABOT' AND ts='2024-01-15 10:00:00' ORDER BY close"
+            "WHERE symbol='ABOT' AND ts='2024-01-15 10:00:00'"
+        ).fetchone()
+        assert row["close"] == 100.5
+
+    def test_different_market_creates_separate_row(self, db):
+        """Same symbol+ts in REG vs ODL (different markets) → 2 rows."""
+        df_reg = pd.DataFrame([{
+            "symbol": "MZNPETF", "ts": "2024-01-15 10:00:00",
+            "market": "REG", "close": 20.75, "volume": 750000,
+        }])
+        df_odl = pd.DataFrame([{
+            "symbol": "MZNPETF", "ts": "2024-01-15 10:00:00",
+            "market": "ODL", "close": 21.0, "volume": 153,
+        }])
+        upsert_intraday(db, df_reg)
+        upsert_intraday(db, df_odl)
+
+        rows = db.execute(
+            "SELECT market, close FROM intraday_bars WHERE symbol='MZNPETF' ORDER BY market"
         ).fetchall()
-        assert rows[0]["close"] == 100.5
-        assert rows[1]["close"] == 101.0
+        assert len(rows) == 2
+        assert rows[0]["market"] == "ODL"
+        assert rows[1]["market"] == "REG"
 
     def test_upsert_no_duplicates(self, db):
         """Upserting same records twice should not create duplicates."""
