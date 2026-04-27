@@ -582,13 +582,16 @@ class PromptBuilder:
         # Format any complex data types
         kwargs = self._format_data_fields(kwargs)
 
-        try:
-            return template.format(**kwargs)
-        except KeyError as e:
-            # Handle missing template variables gracefully
-            missing_key = str(e).strip("'")
-            kwargs[missing_key] = "Not provided"
-            return template.format(**kwargs)
+        # Loop until all missing template variables are filled. Bounded to
+        # prevent runaway in case of a pathological template.
+        for _ in range(50):
+            try:
+                return template.format(**kwargs)
+            except KeyError as e:
+                missing_key = str(e).strip("'")
+                kwargs[missing_key] = "Not provided"
+        # Fall through: too many missing keys; return last attempt to surface error.
+        return template.format(**kwargs)
 
     def _get_defaults(self) -> dict[str, str]:
         """Get default values for template fields."""
@@ -633,6 +636,28 @@ class PromptBuilder:
             "corporate_announcements_data": "No recent corporate announcements",
             "corporate_events_data": "No upcoming corporate events",
             "quant_signals": "No quantitative signals calculated",
+
+            # Treasury / Fixed Income mode
+            "policy_rate": "0",
+            "kibor_6m": "0",
+            "yield_curve_data": "No yield curve data available",
+            "tbill_auction_data": "No T-Bill auction data available",
+            "pib_auction_data": "No PIB auction data available",
+            "secondary_rates_data": "No secondary market rate data available",
+
+            # FX mode
+            "interbank_rates": "No interbank FX rates available",
+            "open_market_rates": "No open market FX rates available",
+            "kerb_rates": "No kerb/retail FX rates available",
+            "fx_trend_data": "No FX trend data available",
+
+            # Funds mode
+            "fund_name": "Not provided",
+            "fund_category": "Not provided",
+            "amc_name": "Not provided",
+            "fund_profile": "No fund profile available",
+            "fund_performance": "No fund performance data available",
+            "peer_comparison": "No peer comparison data available",
         }
 
     def _format_data_fields(self, kwargs: dict) -> dict:
