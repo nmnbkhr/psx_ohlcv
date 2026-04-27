@@ -32,33 +32,19 @@ def _load_pkisrv_curve(date: str) -> pd.DataFrame:
     )
 
 
-@st.cache_data(ttl=300, show_spinner=False)
 def _load_pkrv_dates() -> list[str]:
-    con = get_connection()
-    rows = con.execute(
-        "SELECT DISTINCT date FROM pkrv_daily ORDER BY date DESC"
-    ).fetchall()
-    return [r["date"] for r in rows]
+    from pakfindata.db.date_manifest import get_dates
+    return get_dates("pkrv_daily")
 
 
-@st.cache_data(ttl=300, show_spinner=False)
 def _load_pkisrv_dates() -> list[str]:
-    con = get_connection()
-    rows = con.execute(
-        "SELECT DISTINCT date FROM pkisrv_daily ORDER BY date DESC"
-    ).fetchall()
-    return [r["date"] for r in rows]
+    from pakfindata.db.date_manifest import get_dates
+    return get_dates("pkisrv_daily")
 
 
-@st.cache_data(ttl=300, show_spinner=False)
 def _load_both_curve_dates() -> list[str]:
-    con = get_connection()
-    rows = con.execute(
-        "SELECT DISTINCT date FROM pkrv_daily "
-        "UNION SELECT DISTINCT date FROM pkisrv_daily "
-        "ORDER BY date DESC"
-    ).fetchall()
-    return [r["date"] for r in rows]
+    from pakfindata.db.date_manifest import get_dates
+    return sorted(set(get_dates("pkrv_daily")) | set(get_dates("pkisrv_daily")), reverse=True)
 
 
 def _extract_issuer(s) -> str:
@@ -271,7 +257,7 @@ def render_bonds_screener():
             # Drop columns that are entirely empty
             df = df.replace("", pd.NA)
             df = df.dropna(axis=1, how="all").fillna("")
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width='stretch', hide_index=True)
             st.caption(f"{len(df)} securities")
 
             # =================================================================
@@ -367,7 +353,7 @@ def render_yield_curve():
     # =================================================================
     # CONTROLS
     # =================================================================
-    ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 2, 1])
+    ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4 = st.columns([2, 2, 1, 1])
 
     with ctrl_col1:
         curve_type = st.selectbox(
@@ -389,6 +375,10 @@ def render_yield_curve():
             sel_date = st.selectbox("Curve Date", date_list[:500], index=0, key="yc_date")
         else:
             sel_date = None
+
+    with ctrl_col4:
+        from pakfindata.ui.components.helpers import render_date_refresh_button
+        render_date_refresh_button(["pkrv_daily", "pkisrv_daily", "pkfrv_daily"], key="yc_refresh_dates")
 
     with ctrl_col3:
         show_compare = st.checkbox("Compare", key="yc_compare")
@@ -521,7 +511,7 @@ def render_yield_curve():
                 tickvals=all_tenors,
                 ticktext=[_TENOR_LABELS.get(m, f"{m}M") for m in all_tenors],
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
             # =============================================================
             # CURVE STATISTICS
@@ -568,7 +558,7 @@ def render_yield_curve():
             if table_rows:
                 st.dataframe(
                     pd.DataFrame(table_rows),
-                    use_container_width=True, hide_index=True,
+                    width='stretch', hide_index=True,
                     column_config={
                         "Yield (%)": st.column_config.NumberColumn(format="%.4f%%"),
                     },
@@ -757,7 +747,7 @@ def render_sukuk_screener():
             })
 
         df = pd.DataFrame(table_data)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
 
         st.markdown(f"**Total: {len(sukuk_list)} instruments**")
 
@@ -863,10 +853,7 @@ def render_sukuk_yield_curve():
                     "'Sync Yield Curves (MUFAP)' to download Islamic yield curve data."
                 )
             else:
-                dates = con.execute(
-                    "SELECT DISTINCT date FROM pkisrv_daily ORDER BY date DESC"
-                ).fetchall()
-                date_list = [r["date"] for r in dates]
+                date_list = _load_pkisrv_dates()
 
                 ctrl1, ctrl2 = st.columns(2)
                 with ctrl1:
@@ -953,7 +940,7 @@ def render_sukuk_yield_curve():
                         height=450, hovermode="x unified",
                         legend=dict(orientation="h", y=-0.15),
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
                     st.caption(f"{row_count} total records | {len(date_list)} dates")
 
@@ -964,7 +951,7 @@ def render_sukuk_yield_curve():
                             "tenor": "Tenor", "days": "Days",
                             "yield_pct": "Yield (%)",
                         }),
-                        use_container_width=True, hide_index=True,
+                        width='stretch', hide_index=True,
                     )
                 else:
                     st.info("No data points for selected date")
@@ -1028,13 +1015,13 @@ def render_sukuk_yield_curve():
                 ticktext=df["tenor_label"].tolist(),
             )
 
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
             st.markdown("### Curve Points")
             table_df = df[["tenor_label", "tenor_days", "yield_pct"]].copy()
             table_df.columns = ["Tenor", "Days", "Yield (%)"]
             table_df["Yield (%)"] = table_df["Yield (%)"].apply(lambda x: f"{x:.4f}%")
-            st.dataframe(table_df, use_container_width=True, hide_index=True)
+            st.dataframe(table_df, width='stretch', hide_index=True)
 
             st.markdown("### Yield Interpolation")
             interp_col1, interp_col2 = st.columns([1, 2])
@@ -1096,7 +1083,7 @@ def render_sbp_auction_archive():
         {"Source": name.replace("_", " ").title(), "URL": url}
         for name, url in urls.items()
     ]
-    st.dataframe(pd.DataFrame(url_data), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(url_data), width='stretch', hide_index=True)
 
     st.info("Download documents and place in the document directory.")
 
@@ -1153,7 +1140,7 @@ def render_sbp_auction_archive():
             })
 
         df = pd.DataFrame(table_data)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
 
         st.markdown(f"**Total: {len(documents)} documents**")
     else:
@@ -1383,7 +1370,7 @@ def render_govt_fixed_income():
             })
 
         df = pd.DataFrame(table_data)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
 
         st.markdown(f"**Total: {len(instruments)} instruments**")
 
@@ -1563,7 +1550,7 @@ def render_fi_yield_curve():
                     height=400,
                 )
 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
                 # =================================================================
                 # CURVE METRICS
@@ -1610,7 +1597,7 @@ def render_fi_yield_curve():
                     })
 
                 df = pd.DataFrame(table_data)
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                st.dataframe(df, width='stretch', hide_index=True)
 
         else:
             st.warning(f"No data for curve: {analytics.get('error')}")
@@ -1724,7 +1711,7 @@ def render_sbp_pma_archive():
             })
 
         df = pd.DataFrame(table_data)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
 
         st.markdown(f"**Total: {len(docs)} documents**")
 
@@ -1950,7 +1937,7 @@ def render_psx_debt_market():
 
             if table_data:
                 df = pd.DataFrame(table_data)
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                st.dataframe(df, width='stretch', hide_index=True)
                 st.caption(f"Total: {len(table_data)} securities")
 
     # --- Price Chart Tab ---
@@ -2015,7 +2002,7 @@ def render_psx_debt_market():
                         template="plotly_dark",
                         height=400,
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
                     # Volume chart
                     if df["volume"].sum() > 0:
@@ -2033,7 +2020,7 @@ def render_psx_debt_market():
                             template="plotly_dark",
                             height=200,
                         )
-                        st.plotly_chart(vol_fig, use_container_width=True)
+                        st.plotly_chart(vol_fig, width='stretch')
 
                     # Stats
                     stat_cols = st.columns(4)
@@ -2239,7 +2226,7 @@ def render_psx_debt_market():
                                 analytics_data["Description"].append("Second-order price sensitivity")
 
                         df_analytics = pd.DataFrame(analytics_data)
-                        st.dataframe(df_analytics, use_container_width=True, hide_index=True)
+                        st.dataframe(df_analytics, width='stretch', hide_index=True)
 
                 else:
                     st.info("Select a security with available price data to view analytics")
@@ -2287,15 +2274,8 @@ def render_psx_debt_market():
                 key="yield_curve_type",
             )
 
-            # Date picker — get available dates
-            pkrv_dates = pd.read_sql_query(
-                "SELECT DISTINCT date FROM pkrv_daily ORDER BY date DESC", con
-            )["date"].tolist()
-            pkisrv_dates = pd.read_sql_query(
-                "SELECT DISTINCT date FROM pkisrv_daily ORDER BY date DESC", con
-            )["date"].tolist()
-
-            all_dates = sorted(set(pkrv_dates + pkisrv_dates), reverse=True)
+            # Date picker — use manifest for instant lookup
+            all_dates = _load_both_curve_dates()
             if all_dates:
                 sel_date = st.selectbox("Date", all_dates[:500], index=0, key="yc_date")
                 # Comparison date
@@ -2404,7 +2384,7 @@ def render_psx_debt_market():
                         height=500,
                         legend=dict(orientation="h", yanchor="bottom", y=1.02),
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
                     # Curve statistics from PKRV
                     if curve_type in ("PKRV (Government)", "Both (Overlay)") and 'df_pkrv' in dir() and not df_pkrv.empty:
@@ -2440,7 +2420,7 @@ def render_psx_debt_market():
                             t.insert(0, "Curve", "PKISRV")
                             tables.append(t)
                         if tables:
-                            st.dataframe(pd.concat(tables, ignore_index=True), use_container_width=True, hide_index=True)
+                            st.dataframe(pd.concat(tables, ignore_index=True), width='stretch', hide_index=True)
                 else:
                     st.warning(f"No yield curve data for {sel_date}. Try a different date or run MUFAP sync.")
 
@@ -2508,7 +2488,7 @@ def _render_fi_odl_trading(con):
         gov_cols = ["symbol", "display_name", "security_type", "tenor_years",
                     "maturity_date", "close", "volume", "change_pct", "date"]
         show = [c for c in gov_cols if c in gov.columns]
-        st.dataframe(gov[show], use_container_width=True, hide_index=True)
+        st.dataframe(gov[show], width='stretch', hide_index=True)
         st.caption(f"{len(gov)} government instruments (latest prices)")
 
     # Corporate bonds
@@ -2517,7 +2497,7 @@ def _render_fi_odl_trading(con):
         corp_cols = ["symbol", "display_name", "security_type",
                      "close", "volume", "change_pct", "company_name", "date"]
         show = [c for c in corp_cols if c in corp.columns]
-        st.dataframe(corp[show], use_container_width=True, hide_index=True)
+        st.dataframe(corp[show], width='stretch', hide_index=True)
         st.caption(f"{len(corp)} corporate instruments (latest prices)")
 
     st.info("For full history and auction yield cross-reference, see **Futures → Odd-Lot Bonds** tab.")
