@@ -298,7 +298,7 @@ def render_factor_analysis():
 
                 st.dataframe(
                     display_df,
-                    use_container_width=True,
+                    width='stretch',
                     hide_index=True,
                     column_config={
                         "Rank": st.column_config.NumberColumn(format="%d"),
@@ -360,7 +360,7 @@ def render_factor_analysis():
                     title="Factor Correlation Matrix"
                 )
                 fig.update_layout(height=400)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
                 st.markdown("""
                 **Interpretation:**
@@ -450,7 +450,7 @@ def render_factor_analysis():
 
                 st.dataframe(
                     sector_exposure[display_cols],
-                    use_container_width=True,
+                    width='stretch',
                     hide_index=True,
                     column_config=col_config,
                 )
@@ -472,7 +472,7 @@ def render_factor_analysis():
                     title="Factor Scores by Sector"
                 )
                 fig.update_layout(height=400, xaxis_tickangle=-45)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
             else:
                 st.info("Run Factor Rankings first to see sector exposure.")
         except Exception as e:
@@ -519,7 +519,7 @@ def render_factor_analysis():
                             "composite_score": "Score",
                             "market_cap_str": "Mkt Cap"
                         }),
-                        use_container_width=True,
+                        width='stretch',
                         hide_index=True,
                         column_config={
                             "Avg Price": st.column_config.NumberColumn(format="Rs.%.2f"),

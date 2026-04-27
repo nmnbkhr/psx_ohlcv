@@ -142,7 +142,7 @@ def render_indices():
         }
         display_df.rename(columns=col_names, inplace=True)
 
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        st.dataframe(display_df, width='stretch', hide_index=True)
 
     # =================================================================
     # KPI SUMMARY
@@ -278,7 +278,7 @@ def render_indices():
                     price_col="close",
                     height=400,
                 )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             st.info("No OHLCV data available. Run `pfsync instruments sync-eod` to sync index data.")
 
@@ -288,7 +288,7 @@ def render_indices():
             st.markdown("#### Constituents ({} symbols)".format(len(constituents)))
             const_df = pd.DataFrame(constituents)[["symbol", "name"]]
             const_df.rename(columns={"symbol": "Symbol", "name": "Name"}, inplace=True)
-            st.dataframe(const_df, use_container_width=True, hide_index=True)
+            st.dataframe(const_df, width='stretch', hide_index=True)
         else:
             st.caption(
                 "No constituents loaded. Use **Download Index Data → Sync Index Membership** below."
@@ -343,7 +343,7 @@ def render_indices():
             from pakfindata.ui.charts import apply_bloomberg_layout
             apply_bloomberg_layout(fig)
 
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             st.info("No historical data available for comparison.")
 
@@ -389,7 +389,7 @@ def render_indices():
                     "vol_1m": "Vol",
                 }, inplace=True)
 
-                st.dataframe(display_df, use_container_width=True, hide_index=True)
+                st.dataframe(display_df, width='stretch', hide_index=True)
 
     # =================================================================
     # SYNC SECTION

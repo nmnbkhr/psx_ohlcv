@@ -189,7 +189,7 @@ def _render_overview(con, stats, dates, get_futures_eod, get_most_active_futures
     show_cols = [c for c in display_cols if c in df.columns]
     st.dataframe(
         df[show_cols],
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
         height=400,
     )
@@ -199,7 +199,7 @@ def _render_overview(con, stats, dates, get_futures_eod, get_most_active_futures
     with st.expander("Most Active (by volume)"):
         active = get_most_active_futures(con, sel_date, market_type=market_type, limit=20)
         if not active.empty:
-            st.dataframe(active, use_container_width=True, hide_index=True)
+            st.dataframe(active, width='stretch', hide_index=True)
         else:
             st.info("No active trading data.")
 
@@ -232,7 +232,7 @@ def _render_comparison(con, dates, get_contract_comparison):
         st.warning(f"No data for {sel_sym} on {sel_date}")
         return
 
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width='stretch', hide_index=True)
 
     # Spot price from eod_ohlcv
     spot_row = con.execute(
@@ -320,7 +320,7 @@ def _render_odd_lot(con, dates, get_futures_eod, get_odl_history):
             cols = ["symbol", "display_name", "security_type", "close",
                     "volume", "change_pct", "date"]
             show = [c for c in cols if c in src.columns]
-            st.dataframe(src[show], use_container_width=True, hide_index=True,
+            st.dataframe(src[show], width='stretch', hide_index=True,
                          height=500)
             st.caption(f"{len(src)} instruments")
 
@@ -376,7 +376,7 @@ def _render_odl_gov_tab(con, daily_df, latest_gov_df, sel_date):
     gov = gov.copy()
     gov["auction_yield"] = gov.apply(
         lambda r: yield_map.get(
-            (r["security_type"], int(r["tenor_years"]) if r["tenor_years"] else None)
+            (r["security_type"], int(r["tenor_years"]) if pd.notna(r["tenor_years"]) else None)
         ),
         axis=1,
     )
@@ -388,7 +388,7 @@ def _render_odl_gov_tab(con, daily_df, latest_gov_df, sel_date):
         cols = ["symbol", "display_name", "tenor_years", "maturity_date",
                 "close", "volume", "change_pct", "auction_yield"]
         show = [c for c in cols if c in subset.columns]
-        st.dataframe(subset[show], use_container_width=True, hide_index=True)
+        st.dataframe(subset[show], width='stretch', hide_index=True)
 
     st.caption(
         f"{len(gov)} government bonds"
@@ -419,7 +419,7 @@ def _render_odl_corp_tab(daily_df, latest_corp_df, sel_date):
     cols = ["symbol", "display_name", "security_type", "issuer",
             "close", "volume", "change_pct", "company_name", "date"]
     show = [c for c in cols if c in corp.columns]
-    st.dataframe(corp[show], use_container_width=True, hide_index=True)
+    st.dataframe(corp[show], width='stretch', hide_index=True)
     st.caption(
         f"{len(corp)} corporate bonds"
         + (f" on {sel_date}" if used_daily else " (latest prices per instrument)")
@@ -474,11 +474,11 @@ def _render_odl_detail(con, odl_df, get_odl_history):
         xaxis_title="Date", yaxis_title="Price (PKR)",
         height=400, template="plotly_dark",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # History table
     with st.expander("Price History"):
-        st.dataframe(hist, use_container_width=True, hide_index=True)
+        st.dataframe(hist, width='stretch', hide_index=True)
 
 
 def _build_auction_yield_map(con) -> dict:
@@ -759,7 +759,7 @@ def _render_derivatives_analytics(con, dates):
         layout["yaxis"] = dict(autorange="reversed", gridcolor="#2d2d3d")
         fig.update_layout(**layout, title="Top 10 by OI Concentration",
                           xaxis_title="% of Total OI Volume")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
         # Full OI table with contract details
         oi_display = oi_df[["base_symbol", "contract_month", "oi_contracts",
@@ -768,7 +768,7 @@ def _render_derivatives_analytics(con, dates):
         oi_display["OI Volume"] = oi_display["OI Volume"].apply(lambda x: f"{x:,.0f}")
         oi_display["OI Value (₨)"] = oi_display["OI Value (₨)"].apply(lambda x: f"{x/1e6:.1f}M")
         oi_display["% Free Float"] = oi_display["% Free Float"].round(2)
-        st.dataframe(oi_display, use_container_width=True, hide_index=True)
+        st.dataframe(oi_display, width='stretch', hide_index=True)
     else:
         st.markdown("### Futures Volume Concentration")
         st.caption("No OI XLS data found — showing volume as proxy")
@@ -790,7 +790,7 @@ def _render_derivatives_analytics(con, dates):
             layout["yaxis"] = dict(autorange="reversed", gridcolor="#2d2d3d")
             fig.update_layout(**layout, title="Top 10 Futures by Volume Share",
                               xaxis_title="% of Total Futures Volume")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
     st.markdown("---")
 
@@ -818,14 +818,14 @@ def _render_derivatives_analytics(con, dates):
                 ["base_symbol", "spot_close", "fut_close", "basis", "basis_pct"]
             ].copy()
             top_prem.columns = ["Symbol", "Spot", "Futures", "Basis", "Basis %"]
-            st.dataframe(top_prem, hide_index=True, use_container_width=True)
+            st.dataframe(top_prem, hide_index=True, width='stretch')
         with col_disc:
             st.markdown("**Top Discount (Bearish)**")
             top_disc = basis_df.nsmallest(10, "basis_pct")[
                 ["base_symbol", "spot_close", "fut_close", "basis", "basis_pct"]
             ].copy()
             top_disc.columns = ["Symbol", "Spot", "Futures", "Basis", "Basis %"]
-            st.dataframe(top_disc, hide_index=True, use_container_width=True)
+            st.dataframe(top_disc, hide_index=True, width='stretch')
 
     st.markdown("---")
 
@@ -860,7 +860,7 @@ def _render_derivatives_analytics(con, dates):
             )
             fig.update_yaxes(title_text="Price", secondary_y=False)
             fig.update_yaxes(title_text="Volume", secondary_y=True)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
             # Basis history
             fig2 = go.Figure()
@@ -872,7 +872,7 @@ def _render_derivatives_analytics(con, dates):
             ))
             fig2.add_hline(y=0, line_dash="dash", line_color="#888")
             fig2.update_layout(**_CHART_LAYOUT, height=250, title=f"{sel_sym} — Basis % History")
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, width='stretch')
         else:
             st.info(f"Not enough history for {sel_sym}")
 
@@ -954,7 +954,7 @@ def _render_derivatives_analytics(con, dates):
                         show[oi_label] = show[oi_label].apply(lambda x: f"{x:,.0f}")
                         show[f"{oi_label} Δ"] = show[f"{oi_label} Δ"].apply(lambda x: f"{x:+,.0f}")
                         show["Price Δ"] = show["Price Δ"].round(2)
-                        st.dataframe(show, hide_index=True, use_container_width=True)
+                        st.dataframe(show, hide_index=True, width='stretch')
     else:
         st.info("Need at least 2 trading dates for buildup analysis.")
 
@@ -1009,7 +1009,7 @@ def _render_derivatives_analytics(con, dates):
 
                 roll_df["Curr OI"] = roll_df["Curr OI"].apply(lambda x: f"{x:,.0f}")
                 roll_df["Next OI"] = roll_df["Next OI"].apply(lambda x: f"{x:,.0f}")
-                st.dataframe(roll_df, use_container_width=True, hide_index=True)
+                st.dataframe(roll_df, width='stretch', hide_index=True)
             else:
                 st.info("No symbols with multiple contract months in OI data.")
         else:
@@ -1043,7 +1043,7 @@ def _render_derivatives_analytics(con, dates):
                     st.caption("Using volume as OI proxy (no OI XLS for this date)")
                     roll_df["Curr OI"] = roll_df["Curr OI"].apply(lambda x: f"{x:,.0f}")
                     roll_df["Next OI"] = roll_df["Next OI"].apply(lambda x: f"{x:,.0f}")
-                    st.dataframe(roll_df, use_container_width=True, hide_index=True)
+                    st.dataframe(roll_df, width='stretch', hide_index=True)
     except Exception as e:
         st.error(f"Rollover calculation failed: {e}")
 

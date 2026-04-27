@@ -23,7 +23,8 @@ def _load_eod_stats():
     con = get_connection()
 
     total_rows = con.execute("SELECT COUNT(*) FROM eod_ohlcv").fetchone()[0]
-    total_dates = con.execute("SELECT COUNT(DISTINCT date) FROM eod_ohlcv").fetchone()[0]
+    from pakfindata.db.date_manifest import get_dates as _gd
+    total_dates = len(_gd("eod_ohlcv"))
     total_symbols = con.execute("SELECT COUNT(DISTINCT symbol) FROM eod_ohlcv").fetchone()[0]
     date_range = con.execute("SELECT MIN(date), MAX(date) FROM eod_ohlcv").fetchone()
 
@@ -43,12 +44,10 @@ def _load_eod_stats():
     }
 
 
-@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
 def _load_db_dates():
-    """Load set of dates already in eod_ohlcv."""
-    con = get_connection()
-    cursor = con.execute("SELECT DISTINCT date FROM eod_ohlcv")
-    return set(row[0] for row in cursor.fetchall())
+    """Load set of dates already in eod_ohlcv from manifest."""
+    from pakfindata.db.date_manifest import get_dates
+    return set(get_dates("eod_ohlcv"))
 
 
 def render_eod_loader():
@@ -81,10 +80,13 @@ def _eod_data_loader_page_impl():
     # =================================================================
     # HEADER
     # =================================================================
-    header_col1, header_col2 = st.columns([3, 1])
+    header_col1, header_col2, header_col3 = st.columns([3, 1, 1])
     with header_col1:
         st.markdown("## 📂 EOD Data Loader")
         st.caption("Download and load EOD data into eod_ohlcv table")
+    with header_col3:
+        from pakfindata.ui.components.helpers import render_date_refresh_button
+        render_date_refresh_button(["eod_ohlcv"], key="eod_refresh_dates")
     with header_col2:
         render_market_status_badge()
 
@@ -147,7 +149,7 @@ def _eod_data_loader_page_impl():
                     )
                     source_data.append({"Source": source, "Rows": count})
                 source_df = pd.DataFrame(source_data)
-                st.dataframe(source_df, use_container_width=True, hide_index=True)
+                st.dataframe(source_df, width='stretch', hide_index=True)
             else:
                 st.info("No data in eod_ohlcv table yet.")
 
@@ -191,7 +193,7 @@ def _eod_data_loader_page_impl():
         if source_data:
             source_df = pd.DataFrame(source_data)
             source_df.columns = ["Source", "Process Name", "Rows"]
-            st.dataframe(source_df, use_container_width=True, hide_index=True)
+            st.dataframe(source_df, width='stretch', hide_index=True)
         else:
             st.info("No data in eod_ohlcv table yet.")
 
@@ -409,7 +411,7 @@ def _eod_data_loader_page_impl():
                         st.success(f"Loaded {result.get('ok_count', 0)}/{len(selected_dates)} dates ({result.get('total_rows', 0):,} rows)")
                         if result.get("results"):
                             results_df = pd.DataFrame(result["results"])
-                            st.dataframe(results_df, use_container_width=True, hide_index=True)
+                            st.dataframe(results_df, width='stretch', hide_index=True)
                         st.rerun()
                     except APIError as e:
                         st.error(f"API Error: {e}")
@@ -469,7 +471,7 @@ def _eod_data_loader_page_impl():
                     total_rows_loaded = sum(r["rows"] for r in results)
                     st.success(f"Loaded {ok_count}/{len(selected_dates)} dates ({total_rows_loaded:,} rows)")
                     results_df = pd.DataFrame(results)
-                    st.dataframe(results_df, use_container_width=True, hide_index=True)
+                    st.dataframe(results_df, width='stretch', hide_index=True)
                     st.rerun()
 
     # =========================================================================
@@ -691,7 +693,7 @@ def _eod_data_loader_page_impl():
                 tasks = client.list_tasks(limit=10)
                 if tasks:
                     tasks_df = pd.DataFrame(tasks)
-                    st.dataframe(tasks_df, use_container_width=True, hide_index=True)
+                    st.dataframe(tasks_df, width='stretch', hide_index=True)
                 else:
                     st.info("No tasks found")
 

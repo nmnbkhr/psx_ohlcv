@@ -40,7 +40,7 @@ def render_live_market():
     with h2:
         render_market_status_badge()
     with h3:
-        if st.button("\U0001f504 Refresh Now", use_container_width=True):
+        if st.button("\U0001f504 Refresh Now", width='stretch'):
             st.rerun()
 
     st.markdown("---")
@@ -139,7 +139,7 @@ def render_live_market():
         fig = make_market_breadth_chart(
             gainers=gainers, losers=losers, unchanged=unchanged, height=280,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # =================================================================
     # TOP 10 GAINERS & LOSERS
@@ -151,7 +151,7 @@ def render_live_market():
             fig_g = make_top_movers_chart(
                 top_g, title="", chart_type="gainers", height=280,
             )
-            st.plotly_chart(fig_g, use_container_width=True)
+            st.plotly_chart(fig_g, width='stretch')
 
     with b3:
         st.subheader("Top 10 Losers")
@@ -160,7 +160,7 @@ def render_live_market():
             fig_l = make_top_movers_chart(
                 top_l, title="", chart_type="losers", height=280,
             )
-            st.plotly_chart(fig_l, use_container_width=True)
+            st.plotly_chart(fig_l, width='stretch')
 
     st.markdown("---")
 
@@ -234,7 +234,7 @@ def render_live_market():
                         textinfo="label+text",
                         texttemplate="%{label}<br>%{color:+.2f}%",
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
                     st.markdown("---")
     except Exception:
@@ -253,7 +253,7 @@ def render_live_market():
             g_table = df.nlargest(10, "change_pct")[display_cols].copy()
             st.dataframe(
                 g_table,
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
                 column_config={
                     "symbol": st.column_config.TextColumn("Symbol"),
@@ -269,7 +269,7 @@ def render_live_market():
             l_table = df.nsmallest(10, "change_pct")[display_cols].copy()
             st.dataframe(
                 l_table,
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
                 column_config={
                     "symbol": st.column_config.TextColumn("Symbol"),

@@ -119,7 +119,7 @@ def _render_live():
                       yaxis=dict(gridcolor=_C["grid"], title="Price"),
                       yaxis2=dict(gridcolor=_C["grid"], title="Basis %"),
                       yaxis3=dict(gridcolor=_C["grid"], title="Z-Score"))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 def _render_backtest():
@@ -174,10 +174,10 @@ def _render_backtest():
         fig.add_trace(go.Scatter(y=eq, name="Equity", line=dict(color=_C["accent"], width=2)))
         fig.add_hline(y=1.0, line_dash="dash", line_color=_C["dim"])
         fig.update_layout(**_CHART, height=250, yaxis=dict(gridcolor=_C["grid"], title="Equity"))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
         with st.expander("Trade Log"):
-            st.dataframe(trades, use_container_width=True, hide_index=True)
+            st.dataframe(trades, width='stretch', hide_index=True)
 
 
 def _render_scanner():
@@ -213,14 +213,14 @@ def _render_scanner():
         show["basis_pct"] = show["basis_pct"].map(lambda x: f"{x:+.2f}%")
         show["basis_zscore"] = show["basis_zscore"].map(lambda x: f"{x:+.2f}")
         show["confidence"] = show["confidence"].map(lambda x: f"{x:.0%}")
-        st.dataframe(show, use_container_width=True, hide_index=True)
+        st.dataframe(show, width='stretch', hide_index=True)
 
     if not normal.empty:
         with st.expander(f"{len(normal)} symbols in normal range"):
             show = normal[["symbol", "basis_pct", "basis_zscore"]].copy()
             show["basis_pct"] = show["basis_pct"].map(lambda x: f"{x:+.2f}%")
             show["basis_zscore"] = show["basis_zscore"].map(lambda x: f"{x:+.2f}")
-            st.dataframe(show, use_container_width=True, hide_index=True)
+            st.dataframe(show, width='stretch', hide_index=True)
 
 
 def _render_methodology():

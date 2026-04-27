@@ -141,7 +141,7 @@ def _render_rate_dashboard():
     available_cols = [c for c in display_cols if c in df.columns]
     st.dataframe(
         df[available_cols],
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
         column_config={
             "rate": st.column_config.NumberColumn("Rate (%)", format="%.4f"),
@@ -212,7 +212,7 @@ def _render_sofr_history():
     )
     fig.update_yaxes(title_text="Rate (%)", row=1, col=1)
     fig.update_yaxes(title_text="$B", row=2, col=1)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Percentile band info
     if not sofr_df.empty and "percentile_25" in sofr_df.columns:
@@ -292,7 +292,7 @@ def _render_sofr_kibor_spread_tab():
     )
     fig.update_yaxes(title_text="Rate (%)", secondary_y=False)
     fig.update_yaxes(title_text="Spread (ppts)", secondary_y=True)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Data table
     st.markdown("#### Spread Data")
@@ -300,7 +300,7 @@ def _render_sofr_kibor_spread_tab():
     display_df.columns = ["Date", "KIBOR Bid", "KIBOR Offer", "SOFR", "Spread", "USD/PKR"]
     st.dataframe(
         display_df,
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
         column_config={
             "KIBOR Bid": st.column_config.NumberColumn(format="%.4f"),
@@ -387,7 +387,7 @@ WHERE name LIKE '%Eurobond%';
     combined = pd.concat(dfs, ignore_index=True)
     st.dataframe(
         combined,
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
         column_config={
             "coupon_rate": st.column_config.NumberColumn("Coupon (%)", format="%.2f"),

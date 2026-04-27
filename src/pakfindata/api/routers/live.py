@@ -14,7 +14,7 @@ except ImportError:
 
 PKT = timezone(timedelta(hours=5))
 SNAPSHOT_PATH = DATA_ROOT / "live_snapshot.json"
-EOD_DB_PATH = DATA_ROOT / "tick_bars.db"
+EOD_DB_PATH = Path("/home/smnb/psxdata_rescue/tick_bars.db")
 
 router = APIRouter()
 

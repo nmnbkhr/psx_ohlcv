@@ -252,40 +252,41 @@ def get_user_friendly_error(error: Exception) -> str:
 
 def check_data_staleness(con, table: str = "eod_ohlcv", date_col: str = "date") -> tuple[bool, str]:
     """
-    Check if data in a table is stale.
-
-    Also checks regular_market_current for live data.
+    Check if data is stale. Reads from sync_state.json (fast) first.
 
     Returns:
         Tuple of (is_stale, message)
     """
+    # Fast path: sync state file. If it claims stale, verify against DB before
+    # showing the banner — the file can drift behind the actual DB if a sync
+    # path landed rows without calling set_last_eod_date.
+    file_date = None
     try:
-        latest_dates = []
+        from pakfindata.services.sync_state import get_last_eod_date, set_last_eod_date
+        file_date = get_last_eod_date()
+        if file_date:
+            days_old = (datetime.now() - datetime.strptime(file_date, "%Y-%m-%d")).days
+            if days_old <= 3:
+                return False, ""
+            # Stale per file — fall through to DB cross-check below.
+    except Exception:
+        pass
 
-        # Check the specified table
-        try:
-            result = con.execute(
-                f"SELECT MAX({date_col}) as max_date FROM {table}"
-            ).fetchone()
-            if result and result["max_date"]:
-                latest_dates.append(str(result["max_date"])[:10])
-        except Exception:
-            pass
-
-        # Also check regular_market_current for live data
-        try:
-            result = con.execute(
-                "SELECT MAX(DATE(ts)) as max_date FROM regular_market_current"
-            ).fetchone()
-            if result and result["max_date"]:
-                latest_dates.append(str(result["max_date"])[:10])
-        except Exception:
-            pass
-
-        if latest_dates:
-            most_recent = max(latest_dates)
+    # DB cross-check: authoritative.
+    try:
+        result = con.execute(
+            f"SELECT MAX({date_col}) as max_date FROM {table}"
+        ).fetchone()
+        if result and result["max_date"]:
+            most_recent = str(result["max_date"])[:10]
             latest_date = datetime.strptime(most_recent, "%Y-%m-%d")
             days_old = (datetime.now() - latest_date).days
+            # Heal the state file when the DB has fresher data than what it claims.
+            if file_date is not None and most_recent > file_date:
+                try:
+                    set_last_eod_date(most_recent)
+                except Exception:
+                    pass
             if days_old > 3:
                 return True, f"Data is {days_old} days old (last: {most_recent})"
             return False, ""
@@ -362,52 +363,40 @@ def get_connection():
 @st.cache_data(ttl=60)
 def get_data_freshness(_con) -> tuple[int | None, str | None]:
     """
-    Get data freshness info from multiple sources.
-
-    Checks eod_ohlcv, regular_market_current, and psx_indices tables
-    to find the most recent data timestamp.
+    Get data freshness info. Reads from sync_state.json (fast) first,
+    falls back to DB scan only if the file is missing.
 
     Returns:
         Tuple of (days_old, latest_date_str) or (None, None) if no data.
     """
-    latest_dates = []
+    # Fast path: read from sync state file (written by sync jobs)
+    try:
+        from pakfindata.services.sync_state import get_last_eod_date
+        last_date = get_last_eod_date()
+        if last_date:
+            days_old = (datetime.now() - datetime.strptime(last_date, "%Y-%m-%d")).days
+            return days_old, last_date
+    except Exception:
+        pass
 
-    # Check eod_ohlcv
+    # Fallback: DB scan (only runs if file missing)
     try:
         result = _con.execute(
             "SELECT MAX(date) as max_date FROM eod_ohlcv"
         ).fetchone()
         if result and result["max_date"]:
-            latest_dates.append(str(result["max_date"])[:10])
+            most_recent = str(result["max_date"])[:10]
+            latest_date = datetime.strptime(most_recent, "%Y-%m-%d")
+            days_old = (datetime.now() - latest_date).days
+            # Seed the state file so next call is fast
+            try:
+                from pakfindata.services.sync_state import set_last_eod_date
+                set_last_eod_date(most_recent)
+            except Exception:
+                pass
+            return days_old, most_recent
     except Exception:
         pass
-
-    # Check regular_market_current (live market data)
-    try:
-        result = _con.execute(
-            "SELECT MAX(DATE(ts)) as max_date FROM regular_market_current"
-        ).fetchone()
-        if result and result["max_date"]:
-            latest_dates.append(str(result["max_date"])[:10])
-    except Exception:
-        pass
-
-    # Check psx_indices
-    try:
-        result = _con.execute(
-            "SELECT MAX(index_date) as max_date FROM psx_indices"
-        ).fetchone()
-        if result and result["max_date"]:
-            latest_dates.append(str(result["max_date"])[:10])
-    except Exception:
-        pass
-
-    if latest_dates:
-        # Get the most recent date
-        most_recent = max(latest_dates)
-        latest_date = datetime.strptime(most_recent, "%Y-%m-%d")
-        days_old = (datetime.now() - latest_date).days
-        return days_old, most_recent
 
     return None, None
 
@@ -704,6 +693,17 @@ def add_sector_name_column(
     sector_col = "sector_code" if "sector_code" in df.columns else "sector"
     df["sector_name"] = df[sector_col].map(sector_map).fillna("")
     return df
+
+
+def render_date_refresh_button(tables: list[str], key: str = "date_refresh"):
+    """Render a small button to refresh date manifest for specific tables."""
+    from pakfindata.db.date_manifest import refresh_tables
+    if st.button("Refresh Dates", key=key, help="Rescan DB for latest available dates"):
+        with st.spinner("Refreshing..."):
+            result = refresh_tables(tables)
+            parts = [f"{t}: {n}" for t, n in result.items()]
+            st.toast(f"Dates refreshed — {', '.join(parts)}")
+        st.rerun()
 
 
 def render_footer():

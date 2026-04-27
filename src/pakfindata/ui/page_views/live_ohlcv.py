@@ -83,7 +83,7 @@ def render_live_ohlcv():
         st.session_state.tick_auto_poll = auto_poll
 
     with c2:
-        if st.button("Poll Market Watch", use_container_width=True):
+        if st.button("Poll Market Watch", width='stretch'):
             stats = collector.poll_once()
             st.toast(
                 f"Polled: {stats['new_ticks']} new ticks, "
@@ -91,7 +91,7 @@ def render_live_ohlcv():
             )
 
     with c3:
-        if st.button("Save to tick_ohlcv", use_container_width=True):
+        if st.button("Save to tick_ohlcv", width='stretch'):
             n = collector.save_ohlcv_to_db()
             if n:
                 st.toast(f"Saved {n} OHLCV rows to tick_ohlcv")
@@ -102,7 +102,7 @@ def render_live_ohlcv():
         syncing = is_intraday_sync_running()
         if st.button(
             "Syncing..." if syncing else "Download Intraday Ticks",
-            use_container_width=True,
+            width='stretch',
             disabled=syncing,
         ):
             start_intraday_sync()
@@ -110,7 +110,7 @@ def render_live_ohlcv():
             st.rerun()
 
     with c5:
-        if st.button("Promote Intraday → EOD", use_container_width=True):
+        if st.button("Promote Intraday → EOD", width='stretch'):
             con = get_connection()
             if con:
                 init_tick_schema(con)
@@ -123,7 +123,7 @@ def render_live_ohlcv():
                 )
 
     with c6:
-        if st.button("Reset Collector", use_container_width=True):
+        if st.button("Reset Collector", width='stretch'):
             collector.reset()
             st.session_state.tick_auto_poll = False
             st.toast("Collector reset — all in-memory data cleared")
@@ -276,14 +276,14 @@ def _render_symbol_deep_view(collector: TickCollector):
             display_df = log_df.tail(20)
             st.dataframe(
                 display_df,
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
                 height=min(400, 35 * len(display_df) + 38),
             )
 
             if len(log_df) > 20:
                 with st.expander(f"Full history ({len(log_df)} ticks)"):
-                    st.dataframe(log_df, use_container_width=True, hide_index=True)
+                    st.dataframe(log_df, width='stretch', hide_index=True)
 
             # CSV download
             csv = log_df.to_csv(index=False)
@@ -407,7 +407,7 @@ def _render_price_chart(symbol: str, ticks: list[dict], ohlcv: dict):
         showlegend=False,
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Volume bars
     if any(v > 0 for v in volumes):
@@ -437,7 +437,7 @@ def _render_price_chart(symbol: str, ticks: list[dict], ohlcv: dict):
             margin=dict(l=60, r=20, t=30, b=30),
             showlegend=False,
         )
-        st.plotly_chart(fig_vol, use_container_width=True)
+        st.plotly_chart(fig_vol, width='stretch')
 
 
 # =====================================================================
@@ -542,7 +542,7 @@ def _render_running_ohlcv_table(collector: TickCollector):
         "Volume": "{:,.0f}",
     })
 
-    st.dataframe(styled, use_container_width=True, hide_index=True, height=600)
+    st.dataframe(styled, width='stretch', hide_index=True, height=600)
 
 
 # =====================================================================
@@ -566,6 +566,6 @@ def _render_raw_market_watch(collector: TickCollector):
     # Full DataFrame
     try:
         df = pd.DataFrame(raw)
-        st.dataframe(df, use_container_width=True, hide_index=True, height=500)
+        st.dataframe(df, width='stretch', hide_index=True, height=500)
     except Exception as e:
         st.error(f"Could not render DataFrame: {e}")

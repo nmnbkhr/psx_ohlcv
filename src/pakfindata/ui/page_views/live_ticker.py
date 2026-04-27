@@ -299,7 +299,7 @@ def render_live_ticker():
     st.markdown(f"**{len(df)} symbols**")
     st.dataframe(
         styled,
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
         height=600,
     )

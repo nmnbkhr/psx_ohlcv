@@ -9,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-PSX_SQLITE = Path("/mnt/e/psxdata/psx.sqlite")
+PSX_SQLITE = Path("/home/smnb/psxdata_rescue/psx.sqlite")
 
 
 def _get_sqlite_con() -> sqlite3.Connection:
@@ -48,6 +48,7 @@ def render_psx_scraper():
         "Deep Scrape",
         "Global Announcements",
         "Global Payouts",
+        "Listing Status",
         "Data Status",
         "Browse Data",
     ])
@@ -71,15 +72,21 @@ def render_psx_scraper():
         _render_global_payouts(con)
 
     # ═════════════════════════════════════════════════════════════
-    # TAB 4 — Data Status
+    # TAB 4 — Listing Status
     # ═════════════════════════════════════════════════════════════
     with tabs[3]:
+        _render_listing_status(con)
+
+    # ═════════════════════════════════════════════════════════════
+    # TAB 5 — Data Status
+    # ═════════════════════════════════════════════════════════════
+    with tabs[4]:
         _render_data_status(con)
 
     # ═════════════════════════════════════════════════════════════
-    # TAB 5 — Browse Data
+    # TAB 6 — Browse Data
     # ═════════════════════════════════════════════════════════════
-    with tabs[4]:
+    with tabs[5]:
         _render_browse_data(con)
 
     con.close()
@@ -275,7 +282,7 @@ def _render_global_announcements(con: sqlite3.Connection):
                 con,
             )
             if not df.empty:
-                st.dataframe(df, use_container_width=True)
+                st.dataframe(df, width='stretch')
             else:
                 st.info("No announcements in DB yet.")
         except Exception as e:
@@ -348,11 +355,111 @@ def _render_global_payouts(con: sqlite3.Connection):
                 con,
             )
             if not df.empty:
-                st.dataframe(df, use_container_width=True)
+                st.dataframe(df, width='stretch')
             else:
                 st.info("No payouts in DB yet.")
         except Exception as e:
             st.error(str(e))
+
+
+# ─── Listing Status ────────────────────────────────────────────────────
+
+
+def _render_listing_status(con: sqlite3.Connection):
+    """Show & manage company listing statuses (SUSPENDED, WINDING-UP, etc.)."""
+    from pakfindata.sources.deep_scraper import (
+        is_listing_status_check_running,
+        read_listing_status_progress,
+        start_listing_status_check_background,
+    )
+
+    st.subheader("Company Listing Status")
+    st.caption(
+        "Tracks company-level statuses from PSX (SUSPENDED, WINDING-UP, DEFAULTER, DELISTED). "
+        "Separate from trading statuses (XD/XB/XR)."
+    )
+
+    # ── Current statuses from DB ──
+    try:
+        df_status = pd.read_sql_query(
+            """SELECT cls.symbol, cls.status, cls.first_seen, cls.last_seen,
+                      cp.company_name, cp.sector_name
+               FROM company_listing_status cls
+               LEFT JOIN company_profile cp ON cls.symbol = cp.symbol
+               WHERE cls.is_current = 1
+               ORDER BY cls.status, cls.symbol""",
+            con,
+        )
+        if not df_status.empty:
+            # Summary metrics
+            status_counts = df_status["status"].value_counts()
+            cols = st.columns(len(status_counts) + 1)
+            cols[0].metric("Total Flagged", len(df_status))
+            for i, (status, count) in enumerate(status_counts.items(), 1):
+                cols[i].metric(status, count)
+
+            st.dataframe(df_status, width='stretch', hide_index=True)
+        else:
+            st.info("No company listing statuses found. Run a scan to check all symbols.")
+    except Exception:
+        st.info("No listing status data yet. Run a scan below.")
+
+    st.divider()
+
+    # ── Background scan controls ──
+    running = is_listing_status_check_running()
+    progress = read_listing_status_progress()
+
+    if running:
+        st.warning("Listing status scan is running...")
+        if progress:
+            p = progress.get("processed", 0)
+            t = progress.get("total", 1)
+            st.progress(p / t if t else 0, text=f"{p}/{t} symbols checked")
+            found = progress.get("found", {})
+            if found:
+                st.write(f"Found so far: {len(found)} symbols with statuses")
+                st.json(found)
+        if st.button("Refresh"):
+            st.rerun()
+    else:
+        if progress and progress.get("status") == "completed":
+            st.success(
+                f"Last scan completed at {progress.get('completed_at', '?')} | "
+                f"{progress.get('processed', 0)} symbols checked"
+            )
+            found = progress.get("found", {})
+            if found:
+                st.write(f"**{len(found)} symbols with listing statuses:**")
+                st.json(found)
+
+        if st.button("Scan All Symbols for Listing Status", type="primary"):
+            started = start_listing_status_check_background(str(PSX_SQLITE))
+            if started:
+                st.success("Scan started in background! Refresh to see progress.")
+            else:
+                st.warning("Scan already running.")
+            time.sleep(1)
+            st.rerun()
+
+    # ── Check single symbol ──
+    st.divider()
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        sym_check = st.text_input("Check single symbol", placeholder="e.g. AAL")
+    with col2:
+        st.write("")
+        st.write("")
+        check_btn = st.button("Check")
+
+    if check_btn and sym_check:
+        from pakfindata.sources.deep_scraper import check_listing_status_single
+
+        tags = check_listing_status_single(sym_check.strip().upper())
+        if tags:
+            st.error(f"**{sym_check.upper()}**: {', '.join(tags)}")
+        else:
+            st.success(f"**{sym_check.upper()}**: Normal (no listing status flags)")
 
 
 # ─── Data Status ───────────────────────────────────────────────────────
@@ -397,7 +504,7 @@ def _render_data_status(con: sqlite3.Connection):
         })
 
     df = pd.DataFrame(rows)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width='stretch', hide_index=True)
 
     # Symbols with profiles vs without
     st.markdown("---")
@@ -436,7 +543,7 @@ def _render_data_status(con: sqlite3.Connection):
             LIMIT 20
         """, con)
         if not stale.empty:
-            st.dataframe(stale, use_container_width=True, hide_index=True)
+            st.dataframe(stale, width='stretch', hide_index=True)
         else:
             st.success("No stale profiles (all updated within 30 days).")
     except Exception:
@@ -462,12 +569,30 @@ def _render_browse_data(con: sqlite3.Connection):
                 "SELECT * FROM company_profile WHERE symbol = ?", con, params=(symbol,)
             )
             if not df.empty:
+                # Show listing status prominently if present
+                ls = df.iloc[0].get("listing_status")
+                if ls and str(ls).strip():
+                    st.error(f"Listing Status: **{ls}**")
+
                 for col in df.columns:
                     val = df.iloc[0][col]
                     if val and str(val).strip():
                         st.markdown(f"**{col}:** {val}")
             else:
                 st.info(f"No profile for {symbol}.")
+
+            # Also show listing status history
+            try:
+                df_ls = pd.read_sql_query(
+                    """SELECT status, is_current, first_seen, last_seen, removed_at
+                       FROM company_listing_status WHERE symbol = ? ORDER BY first_seen DESC""",
+                    con, params=(symbol,)
+                )
+                if not df_ls.empty:
+                    st.markdown("**Listing Status History:**")
+                    st.dataframe(df_ls, width='stretch', hide_index=True)
+            except Exception:
+                pass
         except Exception as e:
             st.error(str(e))
 
@@ -478,7 +603,7 @@ def _render_browse_data(con: sqlite3.Connection):
                 con, params=(symbol,)
             )
             if not df.empty:
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                st.dataframe(df, width='stretch', hide_index=True)
             else:
                 st.info(f"No financials for {symbol}.")
         except Exception as e:
@@ -491,7 +616,7 @@ def _render_browse_data(con: sqlite3.Connection):
                 con, params=(symbol,)
             )
             if not df.empty:
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                st.dataframe(df, width='stretch', hide_index=True)
             else:
                 st.info(f"No ratios for {symbol}.")
         except Exception as e:
@@ -510,10 +635,10 @@ def _render_browse_data(con: sqlite3.Connection):
             )
             if not df1.empty:
                 st.markdown("**Per-company payouts:**")
-                st.dataframe(df1, use_container_width=True, hide_index=True)
+                st.dataframe(df1, width='stretch', hide_index=True)
             if not df2.empty:
                 st.markdown("**Global payouts:**")
-                st.dataframe(df2, use_container_width=True, hide_index=True)
+                st.dataframe(df2, width='stretch', hide_index=True)
             if df1.empty and df2.empty:
                 st.info(f"No payouts for {symbol}.")
         except Exception as e:
@@ -528,7 +653,7 @@ def _render_browse_data(con: sqlite3.Connection):
                 con, params=(symbol,)
             )
             if not df.empty:
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                st.dataframe(df, width='stretch', hide_index=True)
             else:
                 st.info(f"No announcements for {symbol}.")
         except Exception as e:
@@ -541,7 +666,7 @@ def _render_browse_data(con: sqlite3.Connection):
                 con, params=(symbol,)
             )
             if not df.empty:
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                st.dataframe(df, width='stretch', hide_index=True)
             else:
                 st.info(f"No equity structure for {symbol}.")
         except Exception as e:

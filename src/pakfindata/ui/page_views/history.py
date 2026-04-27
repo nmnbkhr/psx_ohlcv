@@ -160,7 +160,7 @@ def render_history():
                 hovermode="x unified",
                 legend={"orientation": "h", "yanchor": "bottom", "y": 1.02},
             )
-            st.plotly_chart(fig_breadth, use_container_width=True)
+            st.plotly_chart(fig_breadth, width='stretch')
 
             # Chart 2: Total Volume Over Time
             st.markdown("#### Daily Total Volume")
@@ -178,7 +178,7 @@ def render_history():
                 height=450,
                 hovermode="x unified",
             )
-            st.plotly_chart(fig_volume, use_container_width=True)
+            st.plotly_chart(fig_volume, width='stretch')
 
             # Chart 3: Average Change %
             st.markdown("#### Daily Average Change %")
@@ -201,14 +201,14 @@ def render_history():
                 height=450,
                 hovermode="x unified",
             )
-            st.plotly_chart(fig_chg, use_container_width=True)
+            st.plotly_chart(fig_chg, width='stretch')
 
             # Table: Recent daily data
             st.markdown("#### Daily Summary Table")
             display_df = df.tail(30).sort_values("date", ascending=False)
             st.dataframe(
                 display_df,
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
                 column_config={
                     "date": st.column_config.TextColumn("Date"),
@@ -347,7 +347,7 @@ def render_history():
                             height=500,
                             hovermode="x unified",
                         )
-                    st.plotly_chart(fig_price, use_container_width=True)
+                    st.plotly_chart(fig_price, width='stretch')
 
                     # Chart 2: Volume
                     st.markdown(f"#### {symbol_input} Volume")
@@ -369,7 +369,7 @@ def render_history():
                         yaxis_title="Volume",
                         height=350,
                     )
-                    st.plotly_chart(fig_vol, use_container_width=True)
+                    st.plotly_chart(fig_vol, width='stretch')
 
                     # Table: OHLCV Data
                     st.markdown(f"#### {symbol_input} OHLCV Data")
@@ -379,7 +379,7 @@ def render_history():
                         )
                         st.dataframe(
                             display_sym_df,
-                            use_container_width=True,
+                            width='stretch',
                             hide_index=True,
                             column_config={
                                 "symbol": st.column_config.TextColumn("Symbol"),

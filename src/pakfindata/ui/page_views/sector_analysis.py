@@ -109,9 +109,8 @@ def _load_sector_heatmap_data() -> dict:
     if con is None:
         return {"dates": [], "df": pd.DataFrame()}
 
-    dates = [str(r[0]) for r in con.execute(
-        "SELECT DISTINCT date FROM eod_ohlcv ORDER BY date DESC LIMIT 5"
-    ).fetchall()]
+    from pakfindata.db.date_manifest import get_dates
+    dates = get_dates("eod_ohlcv")[:5]
     if len(dates) < 2:
         return {"dates": dates, "df": pd.DataFrame()}
 
@@ -123,7 +122,7 @@ def _load_sector_heatmap_data() -> dict:
              ROUND(AVG(CASE WHEN e1.prev_close > 0
                THEN (e1.close - e1.prev_close) / e1.prev_close * 100 END), 2) as return_1d
            FROM eod_ohlcv e1
-           LEFT JOIN sectors s ON e1.sector_code = s.sector_code
+           LEFT JOIN sectors s ON s.sector_code = CASE WHEN LENGTH(e1.sector_code) < 4 THEN '0' || e1.sector_code ELSE e1.sector_code END
            WHERE e1.date = ? AND e1.prev_close > 0
            GROUP BY COALESCE(s.sector_name, e1.sector_code)
            HAVING COUNT(*) >= 2
@@ -144,7 +143,7 @@ def _render_sector_performance(date: str):
             df["Total Volume"] = df["Total Volume"].apply(
                 lambda x: f"{x / 1e6:.1f}M" if x >= 1e6 else f"{x:,.0f}"
             )
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width='stretch', hide_index=True)
         else:
             st.info("No sector data available.")
     except Exception as e:
@@ -173,7 +172,7 @@ def _render_sector_breadth(date: str):
                 xaxis_tickangle=-45,
                 margin=dict(b=120),
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
     except Exception as e:
         st.error(f"Error loading breadth chart: {e}")
 
@@ -194,7 +193,7 @@ def _render_sector_heatmap():
 
         if not df.empty:
             df.columns = ["Sector", "1-Day Return %"]
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width='stretch', hide_index=True)
     except Exception as e:
         st.error(f"Error loading heatmap: {e}")
 
@@ -227,9 +226,59 @@ def _load_index_weights() -> pd.DataFrame:
     return df
 
 
+def _fetch_psx_daily(date_str: str):
+    """Fetch PSX DPS daily gap files (constituent data, futures OI, etc.)."""
+    import subprocess
+    result = subprocess.run(
+        ["python3", "-m", "pakfindata.sources.psx_downloads", "daily", date_str],
+        capture_output=True, text=True, timeout=120,
+        cwd=str(Path(__file__).resolve().parents[3]),
+    )
+    return result.stdout + result.stderr
+
+
 def _render_index_weights():
     """KSE-100 index weights treemap + top constituents table."""
     st.subheader("KSE-100 Index Weights")
+
+    # Fetch button — runs as independent subprocess
+    from datetime import datetime, timezone, timedelta
+    PKT = timezone(timedelta(hours=5))
+    today = datetime.now(PKT).strftime("%Y-%m-%d")
+
+    files = sorted(glob.glob(str(_CONSTITUENT_DIR / "*/indices/constituent_data_*.xls")))
+    latest_date = Path(files[-1]).stem.replace("constituent_data_", "") if files else "none"
+
+    if latest_date != today:
+        st.warning(f"Constituent data is from **{latest_date}** — today is {today}")
+
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col1:
+        if st.button(f"Fetch Today ({today})", key="fetch_psx_daily"):
+            with st.spinner(f"Downloading PSX DPS files for {today}..."):
+                output = _fetch_psx_daily(today)
+                st.code(output, language="text")
+                _load_index_weights.clear()
+                st.rerun()
+    with col2:
+        from datetime import date as dt_date
+        backfill_start = st.date_input("From", value=dt_date.fromisoformat(latest_date) if latest_date != "none" else None, key="bf_start")
+    with col3:
+        backfill_end = st.date_input("To", value=dt_date.fromisoformat(today), key="bf_end")
+
+    if st.button("Backfill Date Range", key="fetch_psx_backfill"):
+        if backfill_start and backfill_end:
+            import subprocess
+            with st.spinner(f"Backfilling {backfill_start} → {backfill_end}..."):
+                result = subprocess.run(
+                    ["python3", "-m", "pakfindata.sources.psx_downloads",
+                     "backfill", str(backfill_start), str(backfill_end)],
+                    capture_output=True, text=True, timeout=600,
+                    cwd=str(Path(__file__).resolve().parents[3]),
+                )
+                st.code(result.stdout + result.stderr, language="text")
+                _load_index_weights.clear()
+                st.rerun()
 
     df = _load_index_weights()
     if df.empty:
@@ -282,7 +331,7 @@ def _render_index_weights():
             height=600,
             margin=dict(t=40, l=0, r=0, b=0),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     except Exception as e:
         st.warning(f"Treemap rendering failed: {e}")
 
@@ -295,4 +344,4 @@ def _render_index_weights():
     top.index += 1
 
     st.markdown("**Top 20 Constituents by Weight**")
-    st.dataframe(top, use_container_width=True)
+    st.dataframe(top, width='stretch')

@@ -191,7 +191,7 @@ def render_fx_overview():
             xaxis_rangeslider_visible=False,
         )
 
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     else:
         st.info("No chart data available.")
 
@@ -232,7 +232,7 @@ def render_fx_overview():
                     legend=dict(orientation="h", yanchor="bottom", y=1.02),
                 )
 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
     # Sync section
     st.markdown("---")
@@ -383,7 +383,7 @@ def render_fx_impact():
 
         display_df.columns = ["Symbol", f"Equity ({period})", f"FX ({period})", "Adjusted"]
 
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        st.dataframe(display_df, width='stretch', hide_index=True)
 
         # Visualization
         st.markdown("---")
@@ -429,7 +429,7 @@ def render_fx_impact():
                 height=400,
             )
 
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
         # Summary stats
         st.markdown("---")

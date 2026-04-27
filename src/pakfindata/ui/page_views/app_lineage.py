@@ -556,7 +556,7 @@ def _build_pyvis_html(
 # DB table metadata (cached)
 # =============================================================================
 
-_DUCKDB_PATH = "/mnt/e/psxdata/pakfindata.duckdb"
+_PARQUET_PATH = "/mnt/e/psxdata/parquet"
 
 # Map sync_runs tables → which data tables they feed
 _SYNC_TABLE_MAP: dict[str, list[str]] = {
@@ -672,8 +672,8 @@ def _get_table_freshness_batch() -> dict[str, dict]:
 
     # --- 3. DuckDB: for tick-level tables that only live in DuckDB ---
     try:
-        import duckdb
-        dcon = duckdb.connect(_DUCKDB_PATH, read_only=True)
+        from pakfindata.db.connections import _duck_con
+        dcon = _duck_con()
         duck_tables = {r[0] for r in dcon.execute("SHOW TABLES").fetchall()}
 
         for tbl in _KNOWN_TABLES:
@@ -704,7 +704,6 @@ def _get_table_freshness_batch() -> dict[str, dict]:
             except Exception:
                 pass
 
-        dcon.close()
     except Exception:
         pass
 
@@ -992,7 +991,7 @@ def render_app_lineage():
     else:
         # Sankey data flow view
         fig = _build_sankey(lineage, filter_group=grp)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # Detail inspector
     with st.expander("Inspect Page / Table"):
@@ -1014,7 +1013,7 @@ def render_app_lineage():
                 "Last Sync": d.get("last_sync") or "-",
                 "Source DB": d.get("source") or "-",
             })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, height=400)
+        st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True, height=400)
 
         # Summary
         fresh = sum(1 for d in fd.values() if d["freshness"] == "fresh")
@@ -1094,7 +1093,7 @@ def render_app_lineage():
                 "Tab Names": ", ".join(info["tabs"]) if info["tabs"] else "-",
                 "Table Names": ", ".join(info["tables"]) if info["tables"] else "-",
             })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
     # ─── Strategy Pipeline ───────────────────────────────────────────────
     with st.expander("Strategy Pipeline"):

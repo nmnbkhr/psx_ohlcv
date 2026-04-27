@@ -195,15 +195,15 @@ def render_rates_overview():
     # ── Section 4: Quick Navigation ──────────────────────────────
     c1, c2, c3 = st.columns(3)
     with c1:
-        if st.button("Yield Curves", key="ro_nav_yc", use_container_width=True):
+        if st.button("Yield Curves", key="ro_nav_yc", width='stretch'):
             st.session_state.nav_to = "Yield Curves"
             st.rerun()
     with c2:
-        if st.button("Auction History", key="ro_nav_auct", use_container_width=True):
+        if st.button("Auction History", key="ro_nav_auct", width='stretch'):
             st.session_state.nav_to = "Treasury Auctions"
             st.rerun()
     with c3:
-        if st.button("Rate Trends", key="ro_nav_bm", use_container_width=True):
+        if st.button("Rate Trends", key="ro_nav_bm", width='stretch'):
             st.session_state.nav_to = "Benchmark Monitor"
             st.rerun()
 
@@ -310,7 +310,7 @@ def _render_money_market_rates(con, snap: dict):
 
     if rows:
         df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
     else:
         st.info("No money market rate data. Run `pfsync rates sync` to fetch.")
 
@@ -338,7 +338,7 @@ def _render_auction_cutoffs(con, snap: dict):
             mtb_rows = _load_tbill_cutoffs()
 
         if mtb_rows:
-            st.dataframe(pd.DataFrame(mtb_rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(mtb_rows), width='stretch', hide_index=True)
         else:
             st.info("No T-Bill auction data.")
 
@@ -362,6 +362,6 @@ def _render_auction_cutoffs(con, snap: dict):
             pib_rows = _load_pib_cutoffs()
 
         if pib_rows:
-            st.dataframe(pd.DataFrame(pib_rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(pib_rows), width='stretch', hide_index=True)
         else:
             st.info("No PIB auction data.")

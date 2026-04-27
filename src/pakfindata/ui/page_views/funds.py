@@ -174,7 +174,7 @@ def render_mutual_funds():
                 "amc_name": "AMC",
                 "fund_type": "Type",
             }),
-            use_container_width=True,
+            width='stretch',
             height=400,
         )
 
@@ -261,7 +261,7 @@ def render_mutual_funds():
                         xaxis_title=None, yaxis_title="NAV (Rs.)",
                         template="plotly_dark",
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
                 else:
                     st.info("No NAV data. Click 'Sync Full NAV History' above to fetch.")
 
@@ -459,7 +459,7 @@ def render_fund_analytics():
                 "return_pct": f"Return ({period})",
                 "latest_nav": "NAV",
             }),
-            use_container_width=True,
+            width='stretch',
             height=400,
         )
     else:
@@ -521,7 +521,7 @@ def render_fund_analytics():
                     "vol_1M": "Vol (1M)",
                     "sharpe_ratio": "Sharpe",
                 }),
-                use_container_width=True,
+                width='stretch',
             )
 
             # Normalized performance chart
@@ -583,7 +583,7 @@ def render_fund_analytics():
                 if metrics_data:
                     st.dataframe(
                         pd.DataFrame(metrics_data),
-                        use_container_width=True,
+                        width='stretch',
                         hide_index=True,
                     )
 

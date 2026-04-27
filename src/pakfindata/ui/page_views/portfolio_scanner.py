@@ -161,7 +161,7 @@ def render_page():
                                  "Spread": "{:.0f}bps", "Score": "{:+.0f}",
                                  "Conf%": "{:.0f}%",
                              })
-            st.dataframe(styled, use_container_width=True, hide_index=True, height=500)
+            st.dataframe(styled, width='stretch', hide_index=True, height=500)
 
     with tab2:
         st.markdown("**Open Positions**")
@@ -171,7 +171,7 @@ def render_page():
             show = [c for c in ["symbol", "side", "entry_price", "current_price",
                                 "shares", "pnl", "pnl_pct", "entry_reason", "explanation_summary"]
                     if c in pos_df.columns]
-            st.dataframe(pos_df[show].round(2), use_container_width=True, hide_index=True)
+            st.dataframe(pos_df[show].round(2), width='stretch', hide_index=True)
         else:
             st.caption("No open positions")
 
@@ -183,7 +183,7 @@ def render_page():
             show = [c for c in ["exit_time", "side", "symbol", "shares", "entry_price",
                                 "exit_price", "pnl", "exit_reason"]
                     if c in trade_df.columns]
-            st.dataframe(trade_df[show].round(2), use_container_width=True, hide_index=True)
+            st.dataframe(trade_df[show].round(2), width='stretch', hide_index=True)
         else:
             st.caption("No trades yet")
 

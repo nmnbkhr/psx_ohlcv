@@ -117,7 +117,7 @@ def render_rankings():
     }
     display_df.rename(columns=col_names, inplace=True)
 
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    st.dataframe(display_df, width='stretch', hide_index=True)
 
     st.markdown("---")
 
@@ -176,7 +176,7 @@ def render_rankings():
                         height=400,
                     )
 
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
                 else:
                     st.info("No historical data available for selected instruments.")
 

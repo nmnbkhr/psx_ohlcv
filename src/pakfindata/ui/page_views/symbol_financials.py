@@ -315,7 +315,7 @@ def _render_pl_trend(df, is_bank):
     fig.update_layout(**_CHART, title="P&L Trend (PKR Billions)", height=450)
     fig.update_yaxes(title_text="PKR (B)", secondary_y=False)
     fig.update_yaxes(title_text="PBT (B)", secondary_y=True)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 def _render_balance_sheet(df, is_bank):
@@ -337,7 +337,7 @@ def _render_balance_sheet(df, is_bank):
     ))
     fig.update_layout(**_CHART, title="Balance Sheet Composition (PKR Billions)",
                       barmode="stack", height=400)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Current vs Non-current breakdown
     has_current = dfc["current_assets"].notna().any()
@@ -353,7 +353,7 @@ def _render_balance_sheet(df, is_bank):
             name="Non-Current Assets", marker_color="#1a6fb5",
         ))
         fig2.update_layout(**_CHART, barmode="stack", height=350)
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width='stretch')
 
 
 def _render_nii_decomp(df):
@@ -379,7 +379,7 @@ def _render_nii_decomp(df):
     ))
     fig.update_layout(**_CHART, title="NII Decomposition (PKR Billions)",
                       barmode="relative", height=450)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # NIM proxy
     has_ta = dfc["total_assets"].notna() & (dfc["total_assets"] > 0)
@@ -394,7 +394,7 @@ def _render_nii_decomp(df):
             fill="tozeroy", fillcolor="rgba(0,212,170,0.13)",
         ))
         fig2.update_layout(**_CHART, title="Net Interest Margin (NII/TA %)", height=300)
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width='stretch')
 
 
 def _render_ratios(df, is_bank):
@@ -429,7 +429,7 @@ def _render_ratios(df, is_bank):
         ratios["D/E"] = (tl / te).round(2)
 
     ratios = ratios.set_index("period")
-    st.dataframe(ratios.T.style.format("{:.2f}", na_rep="—"), use_container_width=True)
+    st.dataframe(ratios.T.style.format("{:.2f}", na_rep="—"), width='stretch')
 
     # Chart the key ratios
     fig = go.Figure()
@@ -441,7 +441,7 @@ def _render_ratios(df, is_bank):
                 name=col, mode="lines+markers",
             ))
     fig.update_layout(**_CHART, title="Key Ratios Trend", height=350)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 def _render_raw(df, is_bank):
@@ -467,7 +467,7 @@ def _render_raw(df, is_bank):
                 "cash_and_equivalents", "share_capital", "source"]
 
     display_cols = [c for c in cols if c in df.columns]
-    st.dataframe(df[display_cols], use_container_width=True, height=500)
+    st.dataframe(df[display_cols], width='stretch', height=500)
 
     # CSV download
     csv = df[display_cols].to_csv(index=False)

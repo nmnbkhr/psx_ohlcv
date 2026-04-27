@@ -158,7 +158,7 @@ def render_page():
             fig.update_layout(**PLOT_LAYOUT, height=500, showlegend=True)
             fig.update_yaxes(title_text="lambda(t) events/sec", row=1, col=1)
             fig.update_yaxes(visible=False, row=2, col=1)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
             # Burst table
             if result["bursts"]:
@@ -168,7 +168,7 @@ def render_page():
                     "start_time", "duration_seconds", "peak_ratio",
                     "n_points", "price_change_pct", "volume_in_burst",
                 ] if c in bdf.columns]
-                st.dataframe(bdf[display_cols], use_container_width=True, hide_index=True)
+                st.dataframe(bdf[display_cols], width='stretch', hide_index=True)
             else:
                 st.info("No bursts detected at current threshold.")
 
@@ -202,16 +202,15 @@ def render_page():
         if st.button("Run Backtest", key="hawkes_bt_run"):
             try:
                 from pakfindata.engine.hawkes_process import analyze_symbol
-                import duckdb
+                from pakfindata.db.connections import _duck_con
 
                 sym_upper = bt_sym.upper()
-                con = duckdb.connect("/mnt/e/psxdata/pakfindata.duckdb", read_only=True)
+                con = _duck_con()
                 dates = con.execute(f"""
                     SELECT DISTINCT CAST(_ts AS DATE) as d
                     FROM tick_logs WHERE symbol = '{sym_upper}'
                     ORDER BY d DESC LIMIT {bt_days}
                 """).fetchall()
-                con.close()
 
                 all_bursts = []
                 progress = st.progress(0, text=f"Analyzing day 0/{len(dates)}...")
@@ -315,7 +314,7 @@ def render_page():
                 ] if c in bdf.columns]
                 st.dataframe(
                     bdf[display_cols].round(3),
-                    use_container_width=True, hide_index=True,
+                    width='stretch', hide_index=True,
                 )
 
     # ------------------------------------------------------------------
@@ -334,16 +333,15 @@ def render_page():
         if scan_btn:
             try:
                 from pakfindata.engine.hawkes_process import analyze_symbol
-                import duckdb
+                from pakfindata.db.connections import _duck_con
 
-                con = duckdb.connect("/mnt/e/psxdata/pakfindata.duckdb", read_only=True)
+                con = _duck_con()
                 date = str(con.execute("SELECT MAX(CAST(_ts AS DATE)) FROM tick_logs").fetchone()[0])
                 rows = con.execute(f"""
                     SELECT symbol, COUNT(*) as n
                     FROM tick_logs WHERE CAST(_ts AS DATE) = '{date}'
                     GROUP BY symbol ORDER BY n DESC LIMIT {scan_n}
                 """).fetchall()
-                con.close()
                 symbols = [r[0] for r in rows]
 
                 results = []
@@ -397,7 +395,7 @@ def render_page():
                 "branching_ratio": "{:.3f}", "half_life_seconds": "{:.1f}",
                 "time_in_burst_pct": "{:.1f}%", "max_intensity_ratio": "{:.1f}x",
             })
-            st.dataframe(styled, use_container_width=True, hide_index=True, height=500)
+            st.dataframe(styled, width='stretch', hide_index=True, height=500)
 
             # Bar chart of branching ratios
             top20 = df.head(20)
@@ -414,7 +412,7 @@ def render_page():
                           annotation_text="Near-critical")
             fig.update_layout(**PLOT_LAYOUT, height=350,
                               title_text="Branching Ratio by Symbol")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
     # ------------------------------------------------------------------
     # TAB 4: Methodology

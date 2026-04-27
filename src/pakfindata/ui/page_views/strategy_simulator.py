@@ -348,7 +348,7 @@ def render_page():
             pos_df = pd.DataFrame(positions)
             show = [c for c in ["symbol", "side", "entry", "cur", "pnl", "pnl_pct", "shares"]
                     if c in pos_df.columns]
-            st.dataframe(pos_df[show].round(2), use_container_width=True, hide_index=True)
+            st.dataframe(pos_df[show].round(2), width='stretch', hide_index=True)
         else:
             st.caption("No open positions")
 
@@ -359,7 +359,7 @@ def render_page():
             trade_df = pd.DataFrame(closed[-10:])
             show = [c for c in ["exit_time", "side", "symbol", "shares", "entry", "exit", "pnl", "exit_reason"]
                     if c in trade_df.columns]
-            st.dataframe(trade_df[show].round(2), use_container_width=True, hide_index=True)
+            st.dataframe(trade_df[show].round(2), width='stretch', hide_index=True)
         else:
             st.caption("No trades yet")
 

@@ -109,7 +109,7 @@ def render_instruments():
         display_df = df[display_cols].copy()
         display_df.columns = ["Symbol", "Name", "Type", "Source", "Active"]
         display_df["Active"] = display_df["Active"].apply(lambda x: "✓" if x else "✗")
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        st.dataframe(display_df, width='stretch', hide_index=True)
 
     st.markdown("---")
 
@@ -170,7 +170,7 @@ def render_instruments():
                         price_col="close",
                         title=f"{selected_symbol} - Last 90 Days"
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
                 else:
                     st.info(f"No OHLCV data available. Run `pfsync eod {symbol}` to sync data.")
 

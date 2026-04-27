@@ -89,7 +89,7 @@ def render_company_deep():
         ).strip().upper()
 
     with search_col2:
-        refresh_data = st.button("🔄 Refresh", type="primary", use_container_width=True)
+        refresh_data = st.button("🔄 Refresh", type="primary", width='stretch')
 
     with search_col3:
         st.caption(f"{len(symbols_with_profiles)} companies")
@@ -599,7 +599,7 @@ def render_company_deep():
     key_people = []
     try:
         import sqlite3 as _sqlite3
-        _pcon = _sqlite3.connect("/mnt/e/psxdata/psx.sqlite")
+        _pcon = _sqlite3.connect("/home/smnb/psxdata_rescue/psx.sqlite")
         _pcon.execute("PRAGMA journal_mode=WAL")
         _pcon.execute("PRAGMA busy_timeout=30000")
         _pcon.row_factory = _sqlite3.Row
@@ -660,7 +660,7 @@ def render_company_deep():
         if key_people:
             with st.expander(f"Key People ({len(key_people)})", expanded=False):
                 kp_df = pd.DataFrame(key_people)
-                st.dataframe(kp_df, use_container_width=True, hide_index=True)
+                st.dataframe(kp_df, width='stretch', hide_index=True)
 
         # More details
         with st.expander("More Details"):
@@ -716,7 +716,7 @@ def render_company_deep():
     db_announcements = []
     try:
         import sqlite3 as _sqlite3
-        _acon = _sqlite3.connect("/mnt/e/psxdata/psx.sqlite")
+        _acon = _sqlite3.connect("/home/smnb/psxdata_rescue/psx.sqlite")
         _acon.execute("PRAGMA journal_mode=WAL")
         _acon.execute("PRAGMA busy_timeout=30000")
         _acon.row_factory = _sqlite3.Row
@@ -757,7 +757,7 @@ def render_company_deep():
                 display_cols = ["announcement_date", "announcement_type", "title", "document_url"]
                 available_cols = [c for c in display_cols if c in ann_df.columns]
                 if available_cols:
-                    st.dataframe(ann_df[available_cols], use_container_width=True, hide_index=True)
+                    st.dataframe(ann_df[available_cols], width='stretch', hide_index=True)
 
     # ----- Charts -----
     st.subheader("📈 Charts")
@@ -794,7 +794,7 @@ def render_company_deep():
                 yaxis={"range": [price_min - padding, price_max + padding]},
                 margin={"l": 60, "r": 20, "t": 20, "b": 60},
             )
-            st.plotly_chart(fig_price, use_container_width=True)
+            st.plotly_chart(fig_price, width='stretch')
 
         with chart_tabs[1]:
             # Volume bar chart
@@ -813,7 +813,7 @@ def render_company_deep():
                 hovermode="x unified",
                 margin={"l": 60, "r": 20, "t": 20, "b": 60},
             )
-            st.plotly_chart(fig_vol, use_container_width=True)
+            st.plotly_chart(fig_vol, width='stretch')
 
         # Stats
         if quote_stats:
@@ -918,7 +918,7 @@ def render_company_deep():
                         ]
                         st.dataframe(
                             sub_df[available_cols].head(10),
-                            use_container_width=True,
+                            width='stretch',
                             hide_index=True,
                             column_config={k: v for k, v in fin_col_config.items() if k in available_cols},
                         )
@@ -969,7 +969,7 @@ def render_company_deep():
                             if len(available_cols) > 1:
                                 st.dataframe(
                                     sub_df[available_cols].head(10),
-                                    use_container_width=True,
+                                    width='stretch',
                                     hide_index=True,
                                     column_config={k: v for k, v in bs_col_config.items() if k in available_cols},
                                 )
@@ -1055,7 +1055,7 @@ def render_company_deep():
                             if len(available_cols) > 1:
                                 st.dataframe(
                                     sub_df[available_cols].head(10),
-                                    use_container_width=True,
+                                    width='stretch',
                                     hide_index=True,
                                     column_config={k: v for k, v in ratio_col_config.items() if k in available_cols},
                                 )
@@ -1074,7 +1074,7 @@ def render_company_deep():
                             if len(available_cols) > 1:
                                 st.dataframe(
                                     sub_df[available_cols].head(10),
-                                    use_container_width=True,
+                                    width='stretch',
                                     hide_index=True,
                                     column_config={k: v for k, v in ratio_col_config.items() if k in available_cols},
                                 )
@@ -1093,7 +1093,7 @@ def render_company_deep():
                             if len(available_cols) > 1:
                                 st.dataframe(
                                     sub_df[available_cols].head(10),
-                                    use_container_width=True,
+                                    width='stretch',
                                     hide_index=True,
                                     column_config={k: v for k, v in ratio_col_config.items() if k in available_cols},
                                 )
@@ -1192,7 +1192,7 @@ def render_company_deep():
                 }
                 st.dataframe(
                     payouts_df[available_cols].head(20),
-                    use_container_width=True,
+                    width='stretch',
                     hide_index=True,
                     column_config=col_config,
                 )
@@ -1213,7 +1213,7 @@ def render_company_deep():
                 # Fallback: try dividend_payouts from global scraper
                 try:
                     import sqlite3 as _sqlite3
-                    _dcon = _sqlite3.connect("/mnt/e/psxdata/psx.sqlite")
+                    _dcon = _sqlite3.connect("/home/smnb/psxdata_rescue/psx.sqlite")
                     _dcon.execute("PRAGMA journal_mode=WAL")
                     _dcon.execute("PRAGMA busy_timeout=30000")
                     div_df = pd.read_sql_query(
@@ -1226,7 +1226,7 @@ def render_company_deep():
                     _dcon.close()
                     if not div_df.empty:
                         st.markdown("**Dividend / Payout History** *(from global scrape)*")
-                        st.dataframe(div_df, use_container_width=True, hide_index=True)
+                        st.dataframe(div_df, width='stretch', hide_index=True)
                     else:
                         st.info("No payout history available.")
                 except Exception:

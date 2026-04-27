@@ -86,7 +86,7 @@ def _render_live():
             },
         ))
         fig.update_layout(paper_bgcolor=_C["bg"], plot_bgcolor=_C["bg"], height=220, margin=dict(t=40, b=10, l=30, r=30))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     with c2:
         state_colors = {
@@ -145,7 +145,7 @@ def _render_live():
                 yaxis=dict(gridcolor=_C["grid"], title="Price"),
                 yaxis2=dict(gridcolor=_C["grid"], title="VPIN", range=[0, 1]),
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
 
 # ═══════════════════════════════════════════════════════
@@ -238,12 +238,12 @@ def _render_backtest():
         yaxis2=dict(gridcolor=_C["grid"], title="VPIN", range=[0, 1]),
         yaxis3=dict(gridcolor=_C["grid"], title="Hurst", range=[0.2, 0.8]),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Trade log
     if not trades.empty:
         st.markdown("#### Trade Log")
-        st.dataframe(trades, use_container_width=True, hide_index=True, height=300)
+        st.dataframe(trades, width='stretch', hide_index=True, height=300)
 
 
 # ═══════════════════════════════════════════════════════
@@ -290,7 +290,7 @@ def _render_scanner():
     show_df["position_size"] = show_df["position_size"].map(lambda x: f"{x:.0%}")
 
     styled = show_df.style.map(_color_state, subset=["vpin_state"]).map(_color_signal, subset=["signal"])
-    st.dataframe(styled, use_container_width=True, hide_index=True, height=500)
+    st.dataframe(styled, width='stretch', hide_index=True, height=500)
 
 
 # ═══════════════════════════════════════════════════════

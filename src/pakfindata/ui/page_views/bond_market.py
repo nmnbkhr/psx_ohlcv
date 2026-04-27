@@ -238,13 +238,13 @@ def _render_yield_curve(snap: dict, con):
             ticktext=["1M", "3M", "6M", "1Y", "2Y", "3Y", "5Y", "10Y", "15Y"],
         ),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Show data table
     with st.expander("View Data Table"):
         st.dataframe(df[["label", "security", "yield_pct"]].rename(columns={
             "label": "Tenor", "security": "Type", "yield_pct": "Yield %"
-        }), use_container_width=True)
+        }), width='stretch')
 
 
 def _render_reserves(snap: dict):
@@ -313,7 +313,7 @@ def _render_benchmark_history(con):
             xaxis_title="Date",
             yaxis_title="Value",
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     else:
         st.info("No historical data available yet. Sync daily to build history.")
 
@@ -329,6 +329,6 @@ def _render_trading_volume(con, status: dict):
     try:
         df = _load_trading_volume_latest()
         if not df.empty:
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df, width='stretch')
     except Exception:
         st.info("No trading volume data available.")

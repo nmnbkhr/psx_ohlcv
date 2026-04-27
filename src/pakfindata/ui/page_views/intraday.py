@@ -174,77 +174,26 @@ def _last_trading_day() -> date:
 
 @st.cache_data(ttl=120, show_spinner="Loading intraday data...")
 def _load_today_summary(_con, date_str: str) -> pd.DataFrame:
-    """Load aggregated intraday summary for a given date (cached 2 min).
+    """Load aggregated intraday summary for a given date from intraday_daily_summary.
 
-    Uses DuckDB for speed (window functions on 3M rows) with SQLite fallback.
+    Reads pre-aggregated rows written by intraday_summary.compute_all(). Returns
+    empty DataFrame if the summary hasn't been built for this date yet.
     """
-    ts_start, ts_end = _ts_range(date_str)
-
-    # Try DuckDB first (much faster for window functions on large tables)
-    try:
-        from pakfindata.db.connections import has_duckdb
-        if has_duckdb():
-            import duckdb as _duckdb
-            from pakfindata.db.duckdb_manager import DUCKDB_PATH
-            dcon = _duckdb.connect(str(DUCKDB_PATH), read_only=True)
-            df = dcon.execute("""
-                WITH ranked AS (
-                    SELECT symbol, ts_epoch, close, volume,
-                           ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY ts_epoch ASC) AS rn_first,
-                           ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY ts_epoch DESC) AS rn_last
-                    FROM intraday_bars WHERE ts BETWEEN ? AND ?
-                )
-                SELECT
-                    symbol,
-                    COUNT(*) AS ticks,
-                    MAX(CASE WHEN rn_first=1 THEN close END) AS open,
-                    MAX(close) AS high,
-                    MIN(close) AS low,
-                    MAX(CASE WHEN rn_last=1 THEN close END) AS last_price,
-                    MAX(volume) AS total_vol,
-                    CAST(MAX(CASE WHEN rn_first=1 THEN ts_epoch END) AS BIGINT) AS first_epoch,
-                    CAST(MAX(CASE WHEN rn_last=1 THEN ts_epoch END) AS BIGINT) AS last_epoch
-                FROM ranked
-                GROUP BY symbol
-                HAVING COUNT(*) >= 2
-                ORDER BY total_vol DESC
-            """, [ts_start, ts_end]).df()
-            dcon.close()
-            return df
-    except Exception:
-        pass
-
-    # Fallback to SQLite
-    import sqlite3 as _sqlite3
-    db_path = _con.execute("PRAGMA database_list").fetchone()[2]
-    con = _sqlite3.connect(db_path)
     df = pd.read_sql_query(
         """
-        WITH ranked AS (
-            SELECT symbol, ts_epoch, close, volume,
-                   ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY ts_epoch ASC) AS rn_first,
-                   ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY ts_epoch DESC) AS rn_last
-            FROM intraday_bars WHERE ts BETWEEN ? AND ?
-        )
-        SELECT
-            symbol,
-            COUNT(*) AS ticks,
-            MAX(CASE WHEN rn_first=1 THEN close END) AS open,
-            MAX(close) AS high,
-            MIN(close) AS low,
-            MAX(CASE WHEN rn_last=1 THEN close END) AS last_price,
-            MAX(volume) AS total_vol,
-            MAX(CASE WHEN rn_first=1 THEN ts_epoch END) AS first_epoch,
-            MAX(CASE WHEN rn_last=1 THEN ts_epoch END) AS last_epoch
-        FROM ranked
-        GROUP BY symbol
-        HAVING COUNT(*) >= 2
-        ORDER BY total_vol DESC
+        SELECT symbol,
+               tick_count  AS ticks,
+               day_open    AS open,
+               day_high    AS high,
+               day_low     AS low,
+               day_close   AS last_price,
+               day_volume  AS total_vol
+        FROM intraday_daily_summary
+        WHERE date = ? AND market = 'REG'
+        ORDER BY day_volume DESC
         """,
-        con,
-        params=[ts_start, ts_end],
+        _con, params=[date_str],
     )
-    con.close()
     return df
 
 
@@ -365,43 +314,14 @@ for code, name in _SECTOR_LABELS_RAW.items():
     _SECTOR_LABELS[code.lstrip("0") or "0"] = name
 
 
-@st.cache_data(ttl=600, show_spinner=False)
 def _get_intraday_dates_cached(_con) -> list[str]:
-    """Cached wrapper for intraday date list."""
-    # Try DuckDB first (instant DISTINCT on columnar data)
+    """Dates that have a pre-aggregated summary row. Fast indexed read."""
     try:
-        from pakfindata.db.connections import has_duckdb
-        if has_duckdb():
-            import duckdb as _duckdb
-            from pakfindata.db.duckdb_manager import DUCKDB_PATH
-            dcon = _duckdb.connect(str(DUCKDB_PATH), read_only=True)
-            rows = dcon.execute(
-                "SELECT DISTINCT ts[:10] AS d FROM intraday_bars ORDER BY d DESC"
-            ).fetchall()
-            dcon.close()
-            return [r[0] for r in rows]
+        from pakfindata.db.repositories import intraday_summary as _isum
+        _isum.ensure_tables(_con)
+        return _isum.get_summary_dates(_con)
     except Exception:
-        pass
-
-    # Fallback to SQLite skip-scan
-    import sqlite3 as _sqlite3
-    db_path = _con.execute("PRAGMA database_list").fetchone()[2]
-    con = _sqlite3.connect(db_path)
-    dates: list[str] = []
-    row = con.execute("SELECT MAX(ts) FROM intraday_bars").fetchone()
-    if row and row[0]:
-        cur_date = row[0][:10]
-        dates.append(cur_date)
-        while True:
-            row = con.execute(
-                "SELECT MAX(ts) FROM intraday_bars WHERE ts < ?", (cur_date,)
-            ).fetchone()
-            if not row or not row[0]:
-                break
-            cur_date = row[0][:10]
-            dates.append(cur_date)
-    con.close()
-    return dates
+        return []
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -431,43 +351,23 @@ def render_intraday():
         else:
             st.info("Auto-Sync OFF")
 
-    # Connection + ensure indexes for fast queries
+    # Connection
     con = get_connection()
     _ensure_intraday_indexes(con)
-    today_str = date.today().isoformat()
-    last_td = _last_trading_day()
-    last_td_str = last_td.isoformat()
 
-    # Date selector — include last trading day even if not yet in DB
-    try:
-        avail_dates = _get_intraday_dates_cached(con)
-    except Exception:
-        avail_dates = []
+    # Date selector — manifest only, defaults to latest
+    avail_dates = _get_intraday_dates_cached(con)
+    if not avail_dates:
+        st.warning("No intraday data. Use Sync tab to fetch.")
+        render_footer()
+        return
 
-    # Ensure last trading day is always in the list (even if no data yet)
-    if last_td_str not in avail_dates:
-        avail_dates = [last_td_str] + avail_dates
-
-    # Also ensure today is in the list during market hours
-    if today_str not in avail_dates:
-        avail_dates = [today_str] + avail_dates
-
-    # Show which date the PSX API will serve
-    has_last_td_data = any(
-        d == last_td_str for d in _get_intraday_dates_cached(con) if d
-    ) if avail_dates else False
-    if not has_last_td_data:
-        st.warning(
-            f"Last trading day **{last_td_str}** ({last_td.strftime('%A')}) "
-            f"has no intraday data yet. Use Sync tab to fetch."
-        )
-
-    sel_date = st.selectbox(
-        "Trading Date",
-        avail_dates,
-        index=0,
-        key="int_date_sel",
-    )
+    dc1, dc2 = st.columns([4, 1])
+    with dc1:
+        sel_date = st.selectbox("Trading Date", avail_dates, index=0, key="int_date_sel")
+    with dc2:
+        from pakfindata.ui.components.helpers import render_date_refresh_button
+        render_date_refresh_button(["intraday_bars"], key="int_refresh_dates")
 
     # Tabs
     tab_dash, tab_charts, tab_pulse, tab_vol, tab_movers, tab_idx, tab_dedup, tab_sync = st.tabs(
@@ -651,7 +551,7 @@ def _render_dashboard(con, df, sel_date):
             yaxis=dict(visible=False, gridcolor=_COLORS["grid"]),
             xaxis=dict(visible=False, gridcolor=_COLORS["grid"]),
         )
-        st.plotly_chart(fig_breadth, use_container_width=True)
+        st.plotly_chart(fig_breadth, width='stretch')
 
         # Change distribution histogram
         st.markdown("**Return Distribution**")
@@ -662,32 +562,32 @@ def _render_dashboard(con, df, sel_date):
         ))
         fig_hist.add_vline(x=0, line_dash="dash", line_color=_COLORS["text_dim"])
         _apply_layout(fig_hist, height=250, xaxis_title="Change %", yaxis_title="Count")
-        st.plotly_chart(fig_hist, use_container_width=True)
+        st.plotly_chart(fig_hist, width='stretch')
 
     with col_r:
         # Top gainers and losers quick view
         st.markdown("**Top 10 Gainers**")
         top_gain = df.nlargest(10, "change_pct")[["symbol", "last_price", "change_pct", "total_vol"]]
         st.dataframe(
-            top_gain.style.applymap(
+            top_gain.style.map(
                 lambda v: f"color: {_COLORS['up']}" if isinstance(v, (int, float)) and v > 0
                 else f"color: {_COLORS['down']}" if isinstance(v, (int, float)) and v < 0
                 else "",
                 subset=["change_pct"],
             ),
-            use_container_width=True, hide_index=True, height=200,
+            width='stretch', hide_index=True, height=200,
         )
 
         st.markdown("**Top 10 Losers**")
         top_lose = df.nsmallest(10, "change_pct")[["symbol", "last_price", "change_pct", "total_vol"]]
         st.dataframe(
-            top_lose.style.applymap(
+            top_lose.style.map(
                 lambda v: f"color: {_COLORS['up']}" if isinstance(v, (int, float)) and v > 0
                 else f"color: {_COLORS['down']}" if isinstance(v, (int, float)) and v < 0
                 else "",
                 subset=["change_pct"],
             ),
-            use_container_width=True, hide_index=True, height=200,
+            width='stretch', hide_index=True, height=200,
         )
 
     st.markdown("---")
@@ -727,7 +627,7 @@ def _render_dashboard(con, df, sel_date):
                 fig_sector, height=450,
                 title=dict(text="Sectors by Volume (colored by avg change)", font=dict(size=13)),
             )
-            st.plotly_chart(fig_sector, use_container_width=True)
+            st.plotly_chart(fig_sector, width='stretch')
     else:
         st.caption("Sector data not available — run EOD sync to populate sector codes.")
 
@@ -754,13 +654,12 @@ def _render_charts(con, summary_df, sel_date):
         chart_type = st.radio("Chart", ["Candlestick", "Line"], horizontal=True, key="int_chart_type")
 
     # Load tick data for this symbol on this date
-    ts_start, ts_end = _ts_range(sel_date)
     tick_df = pd.read_sql_query(
         """SELECT ts, ts_epoch, open, high, low, close, volume
-           FROM intraday_bars WHERE symbol=? AND ts BETWEEN ? AND ?
+           FROM intraday_bars WHERE symbol=? AND date=?
            ORDER BY ts_epoch""",
         con,
-        params=[sel_sym, ts_start, ts_end],
+        params=[sel_sym, sel_date],
     )
 
     if tick_df.empty:
@@ -831,7 +730,7 @@ def _render_charts(con, summary_df, sel_date):
         # Resample to ~1 min bars for cleaner candles
         tick_df_indexed = tick_df.set_index("ts_dt")
         ohlc = tick_df_indexed["close"].resample("1min").ohlc().dropna()
-        vol_1m = tick_df_indexed["volume"].resample("1min").last().fillna(method="ffill").dropna()
+        vol_1m = tick_df_indexed["volume"].resample("1min").last().ffill().dropna()
 
         if not ohlc.empty:
             bar_colors = [_COLORS["up"] if c >= o else _COLORS["down"]
@@ -899,7 +798,7 @@ def _render_charts(con, summary_df, sel_date):
     )
     fig.update_yaxes(title_text="Price (Rs.)", row=1, col=1, gridcolor=_COLORS["grid"])
     fig.update_yaxes(title_text="Vol", row=2, col=1, gridcolor=_COLORS["grid"])
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Tick-level data table
     with st.expander("Tick Data (last 100)", expanded=False):
@@ -907,7 +806,7 @@ def _render_charts(con, summary_df, sel_date):
             tick_df.sort_values("ts_epoch", ascending=False).head(100)[
                 ["ts", "open", "high", "low", "close", "volume"]
             ],
-            use_container_width=True, hide_index=True,
+            width='stretch', hide_index=True,
         )
 
 
@@ -927,72 +826,31 @@ def _render_market_pulse(con, df, sel_date):
     # Advancing = symbols with net positive ticks, Declining = net negative.
     st.markdown("**Intraday Advance/Decline — Tick Timeline**")
     tick_timeline = pd.read_sql_query(
-        """WITH tick_dir AS (
-             SELECT
-               symbol,
-               SUBSTR(ts, 1, 16) AS minute,
-               CASE
-                 WHEN close > LAG(close) OVER (PARTITION BY symbol ORDER BY ts_epoch) THEN 1
-                 WHEN close < LAG(close) OVER (PARTITION BY symbol ORDER BY ts_epoch) THEN -1
-                 ELSE 0
-               END AS tick_sign
-             FROM intraday_bars
-             WHERE ts BETWEEN ? AND ?
-           ),
-           symbol_minute AS (
-             SELECT minute, symbol, SUM(tick_sign) AS net_dir
-             FROM tick_dir
-             GROUP BY minute, symbol
-           )
-           SELECT
-             minute,
-             COUNT(DISTINCT CASE WHEN net_dir > 0 THEN symbol END) AS adv,
-             COUNT(DISTINCT CASE WHEN net_dir < 0 THEN symbol END) AS dec,
-             COUNT(DISTINCT symbol) AS total,
-             SUM(net_dir) AS net_ticks
-           FROM symbol_minute
-           GROUP BY minute
+        """SELECT REPLACE(minute, 'T', ' ') AS minute,
+                  advancing  AS adv,
+                  declining  AS dec,
+                  total_symbols AS total,
+                  net_ticks
+           FROM intraday_minute_breadth
+           WHERE date = ? AND market = 'REG'
            ORDER BY minute""",
         con,
-        params=[*_ts_range(sel_date)],
+        params=[sel_date],
     )
 
-    # ── Load KSE-100 intraday ticks (DuckDB preferred, tick_bars.db fallback) ──
+    # ── Load KSE-100 intraday per-minute values from intraday_index_minute ──
     kse_df = pd.DataFrame()
     try:
-        from pakfindata.db.connections import has_duckdb
-        if has_duckdb():
-            import duckdb as _duckdb
-            from pakfindata.db.duckdb_manager import DUCKDB_PATH
-            dcon = _duckdb.connect(str(DUCKDB_PATH), read_only=True)
-            kse_df = dcon.execute(
-                """SELECT ts, value FROM index_raw_ticks
-                   WHERE symbol IN ('KSE100', 'KSE-100', 'KMIALL')
-                   AND ts > 0
-                   ORDER BY ts"""
-            ).df()
-            dcon.close()
-        else:
-            from pakfindata.services.tick_service import EOD_DB_PATH
-            if EOD_DB_PATH.exists():
-                import sqlite3 as _sqlite3
-                tick_con = _sqlite3.connect(str(EOD_DB_PATH))
-                tick_con.row_factory = _sqlite3.Row
-                kse_df = pd.read_sql_query(
-                    """SELECT ts, value FROM index_raw_ticks
-                       WHERE symbol IN ('KSE100', 'KSE-100', 'KMIALL')
-                       AND ts > 0
-                       ORDER BY ts""",
-                    tick_con,
-                )
-                tick_con.close()
-        if not kse_df.empty:
-            kse_df["ts_dt"] = pd.to_datetime(kse_df["ts"], unit="s", utc=True)
-            kse_df["date"] = kse_df["ts_dt"].dt.strftime("%Y-%m-%d")
-            kse_df = kse_df[kse_df["date"] == sel_date].copy()
-            if not kse_df.empty:
-                kse_df["minute"] = kse_df["ts_dt"].dt.strftime("%Y-%m-%d %H:%M")
-                kse_df = kse_df.groupby("minute").agg(value=("value", "last")).reset_index()
+        from pakfindata.db.repositories import intraday_summary as _isum
+        kse_all = _isum.get_index_minute(
+            con, sel_date, ["KSE100", "KSE-100", "KMIALL"]
+        )
+        if not kse_all.empty:
+            # Collapse across symbol aliases: take one value per minute
+            kse_df = (
+                kse_all.groupby("minute", as_index=False)
+                .agg(value=("value", "last"))
+            )
     except Exception:
         pass  # KSE-100 overlay is optional — fail silently
 
@@ -1048,7 +906,7 @@ def _render_market_pulse(con, df, sel_date):
                 tickfont=dict(color=_COLORS["gold"]),
                 title_font=dict(color=_COLORS["gold"]),
             )
-        st.plotly_chart(fig_pulse, use_container_width=True)
+        st.plotly_chart(fig_pulse, width='stretch')
 
         # ════════════════════════════════════════════════════════════════
         # PANE 2: THE TREND — Cumulative A/D as conditional fill area
@@ -1093,7 +951,7 @@ def _render_market_pulse(con, df, sel_date):
             hovermode="x unified",
         )
         fig_trend.update_yaxes(title_text="Cum. A/D", gridcolor=_COLORS["grid"])
-        st.plotly_chart(fig_trend, use_container_width=True)
+        st.plotly_chart(fig_trend, width='stretch')
 
         # ════════════════════════════════════════════════════════════════
         # PANE 3: THE OSCILLATOR — Net Tick Momentum histogram
@@ -1132,7 +990,7 @@ def _render_market_pulse(con, df, sel_date):
             hovermode="x unified",
         )
         fig_osc.update_yaxes(title_text="Net Ticks", gridcolor=_COLORS["grid"])
-        st.plotly_chart(fig_osc, use_container_width=True)
+        st.plotly_chart(fig_osc, width='stretch')
 
         # ── Summary KPIs for the breadth panel ──
         last_ad = cum_ad.iloc[-1]
@@ -1150,16 +1008,14 @@ def _render_market_pulse(con, df, sel_date):
     # Tick distribution by hour
     st.markdown("**Tick Activity by Hour**")
     hourly = pd.read_sql_query(
-        """SELECT
-             CAST(SUBSTR(ts, 12, 2) AS INTEGER) AS hour,
-             COUNT(*) AS ticks,
-             COUNT(DISTINCT symbol) AS symbols,
-             SUM(volume) AS volume
-           FROM intraday_bars
-           WHERE ts BETWEEN ? AND ?
-           GROUP BY hour ORDER BY hour""",
+        """SELECT hour,
+                  tick_count   AS ticks,
+                  symbol_count AS symbols
+           FROM intraday_hourly_summary
+           WHERE date = ? AND market = 'REG'
+           ORDER BY hour""",
         con,
-        params=[*_ts_range(sel_date)],
+        params=[sel_date],
     )
 
     if not hourly.empty:
@@ -1182,7 +1038,7 @@ def _render_market_pulse(con, df, sel_date):
         fig_hourly.update_yaxes(title_text="Ticks", secondary_y=False, gridcolor=_COLORS["grid"])
         fig_hourly.update_yaxes(title_text="Symbols", secondary_y=True, gridcolor=_COLORS["grid"])
         fig_hourly.update_xaxes(gridcolor=_COLORS["grid"])
-        st.plotly_chart(fig_hourly, use_container_width=True)
+        st.plotly_chart(fig_hourly, width='stretch')
 
     st.markdown("---")
 
@@ -1202,7 +1058,7 @@ def _render_market_pulse(con, df, sel_date):
             text=bucket_counts.values.astype(int), textposition="outside",
         ))
         _apply_layout(fig_buckets, height=300, xaxis_title="Change Range", yaxis_title="Stocks")
-        st.plotly_chart(fig_buckets, use_container_width=True)
+        st.plotly_chart(fig_buckets, width='stretch')
 
     st.markdown("---")
 
@@ -1249,7 +1105,7 @@ def _render_market_pulse(con, df, sel_date):
                 "net_ticks": "Net Ticks", "cum_ad": "Cum A/D", "cum_ticks": "Cum Ticks",
                 "ingested_at": "Saved At",
             }),
-            use_container_width=True, hide_index=True, height=400,
+            width='stretch', hide_index=True, height=400,
             column_config={
                 "Date": st.column_config.TextColumn("Date", width="small"),
                 "Adv": st.column_config.NumberColumn("Adv", format="%d"),
@@ -1304,7 +1160,7 @@ def _render_market_pulse(con, df, sel_date):
                 hovermode="x unified",
             )
             fig_hist_ad.update_yaxes(title_text="Running A/D", gridcolor=_COLORS["grid"])
-            st.plotly_chart(fig_hist_ad, use_container_width=True)
+            st.plotly_chart(fig_hist_ad, width='stretch')
 
     # Drill-down: view persisted minute data for a specific date
     if persisted_dates:
@@ -1322,7 +1178,7 @@ def _render_market_pulse(con, df, sel_date):
                             "cum_ad": "Cum A/D", "cum_ticks": "Cum Ticks",
                         }
                     ),
-                    use_container_width=True, hide_index=True, height=400,
+                    width='stretch', hide_index=True, height=400,
                 )
 
                 st.download_button(
@@ -1362,7 +1218,7 @@ def _render_volume(con, df, sel_date):
         yaxis=dict(autorange="reversed", gridcolor=_COLORS["grid"]),
         xaxis_title="Volume",
     )
-    st.plotly_chart(fig_vol, use_container_width=True)
+    st.plotly_chart(fig_vol, width='stretch')
 
     st.markdown("---")
 
@@ -1387,7 +1243,7 @@ def _render_volume(con, df, sel_date):
         ))
         fig_scatter.add_vline(x=0, line_dash="dash", line_color=_COLORS["text_dim"])
         _apply_layout(fig_scatter, height=450, xaxis_title="Change %", yaxis_title="Log10(Volume)")
-        st.plotly_chart(fig_scatter, use_container_width=True)
+        st.plotly_chart(fig_scatter, width='stretch')
 
     st.markdown("---")
 
@@ -1417,7 +1273,7 @@ def _render_volume(con, df, sel_date):
     fig_conc.add_hline(y=80, line_dash="dash", line_color=_COLORS["text_dim"],
                        annotation_text="80%", annotation_position="right")
     _apply_layout(fig_conc, height=300, xaxis_title="Number of Stocks (ranked)", yaxis_title="Cumulative Volume %")
-    st.plotly_chart(fig_conc, use_container_width=True)
+    st.plotly_chart(fig_conc, width='stretch')
 
     st.markdown("---")
 
@@ -1439,7 +1295,7 @@ def _render_volume(con, df, sel_date):
             textposition="outside",
         ))
         _apply_layout(fig_sv, height=350, xaxis_tickangle=-45)
-        st.plotly_chart(fig_sv, use_container_width=True)
+        st.plotly_chart(fig_sv, width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1469,7 +1325,7 @@ def _render_movers(con, df, sel_date):
             yaxis=dict(autorange="reversed", gridcolor=_COLORS["grid"]),
             xaxis_title="Change %",
         )
-        st.plotly_chart(fig_g, use_container_width=True)
+        st.plotly_chart(fig_g, width='stretch')
 
     with col_l:
         st.markdown("**Top Losers**")
@@ -1485,7 +1341,7 @@ def _render_movers(con, df, sel_date):
             yaxis=dict(autorange="reversed", gridcolor=_COLORS["grid"]),
             xaxis_title="Change %",
         )
-        st.plotly_chart(fig_l, use_container_width=True)
+        st.plotly_chart(fig_l, width='stretch')
 
     st.markdown("---")
 
@@ -1505,7 +1361,7 @@ def _render_movers(con, df, sel_date):
         yaxis=dict(autorange="reversed", gridcolor=_COLORS["grid"]),
         xaxis_title="Tick Count",
     )
-    st.plotly_chart(fig_active, use_container_width=True)
+    st.plotly_chart(fig_active, width='stretch')
 
     st.markdown("---")
 
@@ -1543,7 +1399,7 @@ def _render_movers(con, df, sel_date):
         xaxis_title="Price (Rs.)",
         title=dict(text="Low-High Range (diamond = last price)", font=dict(size=12)),
     )
-    st.plotly_chart(fig_range, use_container_width=True)
+    st.plotly_chart(fig_range, width='stretch')
 
     st.markdown("---")
 
@@ -1562,7 +1418,7 @@ def _render_movers(con, df, sel_date):
 
     st.dataframe(
         table_df.sort_values("PSX Vol" if "PSX Vol" in table_df.columns else "Tick Vol", ascending=False),
-        use_container_width=True, hide_index=True, height=500,
+        width='stretch', hide_index=True, height=500,
         column_config={
             "open": st.column_config.NumberColumn("Open", format="%.2f"),
             "high": st.column_config.NumberColumn("High", format="%.2f"),
@@ -1590,7 +1446,7 @@ def _render_movers(con, df, sel_date):
 # TAB: INDEX — IDX market ticks from JSONL
 # ═════════════════════════════════════════════════════════════════════════════
 
-_TICK_LOGS_DIR = Path("/mnt/e/psxdata/tick_logs")
+_TICK_LOGS_DIR = Path("/mnt/e/psxdata/tick_logs_cloud")
 
 
 def _list_jsonl_files():
@@ -1728,7 +1584,7 @@ def _render_index_ticks(sel_date: str):
         hovermode="x unified",
         legend=dict(orientation="h", y=1.12),
     )
-    st.plotly_chart(fig_price, use_container_width=True)
+    st.plotly_chart(fig_price, width='stretch')
 
     # ── Change % chart ──
     fig_chg = go.Figure()
@@ -1749,7 +1605,7 @@ def _render_index_ticks(sel_date: str):
         hovermode="x unified",
         legend=dict(orientation="h", y=1.12),
     )
-    st.plotly_chart(fig_chg, use_container_width=True)
+    st.plotly_chart(fig_chg, width='stretch')
 
     # ── High/Low range bar ──
     st.markdown("#### Intraday Range")
@@ -1779,7 +1635,7 @@ def _render_index_ticks(sel_date: str):
         yaxis=dict(gridcolor="#1e2430"),
         margin=dict(l=10, r=10, t=10, b=10),
     )
-    st.plotly_chart(fig_range, use_container_width=True)
+    st.plotly_chart(fig_range, width='stretch')
 
     # ── Raw data table ──
     with st.expander("Raw IDX ticks"):
@@ -1788,7 +1644,7 @@ def _render_index_ticks(sel_date: str):
         show_cols = [c for c in show_cols if c in df_sel.columns]
         st.dataframe(
             df_sel[show_cols].sort_values("_ts", ascending=False),
-            use_container_width=True, hide_index=True, height=400,
+            width='stretch', hide_index=True, height=400,
         )
 
 
@@ -1889,7 +1745,7 @@ def _render_dedup():
         # Color-code dupe % for visibility
         st.dataframe(
             rdf,
-            use_container_width=True, hide_index=True,
+            width='stretch', hide_index=True,
             column_config={
                 "Dupe %": st.column_config.ProgressColumn("Dupe %", min_value=0, max_value=100, format="%.1f%%"),
                 "Size (MB)": st.column_config.NumberColumn("Size (MB)", format="%.1f"),
@@ -1974,23 +1830,101 @@ def _render_sync(con, sel_date):
             if progress.get("json_dir"):
                 st.caption(f"JSON files: {progress['json_dir']}")
 
-        # Row 1: SQLite buttons (existing)
-        st.markdown("#### SQLite (psx.sqlite)")
+        # ── Step 1: Fetch All → Disk (parallel sharded) ──
+        st.markdown("#### Step 1: Fetch All Ticks → Disk")
+        st.caption(
+            "Fetch tick data from PSX API for all symbols using **3 parallel shards** "
+            "(10 workers each) and save JSON files to disk. "
+            "SUSPENDED/DELISTED (>30 days) skipped."
+        )
+        fetch_disk_date = st.date_input(
+            "Date (output folder)",
+            value=last_td,
+            max_value=date.today(),
+            key="int_fetch_disk_date",
+        )
+        if st.button(
+            f"Fetch All Ticks → Disk ({fetch_disk_date.isoformat()})",
+            key="int_fetch_disk_btn",
+            type="primary",
+        ):
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            from pakfindata.sync_timeseries import fetch_ticks_to_disk_parallel
+
+            with st.spinner(f"Fetching ticks for {fetch_disk_date.isoformat()} (3 shards)..."):
+                try:
+                    result = fetch_ticks_to_disk_parallel(
+                        con, fetch_disk_date.isoformat(), n_shards=3,
+                    )
+                    st.success(
+                        f"Done! **{result['ok']}** symbols, "
+                        f"**{result['ticks']:,}** ticks saved. "
+                        f"{result['fail']} failed, {result['skipped']} skipped. "
+                        f"→ `{result['json_dir']}`"
+                    )
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+        st.markdown("---")
+
+        # ── Step 2: Load from Disk → SQLite ──
+        st.markdown("#### Step 2: Disk → SQLite")
+        _intraday_root = Path("/mnt/e/psxdata/intraday")
+        _disk_dates = sorted(
+            [d.name for d in _intraday_root.iterdir() if d.is_dir() and d.name[:4].isdigit()],
+            reverse=True,
+        ) if _intraday_root.is_dir() else []
+        load_disk_date = st.selectbox(
+            "Date (disk folder)", _disk_dates,
+            index=_disk_dates.index(last_td_str) if last_td_str in _disk_dates else 0,
+            key="int_load_disk_date",
+        )
         bulk_col1, bulk_col2, bulk_col3 = st.columns(3)
         with bulk_col1:
-            save_json = st.checkbox(
-                "Save JSON files", value=False, key="int_bulk_save_json",
-                help="Save raw PSX responses to /mnt/e/psxdata/intraday/{date}/{SYMBOL}.json",
-            )
             if st.button(
-                f"Fetch PSX Ticks ({last_td_str})", key="int_bulk_btn", type="primary",
-                help=f"Fetches {last_td_str} ({last_td.strftime('%A')}) tick-level trades for all ~620 symbols.",
+                f"Load Ticks from Disk ({load_disk_date})", key="int_bulk_btn", type="primary",
+                help=f"Reads JSON files from /mnt/e/psxdata/intraday/{load_disk_date}/ and loads into intraday_bars + tick_data.",
             ):
-                started = start_intraday_sync(save_json=save_json)
-                if started:
-                    st.success(f"Fetching PSX ticks for {last_td_str} — auto-refreshing progress...")
-                else:
-                    st.warning("Already running.")
+                from pakfindata.sync_timeseries import load_ticks_from_disk
+                with st.spinner(f"Loading ticks from disk for {load_disk_date}..."):
+                    try:
+                        result = load_ticks_from_disk(con, load_disk_date)
+                        if result.get("error"):
+                            st.error(result["error"])
+                        else:
+                            st.success(
+                                f"Loaded {result['ok']}/{result['total_files']} files, "
+                                f"{result['rows_total']:,} rows → intraday_bars + tick_data"
+                            )
+                            # Update manifest once after bulk load
+                            try:
+                                from pakfindata.db.date_manifest import add_date
+                                add_date("intraday_bars", load_disk_date)
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+                # Chained step: build summary tables from JSONL
+                try:
+                    from pakfindata.db.repositories import intraday_summary as _isum
+                    if _isum.source_available(load_disk_date) == "jsonl":
+                        with st.spinner(f"Building summaries for {load_disk_date}..."):
+                            sres = _isum.compute_all(con, load_disk_date)
+                        if "error" in sres:
+                            st.warning(f"Summary build skipped: {sres['error']}")
+                        else:
+                            t = sres["timings"]
+                            st.success(
+                                f"Summaries built in {t['total_s']}s — "
+                                f"daily: {sres['daily']}, minute: {sres['minute_breadth']}, hourly: {sres['hourly']}"
+                            )
+                    else:
+                        st.info(
+                            f"No JSONL for {load_disk_date} — run tick log sync to enable summary build."
+                        )
+                except Exception as e:
+                    st.warning(f"Summary build failed: {e}")
 
         with bulk_col2:
             if st.button(
@@ -2002,11 +1936,10 @@ def _render_sync(con, sel_date):
                     from collections import defaultdict
                     from pakfindata.config import DATA_ROOT
 
-                    _ts_s, _ts_e = _ts_range(last_td_str)
                     rows = con.execute(
                         "SELECT symbol, ts_epoch, close, volume "
-                        "FROM intraday_bars WHERE ts BETWEEN ? AND ? ORDER BY symbol, ts_epoch",
-                        (_ts_s, _ts_e),
+                        "FROM intraday_bars WHERE date = ? ORDER BY symbol, ts_epoch",
+                        (last_td_str,),
                     ).fetchall()
                     by_sym = defaultdict(list)
                     for r in rows:
@@ -2033,168 +1966,325 @@ def _render_sync(con, sel_date):
                 except Exception as e:
                     st.error(f"Promote failed: {e}")
 
-        # Row 2: DuckDB buttons (new)
-        st.markdown("#### DuckDB (pakfindata.duckdb) — Primary")
-        duck_col1, duck_col2 = st.columns(2)
-        with duck_col1:
-            if st.button(
-                f"🦆 Fetch PSX Ticks → DuckDB ({last_td_str})", key="int_duck_fetch_btn",
-                type="primary",
-                help=f"Fetches {last_td_str} ticks and writes ONLY to DuckDB intraday_bars.",
+        # Row 2: Parquet export
+        st.markdown("#### Parquet Export")
+        from pathlib import Path as _Path
+        _intraday_root = _Path("/mnt/e/psxdata/intraday")
+        _avail_dates = sorted(
+            [d.name for d in _intraday_root.iterdir() if d.is_dir() and d.name[:4].isdigit()],
+            reverse=True,
+        ) if _intraday_root.is_dir() else []
+        _duck_date = st.selectbox(
+            "Date (JSON folder)", _avail_dates,
+            index=_avail_dates.index(last_td_str) if last_td_str in _avail_dates else 0,
+            key="int_duck_date_select",
+        )
+        if st.button(
+            f"Export intraday_bars → Parquet ({_duck_date})", key="int_duck_fetch_btn",
+            type="primary",
+            help=f"Exports intraday_bars for {_duck_date} from SQLite to Parquet.",
+        ):
+            try:
+                from pakfindata.db.parquet_store import export_table
+                with st.spinner(f"Exporting intraday_bars for {_duck_date}..."):
+                    rows = export_table("intraday_bars", _duck_date)
+                st.success(f"Exported intraday_bars: {rows:,} rows → Parquet/{_duck_date}.parquet")
+            except Exception as e:
+                import traceback
+                st.error(f"Parquet export failed: {e}")
+                st.code(traceback.format_exc(), language="python")
+
+        # ── Build Summary Tables from JSONL ──
+        st.markdown("#### Build Intraday Summary Tables")
+        st.caption(
+            "Aggregates `tick_logs_cloud/ticks_{date}.jsonl` into three summary tables "
+            "(`intraday_daily_summary`, `intraday_minute_breadth`, `intraday_hourly_summary`). "
+            "Parser runs via in-memory DuckDB — no persistent DuckDB file, no locks. "
+            "Output is written to SQLite."
+        )
+
+        try:
+            from pakfindata.db.repositories import intraday_summary as _isum
+            _isum.ensure_tables(con)
+            _stats = _isum.get_stats(con)
+        except Exception as _e:
+            _stats = {"total_rows": 0, "dates": 0, "first_date": None, "last_date": None}
+            st.caption(f"(summary tables not yet created: {_e})")
+
+        _sc1, _sc2, _sc3 = st.columns(3)
+        _sc1.metric("Rows", f"{_stats['total_rows']:,}")
+        _sc2.metric("Dates", _stats["dates"])
+        _sc3.metric("Last", _stats["last_date"] or "—")
+
+        _jl_root = Path("/mnt/e/psxdata/tick_logs_cloud")
+        _jl_dates = sorted(
+            [p.stem.replace("ticks_", "") for p in _jl_root.glob("ticks_*.jsonl")],
+            reverse=True,
+        ) if _jl_root.is_dir() else []
+        _sum_date = st.selectbox(
+            "Date (JSONL source)", _jl_dates,
+            index=_jl_dates.index(last_td_str) if last_td_str in _jl_dates else 0,
+            key="int_sum_date_select",
+        ) if _jl_dates else None
+
+        _sumb1, _sumb2 = st.columns(2)
+        with _sumb1:
+            if _sum_date and st.button(
+                f"Build Summaries for {_sum_date}",
+                key="int_sum_build_btn", type="primary",
+                help="Runs daily / minute breadth / hourly aggregations for this date.",
             ):
-                try:
-                    from pakfindata.db.connections import has_duckdb, duck_write
-                    if not has_duckdb():
-                        st.error("DuckDB file not found at /mnt/e/psxdata/pakfindata.duckdb")
-                    else:
-                        import time as _time
-                        import requests
-                        INT_URL = "https://dps.psx.com.pk/timeseries/int/{symbol}"
+                from pakfindata.db.repositories import intraday_summary as _isum
+                with st.spinner(f"Aggregating {_sum_date}..."):
+                    try:
+                        result = _isum.compute_all(con, _sum_date)
+                        if "error" in result:
+                            st.error(result["error"])
+                        else:
+                            t = result["timings"]
+                            st.success(
+                                f"Done in {t['total_s']}s — "
+                                f"daily: {result['daily']} rows ({t['daily_s']}s), "
+                                f"minute: {result['minute_breadth']} rows ({t['minute_breadth_s']}s), "
+                                f"hourly: {result['hourly']} rows ({t['hourly_s']}s)"
+                            )
+                    except Exception as e:
+                        import traceback
+                        st.error(f"Build failed: {e}")
+                        st.code(traceback.format_exc(), language="python")
 
-                        syms = get_symbols_list(con)
-                        total = len(syms)
-                        progress_bar = st.progress(0, text=f"Fetching 0/{total}...")
-                        ok_count = 0
-                        fail_count = 0
-                        total_rows = 0
-                        session = requests.Session()
+        with _sumb2:
+            if st.button(
+                "Build Missing (all JSONL dates)",
+                key="int_sum_build_missing_btn",
+                help="Runs aggregations for every JSONL date not yet in the summary table.",
+            ):
+                from pakfindata.db.repositories import intraday_summary as _isum
+                _existing = set(_isum.get_summary_dates(con))
+                _missing = [d for d in _jl_dates if d not in _existing]
+                if not _missing:
+                    st.info("No missing dates — all JSONL dates already summarized.")
+                else:
+                    _prog = st.progress(0, text=f"0/{len(_missing)}")
+                    _ok = 0
+                    for _i, _d in enumerate(_missing):
+                        try:
+                            _isum.compute_all(con, _d)
+                            _ok += 1
+                        except Exception as _e:
+                            st.warning(f"{_d}: {_e}")
+                        _prog.progress((_i + 1) / len(_missing), text=f"{_i+1}/{len(_missing)} ({_d})")
+                    st.success(f"Built summaries for {_ok}/{len(_missing)} dates.")
 
-                        for i, sym in enumerate(syms):
-                            try:
-                                resp = session.get(INT_URL.format(symbol=sym), timeout=15)
-                                resp.raise_for_status()
-                                payload = resp.json()
-                                data = payload.get("data", payload) if isinstance(payload, dict) else payload
-                                if not isinstance(data, list):
-                                    data = []
+    st.markdown("---")
 
-                                if data:
-                                    rows = []
-                                    now = datetime.now().isoformat()
+    # ── Data Coverage / Gap Detector ──
+    st.markdown("### Data Coverage — Gap Detector")
+    if st.button("Scan All Dates", key="int_gap_scan"):
+        with st.spinner("Scanning all data stores..."):
+            from pathlib import Path as _P
+            from pakfindata.db.date_manifest import get_dates
+
+            # Use manifest for instant lookups
+            _eod = set(d for d in get_dates("eod_ohlcv") if d >= "2026-02-01")
+            _sq_dates = set(d for d in get_dates("intraday_bars") if d >= "2026-02-01")
+            _tb = set(get_dates("ohlcv_5s"))
+            _jl = set(get_dates("tick_jsonl"))
+            _duck_dates = _sq_dates  # same source
+
+            # Disk JSON dates (filesystem scan — fast)
+            _disk_root = _P("/mnt/e/psxdata/intraday")
+            _disk = set(
+                p.name for p in _disk_root.iterdir()
+                if p.is_dir() and p.name[:4].isdigit() and p.name >= "2026-02-01"
+            ) if _disk_root.is_dir() else set()
+
+            _all = sorted(_eod | _disk | _sq_dates | _tb | _jl | _duck_dates)
+            rows_data = []
+            for dt in _all:
+                if dt < "2026-02-01":
+                    continue
+                in_eod = dt in _eod
+                in_disk = dt in _disk
+                in_sq = dt in _sq_dates
+                in_tb = dt in _tb
+                in_jl = dt in _jl
+                in_duck = dt in _duck_dates
+
+                disk_count = ""
+                if in_disk:
+                    disk_count = str(len(list((_disk_root / dt).glob("*.json"))))
+
+                status = "OK" if (in_disk and in_sq and in_duck) else "GAP"
+                rows_data.append({
+                    "Date": dt,
+                    "EOD": "Y" if in_eod else "-",
+                    "Disk JSON": disk_count if in_disk else "MISS",
+                    "SQLite": "Y" if in_sq else "MISS",
+                    "DuckDB": "Y" if in_duck else "MISS",
+                    "TickBar": "Y" if in_tb else "-",
+                    "JSONL": "Y" if in_jl else "-",
+                    "Status": status,
+                })
+
+            import pandas as _gap_pd
+            gap_df = _gap_pd.DataFrame(rows_data)
+
+            gaps = gap_df[gap_df["Status"] == "GAP"]
+            if gaps.empty:
+                st.success(f"No gaps found across {len(gap_df)} trading dates!")
+            else:
+                st.warning(f"{len(gaps)} dates have gaps out of {len(gap_df)} total")
+
+            # Color the status column
+            def _highlight_gaps(row):
+                if row["Status"] == "GAP":
+                    return ["background-color: #3a1c1c"] * len(row)
+                return [""] * len(row)
+
+            st.dataframe(
+                gap_df.style.apply(_highlight_gaps, axis=1),
+                width='stretch',
+                height=min(len(gap_df) * 35 + 40, 600),
+            )
+
+            # Backfill suggestions
+            fillable = []
+            for _, r in gap_df.iterrows():
+                if r["Disk JSON"] == "MISS" and r["JSONL"] == "Y":
+                    fillable.append((r["Date"], "JSONL → Disk JSON"))
+                elif r["Disk JSON"] == "MISS" and r["SQLite"] == "Y":
+                    fillable.append((r["Date"], "SQLite → Disk JSON"))
+                if r["SQLite"] == "MISS" and r["Disk JSON"] not in ("MISS", ""):
+                    fillable.append((r["Date"], "Disk JSON → SQLite"))
+                if r["DuckDB"] == "MISS" and r["Disk JSON"] not in ("MISS", ""):
+                    fillable.append((r["Date"], "Disk JSON → DuckDB"))
+
+            if fillable:
+                st.markdown("**Auto-fixable gaps:**")
+                for dt, action in fillable:
+                    st.caption(f"  {dt}: {action}")
+
+                if st.button("Fix All Gaps", key="int_fix_gaps", type="primary"):
+                    import json as _json2
+                    from collections import defaultdict as _dd
+                    fixed = 0
+                    for dt, action in fillable:
+                        try:
+                            if action == "JSONL → Disk JSON":
+                                # Find JSONL file
+                                jl_file = None
+                                for _d2 in [_P("/mnt/e/psxdata/tick_logs_cloud"), _P("/mnt/e/psxdata/tick_logs_cloud")]:
+                                    candidate = _d2 / f"ticks_{dt}.jsonl"
+                                    if candidate.exists():
+                                        jl_file = candidate
+                                        break
+                                if jl_file:
+                                    out_dir = _disk_root / dt
+                                    out_dir.mkdir(parents=True, exist_ok=True)
+                                    syms = _dd(list)
+                                    with open(jl_file) as _fh:
+                                        for _line in _fh:
+                                            _row = _json2.loads(_line)
+                                            if _row.get("market") != "REG":
+                                                continue
+                                            syms[_row["symbol"]].append([_row["timestamp"], _row["price"], _row.get("volume", 0)])
+                                    for sym, trades in syms.items():
+                                        seen = set()
+                                        unique = []
+                                        for t in trades:
+                                            k = (t[0], t[1], t[2])
+                                            if k not in seen:
+                                                seen.add(k)
+                                                unique.append(t)
+                                        unique.sort(key=lambda x: x[0], reverse=True)
+                                        (out_dir / f"{sym}.json").write_text(
+                                            _json2.dumps({"status": 1, "message": "", "data": unique}, indent=2)
+                                        )
+                                    st.toast(f"Fixed {dt}: {len(syms)} symbols from JSONL")
+                                    fixed += 1
+
+                            elif action == "SQLite → Disk JSON":
+                                out_dir = _disk_root / dt
+                                out_dir.mkdir(parents=True, exist_ok=True)
+                                rows = con.execute(
+                                    "SELECT symbol, ts_epoch, close, volume FROM intraday_bars "
+                                    "WHERE ts BETWEEN ? AND ? ORDER BY symbol, ts_epoch",
+                                    (f"{dt} 00:00:00", f"{dt} 23:59:59"),
+                                ).fetchall()
+                                by_sym = _dd(list)
+                                for r in rows:
+                                    by_sym[r["symbol"]].append([r["ts_epoch"], r["close"], r["volume"]])
+                                for sym, data in by_sym.items():
+                                    data.sort(key=lambda x: x[0], reverse=True)
+                                    (out_dir / f"{sym}.json").write_text(
+                                        _json2.dumps({"status": 1, "message": "", "data": data}, indent=2)
+                                    )
+                                st.toast(f"Fixed {dt}: {len(by_sym)} symbols from SQLite")
+                                fixed += 1
+
+                            elif action == "Disk JSON → SQLite":
+                                json_dir = _disk_root / dt
+                                batch = []
+                                for jf in json_dir.glob("*.json"):
+                                    sym = jf.stem
+                                    payload = _json2.loads(jf.read_text())
+                                    data = payload.get("data", payload) if isinstance(payload, dict) else payload
+                                    if not isinstance(data, list):
+                                        continue
+                                    # Aggregate to 1s bars (v3 schema bar semantics)
+                                    by_sec: dict[int, dict] = {}
                                     for item in data:
                                         if not isinstance(item, list) or len(item) < 2:
                                             continue
                                         ts_epoch = int(item[0])
+                                        price = float(item[1])
+                                        volume = float(item[2]) if len(item) >= 3 else 0
+                                        b = by_sec.get(ts_epoch)
+                                        if b is None:
+                                            by_sec[ts_epoch] = {
+                                                "o": price, "h": price, "l": price, "c": price,
+                                                "v": volume, "tc": 1, "pv": price * volume,
+                                            }
+                                        else:
+                                            b["h"] = max(b["h"], price)
+                                            b["l"] = min(b["l"], price)
+                                            b["c"] = price
+                                            b["v"] += volume
+                                            b["tc"] += 1
+                                            b["pv"] += price * volume
+                                    for ts_epoch, b in by_sec.items():
                                         try:
                                             ts_str = datetime.fromtimestamp(ts_epoch).strftime("%Y-%m-%d %H:%M:%S")
                                         except (ValueError, OSError):
                                             continue
-                                        price = float(item[1])
-                                        volume = float(item[2]) if len(item) >= 3 else 0
-                                        rows.append({
-                                            "symbol": sym, "ts": ts_str, "ts_epoch": ts_epoch,
-                                            "open": price, "high": price, "low": price,
-                                            "close": price, "volume": volume,
-                                            "interval": "int", "ingested_at": now,
-                                            "operation": "insert", "process_ts": "",
-                                        })
-
-                                    if rows:
-                                        import pandas as _pd
-                                        from pakfindata.db.connections import duck_insert
-                                        df = _pd.DataFrame(rows)
-                                        duck_insert("intraday_bars", df)
-                                        total_rows += len(rows)
-
-                                ok_count += 1
-                            except Exception:
-                                fail_count += 1
-
-                            if (i + 1) % 5 == 0 or i == total - 1:
-                                progress_bar.progress(
-                                    (i + 1) / total,
-                                    text=f"{i+1}/{total} — {ok_count} ok, {fail_count} fail, {total_rows:,} rows",
+                                        vwap = (b["pv"] / b["v"]) if b["v"] > 0 else b["c"]
+                                        batch.append((sym, "REG", dt, ts_str, ts_epoch,
+                                                      b["o"], b["h"], b["l"], b["c"],
+                                                      b["v"], b["tc"], vwap))
+                                con.executemany(
+                                    "INSERT OR IGNORE INTO intraday_bars "
+                                    "(symbol, market, date, ts, ts_epoch, interval, "
+                                    " open, high, low, close, volume, trade_count, vwap, source) "
+                                    "VALUES (?,?,?,?,?,'1s',?,?,?,?,?,?,?,'disk_json')",
+                                    batch,
                                 )
-                            _time.sleep(0.3)
+                                con.commit()
+                                st.toast(f"Fixed {dt}: {len(batch):,} rows → SQLite")
+                                fixed += 1
 
-                        st.success(
-                            f"DuckDB: {ok_count}/{total} symbols, {total_rows:,} rows → intraday_bars"
-                        )
-                except Exception as e:
-                    st.error(f"DuckDB fetch failed: {e}")
+                            elif action == "Disk JSON → DuckDB":
+                                # Export to Parquet instead of DuckDB
+                                from pakfindata.db.parquet_store import export_table
+                                rows = export_table("intraday_bars", dt)
+                                st.toast(f"Fixed {dt}: {rows:,} rows → Parquet")
+                                fixed += 1
+                        except Exception as e:
+                            st.error(f"Failed {dt}: {e}")
 
-        with duck_col2:
-            if st.button(
-                f"🦆 intraday_bars → eod_ohlcv DuckDB ({last_td_str})", key="int_duck_promote_btn",
-                help=f"Reads DuckDB intraday_bars, aggregates to DuckDB eod_ohlcv for {last_td_str}.",
-            ):
-                try:
-                    from pakfindata.db.connections import has_duckdb, duck_write
-                    if not has_duckdb():
-                        st.error("DuckDB file not found")
-                    else:
-                        dcon = duck_write()
-                        ts_start = f"{last_td_str} 00:00:00"
-                        ts_end = f"{last_td_str} 23:59:59"
-                        now = datetime.now().isoformat()
-
-                        # Aggregate intraday_bars → OHLCV
-                        agg = dcon.execute("""
-                            WITH ranked AS (
-                                SELECT symbol, close, volume,
-                                    ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY ts_epoch ASC) AS rn_first,
-                                    ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY ts_epoch DESC) AS rn_last
-                                FROM intraday_bars
-                                WHERE ts BETWEEN ? AND ?
-                            )
-                            SELECT
-                                symbol,
-                                MAX(CASE WHEN rn_first = 1 THEN close END) AS open,
-                                MAX(close) AS high,
-                                MIN(close) AS low,
-                                MAX(CASE WHEN rn_last = 1 THEN close END) AS close,
-                                MAX(volume) AS volume
-                            FROM ranked
-                            GROUP BY symbol
-                            HAVING COUNT(*) >= 2
-                        """, [ts_start, ts_end]).fetchall()
-
-                        if not agg:
-                            dcon.close()
-                            st.warning(f"No intraday_bars found for {last_td_str} in DuckDB")
-                        else:
-                            # Get prev_close from DuckDB eod_ohlcv
-                            prev_rows = dcon.execute("""
-                                SELECT symbol, close, sector_code, company_name
-                                FROM eod_ohlcv
-                                WHERE date = (SELECT MAX(date) FROM eod_ohlcv WHERE date < ?)
-                            """, [last_td_str]).fetchall()
-                            prev_map = {r[0]: r[1] for r in prev_rows}
-                            sector_map = {r[0]: r[2] for r in prev_rows if r[2]}
-                            name_map = {r[0]: r[3] for r in prev_rows if r[3]}
-
-                            import pandas as _pd
-                            eod_rows = []
-                            for r in agg:
-                                sym = r[0]
-                                eod_rows.append({
-                                    "symbol": sym, "date": last_td_str,
-                                    "open": r[1], "high": r[2], "low": r[3],
-                                    "close": r[4], "volume": int(r[5]) if r[5] else 0,
-                                    "prev_close": prev_map.get(sym),
-                                    "sector_code": sector_map.get(sym),
-                                    "company_name": name_map.get(sym),
-                                    "ingested_at": now, "source": "intraday_aggregation",
-                                    "processname": "duckdb_promote", "turnover": None,
-                                })
-                            eod_df = _pd.DataFrame(eod_rows)
-                            dcon.register("_eod_agg", eod_df)
-                            dcon.execute("""
-                                INSERT INTO eod_ohlcv SELECT * FROM _eod_agg
-                                ON CONFLICT (symbol, date) DO UPDATE SET
-                                    open = excluded.open, high = excluded.high,
-                                    low = excluded.low, close = excluded.close,
-                                    volume = excluded.volume, prev_close = excluded.prev_close,
-                                    sector_code = COALESCE(excluded.sector_code, eod_ohlcv.sector_code),
-                                    company_name = COALESCE(excluded.company_name, eod_ohlcv.company_name),
-                                    ingested_at = excluded.ingested_at, source = excluded.source,
-                                    processname = excluded.processname
-                            """)
-                            dcon.unregister("_eod_agg")
-                            dcon.close()
-                            st.success(f"DuckDB: {len(agg)} symbols → eod_ohlcv for {last_td_str}")
-                except Exception as e:
-                    st.error(f"DuckDB promote failed: {e}")
+                    if fixed:
+                        st.success(f"Fixed {fixed}/{len(fillable)} gaps")
+                        st.rerun()
 
     st.markdown("---")
 

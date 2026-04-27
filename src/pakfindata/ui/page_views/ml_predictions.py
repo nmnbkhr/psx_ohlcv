@@ -93,7 +93,7 @@ def _render_train_tab():
         sym_single = st.text_input("Symbol", "HUBC").strip().upper()
         symbols = [sym_single] if sym_single else None
 
-    if st.button("Train Model", type="primary", use_container_width=True):
+    if st.button("Train Model", type="primary", width='stretch'):
         feature_cols = FEATURE_COLS + (TICK_FEATURE_COLS if include_ticks else [])
         symbols_key = str(symbols) + str(lookback) + str(target_horizon) + str(include_ticks)
 
@@ -143,7 +143,7 @@ def _render_train_tab():
         fold_df = pd.DataFrame(results["folds"])
         for col in ["accuracy", "precision", "recall", "f1"]:
             fold_df[col] = fold_df[col].map(lambda x: f"{x:.1%}")
-        st.dataframe(fold_df, use_container_width=True, hide_index=True)
+        st.dataframe(fold_df, width='stretch', hide_index=True)
 
         # -- Confusion matrix --
         st.subheader("Confusion Matrix")
@@ -160,7 +160,7 @@ def _render_train_tab():
             showscale=False,
         ))
         fig_cm.update_layout(**PLOT_LAYOUT, height=300, title="Confusion Matrix")
-        st.plotly_chart(fig_cm, use_container_width=True)
+        st.plotly_chart(fig_cm, width='stretch')
 
         # -- Equity curve --
         st.subheader("Equity Curve (following predictions)")
@@ -179,7 +179,7 @@ def _render_train_tab():
         fig_eq.add_hline(y=1.0, line_dash="dash", line_color="#666")
         fig_eq.update_layout(**PLOT_LAYOUT, height=350, title="Cumulative Equity",
                              yaxis_title="Growth of $1", xaxis_title="Trade #")
-        st.plotly_chart(fig_eq, use_container_width=True)
+        st.plotly_chart(fig_eq, width='stretch')
 
         # -- Train final model and save --
         with st.spinner("Training final model on full dataset..."):
@@ -196,10 +196,24 @@ def _render_train_tab():
                 "accuracy": overall["accuracy"],
                 "auc": overall["auc"],
                 "trained_at": datetime.now().isoformat(),
+                "cv_sample_predictions": results.get("sample_predictions", []),
             }
             path = save_model(final_model, final_scaler, metadata)
 
         st.success(f"Model saved to `{path}`")
+
+        # Bootstrap credibility from CV results
+        cv_preds = results.get("sample_predictions", [])
+        if cv_preds:
+            from pakfindata.engine.ml_model import BayesianCredibility
+            tracker = BayesianCredibility()
+            added = tracker.seed_from_cv(cv_preds)
+            if added > 0:
+                cred = tracker.get_credibility()
+                st.success(
+                    f"Credibility bootstrapped: **{added}** CV predictions seeded "
+                    f"→ **{cred['assessment']}** ({cred['posterior_mean']:.1%} accuracy)"
+                )
 
         # Store for other tabs
         st.session_state["ml_model"] = final_model
@@ -237,6 +251,38 @@ def _render_predictions_tab():
                f"CV Accuracy: **{meta.get('accuracy', 0):.1%}** | "
                f"Trained: {meta.get('trained_at', 'unknown')[:16]}")
 
+    # Bayesian credibility panel
+    from pakfindata.engine.ml_model import BayesianCredibility, compute_expected_value
+    from pakfindata.engine.ml_features import compute_return_targets
+    from scipy import stats as sp_stats
+    from datetime import datetime, timezone, timedelta
+
+    tracker = BayesianCredibility()
+
+    # Resolve pending predictions from previous days
+    try:
+        updated = tracker.update_actuals()
+        if updated > 0:
+            st.toast(f"Updated {updated} previous predictions with actual results")
+    except Exception:
+        pass
+
+    cred = tracker.get_credibility()
+
+    # Auto-seed from CV if credibility is empty and model has CV data
+    if cred["assessment"] == "NO_DATA":
+        try:
+            _saved = load_model("latest")
+            if _saved:
+                cv_preds = _saved.get("metadata", {}).get("cv_sample_predictions", [])
+                if cv_preds:
+                    added = tracker.seed_from_cv(cv_preds)
+                    if added > 0:
+                        cred = tracker.get_credibility()
+        except Exception:
+            pass
+    _render_credibility_panel(cred)
+
     sym_input = st.text_input(
         "Symbols (comma-separated, blank = top 30)",
         help="Leave blank to predict top 30 by volume",
@@ -250,11 +296,14 @@ def _render_predictions_tab():
             con = _duck_con()
             symbols = [r[0] for r in con.execute("""
                 SELECT symbol FROM eod_ohlcv
-                WHERE CAST(date AS DATE) >= CAST((SELECT MAX(date) FROM eod_ohlcv) AS DATE) - INTERVAL '5 days'
+                WHERE date >= (SELECT MAX(date) FROM eod_ohlcv)
                 GROUP BY symbol
                 ORDER BY SUM(volume) DESC
                 LIMIT 30
             """).fetchall()]
+
+        pkt = timezone(timedelta(hours=5))
+        today = datetime.now(pkt).strftime("%Y-%m-%d")
 
         rows = []
         progress = st.progress(0)
@@ -276,17 +325,41 @@ def _render_predictions_tab():
             )
 
             signal = "BUY" if pred == 1 else "SELL"
-            strength = abs(prob - 0.5) * 200  # 0-100 scale
+            current_price = float(df.iloc[-1]["close"])
+
+            # Compute expected PKR value
+            rt_df = compute_return_targets(df)
+            last_row = rt_df.iloc[-1]
+            hist_up = float(last_row.get("hist_up_move_avg", 0.8) or 0.8)
+            hist_dn = float(last_row.get("hist_dn_move_avg", 0.6) or 0.6)
+            hist_vol = float(last_row.get("hist_volatility", 25.0) or 25.0)
+
+            ev = compute_expected_value(prob, current_price, hist_up, hist_dn, hist_vol)
+
+            # Get per-symbol credibility
+            sym_cred = tracker.get_credibility(symbol=sym)
 
             rows.append({
                 "Symbol": sym,
                 "Direction": signal,
-                "Probability": prob,
-                "Strength": strength,
-                "Close": df.iloc[-1]["close"],
-                "Return 1d": df.iloc[-1].get("returns", 0),
-                "RSI": df.iloc[-1].get("rsi_14", 0),
+                "Probability": prob if pred == 1 else (1 - prob),
+                "Close": current_price,
+                "Predicted": ev["expected_price"],
+                "Move (PKR)": ev["expected_move_pkr"],
+                "EV (PKR)": ev["expected_move_pkr"],
+                "R/R": ev["risk_reward"],
+                "Credibility": sym_cred["assessment"],
             })
+
+            # Log prediction
+            try:
+                tracker.log_prediction(
+                    symbol=sym, date=today,
+                    predicted_dir=signal, prob=float(prob),
+                    predicted_price=ev["expected_price"],
+                )
+            except Exception:
+                pass
 
         progress.empty()
 
@@ -294,15 +367,11 @@ def _render_predictions_tab():
             st.warning("No predictions generated.")
             return
 
-        pred_df = pd.DataFrame(rows).sort_values("Probability", ascending=False)
+        pred_df = pd.DataFrame(rows).sort_values("EV (PKR)", ascending=False)
 
         # Color coding
         def _color_direction(val):
-            if val == "BUY":
-                return "color: #3fb950"
-            elif val == "SELL":
-                return "color: #f85149"
-            return "color: #8b949e"
+            return "color: #3fb950" if val == "BUY" else "color: #f85149"
 
         def _color_prob(val):
             if val >= 0.6:
@@ -311,25 +380,114 @@ def _render_predictions_tab():
                 return "color: #f85149"
             return "color: #8b949e"
 
+        def _color_ev(val):
+            return "color: #3fb950" if val > 0 else "color: #f85149" if val < 0 else ""
+
+        def _color_cred(val):
+            colors = {"STRONG": "#00BCD4", "CREDIBLE": "#00E676", "MARGINAL": "#FFB300",
+                       "NOT_CREDIBLE": "#FF5252", "INSUFFICIENT": "#6B7280", "NO_DATA": "#6B7280"}
+            return f"color: {colors.get(val, '#6B7280')}"
+
         styled = pred_df.style.map(
             _color_direction, subset=["Direction"]
         ).map(
             _color_prob, subset=["Probability"]
+        ).map(
+            _color_ev, subset=["Move (PKR)", "EV (PKR)"]
+        ).map(
+            _color_cred, subset=["Credibility"]
         ).format({
             "Probability": "{:.1%}",
-            "Strength": "{:.0f}",
             "Close": "{:,.2f}",
-            "Return 1d": "{:.2%}",
-            "RSI": "{:.1f}",
+            "Predicted": "{:,.2f}",
+            "Move (PKR)": "{:+,.2f}",
+            "EV (PKR)": "{:+,.2f}",
+            "R/R": "{:.1f}x",
         })
 
-        st.dataframe(styled, use_container_width=True, hide_index=True, height=600)
+        st.dataframe(styled, width='stretch', hide_index=True, height=600)
 
         # Summary
         buys = sum(1 for r in rows if r["Direction"] == "BUY")
         sells = len(rows) - buys
-        st.caption(f"**{buys}** BUY signals | **{sells}** SELL signals | "
-                   f"**{len(rows)}** total symbols")
+        pos_ev = sum(1 for r in rows if r["EV (PKR)"] > 0)
+        st.caption(f"**{buys}** BUY | **{sells}** SELL | "
+                   f"**{pos_ev}** positive EV | **{len(rows)}** total")
+
+    # Per-symbol breakdown
+    breakdown = tracker.get_symbol_breakdown()
+    if not breakdown.empty:
+        with st.expander("Per-Symbol Model Credibility", expanded=False):
+            st.dataframe(breakdown, width='stretch', hide_index=True)
+
+    # Posterior distribution
+    if cred["n_predictions"] > 0:
+        with st.expander("Bayesian Posterior Distribution", expanded=False):
+            _render_posterior_chart(cred["alpha"], cred["beta_param"])
+
+
+def _render_credibility_panel(c: dict):
+    """Render Bayesian credibility assessment banner."""
+    st.markdown(f"""
+    <div style="background:#141820;border:1px solid #1E2530;border-radius:8px;padding:16px;margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+        <div>
+          <span style="color:#6B7280;font-size:10px;">MODEL CREDIBILITY</span><br>
+          <span style="color:{c['color']};font-weight:900;font-size:18px;">{c['assessment']}</span>
+        </div>
+        <div>
+          <span style="color:#6B7280;font-size:10px;">BAYESIAN ACCURACY</span><br>
+          <span style="font-weight:700;font-size:16px;">{c['posterior_mean']:.1%}</span>
+          <span style="color:#6B7280;font-size:10px;">
+            ({c['credible_interval'][0]:.0%} – {c['credible_interval'][1]:.0%} 90% CI)
+          </span>
+        </div>
+        <div>
+          <span style="color:#6B7280;font-size:10px;">P(BETTER THAN RANDOM)</span><br>
+          <span style="font-weight:700;font-size:16px;">{c['prob_better_than_random']:.0%}</span>
+        </div>
+        <div>
+          <span style="color:#6B7280;font-size:10px;">TRACK RECORD</span><br>
+          <span style="font-weight:700;">{c['n_correct']}/{c['n_predictions']}</span>
+          <span style="color:{'#00E676' if c['streak_type']=='win' else '#FF5252' if c['streak_type']=='loss' else '#6B7280'};font-size:10px;">
+            {c['streak']}{'W' if c['streak_type']=='win' else 'L' if c['streak_type']=='loss' else ''} streak
+          </span>
+        </div>
+      </div>
+      <div style="margin-top:8px;color:#6B7280;font-size:11px;">{c['assessment_text']}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def _render_posterior_chart(alpha: int, beta_param: int):
+    """Show Beta posterior distribution."""
+    from scipy import stats as sp_stats
+
+    x = np.linspace(0, 1, 200)
+    y = sp_stats.beta.pdf(x, alpha, beta_param)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=x * 100, y=y, mode="lines", fill="tozeroy",
+        line=dict(color="#00BCD4", width=2),
+        fillcolor="rgba(0,188,212,0.15)",
+        name="Posterior",
+    ))
+    fig.add_vline(x=50, line_dash="dot", line_color="#FF5252",
+                  annotation_text="Random (50%)")
+    fig.add_vline(x=55, line_dash="dot", line_color="#FFB300",
+                  annotation_text="PSX Baseline (55%)")
+    fig.add_vline(x=alpha / (alpha + beta_param) * 100, line_dash="solid",
+                  line_color="#00E676", annotation_text="Model")
+
+    fig.update_layout(
+        paper_bgcolor="#0B0E11", plot_bgcolor="#0B0E11",
+        font_color="#6B7280", height=200,
+        margin=dict(l=10, r=10, t=10, b=30),
+        xaxis_title="Accuracy %", yaxis_visible=False,
+        showlegend=False,
+    )
+    st.plotly_chart(fig, width='stretch')
 
 
 # ---------------------------------------------------------------------------
@@ -365,11 +523,11 @@ def _render_features_tab():
     ))
     fig.update_layout(**PLOT_LAYOUT, height=500, title="Top 20 Features by Importance",
                       xaxis_title="Importance", yaxis_title="")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Full table
     with st.expander("All features"):
-        st.dataframe(imp_df.reset_index(drop=True), use_container_width=True, hide_index=True)
+        st.dataframe(imp_df.reset_index(drop=True), width='stretch', hide_index=True)
 
     # Feature correlation heatmap (if dataset available)
     if dataset is not None and not dataset.empty:
@@ -391,7 +549,7 @@ def _render_features_tab():
             ))
             fig_corr.update_layout(**PLOT_LAYOUT, height=500,
                                    title="Top 15 Feature Correlations")
-            st.plotly_chart(fig_corr, use_container_width=True)
+            st.plotly_chart(fig_corr, width='stretch')
 
     # SHAP values
     try:
@@ -424,7 +582,7 @@ def _render_features_tab():
             fig_shap.update_layout(**PLOT_LAYOUT, height=500,
                                    title="Top 20 Features by SHAP Impact",
                                    xaxis_title="Mean |SHAP value|")
-            st.plotly_chart(fig_shap, use_container_width=True)
+            st.plotly_chart(fig_shap, width='stretch')
 
     except Exception:
         pass  # SHAP is optional
@@ -510,7 +668,7 @@ def _render_backtest_tab():
     fig.update_layout(**PLOT_LAYOUT, height=400, title="ML Strategy vs Buy & Hold",
                       yaxis_title="Growth of $1", xaxis_title="Trade #",
                       legend=dict(x=0.02, y=0.98))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Monthly returns heatmap (simplified — use trade index as proxy)
     st.subheader("Return Distribution")
@@ -521,7 +679,7 @@ def _render_backtest_tab():
     fig_hist.add_vline(x=0, line_dash="dash", line_color="#f85149")
     fig_hist.update_layout(**PLOT_LAYOUT, height=300, title="Trade Return Distribution",
                            xaxis_title="Return per Trade", yaxis_title="Count")
-    st.plotly_chart(fig_hist, use_container_width=True)
+    st.plotly_chart(fig_hist, width='stretch')
 
     # Long vs Short breakdown
     st.subheader("Long vs Short Performance")

@@ -164,7 +164,7 @@ def render_example_queries():
     cols = st.columns(3)
     for i, (label, query) in enumerate(examples):
         with cols[i % 3]:
-            if st.button(f"{label}", key=f"example_{i}", use_container_width=True):
+            if st.button(f"{label}", key=f"example_{i}", width='stretch'):
                 return query
     return None
 

@@ -152,6 +152,6 @@ def _render_benchmark_history(con):
             yaxis_title="Value",
             legend=dict(orientation="h", y=-0.2),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     else:
         st.info("No historical data. Sync daily to build history.")

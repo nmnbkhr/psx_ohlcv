@@ -231,7 +231,7 @@ LIMIT 30;
 
                 col1, col2 = st.columns([2, 1])
                 with col1:
-                    st.dataframe(df, use_container_width=True, hide_index=True)
+                    st.dataframe(df, width='stretch', hide_index=True)
                 with col2:
                     total_rows = sum(s["Rows"] for s in stats if isinstance(s["Rows"], int))
                     st.metric("Total Tables", len(stats))

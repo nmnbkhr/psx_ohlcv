@@ -236,7 +236,7 @@ def _load_macro_snapshot() -> dict:
         pass
     # KIBOR 6M offer
     try:
-        row = con.execute("SELECT offer, date FROM kibor_daily WHERE tenor='6M' ORDER BY date DESC LIMIT 1").fetchone()
+        row = con.execute("SELECT offer, date FROM kibor_daily WHERE tenor='6M' AND offer IS NOT NULL ORDER BY date DESC LIMIT 1").fetchone()
         if row:
             data["kibor_6m"] = row["offer"]
             data["kibor_date"] = row["date"]
@@ -244,9 +244,9 @@ def _load_macro_snapshot() -> dict:
         pass
     # KONIA
     try:
-        row = con.execute("SELECT rate, date FROM konia_daily ORDER BY date DESC LIMIT 1").fetchone()
+        row = con.execute("SELECT rate_pct, date FROM konia_daily ORDER BY date DESC LIMIT 1").fetchone()
         if row:
-            data["konia"] = row["rate"]
+            data["konia"] = row["rate_pct"]
             data["konia_date"] = row["date"]
     except Exception:
         pass
@@ -389,17 +389,13 @@ def _load_fund_category_summary() -> pd.DataFrame:
             changes AS (
                 SELECT
                     n1.fund_id,
-                    ROUND(CASE
-                        WHEN n0.nav > 0
-                        THEN (n1.nav - n0.nav) / n0.nav * 100
-                        ELSE n1.nav_change_pct
-                    END, 2) AS daily_chg,
+                    ROUND((n1.nav - n0.nav) / n0.nav * 100, 2) AS daily_chg,
                     n1.aum
                 FROM mutual_fund_nav n1
                 JOIN ranked r ON n1.date = r.d1
-                LEFT JOIN mutual_fund_nav n0
+                JOIN mutual_fund_nav n0
                     ON n0.fund_id = n1.fund_id AND n0.date = r.d0
-                WHERE n1.nav > 0
+                WHERE n1.nav > 0 AND n0.nav > 0
             )
             SELECT
                 mf.category,
@@ -422,7 +418,7 @@ def _load_commodities_snapshot() -> pd.DataFrame:
     """Latest PMEX commodity prices from commod.db."""
     import sqlite3 as _sqlite3
     from pathlib import Path
-    commod_db = Path("/mnt/e/psxdata/commod/commod.db")
+    commod_db = Path("/home/smnb/psxdata_rescue/commod/commod.db")
     if not commod_db.exists():
         return pd.DataFrame()
     try:
@@ -635,11 +631,28 @@ _MODEL_TIERS = {
 
 
 def _generate_commentary(prompt: str, tier: str = "Normal") -> str | None:
-    """Call LLM for market commentary with tier-based model selection."""
+    """Call LLM for market commentary — Ollama first, OpenAI fallback."""
+    from pakfindata.services.llm_client import llm
+
+    cfg = _MODEL_TIERS.get(tier, _MODEL_TIERS["Normal"])
+
+    # Try Ollama first (free, local)
+    if llm.is_running():
+        result = llm.complete_chat_text(
+            system=_MARKET_SYSTEM_PROMPT,
+            user=prompt,
+            use_case="summary",
+            max_tokens=cfg["max_tokens"],
+            temperature=cfg.get("temperature", 0.4),
+            timeout=120,
+        )
+        if result:
+            return result
+
+    # Fall back to OpenAI if available
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         return None
-    cfg = _MODEL_TIERS.get(tier, _MODEL_TIERS["Normal"])
     try:
         from openai import OpenAI
         client = OpenAI(api_key=api_key)
@@ -729,7 +742,7 @@ def _render_index_chart():
         name="KSE-100",
     ))
     fig.update_layout(**_LAYOUT, height=280, title="KSE-100 (60 days)")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 def _render_sector_heatmap(sectors: pd.DataFrame):
@@ -755,18 +768,18 @@ def _render_sector_heatmap(sectors: pd.DataFrame):
         yaxis=dict(autorange="reversed", gridcolor=_C["grid"]),
         xaxis=dict(title="Avg Change %", gridcolor=_C["grid"]),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Table
     with st.expander("Full Sector Table", expanded=False):
         st.dataframe(
-            sectors.style.applymap(
+            sectors.style.map(
                 lambda v: f"color: {_C['up']}" if isinstance(v, (int, float)) and v > 0
                 else f"color: {_C['down']}" if isinstance(v, (int, float)) and v < 0
                 else "",
                 subset=["avg_chg"],
             ),
-            use_container_width=True, hide_index=True,
+            width='stretch', hide_index=True,
         )
 
 
@@ -784,13 +797,13 @@ def _render_top_picks(momentum: pd.DataFrame, value: pd.DataFrame, volume: pd.Da
             display_cols = ["symbol", "close", "change_pct", "volume", "turnover", "ytd_change", "pe_ratio_ttm", "sector_name"]
             avail = [c for c in display_cols if c in momentum.columns]
             st.dataframe(
-                momentum[avail].style.applymap(
+                momentum[avail].style.map(
                     lambda v: f"color: {_C['up']}" if isinstance(v, (int, float)) and v > 0
                     else f"color: {_C['down']}" if isinstance(v, (int, float)) and v < 0
                     else "",
                     subset=[c for c in ["change_pct", "ytd_change"] if c in avail],
                 ),
-                use_container_width=True, hide_index=True,
+                width='stretch', hide_index=True,
             )
 
     with tab_invest:
@@ -800,7 +813,7 @@ def _render_top_picks(momentum: pd.DataFrame, value: pd.DataFrame, volume: pd.Da
             st.caption("Low P/E (< 15), price > PKR 5, volume > 10K")
             display_cols = ["symbol", "close", "pe_ratio_ttm", "ytd_change", "year_1_change", "volume", "sector_name"]
             avail = [c for c in display_cols if c in value.columns]
-            st.dataframe(value[avail], use_container_width=True, hide_index=True)
+            st.dataframe(value[avail], width='stretch', hide_index=True)
 
     with tab_volume:
         if volume.empty:
@@ -809,7 +822,7 @@ def _render_top_picks(momentum: pd.DataFrame, value: pd.DataFrame, volume: pd.Da
             st.caption("Top 10 by shares traded")
             display_cols = ["symbol", "close", "change_pct", "volume", "turnover", "sector_name"]
             avail = [c for c in display_cols if c in volume.columns]
-            st.dataframe(volume[avail], use_container_width=True, hide_index=True)
+            st.dataframe(volume[avail], width='stretch', hide_index=True)
 
 
 def _render_macro_dashboard(macro: dict):
@@ -903,7 +916,7 @@ def _render_fixed_income(fi: dict):
             marker=dict(size=6),
         ))
         fig.update_layout(**_LAYOUT, height=220, title="PKRV Yield Curve")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
 
 def _render_funds_overview(fund_cats: pd.DataFrame):
@@ -929,10 +942,10 @@ def _render_funds_overview(fund_cats: pd.DataFrame):
         yaxis=dict(autorange="reversed", gridcolor=_C["grid"]),
         xaxis=dict(title="Avg Daily %", gridcolor=_C["grid"]),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     with st.expander("Category Details", expanded=False):
-        st.dataframe(fund_cats, use_container_width=True, hide_index=True)
+        st.dataframe(fund_cats, width='stretch', hide_index=True)
 
 
 def _render_commodities(commodities: pd.DataFrame):
@@ -944,7 +957,7 @@ def _render_commodities(commodities: pd.DataFrame):
 
     st.caption(f"Latest trading date: {commodities['trading_date'].iloc[0] if 'trading_date' in commodities.columns else 'N/A'}")
     display_cols = [c for c in ["symbol", "close", "settlement_price", "traded_volume"] if c in commodities.columns]
-    st.dataframe(commodities[display_cols], use_container_width=True, hide_index=True)
+    st.dataframe(commodities[display_cols], width='stretch', hide_index=True)
 
 
 def _render_ai_commentary(prompt: str):

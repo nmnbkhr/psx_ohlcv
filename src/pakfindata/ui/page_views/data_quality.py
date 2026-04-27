@@ -263,15 +263,10 @@ def _load_freshness_data():
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_gap_data():
-    """Load EOD trading dates for gap detection. Returns date strings."""
-    con = get_client().connection
-    dates_df = pd.read_sql_query(
-        "SELECT DISTINCT date FROM eod_ohlcv ORDER BY date", con
-    )
-    if not dates_df.empty:
-        # Convert to strings for cacheability
-        dates_df["date"] = pd.to_datetime(dates_df["date"]).dt.strftime("%Y-%m-%d")
-    return dates_df
+    """Load EOD trading dates for gap detection from manifest."""
+    from pakfindata.db.date_manifest import get_dates
+    dates = get_dates("eod_ohlcv")
+    return pd.DataFrame({"date": sorted(dates)})
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -406,7 +401,7 @@ def render_data_quality():
         if freshness_rows:
             st.dataframe(
                 pd.DataFrame(freshness_rows),
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
             )
         else:
@@ -504,7 +499,7 @@ def render_data_quality():
                         xaxis_title="Week Number",
                         yaxis_title="",
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
             else:
                 st.success("No gaps detected in EOD data.")
         else:
@@ -530,7 +525,7 @@ def render_data_quality():
                 st.warning(f"**{table_name}**: {dup_count} duplicate groups found")
                 with st.expander(f"Show duplicates in {table_name}"):
                     dup_df = pd.DataFrame(dup_rows)
-                    st.dataframe(dup_df, use_container_width=True, hide_index=True)
+                    st.dataframe(dup_df, width='stretch', hide_index=True)
             else:
                 st.success(f"**{table_name}**: No duplicates")
 
@@ -572,7 +567,7 @@ def render_data_quality():
                     [{"Table": k, "Rows": f"{v:,}"} for k, v in
                      sorted(table_counts.items(), key=lambda x: x[1], reverse=True)]
                 )
-                st.dataframe(tc_df, use_container_width=True, hide_index=True)
+                st.dataframe(tc_df, width='stretch', hide_index=True)
 
         st.markdown("---")
 

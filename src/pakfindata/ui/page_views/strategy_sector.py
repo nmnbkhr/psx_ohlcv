@@ -97,7 +97,7 @@ def _render_rankings():
     fig.update_layout(**_CHART, height=max(400, len(df) * 22),
                       xaxis=dict(title="1M Return %", gridcolor=_C["grid"]),
                       yaxis=dict(autorange="reversed"))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Table
     with st.expander("Full Rankings Table"):
@@ -105,7 +105,7 @@ def _render_rankings():
         show["return_1m"] = show["return_1m"].map(lambda x: f"{x:+.2%}")
         show["return_3m"] = show["return_3m"].map(lambda x: f"{x:+.2%}")
         show.columns = ["Rank", "Sector", "1M Return", "3M Return", "Signal"]
-        st.dataframe(show, use_container_width=True, hide_index=True)
+        st.dataframe(show, width='stretch', hide_index=True)
 
 
 def _render_backtest():
@@ -158,7 +158,7 @@ def _render_backtest():
     fig.update_layout(**_CHART, height=350,
                       legend=dict(orientation="h", y=1.08, bgcolor="rgba(0,0,0,0)"),
                       yaxis=dict(gridcolor=_C["grid"], title="Equity"))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Monthly trades
     trades = result["trades"]
@@ -170,7 +170,7 @@ def _render_backtest():
             show["strategy_ret"] = show["strategy_ret"].map(lambda x: f"{x:+.2%}")
             show["bh_ret"] = show["bh_ret"].map(lambda x: f"{x:+.2%}")
             show.columns = ["Month", "Long Sectors", "Short Sectors", "Strategy", "B&H"]
-            st.dataframe(show, use_container_width=True, hide_index=True, height=400)
+            st.dataframe(show, width='stretch', hide_index=True, height=400)
 
 
 def _render_methodology():

@@ -434,7 +434,7 @@ def render_post_close():
                 df_display["Volume"] = df_display["Volume"].apply(
                     lambda x: f"{x:,.0f}" if x else "0"
                 )
-                st.dataframe(df_display, use_container_width=True, height=400)
+                st.dataframe(df_display, width='stretch', height=400)
             else:
                 st.info("No data for selected date.")
 

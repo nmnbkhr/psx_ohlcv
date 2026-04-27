@@ -125,10 +125,10 @@ def _render_current_rates():
     try:
         st.dataframe(
             pivot.style.format("{:.2f}%").background_gradient(cmap="RdYlGn", axis=None),
-            use_container_width=True,
+            width='stretch',
         )
     except ImportError:
-        st.dataframe(pivot.style.format("{:.2f}%"), use_container_width=True)
+        st.dataframe(pivot.style.format("{:.2f}%"), width='stretch')
 
     # Show effective date if available
     if "effective_date" in df.columns:
@@ -181,7 +181,7 @@ def _render_yield_curves():
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         margin=dict(l=40, r=20, t=20, b=40),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 def _render_rfr_spread():
@@ -240,7 +240,7 @@ def _render_rfr_spread():
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         margin=dict(l=40, r=20, t=20, b=40),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Data table
     st.markdown("#### Spread Data")
@@ -248,7 +248,7 @@ def _render_rfr_spread():
     available = [c for c in display_cols if c in df.columns]
     st.dataframe(
         df[available],
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
         column_config={
             "npc_rate": st.column_config.NumberColumn("NPC (%)", format="%.2f"),
@@ -291,7 +291,7 @@ def _render_carry_trade():
     available = [c for c in display_cols if c in df.columns]
     st.dataframe(
         df[available],
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
         column_config={
             "npc_rate": st.column_config.NumberColumn(f"NPC {currency} (%)", format="%.2f"),
@@ -320,7 +320,7 @@ def _render_dashboard():
 
     st.dataframe(
         df,
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
         column_config={
             "npc_rate": st.column_config.NumberColumn("NPC (%)", format="%.2f"),

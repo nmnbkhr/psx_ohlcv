@@ -102,7 +102,7 @@ def _render_graph_explorer():
             hole=0.4,
         )])
         fig.update_layout(**PLOT_LAYOUT, height=300, title_text="Edge Type Distribution")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     with col2:
         top = stats["most_connected"][:15]
@@ -111,7 +111,7 @@ def _render_graph_explorer():
             marker_color=_C["accent"],
         )])
         fig.update_layout(**PLOT_LAYOUT, height=300, title_text="Most Connected Stocks")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # Network visualization
     st.markdown("#### Network Graph")
@@ -159,7 +159,7 @@ def _render_graph_explorer():
                       title_text="PSX Stock Relationship Graph",
                       xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
                       yaxis=dict(showgrid=False, zeroline=False, showticklabels=False))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Community detection
     with st.expander("Community Detection (Louvain)"):
@@ -207,7 +207,7 @@ def _render_gnn_training():
             run_df = pd.DataFrame(runs)
             cols = [c for c in ["model_type", "task", "test_accuracy", "epochs",
                                 "num_nodes", "num_edges", "final_train_loss"] if c in run_df.columns]
-            st.dataframe(run_df[cols] if cols else run_df, use_container_width=True, hide_index=True)
+            st.dataframe(run_df[cols] if cols else run_df, width='stretch', hide_index=True)
         return
 
     with st.spinner(f"Training {model_type} ({task}) for {epochs} epochs..."):
@@ -254,7 +254,7 @@ def _render_gnn_training():
         fig.add_trace(go.Scatter(y=result["train_losses"], mode="lines",
                                  line=dict(color=_C["accent"], width=1), name="Train Loss"))
         fig.update_layout(**PLOT_LAYOUT, height=300, title_text="Training Loss")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     with col2:
         if result["val_accuracies"]:
@@ -264,7 +264,7 @@ def _render_gnn_training():
             fig.add_hline(y=0.5, line_dash="dash", line_color=_C["dim"],
                           annotation_text="Random baseline")
             fig.update_layout(**PLOT_LAYOUT, height=300, title_text="Validation Accuracy")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
     # Sector accuracy
     if result.get("sector_accuracy"):
@@ -276,13 +276,13 @@ def _render_gnn_training():
         )])
         fig.add_hline(y=0.5, line_dash="dash", line_color=_C["dim"])
         fig.update_layout(**PLOT_LAYOUT, height=350, title_text="Accuracy by Sector")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # Sample predictions
     if result.get("predictions_sample"):
         with st.expander("Sample Predictions (first 20)"):
             st.dataframe(pd.DataFrame(result["predictions_sample"]),
-                         use_container_width=True, hide_index=True)
+                         width='stretch', hide_index=True)
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +325,7 @@ def _render_influence():
     display_cols = ["symbol", "sector", "composite", "degree", "betweenness",
                     "pagerank", "eigenvector", "connections"]
     show = [c for c in display_cols if c in top_df.columns]
-    st.dataframe(top_df[show], use_container_width=True, hide_index=True)
+    st.dataframe(top_df[show], width='stretch', hide_index=True)
 
     # Bar chart
     fig = go.Figure(data=[go.Bar(
@@ -334,7 +334,7 @@ def _render_influence():
         marker_color=_C["accent"],
     )])
     fig.update_layout(**PLOT_LAYOUT, height=300, title_text="Composite Centrality Score")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Propagation analysis
     st.markdown("---")
@@ -353,7 +353,7 @@ def _render_influence():
             st.markdown(f"**Hop {hop_data['hop']}:** {hop_data['count']} stocks reached")
             if hop_data["stocks"]:
                 hop_df = pd.DataFrame(hop_data["stocks"])
-                st.dataframe(hop_df, use_container_width=True, hide_index=True)
+                st.dataframe(hop_df, width='stretch', hide_index=True)
 
 
 # ---------------------------------------------------------------------------
@@ -444,14 +444,13 @@ def _render_build_your_own():
 
     else:  # Top N by Volume
         top_n = st.slider("Number of stocks", 10, 100, 30, 5, key="byo_topn")
-        import duckdb
-        con = duckdb.connect("/mnt/e/psxdata/pakfindata.duckdb", read_only=True)
+        from pakfindata.db.connections import _duck_con
+        con = _duck_con()
         rows = con.execute(f"""
             SELECT symbol, AVG(volume) as avg_vol FROM eod_ohlcv
-            WHERE CAST(date AS DATE) >= CURRENT_DATE - INTERVAL '30 days'
+            WHERE date >= CAST(CURRENT_DATE - INTERVAL '30 days' AS VARCHAR)
             GROUP BY symbol ORDER BY avg_vol DESC LIMIT {top_n}
         """).fetchall()
-        con.close()
         selected_symbols = [r[0] for r in rows]
 
     if selected_symbols:
@@ -564,7 +563,7 @@ def _render_build_your_own():
                 marker_color=[EDGE_COLORS.get(k, "#888") for k in et.keys()],
             )])
             fig.update_layout(**PLOT_LAYOUT, height=250, title_text="Edges by Type")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
         # Mini network viz
         import networkx as nx
@@ -607,7 +606,7 @@ def _render_build_your_own():
                           title_text="Your Custom Graph",
                           xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
                           yaxis=dict(showgrid=False, zeroline=False, showticklabels=False))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # --- Step 5: Train ---
     st.markdown("---")
@@ -652,7 +651,7 @@ def _render_build_your_own():
             fig.add_trace(go.Scatter(y=result["train_losses"], mode="lines",
                                      line=dict(color=_C["accent"], width=1.5), name="Train Loss"))
             fig.update_layout(**PLOT_LAYOUT, height=300, title_text="Training Loss")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         with col2:
             if result["val_accuracies"]:
                 fig = go.Figure()
@@ -661,7 +660,7 @@ def _render_build_your_own():
                 fig.add_hline(y=0.5, line_dash="dash", line_color=_C["dim"],
                               annotation_text="Random baseline")
                 fig.update_layout(**PLOT_LAYOUT, height=300, title_text="Validation Accuracy")
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
         # Sector accuracy
         if result.get("sector_accuracy"):
@@ -673,13 +672,13 @@ def _render_build_your_own():
             )])
             fig.add_hline(y=0.5, line_dash="dash", line_color=_C["dim"])
             fig.update_layout(**PLOT_LAYOUT, height=300, title_text="Accuracy by Sector")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
         # Predictions table
         if result.get("predictions_sample"):
             with st.expander("Sample Predictions"):
                 st.dataframe(pd.DataFrame(result["predictions_sample"]),
-                             use_container_width=True, hide_index=True)
+                             width='stretch', hide_index=True)
 
 
 # ---------------------------------------------------------------------------

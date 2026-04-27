@@ -1053,7 +1053,7 @@ def _render_blotter(analytics_list: list[dict], persona: str):
 
     st.dataframe(
         df,
-        use_container_width=True,
+        width='stretch',
         height=min(350, 35 * len(rows) + 38),
         column_config={
             "Price": st.column_config.NumberColumn(format="%.2f"),
@@ -1202,7 +1202,7 @@ def _render_price_volume_chart(instrument_id: str, con=None):
         showlegend=True,
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 def _render_yield_curve(
@@ -1274,7 +1274,7 @@ def _render_yield_curve(
         legend=dict(orientation="h", y=-0.2),
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Traded dots list
     with st.expander("Traded Yield Points"):
@@ -1340,7 +1340,7 @@ def _render_simulator(
         impact_df = pd.DataFrame(impact_rows)
         st.dataframe(
             impact_df,
-            use_container_width=True,
+            width='stretch',
             column_config={
                 "Current": st.column_config.NumberColumn(format="%.2f"),
                 "Shifted": st.column_config.NumberColumn(format="%.2f"),

@@ -4,6 +4,16 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from pakfindata.db.repositories.market_summary import (
+    get_change_distribution,
+    get_eod_breadth,
+    get_latest_full_trading_day,
+    get_recent_announcements,
+    get_sector_performance,
+    get_top_movers,
+    get_value_leaders,
+    get_volume_leaders,
+)
 from pakfindata.ui.components.helpers import get_connection, render_footer
 from pakfindata.ui.themes import get_plotly_layout, get_chart_colors
 
@@ -15,138 +25,47 @@ _C = {
 }
 
 
-# ── Cached queries ────────────────────────────────────────────────────────
+# ── Cached queries (thin wrappers around market_summary repo) ─────────────
 
 @st.cache_data(ttl=60)
 def _load_pulse(_con):
-    """Load all market pulse data in one pass."""
-    date = None
-    try:
-        row = _con.execute("SELECT MAX(date) FROM eod_ohlcv").fetchone()
-        date = row[0] if row and row[0] else None
-    except Exception:
-        return None
-
+    """Load all market pulse data in one pass via the market_summary repo."""
+    date = get_latest_full_trading_day(_con, min_symbols=1)
     if not date:
         return None
 
-    out = {"date": date}
+    breadth = get_eod_breadth(_con, date=date) or {}
+    # Remap canonical names to the renderer's expectations
+    breadth_view = {
+        "gainers": breadth.get("gainers"),
+        "losers": breadth.get("losers"),
+        "unchanged": breadth.get("unchanged"),
+        "total": breadth.get("total"),
+        "total_vol": breadth.get("total_volume"),
+        "total_value": breadth.get("total_value"),
+        "avg_chg": breadth.get("avg_change"),
+    }
 
-    # Breadth
-    try:
-        b = _con.execute("""
-            SELECT
-                SUM(CASE WHEN close > prev_close THEN 1 ELSE 0 END) as gainers,
-                SUM(CASE WHEN close < prev_close THEN 1 ELSE 0 END) as losers,
-                SUM(CASE WHEN close = prev_close OR prev_close IS NULL OR prev_close = 0 THEN 1 ELSE 0 END) as unchanged,
-                COUNT(*) as total,
-                SUM(volume) as total_vol,
-                SUM(close * volume) as total_value,
-                ROUND(AVG(CASE WHEN prev_close > 0 THEN (close - prev_close) / prev_close * 100 END), 2) as avg_chg
-            FROM eod_ohlcv WHERE date = ? AND prev_close > 0
-        """, (date,)).fetchone()
-        if b:
-            out["breadth"] = dict(b)
-    except Exception:
-        pass
+    # Movers return 'change_pct'; renderer expects 'chg_pct' for the styler
+    gainers_df = get_top_movers(_con, direction="gainers", date=date, limit=10)
+    losers_df = get_top_movers(_con, direction="losers", date=date, limit=10)
+    vol_df = get_volume_leaders(_con, date=date, limit=10)
+    val_df = get_value_leaders(_con, date=date, limit=10)
+    for df in (gainers_df, losers_df, vol_df, val_df):
+        if not df.empty and "change_pct" in df.columns and "chg_pct" not in df.columns:
+            df.rename(columns={"change_pct": "chg_pct"}, inplace=True)
 
-    # Top gainers
-    try:
-        out["gainers"] = pd.read_sql_query("""
-            SELECT symbol, close, prev_close,
-                   ROUND((close - prev_close) / prev_close * 100, 2) as chg_pct,
-                   volume
-            FROM eod_ohlcv
-            WHERE date = ? AND prev_close > 0 AND close > prev_close
-            ORDER BY chg_pct DESC LIMIT 10
-        """, _con, params=(date,))
-    except Exception:
-        out["gainers"] = pd.DataFrame()
-
-    # Top losers
-    try:
-        out["losers"] = pd.read_sql_query("""
-            SELECT symbol, close, prev_close,
-                   ROUND((close - prev_close) / prev_close * 100, 2) as chg_pct,
-                   volume
-            FROM eod_ohlcv
-            WHERE date = ? AND prev_close > 0 AND close < prev_close
-            ORDER BY chg_pct ASC LIMIT 10
-        """, _con, params=(date,))
-    except Exception:
-        out["losers"] = pd.DataFrame()
-
-    # Volume leaders
-    try:
-        out["vol_leaders"] = pd.read_sql_query("""
-            SELECT symbol, close, volume,
-                   ROUND((close - prev_close) / prev_close * 100, 2) as chg_pct
-            FROM eod_ohlcv
-            WHERE date = ? AND volume > 0 AND prev_close > 0
-            ORDER BY volume DESC LIMIT 10
-        """, _con, params=(date,))
-    except Exception:
-        out["vol_leaders"] = pd.DataFrame()
-
-    # Value leaders (turnover proxy = close * volume)
-    try:
-        out["val_leaders"] = pd.read_sql_query("""
-            SELECT symbol, close, volume, close * volume as value,
-                   ROUND((close - prev_close) / prev_close * 100, 2) as chg_pct
-            FROM eod_ohlcv
-            WHERE date = ? AND volume > 0 AND prev_close > 0
-            ORDER BY value DESC LIMIT 10
-        """, _con, params=(date,))
-    except Exception:
-        out["val_leaders"] = pd.DataFrame()
-
-    # Change distribution (for histogram)
-    try:
-        out["change_dist"] = pd.read_sql_query("""
-            SELECT ROUND((close - prev_close) / prev_close * 100, 1) as chg_pct
-            FROM eod_ohlcv
-            WHERE date = ? AND prev_close > 0
-        """, _con, params=(date,))
-    except Exception:
-        out["change_dist"] = pd.DataFrame()
-
-    # Sector performance
-    try:
-        out["sectors"] = pd.read_sql_query("""
-            SELECT s.sector_name as sector,
-                   COUNT(*) as stocks,
-                   ROUND(AVG((e.close - e.prev_close) / e.prev_close * 100), 2) as avg_chg,
-                   SUM(e.volume) as total_vol,
-                   SUM(CASE WHEN e.close > e.prev_close THEN 1 ELSE 0 END) as up,
-                   SUM(CASE WHEN e.close < e.prev_close THEN 1 ELSE 0 END) as down
-            FROM eod_ohlcv e
-            JOIN sector_map s ON e.symbol = s.symbol
-            WHERE e.date = ? AND e.prev_close > 0
-            GROUP BY s.sector_name
-            HAVING COUNT(*) >= 3
-            ORDER BY avg_chg DESC
-        """, _con, params=(date,))
-    except Exception:
-        out["sectors"] = pd.DataFrame()
-
-    # Recent announcements
-    try:
-        out["announcements"] = pd.read_sql_query("""
-            SELECT symbol, announcement_date as date, subject
-            FROM company_announcements
-            ORDER BY announcement_date DESC LIMIT 8
-        """, _con)
-    except Exception:
-        try:
-            out["announcements"] = pd.read_sql_query("""
-                SELECT symbol, date, headline as subject
-                FROM corporate_announcements
-                ORDER BY date DESC LIMIT 8
-            """, _con)
-        except Exception:
-            out["announcements"] = pd.DataFrame()
-
-    return out
+    return {
+        "date": date,
+        "breadth": breadth_view,
+        "gainers": gainers_df,
+        "losers": losers_df,
+        "vol_leaders": vol_df,
+        "val_leaders": val_df,
+        "change_dist": get_change_distribution(_con, date=date),
+        "sectors": get_sector_performance(_con, date=date, min_stocks=3),
+        "announcements": get_recent_announcements(_con, limit=8),
+    }
 
 
 # ── Charts ────────────────────────────────────────────────────────────────
@@ -264,7 +183,7 @@ def _styled_movers_table(df, columns_map):
     if chg_cols:
         styled = styled.map(_color_chg, subset=chg_cols)
     styled = styled.format({k: v for k, v in fmt.items() if k in display.columns})
-    st.dataframe(styled, use_container_width=True, hide_index=True, height=340)
+    st.dataframe(styled, width='stretch', hide_index=True, height=340)
 
 
 # ── Main render ───────────────────────────────────────────────────────────
@@ -344,17 +263,17 @@ def render_market_pulse():
     c1, c2, c3 = st.columns([1, 1.5, 2])
 
     with c1:
-        st.plotly_chart(_breadth_donut(g, l, u), use_container_width=True)
+        st.plotly_chart(_breadth_donut(g, l, u), width='stretch')
 
     with c2:
         dist_df = pulse.get("change_dist", pd.DataFrame())
         if not dist_df.empty and "chg_pct" in dist_df.columns:
-            st.plotly_chart(_change_histogram(dist_df), use_container_width=True)
+            st.plotly_chart(_change_histogram(dist_df), width='stretch')
 
     with c3:
         sect_df = pulse.get("sectors", pd.DataFrame())
         if not sect_df.empty:
-            st.plotly_chart(_sector_bar(sect_df), use_container_width=True)
+            st.plotly_chart(_sector_bar(sect_df), width='stretch')
 
     # ══════════════════════════════════════════════════════════════
     # ROW 3: GAINERS | LOSERS
@@ -433,6 +352,6 @@ def render_market_pulse():
     ann_df = pulse.get("announcements", pd.DataFrame())
     if not ann_df.empty:
         with st.expander("Recent Announcements", expanded=False):
-            st.dataframe(ann_df, use_container_width=True, hide_index=True, height=250)
+            st.dataframe(ann_df, width='stretch', hide_index=True, height=250)
 
     render_footer()

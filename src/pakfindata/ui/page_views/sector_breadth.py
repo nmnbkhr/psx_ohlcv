@@ -118,20 +118,9 @@ def _load_eod_basket(con, symbols: list[str], limit: int = 500) -> pd.DataFrame:
 
 
 def _get_intraday_dates(con) -> list[str]:
-    """Get available trading dates from intraday_bars."""
-    dates: list[str] = []
-    row = con.execute("SELECT MAX(ts) FROM intraday_bars").fetchone()
-    if not row or not row[0]:
-        return dates
-    cur = row[0][:10]
-    for _ in range(30):
-        dates.append(cur)
-        prev = con.execute(
-            "SELECT MAX(ts) FROM intraday_bars WHERE ts < ?", (cur,)
-        ).fetchone()
-        if not prev or not prev[0]:
-            break
-        cur = prev[0][:10]
+    """Get available trading dates from manifest (<1ms). No DB scan."""
+    from pakfindata.db.date_manifest import get_dates
+    return get_dates("intraday_bars")[:30]
     return dates
 
 
@@ -205,7 +194,7 @@ def _render_fft_spectrum(spectrum: pd.DataFrame, dominant_cycles: list[dict]):
         xaxis_title="Period (days)", yaxis_title="Amplitude",
         hovermode="x unified",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 def _render_fft_overlay(df: pd.DataFrame, ifft_signal, dates):
@@ -241,7 +230,7 @@ def _render_fft_overlay(df: pd.DataFrame, ifft_signal, dates):
         xaxis_rangeslider_visible=False, hovermode="x unified",
     )
     fig.update_yaxes(title_text="Price (avg)")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -290,7 +279,7 @@ def _render_systemic_gauge(vpin_value: float):
         font=dict(color=_COLORS["text"]),
         margin=dict(l=30, r=30, t=60, b=10),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 def _render_aggregate_bucket_flow(buckets: pd.DataFrame):
@@ -333,7 +322,7 @@ def _render_aggregate_bucket_flow(buckets: pd.DataFrame):
     fig.update_yaxes(title_text="Volume", gridcolor=_COLORS["grid"], secondary_y=False)
     fig.update_yaxes(title_text="Agg. VPIN", range=[0, 1.05],
                      gridcolor=_COLORS["grid"], secondary_y=True)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 def _render_payoff_matrix(vpin: float, half_spread: float, adverse_loss: float):
@@ -385,7 +374,7 @@ def _render_payoff_matrix(vpin: float, half_spread: float, adverse_loss: float):
         .map(_color_strategy, subset=["Optimal Strategy"])
         .format({"VPIN (π)": "{:.3f}", "EV_make": "{:+.4f}"})
     )
-    st.dataframe(styled, use_container_width=True, hide_index=True, height=210)
+    st.dataframe(styled, width='stretch', hide_index=True, height=210)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -461,6 +450,10 @@ def render_sector_breadth():
     if sector_pick != "-- Manual --":
         sector_code = sector_pick.split(" — ")[0]
         default_symbols = _get_symbols_by_sector(con, sector_code)
+        # Cascade: overwrite multiselect when sector changes
+        if st.session_state.get("_sb_last_sector") != sector_pick:
+            st.session_state["sb_symbols"] = default_symbols
+            st.session_state["_sb_last_sector"] = sector_pick
 
     with col_multi:
         selected_symbols = st.multiselect(

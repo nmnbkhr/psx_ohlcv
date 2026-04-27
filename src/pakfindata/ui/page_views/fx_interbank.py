@@ -172,11 +172,11 @@ def _render_spread_chart(con):
         yaxis_title="PKR Rate (Selling)",
         legend=dict(orientation="h", y=-0.2),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Summary table
     with st.expander("Spread Details"):
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
 
 
 def _render_spread_history(con):
@@ -211,4 +211,4 @@ def _render_spread_history(con):
         yaxis_title=f"{currency}/PKR (Selling)",
         legend=dict(orientation="h", y=-0.15),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')

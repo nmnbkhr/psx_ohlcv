@@ -111,7 +111,7 @@ def _render_plan():
                           legend=dict(orientation="h", y=1.08, bgcolor="rgba(0,0,0,0)"))
         fig.update_yaxes(title_text="Shares", gridcolor=_C["grid"], secondary_y=False)
         fig.update_yaxes(title_text="Participation %", gridcolor=_C["grid"], secondary_y=True)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
         # Slice table
         with st.expander("Full Execution Schedule"):
@@ -121,7 +121,7 @@ def _render_plan():
             show["hist_volume"] = show["hist_volume"].map(lambda x: f"{x:,.0f}")
             show["participation_rate"] = show["participation_rate"].map(lambda x: f"{x:.2%}")
             show["limit_price"] = show["limit_price"].map(lambda x: f"{x:.2f}")
-            st.dataframe(show, use_container_width=True, hide_index=True)
+            st.dataframe(show, width='stretch', hide_index=True)
 
 
 def _render_backtest():
@@ -143,12 +143,13 @@ def _render_backtest():
     if st.button("Run Backtest", type="primary", key="vwap_bt_run") and date_str != "No data":
         with st.spinner(f"Backtesting {strategy} on {date_str}..."):
             result = backtest_execution(symbol, side, shares, date_str, strategy)
-
-        if not result:
+        if result:
+            st.session_state["vwap_bt_result"] = result
+        else:
             st.error("Backtest failed — not enough data")
-            return
 
-        # KPIs
+    result = st.session_state.get("vwap_bt_result")
+    if result:
         mc = st.columns(6)
         with mc[0]:
             _kpi("Exec VWAP", f"{result['exec_vwap']:.2f}")
@@ -167,11 +168,16 @@ def _render_backtest():
 
         st.markdown(f"Slices executed: {result['slices_executed']} | Market vol: {result['total_market_vol']:,.0f}")
 
-        # Compare strategies
         if st.checkbox("Compare all strategies", key="vwap_bt_compare"):
             rows = []
             for strat in ["VWAP", "TWAP", "AGGRESSIVE"]:
-                r = backtest_execution(symbol, side, shares, date_str, strat)
+                r = backtest_execution(
+                    st.session_state.get("vwap_bt_sym", "OGDC"),
+                    st.session_state.get("vwap_bt_side", "BUY"),
+                    st.session_state.get("vwap_bt_shares", 500000),
+                    st.session_state.get("vwap_bt_date", ""),
+                    strat,
+                )
                 if r:
                     rows.append({
                         "Strategy": strat,
@@ -181,7 +187,7 @@ def _render_backtest():
                         "Participation": f"{r['participation']:.1%}",
                     })
             if rows:
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
 
 def _render_profile():
@@ -217,18 +223,18 @@ def _render_profile():
                       legend=dict(orientation="h", y=1.08, bgcolor="rgba(0,0,0,0)"))
     fig.update_yaxes(title_text="Volume (M)", gridcolor=_C["grid"], secondary_y=False)
     fig.update_yaxes(title_text="Cumulative %", gridcolor=_C["grid"], secondary_y=True)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Spread by time
     fig2 = go.Figure()
     fig2.add_trace(go.Bar(x=profile["time_start"], y=profile["spread_bps"],
                           marker_color=_C["cyan"], opacity=0.7, name="Spread (bps)"))
     fig2.update_layout(**_CHART, height=250, yaxis=dict(gridcolor=_C["grid"], title="Spread (bps)"))
-    st.plotly_chart(fig2, use_container_width=True)
+    st.plotly_chart(fig2, width='stretch')
 
     with st.expander("Profile Data"):
         st.dataframe(profile[["time_start", "time_end", "avg_volume", "pct_of_day", "spread_bps", "avg_price"]],
-                     use_container_width=True, hide_index=True)
+                     width='stretch', hide_index=True)
 
 
 def _render_methodology():

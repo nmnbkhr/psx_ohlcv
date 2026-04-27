@@ -625,7 +625,7 @@ def render_sync_monitor():
                 ):
                     failures_df = pd.DataFrame(summary.failures)
                     failures_df.columns = ["Symbol", "Error Type", "Error Message"]
-                    st.dataframe(failures_df, use_container_width=True, hide_index=True)
+                    st.dataframe(failures_df, width='stretch', hide_index=True)
 
             st.caption(f"Run ID: `{summary.run_id}`")
 
@@ -691,7 +691,7 @@ def render_sync_monitor():
             st.success("✅ No failures recorded!")
         else:
             failures_df.columns = ["Symbol", "Error Type", "Message", "Time"]
-            st.dataframe(failures_df, use_container_width=True, hide_index=True)
+            st.dataframe(failures_df, width='stretch', hide_index=True)
 
         st.markdown("---")
 
@@ -709,7 +709,7 @@ def render_sync_monitor():
 
         if not history_df.empty:
             history_df.columns = ["Run ID", "Started", "Mode", "OK", "Failed", "Rows"]
-            st.dataframe(history_df, use_container_width=True, hide_index=True)
+            st.dataframe(history_df, width='stretch', hide_index=True)
 
     except Exception as e:
         st.error(f"Database error: {e}")

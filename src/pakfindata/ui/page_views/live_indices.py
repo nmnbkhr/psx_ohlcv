@@ -345,7 +345,7 @@ def _index_table(syms, idx_map, title):
         "High": "{:,.2f}",
         "Low": "{:,.2f}",
     })
-    st.dataframe(styled, use_container_width=True, hide_index=True)
+    st.dataframe(styled, width='stretch', hide_index=True)
 
 
 # ── Service control ───────────────────────────────────────────────────────
@@ -458,7 +458,7 @@ def render_live_indices():
         if len(spark) >= 2:
             st.plotly_chart(
                 _sparkline_chart(spark, "KSE100", kse100.get("changePercent", 0) * 100),
-                use_container_width=True,
+                width='stretch',
             )
         elif not live_mode:
             con = get_connection()
@@ -466,7 +466,7 @@ def render_live_indices():
                 hist = _get_index_history(con, "KSE100", 30)
                 fig = _history_chart(hist, "KSE100")
                 if fig:
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
     # ══════════════════════════════════════════════════════════════
     # SECONDARY CARDS: KSE-30, KMI-30, All Share
@@ -537,7 +537,7 @@ def render_live_indices():
                         )
                         st.plotly_chart(
                             _sparkline_chart(spark, sym, pct),
-                            use_container_width=True,
+                            width='stretch',
                         )
     elif not live_mode:
         # Show 30-day history for top indices when not live
@@ -555,6 +555,6 @@ def render_live_indices():
                     hist = _get_index_history(con, sym, 30)
                     fig = _history_chart(hist, sym)
                     if fig:
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width='stretch')
 
     render_footer()

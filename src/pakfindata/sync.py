@@ -105,12 +105,22 @@ def sync_all(
     except Exception as e:
         logger.warning("Failed to sync indices: %s", e)
 
-    # Step 2: Get symbols to sync
+    # Step 2: Get symbols to sync (normalized to base symbols)
+    from .db.repositories.symbols import get_scrapable_symbols, normalize_symbol
     if symbols_list is not None:
-        # Use explicit list, filter to uppercase and sorted
-        symbols_to_sync = sorted([s.upper().strip() for s in symbols_list])
+        # Normalize explicit list to base symbols
+        seen: set[str] = set()
+        symbols_to_sync = []
+        for s in symbols_list:
+            base, _ = normalize_symbol(s.upper().strip())
+            if base not in seen:
+                seen.add(base)
+                symbols_to_sync.append(base)
+        symbols_to_sync.sort()
     else:
-        symbols_to_sync = get_symbols_list(con, limit=limit_symbols)
+        symbols_to_sync = get_scrapable_symbols(con)
+        if limit_symbols:
+            symbols_to_sync = symbols_to_sync[:limit_symbols]
 
     if not symbols_to_sync:
         # No symbols to sync

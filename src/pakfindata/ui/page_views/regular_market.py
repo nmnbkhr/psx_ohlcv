@@ -226,7 +226,7 @@ def render_regular_market():
                     unchanged=unchanged,
                     height=300,
                 )
-                st.plotly_chart(breadth_fig, use_container_width=True)
+                st.plotly_chart(breadth_fig, width='stretch')
 
             with col2:
                 # Use analytics table for top gainers
@@ -241,7 +241,7 @@ def render_regular_market():
                     chart_type="gainers",
                     height=300,
                 )
-                st.plotly_chart(gainers_fig, use_container_width=True)
+                st.plotly_chart(gainers_fig, width='stretch')
                 # Quick links to company analytics
                 gainer_symbols = top_gainers_df["symbol"].tolist()[:3]
                 gcols = st.columns(len(gainer_symbols))
@@ -265,7 +265,7 @@ def render_regular_market():
                     chart_type="losers",
                     height=300,
                 )
-                st.plotly_chart(losers_fig, use_container_width=True)
+                st.plotly_chart(losers_fig, width='stretch')
                 # Quick links to company analytics
                 loser_symbols = top_losers_df["symbol"].tolist()[:3]
                 lcols = st.columns(len(loser_symbols))
@@ -355,7 +355,7 @@ def render_regular_market():
 
         st.dataframe(
             filtered_df[display_cols],
-            use_container_width=True,
+            width='stretch',
             hide_index=True,
             column_config={
                 "symbol": st.column_config.TextColumn("Symbol", width="small"),

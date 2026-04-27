@@ -227,7 +227,7 @@ def render_stock_screener():
             lambda x: f"{x:.1f}" if pd.notna(x) else "—"
         )
 
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        st.dataframe(display_df, width='stretch', hide_index=True)
 
         # Export button
         csv = df.to_csv(index=False)

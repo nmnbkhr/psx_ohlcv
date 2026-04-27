@@ -143,7 +143,7 @@ def render_candlestick():
             show_sma=show_sma,
             height=650,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
         st.markdown("---")
 
@@ -152,7 +152,7 @@ def render_candlestick():
         preview_df = df.sort_values("date", ascending=False).head(20)
         st.dataframe(
             preview_df,
-            use_container_width=True,
+            width='stretch',
             hide_index=True,
             column_config={
                 "date": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),

@@ -74,7 +74,10 @@ def _upsert_intraday(con: sqlite3.Connection, symbol: str, records: list) -> int
     """Insert intraday tick records into intraday_bars. Returns rows upserted."""
     if not records:
         return 0
-    rows = []
+
+    # Aggregate multiple ticks at the same second into a single 1s bar
+    # (v3 schema enforces bar semantics via PK (symbol, market, ts_epoch, interval))
+    bars: dict[int, dict] = {}
     for item in records:
         if not isinstance(item, list) or len(item) < 2:
             continue
@@ -82,49 +85,50 @@ def _upsert_intraday(con: sqlite3.Connection, symbol: str, records: list) -> int
         try:
             dt = datetime.fromtimestamp(ts_epoch)
             ts_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+            date_str = dt.strftime("%Y-%m-%d")
         except (ValueError, OSError):
             continue
 
         price = float(item[1])
         volume = float(item[2]) if len(item) >= 3 else 0
-        rows.append((symbol, ts_str, ts_epoch, price, price, price, price, volume, "int", "insert"))
+        b = bars.get(ts_epoch)
+        if b is None:
+            bars[ts_epoch] = {
+                "ts": ts_str, "date": date_str,
+                "o": price, "h": price, "l": price, "c": price,
+                "vol": volume, "trade_count": 1,
+                "pv_sum": price * volume,
+            }
+        else:
+            b["h"] = max(b["h"], price)
+            b["l"] = min(b["l"], price)
+            b["c"] = price
+            b["vol"] += volume
+            b["trade_count"] += 1
+            b["pv_sum"] += price * volume
+
+    rows = []
+    for ts_epoch, b in bars.items():
+        vwap = (b["pv_sum"] / b["vol"]) if b["vol"] > 0 else b["c"]
+        rows.append((
+            symbol, "REG", b["date"], b["ts"], ts_epoch,
+            b["o"], b["h"], b["l"], b["c"], b["vol"],
+            b["trade_count"], vwap,
+        ))
 
     if not rows:
         return 0
 
     con.executemany(
-        """INSERT INTO intraday_bars
-           (symbol, ts, ts_epoch, open, high, low, close, volume, interval, operation)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT (symbol, ts, close) DO UPDATE SET
-               operation = 'upsert',
-               process_ts = datetime('now')""",
+        """INSERT OR IGNORE INTO intraday_bars
+           (symbol, market, date, ts, ts_epoch, interval,
+            open, high, low, close, volume, trade_count, vwap, source)
+           VALUES (?, ?, ?, ?, ?, '1s', ?, ?, ?, ?, ?, ?, ?, 'dps_int')""",
         rows,
     )
     con.commit()
 
-    # Dual-write to DuckDB
-    try:
-        from pakfindata.db.connections import has_duckdb, duck_write
-        if has_duckdb() and rows:
-            import pandas as _pd
-            duck_df = _pd.DataFrame(rows, columns=[
-                "symbol", "ts", "ts_epoch", "open", "high", "low",
-                "close", "volume", "interval", "operation"])
-            duck_df["ingested_at"] = datetime.now().isoformat()
-            duck_df["process_ts"] = ""
-            dcon = duck_write()
-            dcon.register("_intra_df", duck_df)
-            dcon.execute("""
-                INSERT OR IGNORE INTO intraday_bars
-                SELECT symbol, ts, ts_epoch, "open", high, low, close,
-                       volume, interval, ingested_at, operation, process_ts
-                FROM _intra_df
-            """)
-            dcon.unregister("_intra_df")
-            dcon.close()
-    except Exception:
-        pass
+    # DuckDB dual-write removed — data flows through SQLite → Parquet now
 
     return len(rows)
 
@@ -285,6 +289,166 @@ def sync_intraday_all(
 
     log.info("Intraday sync: %d/%d ok, %d rows", ok, total, total_rows)
     return progress
+
+
+# ── Parallel fetch to disk (3-shard) ──────────────────────────────────────────
+
+def _fetch_tick_to_disk(symbol: str, json_dir: Path, session) -> tuple[str, bool, int]:
+    """Fetch one symbol's ticks from API and save JSON to disk."""
+    time.sleep(0.05)
+    url = INT_URL.format(symbol=symbol)
+    try:
+        resp = session.get(url, timeout=15)
+        resp.raise_for_status()
+        payload = resp.json()
+        data = payload.get("data", payload) if isinstance(payload, dict) else payload
+        if not isinstance(data, list):
+            data = []
+        (json_dir / f"{symbol}.json").write_text(json.dumps(payload))
+        return symbol, True, len(data)
+    except Exception:
+        return symbol, False, 0
+
+
+def _run_tick_shard(shard: list[str], json_dir: Path) -> tuple[int, int, int]:
+    """Run one shard of tick downloads in parallel threads."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    session = create_session()
+    ok = fail = ticks = 0
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futs = {pool.submit(_fetch_tick_to_disk, s, json_dir, session): s for s in shard}
+        for fut in as_completed(futs):
+            _, success, n = fut.result()
+            if success:
+                ok += 1
+                ticks += n
+            else:
+                fail += 1
+    return ok, fail, ticks
+
+
+def fetch_ticks_to_disk_parallel(
+    con: sqlite3.Connection, target_date: str, n_shards: int = 3,
+) -> dict:
+    """Fetch intraday ticks for all symbols and save JSON to disk using parallel shards.
+
+    Args:
+        con: DB connection (for symbol list + skip filter)
+        target_date: Date string for output folder (YYYY-MM-DD)
+        n_shards: Number of parallel shard groups
+
+    Returns:
+        dict with: symbols_total, ok, fail, ticks, json_dir, skipped
+    """
+    from pakfindata.sources.eod import _get_active_symbols, _get_skip_symbols, _shard_symbols
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    all_symbols = _get_active_symbols(con)
+    skip = _get_skip_symbols(con)
+    symbols = [s for s in all_symbols if s not in skip]
+
+    json_dir = DATA_ROOT / "intraday" / target_date
+    json_dir.mkdir(parents=True, exist_ok=True)
+
+    shards = _shard_symbols(symbols, n_shards)
+    total_ok = total_fail = total_ticks = 0
+
+    with ThreadPoolExecutor(max_workers=n_shards) as pool:
+        futs = {pool.submit(_run_tick_shard, shard, json_dir): i for i, shard in enumerate(shards)}
+        for fut in as_completed(futs):
+            ok, fail, ticks = fut.result()
+            total_ok += ok
+            total_fail += fail
+            total_ticks += ticks
+
+    return {
+        "symbols_total": len(symbols),
+        "ok": total_ok,
+        "fail": total_fail,
+        "ticks": total_ticks,
+        "skipped": len(skip),
+        "json_dir": str(json_dir),
+    }
+
+
+def load_ticks_from_disk(
+    con: sqlite3.Connection, target_date: str,
+) -> dict:
+    """Load tick JSON files from disk into intraday_bars + tick_data.
+
+    Batches all inserts and commits once at the end for speed.
+
+    Args:
+        con: DB connection
+        target_date: Date folder to load from
+
+    Returns:
+        dict with: total_files, ok, fail, rows_total
+    """
+    json_dir = DATA_ROOT / "intraday" / target_date
+    if not json_dir.is_dir():
+        return {"total_files": 0, "ok": 0, "fail": 0, "rows_total": 0, "error": f"No folder: {json_dir}"}
+
+    json_files = sorted(json_dir.glob("*.json"))
+    ok = fail = rows_total = 0
+    all_intraday_rows = []
+
+    # Collect best tick per (symbol, ts_epoch) — keep highest volume
+    best_ticks = {}  # (symbol, ts_epoch) → (date, ts, price, volume)
+
+    for jf in json_files:
+        sym = jf.stem
+        try:
+            payload = json.loads(jf.read_text())
+            data = payload.get("data", payload) if isinstance(payload, dict) else payload
+            if not isinstance(data, list):
+                data = []
+
+            for item in data:
+                if not isinstance(item, list) or len(item) < 2:
+                    continue
+                ts_epoch = int(item[0])
+                try:
+                    ts_str = datetime.fromtimestamp(ts_epoch).strftime("%Y-%m-%d %H:%M:%S")
+                except (ValueError, OSError):
+                    continue
+                price = float(item[1])
+                volume = float(item[2]) if len(item) >= 3 else 0
+
+                key = (sym, ts_epoch)
+                existing = best_ticks.get(key)
+                if existing is None or volume > existing[3]:
+                    best_ticks[key] = (ts_str[:10], ts_str, price, volume)
+
+            rows_total += len(data)
+            ok += 1
+        except Exception:
+            fail += 1
+
+    for (sym, ts_epoch), (date_str, ts_str, price, volume) in best_ticks.items():
+        all_intraday_rows.append(
+            (sym, date_str, ts_str, ts_epoch, price, price, price, price, volume)
+        )
+
+    if all_intraday_rows:
+        db_path = con.execute("PRAGMA database_list").fetchone()[2]
+        bulk_con = sqlite3.connect(db_path)
+        # NORMAL (not OFF): WAL-safe durability; OFF previously caused page corruption.
+        bulk_con.execute("PRAGMA journal_mode=WAL")
+        bulk_con.execute("PRAGMA synchronous=NORMAL")
+        bulk_con.execute("PRAGMA cache_size=-64000")
+
+        bulk_con.executemany(
+            """INSERT OR IGNORE INTO intraday_bars
+               (symbol, date, ts, ts_epoch, open, high, low, close, volume)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            all_intraday_rows,
+        )
+
+        bulk_con.commit()
+        bulk_con.close()
+
+    return {"total_files": len(json_files), "ok": ok, "fail": fail, "rows_total": rows_total}
 
 
 # ── Background thread launcher ──────────────────────────────────────────────

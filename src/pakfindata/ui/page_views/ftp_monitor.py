@@ -160,7 +160,7 @@ def _render_ftp_rates(con):
                 "customer_rate": "{:.2f}%", "ftp_margin_bps": "{:+.0f}",
                 "ftp_tenor_months": "{:.1f}",
             }, na_rep="—"),
-            use_container_width=True, hide_index=True,
+            width='stretch', hide_index=True,
         )
 
     # Liability FTP table
@@ -176,7 +176,7 @@ def _render_ftp_rates(con):
                 "customer_rate": "{:.2f}%", "ftp_margin_bps": "{:+.0f}",
                 "ftp_tenor_months": "{:.1f}",
             }, na_rep="—"),
-            use_container_width=True, hide_index=True,
+            width='stretch', hide_index=True,
         )
 
     # Product profitability heatmap
@@ -195,7 +195,7 @@ def _render_ftp_rates(con):
         ))
         fig.update_layout(**_LAYOUT, height=max(350, len(margin_data) * 28),
                          title="FTP Margin by Product (bps)", xaxis_title="Margin (bps)")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -241,7 +241,7 @@ def _render_decomposition(con):
         title="FTP Rate Components by Product",
         yaxis_title="Rate (%)", xaxis_tickangle=-45,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Curve usage breakdown
     _section("CURVE USAGE")
@@ -254,7 +254,7 @@ def _render_decomposition(con):
             hole=0.4,
         ))
         fig2.update_layout(**_LAYOUT, height=300, title="Products by FTP Curve")
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -305,7 +305,7 @@ def _render_time_series(con):
                 mode="lines", name=pc, line=dict(width=2),
             ))
     fig.update_layout(yaxis_title="FTP Rate (%)")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Margin time series
     margin_data = history[history["ftp_margin_bps"].notna()]
@@ -319,7 +319,7 @@ def _render_time_series(con):
                     mode="lines", name=pc, line=dict(width=2),
                 ))
         fig2.update_layout(yaxis_title="Margin (bps)")
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -383,7 +383,7 @@ def _render_pnl_attribution(con):
     fig.update_layout(**_LAYOUT, height=max(350, len(pnl) * 28),
                      title=f"NII Contribution by Product — {month}",
                      xaxis_title="PKR Millions")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Attribution breakdown
     if (pnl["volume_effect_mn"].abs().sum() + pnl["rate_effect_mn"].abs().sum()) > 0:
@@ -398,7 +398,7 @@ def _render_pnl_attribution(con):
         fig2.update_layout(**_LAYOUT, height=max(350, len(pnl) * 28),
                           barmode="group", title="Volume / Rate / Mix Attribution",
                           xaxis_title="PKR Millions")
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width='stretch')
 
     with st.expander("P&L Data"):
         st.dataframe(pnl.style.format({
@@ -406,7 +406,7 @@ def _render_pnl_attribution(con):
             "avg_ftp_rate": "{:.2f}%", "avg_margin_bps": "{:+.0f}",
             "nii_contribution_mn": "{:+,.2f}", "volume_effect_mn": "{:+,.2f}",
             "rate_effect_mn": "{:+,.2f}", "mix_effect_mn": "{:+,.2f}",
-        }, na_rep="—"), use_container_width=True, hide_index=True)
+        }, na_rep="—"), width='stretch', hide_index=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -449,7 +449,7 @@ def _render_compute(con):
     with col1:
         st.markdown(f"**Run Daily FTP**")
         ftp_date = st.date_input("FTP Date", value=datetime.now().date(), key="ftp_date")
-        if st.button("Compute FTP", type="primary", use_container_width=True):
+        if st.button("Compute FTP", type="primary", width='stretch'):
             if n_products == 0:
                 st.warning("No products. Seed first.")
             else:
@@ -461,7 +461,7 @@ def _render_compute(con):
         st.markdown(f"**Seed Products**")
         st.markdown(f'<div style="color:{_C["text_dim"]};font-size:12px">Load typical Pakistani bank product set</div>',
                     unsafe_allow_html=True)
-        if st.button("Seed Defaults", type="secondary", use_container_width=True):
+        if st.button("Seed Defaults", type="secondary", width='stretch'):
             count = seed_default_products(con)
             st.success(f"Seeded {count} products")
             st.rerun()
@@ -469,7 +469,7 @@ def _render_compute(con):
     with col3:
         st.markdown(f"**Backfill FTP**")
         backfill_days = st.number_input("Days to backfill", value=30, min_value=1, max_value=365)
-        if st.button("Backfill", type="secondary", use_container_width=True):
+        if st.button("Backfill", type="secondary", width='stretch'):
             if n_products == 0:
                 st.warning("No products. Seed first.")
             else:
@@ -496,6 +496,6 @@ def _render_compute(con):
     """, con)
 
     if not recent.empty:
-        st.dataframe(recent, use_container_width=True, hide_index=True)
+        st.dataframe(recent, width='stretch', hide_index=True)
     else:
         st.info("No FTP computations yet.")

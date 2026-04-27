@@ -172,12 +172,12 @@ def _render_rate_chart(pair: str, limit: int):
         height=450,
         xaxis_rangeslider_visible=False,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Data table
     with st.expander("View Data"):
         st.dataframe(df[["date", "open", "high", "low", "close"]].tail(30),
-                      use_container_width=True, hide_index=True)
+                      width='stretch', hide_index=True)
         csv = df.to_csv(index=False)
         st.download_button("Export CSV", csv, f"fx_{pair.replace('/', '_')}.csv",
                            "text/csv", key="fxh_export")
@@ -247,4 +247,4 @@ def _render_multi_pair_comparison(pairs: list[str]):
         height=400,
         legend=dict(orientation="h", y=-0.15),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')

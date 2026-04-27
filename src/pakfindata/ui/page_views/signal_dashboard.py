@@ -34,12 +34,7 @@ from pakfindata.engine.signal_score import (
 )
 from pakfindata.ui.components.helpers import get_connection, render_footer
 
-# Commentary engine — import _llm_call for AI analysis
-try:
-    from pakfindata.engine.commentary import _llm_call
-    _HAS_LLM = True
-except ImportError:
-    _HAS_LLM = False
+from pakfindata.services.llm_client import llm
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -212,93 +207,138 @@ def _get_index_data(limit: int = 600) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+@st.cache_data(ttl=86400, show_spinner=False, hash_funcs={pd.DataFrame: lambda _: None})
+def _cached_macro_regime(
+    symbol: str,
+    eod_as_of: str,
+    index_as_of: str,
+    eod_df: pd.DataFrame,
+    sector: str,
+    sector_name: str,
+    index_df: pd.DataFrame,
+) -> MacroRegime:
+    """Cache `compute_macro_regime` by (symbol, eod_as_of, index_as_of).
+    EOD is write-once per day, so result is stable for the whole day.
+    DataFrame args are excluded from the hash key (passed for the computation only).
+    """
+    return compute_macro_regime(
+        eod_df,
+        symbol,
+        sector=sector or None,
+        sector_name=sector_name or None,
+        index_df=index_df if not index_df.empty else None,
+    )
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def _get_intraday_data(symbol: str, limit: int = 5000) -> pd.DataFrame:
-    """Query intraday bars from intraday_bars table (cached)."""
+    """Intraday bars for the latest date — reads directly from the JSONL tick
+    log via in-memory DuckDB. Avoids the 24M-row `intraday_bars` scan entirely
+    (which is unreliable on FUSE filesystems).
+    """
+    from pathlib import Path
+    import duckdb
+
     try:
         con = get_connection()
-        return pd.read_sql_query(
-            """SELECT ts, ts_epoch, open, high, low, close, volume
-               FROM intraday_bars
-               WHERE symbol = ?
-               ORDER BY ts_epoch DESC LIMIT ?""",
-            con,
-            params=(symbol, limit),
-        ).sort_values("ts_epoch").reset_index(drop=True)
+        row = con.execute(
+            "SELECT MAX(date) FROM intraday_daily_summary "
+            "WHERE symbol = ? AND market = 'REG'",
+            (symbol,),
+        ).fetchone()
+        latest_date = row[0] if row and row[0] else None
+    except Exception:
+        latest_date = None
+
+    if not latest_date:
+        return pd.DataFrame()
+
+    jf = Path(f"/mnt/e/psxdata/tick_logs_cloud/ticks_{latest_date}.jsonl")
+    if not jf.exists():
+        return pd.DataFrame()
+
+    dcon = duckdb.connect(":memory:")
+    try:
+        df = dcon.execute(
+            f"""SELECT _ts AS ts,
+                       CAST(timestamp AS BIGINT) AS ts_epoch,
+                       open, high, low,
+                       price AS close,
+                       volume
+                FROM read_json_auto('{jf}', ignore_errors=true)
+                WHERE symbol = ? AND market = 'REG'
+                ORDER BY timestamp ASC
+                LIMIT {int(limit)}""",
+            [symbol],
+        ).df()
+        return df
     except Exception:
         return pd.DataFrame()
+    finally:
+        dcon.close()
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _get_tick_data(
     symbol: str, market: str = "REG", days: int = 3
 ) -> pd.DataFrame:
-    """Query tick logs — DuckDB primary, SQLite fallback.
+    """Read ticks for a symbol+market from the JSONL file for the latest date
+    on which this symbol actually has data.
 
-    If no data within `days`, auto-finds the most recent date with data.
+    Uses `intraday_daily_summary` as a cheap index — looks up MAX(date) for
+    the (symbol, market) pair, then opens that ONE JSONL file with in-memory
+    DuckDB. Returns empty fast if the symbol/market combination has no data.
     """
-    cutoff = (
-        datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5)))
-        - datetime.timedelta(days=days)
-    )
-    cutoff_ts = cutoff.timestamp()
+    from pathlib import Path
+    import duckdb
 
-    # DuckDB columns: prev_close, change_pct, bid_vol, ask_vol (no camelCase)
-    _TICK_COLS_DUCK = """symbol, market, timestamp, _ts, price, volume,
-                      change, high, low, open, prev_close,
-                      bid, ask, bid_vol, ask_vol, trades"""
-
-    # DuckDB primary (faster, more data)
-    try:
-        from pakfindata.db.connections import duck, duck_fetchone
-        df = duck(
-            f"SELECT {_TICK_COLS_DUCK} FROM tick_logs "
-            "WHERE symbol = ? AND market = ? AND timestamp >= ? "
-            "ORDER BY timestamp ASC",
-            [symbol, market, cutoff_ts],
-        )
-        if not df.empty:
-            return df
-
-        # Fallback: find most recent date that HAS data for this symbol
-        # (no 'date' column — derive from _ts)
-        row = duck_fetchone(
-            "SELECT MAX(SUBSTR(_ts, 1, 10)) FROM tick_logs "
-            "WHERE symbol = ? AND market = ?",
-            [symbol, market],
-        )
-        if row and row[0]:
-            df = duck(
-                f"SELECT {_TICK_COLS_DUCK} FROM tick_logs "
-                "WHERE symbol = ? AND market = ? AND SUBSTR(_ts, 1, 10) = ? "
-                "ORDER BY timestamp ASC",
-                [symbol, market, row[0]],
-            )
-            if not df.empty:
-                return df
-    except Exception:
-        pass
-
-    # SQLite fallback
+    # Cheap lookup: does this (symbol, market) combo have any data?
     try:
         con = get_connection()
-        return pd.read_sql_query(
-            """SELECT symbol, market, timestamp, _ts, price, volume,
-                      change, high, low, open, prev_close,
-                      bid, ask, bid_vol, ask_vol, trades
-               FROM tick_logs
-               WHERE symbol = ? AND market = ? AND timestamp >= ?
-               ORDER BY timestamp ASC""",
-            con,
-            params=(symbol, market, cutoff_ts),
-        )
+        row = con.execute(
+            "SELECT MAX(date) FROM intraday_daily_summary "
+            "WHERE symbol = ? AND market = ?",
+            (symbol, market),
+        ).fetchone()
+        latest_date = row[0] if row and row[0] else None
+    except Exception:
+        latest_date = None
+
+    if not latest_date:
+        return pd.DataFrame()
+
+    jf = Path(f"/mnt/e/psxdata/tick_logs_cloud/ticks_{latest_date}.jsonl")
+    if not jf.exists():
+        return pd.DataFrame()
+
+    dcon = duckdb.connect(":memory:")
+    try:
+        df = dcon.execute(
+            f"""SELECT symbol, market, timestamp, _ts, price, volume,
+                       change, high, low, open,
+                       previousClose AS prev_close,
+                       bid, ask,
+                       bidVol AS bid_vol, askVol AS ask_vol,
+                       trades
+                FROM read_json_auto('{jf}', ignore_errors=true)
+                WHERE symbol = ? AND market = ?
+                ORDER BY timestamp ASC""",
+            [symbol, market],
+        ).df()
+        return df
     except Exception:
         return pd.DataFrame()
+    finally:
+        dcon.close()
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _check_tick_table_exists() -> bool:
-    """Check if tick_logs table exists and has data — DuckDB primary."""
+    """True when at least one JSONL tick file exists on disk (fast filesystem check)."""
+    from pathlib import Path
+    if any(Path("/mnt/e/psxdata/tick_logs_cloud").glob("ticks_*.jsonl")):
+        return True
+    # Retained fallback for legacy environments without cloud JSONL
     try:
         from pakfindata.db.connections import duck_fetchone
         row = duck_fetchone("SELECT COUNT(*) FROM tick_logs LIMIT 1")
@@ -447,7 +487,7 @@ def _render_layer1(macro: MacroRegime):
             showlegend=True,
             legend=dict(orientation="h", yanchor="bottom", y=1.02),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
         # --- Rolling Hurst Chart ---
         if macro.hurst_rolling is not None and len(macro.hurst_rolling) > 10:
@@ -474,7 +514,7 @@ def _render_layer1(macro: MacroRegime):
                 showlegend=False,
             )
             fig_h.update_yaxes(range=[0.2, 0.9], gridcolor=_COLORS["grid"])
-            st.plotly_chart(fig_h, use_container_width=True)
+            st.plotly_chart(fig_h, width='stretch')
 
 
 def _render_layer2(intraday: IntradayAnchor):
@@ -578,7 +618,7 @@ def _render_layer2(intraday: IntradayAnchor):
             showlegend=True,
             legend=dict(orientation="h", yanchor="bottom", y=1.02),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # --- Volume Profile Histogram ---
     if intraday.profile_data and intraday.profile_data.get("levels"):
@@ -606,7 +646,7 @@ def _render_layer2(intraday: IntradayAnchor):
             xaxis_title="Volume",
             yaxis_title="Price (PKR)",
         )
-        st.plotly_chart(fig_vp, use_container_width=True)
+        st.plotly_chart(fig_vp, width='stretch')
 
 
 def _render_layer3(execution: ExecutionDNA):
@@ -734,7 +774,7 @@ def _render_layer3(execution: ExecutionDNA):
         )
         fig.update_yaxes(title_text="Price (PKR)", row=1, col=1, gridcolor=_COLORS["grid"])
         fig.update_yaxes(title_text="CVD", row=2, col=1, gridcolor=_COLORS["grid"])
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # --- OFI Heatmap ---
     if execution.ofi_df is not None and not execution.ofi_df.empty:
@@ -760,7 +800,7 @@ def _render_layer3(execution: ExecutionDNA):
         )
         fig_ofi.update_yaxes(range=[-1.1, 1.1], gridcolor=_COLORS["grid"])
         fig_ofi.update_xaxes(gridcolor=_COLORS["grid"])
-        st.plotly_chart(fig_ofi, use_container_width=True)
+        st.plotly_chart(fig_ofi, width='stretch')
 
     # --- Session Segmentation ---
     if execution.session_ofi:
@@ -878,7 +918,7 @@ def _signal_rules_commentary(report: SignalReport) -> str:
 
 def _signal_ai_commentary(report: SignalReport, symbol: str) -> Optional[str]:
     """LLM commentary for single symbol signal analysis."""
-    if not _HAS_LLM:
+    if not llm.is_running():
         return None
 
     macro = report.macro
@@ -936,13 +976,13 @@ def _signal_ai_commentary(report: SignalReport, symbol: str) -> Optional[str]:
 
     parts.append("Provide your tactical analysis.")
     user = "\n".join(parts)
-    return _llm_call(system, user, max_tokens=500)
+    return llm.complete_chat_text(system, user, max_tokens=500, use_case="commentary")
 
 
 def _render_signal_commentary(report: SignalReport, symbol: str):
     """Render the AI/rules-based commentary expander for single symbol."""
     with st.expander("Quant Analyst Commentary", expanded=True):
-        use_ai = st.toggle("Enable Deep LLM Analysis (OpenAI)", value=False, key="signal_ai_toggle")
+        use_ai = st.toggle("Enable Deep LLM Analysis (Ollama)", value=False, key="signal_ai_toggle")
 
         if not use_ai:
             commentary = _signal_rules_commentary(report)
@@ -1120,7 +1160,7 @@ def _render_batch_scanner(results: list[BatchScanResult], top_n: int):
             height=300,
             title=dict(text="Sector Heatmap (Avg Score)", font=dict(size=13)),
         )
-        st.plotly_chart(fig_tree, use_container_width=True)
+        st.plotly_chart(fig_tree, width='stretch')
 
     # Regime distribution (donut)
     with chart_cols[1]:
@@ -1150,7 +1190,7 @@ def _render_batch_scanner(results: list[BatchScanResult], top_n: int):
             title=dict(text="Regime Distribution", font=dict(size=13)),
             showlegend=False,
         )
-        st.plotly_chart(fig_donut, use_container_width=True)
+        st.plotly_chart(fig_donut, width='stretch')
 
     # ── Top N Table ──
     st.markdown(
@@ -1163,7 +1203,7 @@ def _render_batch_scanner(results: list[BatchScanResult], top_n: int):
 
     st.dataframe(
         top_df,
-        use_container_width=True,
+        width='stretch',
         height=min(40 * len(top_df) + 40, 500),
         column_config={
             "Price": st.column_config.NumberColumn(format="%.2f"),
@@ -1179,7 +1219,7 @@ def _render_batch_scanner(results: list[BatchScanResult], top_n: int):
     with st.expander(f"Full Results ({len(df)} symbols)"):
         st.dataframe(
             df,
-            use_container_width=True,
+            width='stretch',
             height=600,
             column_config={
                 "Price": st.column_config.NumberColumn(format="%.2f"),
@@ -1332,7 +1372,7 @@ def render_signal_dashboard():
             placeholder="Select symbol or ALL for batch scanner...",
         )
     with row1[1]:
-        run_btn = st.button("Run Analysis", type="primary", use_container_width=True)
+        run_btn = st.button("Run Analysis", type="primary", width='stretch')
     with row1[2]:
         if _is_market_open():
             st.markdown(":red_circle: **LIVE**")
@@ -1526,12 +1566,14 @@ def _run_full_analysis(con, symbol: str) -> SignalReport:
         if len(eod_df) < 30:
             st.warning("Insufficient data for Hurst Exponent (need 30+ days).")
 
-        report.macro = compute_macro_regime(
-            eod_df,
+        report.macro = _cached_macro_regime(
             symbol,
-            sector=info.get("sector"),
-            sector_name=info.get("sector_name"),
-            index_df=index_df if not index_df.empty else None,
+            str(eod_df["date"].iloc[-1]),
+            str(index_df["date"].iloc[-1]) if not index_df.empty else "",
+            eod_df,
+            info.get("sector") or "",
+            info.get("sector_name") or "",
+            index_df,
         )
     else:
         st.error(f"No EOD data found for {symbol}. Check the Symbols page.")

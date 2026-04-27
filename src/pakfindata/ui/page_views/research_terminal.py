@@ -243,7 +243,7 @@ def _render_ai_research(con):
     selected_quick = None
     for i, (label, prompt) in enumerate(_QUICK_QUERIES.items()):
         with cols[i]:
-            if st.button(label, key=f"quick_{i}", use_container_width=True):
+            if st.button(label, key=f"quick_{i}", width='stretch'):
                 selected_quick = prompt
 
     # Custom query input
@@ -425,7 +425,7 @@ def _execute_query(con, query: str, max_rows: int):
             df = pd.read_sql_query(query, con)
 
         st.success(f"{len(df)} rows returned")
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
 
         # Auto-detect chartable results
         if len(df.columns) >= 2:
@@ -442,7 +442,7 @@ def _execute_query(con, query: str, max_rows: int):
                             mode="lines+markers", name=nc,
                         ))
                     fig.update_layout(height=350, margin=dict(l=20, r=20, t=30, b=20))
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
         csv = df.to_csv(index=False)
         st.download_button(

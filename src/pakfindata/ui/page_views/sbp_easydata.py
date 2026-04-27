@@ -292,7 +292,7 @@ def _render_coverage(datasets: dict, downloaded: set):
         fdf[["Dataset", "Name", "Subject", "Series", "Downloaded", "Pct", "Priority"]]
         .sort_values(["Priority", "Pct"], ascending=[False, True])
         .reset_index(drop=True),
-        use_container_width=True,
+        width='stretch',
         height=500,
         column_config={
             "Pct": st.column_config.ProgressColumn(
@@ -349,7 +349,7 @@ def _render_browse(datasets: dict, downloaded: set):
 
     sdf = pd.DataFrame(rows)
     st.dataframe(
-        sdf, use_container_width=True, height=400,
+        sdf, width='stretch', height=400,
         column_config={"Downloaded": st.column_config.CheckboxColumn("Downloaded")},
     )
 
@@ -562,8 +562,8 @@ def _render_explore(catalog: dict, downloaded: set):
         chart_df = df[["Observation Date", "Observation Value"]].dropna().sort_values("Observation Date")
         chart_df = chart_df.set_index("Observation Date")
 
-        st.line_chart(chart_df, use_container_width=True, height=350)
+        st.line_chart(chart_df, width='stretch', height=350)
 
     # Data table
     with st.expander("Raw Data"):
-        st.dataframe(df, use_container_width=True, height=300)
+        st.dataframe(df, width='stretch', height=300)

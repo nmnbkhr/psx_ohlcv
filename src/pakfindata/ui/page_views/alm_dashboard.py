@@ -269,7 +269,7 @@ def _render_repricing_gap(con):
         title="Repricing Gap — Assets vs Liabilities by Bucket",
         yaxis_title="PKR Millions",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Gap as % of total assets
     total_assets = gap_df["assets_mn"].sum()
@@ -291,7 +291,7 @@ def _render_repricing_gap(con):
         ))
         fig2.update_layout(**_LAYOUT, height=350, title="Gap as % of Total Assets",
                           yaxis_title="% of Assets")
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width='stretch')
 
     # Data table
     with st.expander("Repricing Gap Data"):
@@ -300,7 +300,7 @@ def _render_repricing_gap(con):
         st.dataframe(display_df.style.format({
             "assets_mn": "{:,.0f}", "liabilities_mn": "{:,.0f}",
             "gap_mn": "{:+,.0f}", "cum_gap_mn": "{:+,.0f}",
-        }), use_container_width=True)
+        }), width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -314,7 +314,7 @@ def _render_sensitivity(con):
 
     col1, col2 = st.columns([3, 1])
     with col2:
-        if st.button("Run Sensitivity", type="primary", use_container_width=True):
+        if st.button("Run Sensitivity", type="primary", width='stretch'):
             with st.spinner("Computing scenarios..."):
                 results = run_sensitivity(con)
                 st.success(f"Computed {len(results)} scenarios")
@@ -344,7 +344,7 @@ def _render_sensitivity(con):
 
     fig.update_layout(**_LAYOUT, height=450, showlegend=False,
                      title="Interest Rate Sensitivity — Parallel Shift Scenarios")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Duration gap card
     if "duration_gap" in sens_df.columns:
@@ -367,7 +367,7 @@ def _render_sensitivity(con):
             "eve_base_mn": "{:,.0f}", "eve_shocked_mn": "{:,.0f}",
             "eve_impact_mn": "{:+,.0f}", "eve_pct_change": "{:+.2f}%",
             "duration_gap": "{:.4f}",
-        }), use_container_width=True)
+        }), width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -381,7 +381,7 @@ def _render_liquidity(con):
 
     col1, col2 = st.columns([3, 1])
     with col2:
-        if st.button("Compute Ladder", type="primary", use_container_width=True):
+        if st.button("Compute Ladder", type="primary", width='stretch'):
             with st.spinner("Computing liquidity ladder..."):
                 results = compute_liquidity_ladder(con)
                 st.success(f"Computed {len(results)} buckets")
@@ -415,7 +415,7 @@ def _render_liquidity(con):
     fig.update_layout(**_LAYOUT, height=450, barmode="group",
                      title="Maturity Ladder — Cash Inflows vs Outflows",
                      yaxis_title="PKR Millions")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # LCR proxy
     if liq_df["lcr_pct"].notna().any():
@@ -437,7 +437,7 @@ def _render_liquidity(con):
             "inflows_mn": "{:,.0f}", "outflows_mn": "{:,.0f}",
             "net_gap_mn": "{:+,.0f}", "cumulative_gap_mn": "{:+,.0f}",
             "hqla_mn": "{:,.0f}", "lcr_pct": "{:.0f}%",
-        }), use_container_width=True)
+        }), width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -451,7 +451,7 @@ def _render_products(con):
 
     col1, col2 = st.columns([3, 1])
     with col2:
-        if st.button("Seed Default Products", type="secondary", use_container_width=True):
+        if st.button("Seed Default Products", type="secondary", width='stretch'):
             count = seed_default_products(con)
             st.success(f"Seeded {count} products")
             st.rerun()
@@ -484,7 +484,7 @@ def _render_products(con):
             "reference_rate", "spread_bps", "repricing_freq_months",
             "contractual_maturity_months", "category", "currency", "is_islamic",
         ]]
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
 
     # Add product form
     with st.expander("Add / Edit Product"):
@@ -558,7 +558,7 @@ def _render_positions(con):
             if not required.issubset(set(df.columns)):
                 st.error(f"CSV must have columns: {required}")
             else:
-                st.dataframe(df.head(20), use_container_width=True)
+                st.dataframe(df.head(20), width='stretch')
                 if st.button("Load Positions", type="primary"):
                     count = 0
                     date_str = as_of.strftime("%Y-%m-%d")
@@ -617,7 +617,7 @@ def _render_positions(con):
         ]]
         st.dataframe(display.style.format({
             "outstanding_mn": "{:,.0f}", "weighted_avg_rate": "{:.2f}",
-        }), use_container_width=True, hide_index=True)
+        }), width='stretch', hide_index=True)
 
     # Sample data generator
     with st.expander("Generate Sample Positions (Demo Data)"):

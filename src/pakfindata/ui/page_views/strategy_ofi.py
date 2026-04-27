@@ -64,7 +64,7 @@ def _render_live():
     with c2:
         con = _duck_con()
         dates = [r[0] for r in con.execute(
-            "SELECT DISTINCT SUBSTR(_ts, 1, 10) AS d FROM tick_logs "
+            "SELECT DISTINCT date AS d FROM tick_logs "
             "WHERE symbol = ? ORDER BY d DESC", [symbol],
         ).fetchall()] if symbol else []
         con.close()
@@ -117,14 +117,14 @@ def _render_live():
     fig.update_layout(**_CHART, height=450, showlegend=False,
                       yaxis=dict(gridcolor=_C["grid"], title="Price"),
                       yaxis2=dict(gridcolor=_C["grid"], title="OFI", range=[-1, 1]))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Bar table
     with st.expander("Bar Details"):
         show = bars[["bar_time", "open", "close", "volume", "ofi_normalized", "ofi_delta_norm",
                       "bar_return", "spread_bps", "tick_count"]].copy()
         show.columns = ["Time", "Open", "Close", "Volume", "OFI", "OFI(delta)", "Return", "Spread(bps)", "Ticks"]
-        st.dataframe(show, use_container_width=True, hide_index=True)
+        st.dataframe(show, width='stretch', hide_index=True)
 
 
 # ═══════════════════════════════════════════════════════
@@ -199,7 +199,7 @@ def _render_backtest():
                              fillcolor="rgba(33,150,243,0.1)"))
     fig.add_hline(y=1.0, line_dash="dash", line_color=_C["dim"])
     fig.update_layout(**_CHART, height=300, yaxis=dict(gridcolor=_C["grid"], title="Cumulative Return"))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # PnL distribution + exit reasons
     c1, c2 = st.columns(2)
@@ -210,14 +210,14 @@ def _render_backtest():
         fig.add_vline(x=0, line_color=_C["dim"])
         fig.update_layout(**_CHART, height=250, xaxis=dict(title="P&L %", gridcolor=_C["grid"]),
                           yaxis=dict(gridcolor=_C["grid"]))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     with c2:
         exits = m["exit_reasons"]
         fig = go.Figure(go.Pie(labels=list(exits.keys()), values=list(exits.values()),
                                hole=0.4, marker=dict(colors=[_C["up"], _C["down"], _C["amber"], _C["cyan"]])))
         fig.update_layout(**_CHART, height=250, showlegend=True)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # Trade log
     with st.expander("Trade Log"):
@@ -225,7 +225,7 @@ def _render_backtest():
                         "exit_price", "pnl_pct", "bars_held", "exit_reason", "entry_ofi"]].copy()
         show["pnl_pct"] = show["pnl_pct"].map(lambda x: f"{x:.2%}")
         show["entry_ofi"] = show["entry_ofi"].map(lambda x: f"{x:.3f}")
-        st.dataframe(show, use_container_width=True, hide_index=True, height=400)
+        st.dataframe(show, width='stretch', hide_index=True, height=400)
 
 
 # ═══════════════════════════════════════════════════════
@@ -264,7 +264,7 @@ def _render_scanner():
     show["spread_bps"] = show["spread_bps"].map(lambda x: f"{x:.1f}")
 
     styled = show.style.map(_color_sig, subset=["signal"])
-    st.dataframe(styled, use_container_width=True, hide_index=True, height=500)
+    st.dataframe(styled, width='stretch', hide_index=True, height=500)
 
 
 # ═══════════════════════════════════════════════════════
@@ -280,7 +280,7 @@ def _render_research():
 
     con = _duck_con()
     dates = [r[0] for r in con.execute(
-        "SELECT DISTINCT SUBSTR(_ts, 1, 10) AS d FROM tick_logs WHERE symbol = ? ORDER BY d", [symbol],
+        "SELECT DISTINCT date AS d FROM tick_logs WHERE symbol = ? ORDER BY d", [symbol],
     ).fetchall()]
     con.close()
 
@@ -329,7 +329,7 @@ def _render_research():
         fig.update_layout(**_CHART, height=350, title=dict(text=f"OFI vs Next-Bar Return (R={corr:.3f})", font=dict(size=12)),
                           xaxis=dict(title="OFI", gridcolor=_C["grid"]),
                           yaxis=dict(title="Next Return %", gridcolor=_C["grid"]))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     with c2:
         # OFI distribution
@@ -340,7 +340,7 @@ def _render_research():
         fig.update_layout(**_CHART, height=350, title=dict(text="OFI Distribution", font=dict(size=12)),
                           xaxis=dict(title="OFI Normalized", gridcolor=_C["grid"]),
                           yaxis=dict(gridcolor=_C["grid"]))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # OFI by time of day
     df["hour"] = pd.to_datetime(df["bar_time"]).dt.hour
@@ -358,7 +358,7 @@ def _render_research():
     fig.update_layout(**_CHART, height=300, title=dict(text="OFI Predictive Power by Hour", font=dict(size=12)))
     fig.update_yaxes(title_text="Bars", gridcolor=_C["grid"], secondary_y=False)
     fig.update_yaxes(title_text="Correlation", gridcolor=_C["grid"], secondary_y=True)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     st.markdown("""
     ---

@@ -12,9 +12,16 @@ except ImportError:
 
 from pakfindata.api_client import get_client
 from pakfindata.config import get_db_path
-from pakfindata.sources.fx_client import FXClient
-
-_fx = FXClient()
+from pakfindata.db.repositories.market_summary import (
+    get_52w_extremes,
+    get_eod_breadth,
+    get_latest_full_trading_day,
+    get_volume_leaders,
+    refresh_eod_summary,
+    refresh_eod_summary_range,
+    summary_coverage,
+)
+from pakfindata.db.repositories.rates_strip import get_fx_strip, get_rates_strip
 from pakfindata.services import (
     is_service_running,
     read_status as read_service_status,
@@ -78,160 +85,75 @@ def _sync_rates(con):
     return rates, treas
 
 
-# ── Query helpers (cached) ────────────────────────────────────────────────
+# ── Query helpers (cached wrappers around repository queries) ─────────────
 
 @st.cache_data(ttl=60)
 def _get_rates_strip(_con):
-    """Fetch macro rates for the top strip."""
-    data = {}
-    queries = {
-        "policy": ("SELECT policy_rate, rate_date FROM sbp_policy_rates ORDER BY rate_date DESC LIMIT 1", None),
-        "kibor3m": ("SELECT bid, offer, date FROM kibor_daily WHERE tenor='3M' ORDER BY date DESC LIMIT 1", None),
-        "tbill3m": ("SELECT cutoff_yield, auction_date FROM tbill_auctions WHERE tenor='3M' ORDER BY auction_date DESC LIMIT 1", None),
-        "pkrv10y": ("SELECT yield_pct, date FROM pkrv_daily WHERE tenor_months=120 ORDER BY date DESC LIMIT 1", None),
-    }
-    for key, (sql, _) in queries.items():
-        try:
-            row = _con.execute(sql).fetchone()
-            data[key] = tuple(row) if row else None
-        except Exception:
-            data[key] = None
-    return data
+    return get_rates_strip(_con)
 
 
 @st.cache_data(ttl=60)
 def _get_fx_rates(_con):
-    """Fetch FX rates from DB."""
-    fx_data = []
-    for curr in ["USD", "EUR", "GBP", "AED", "SAR"]:
-        try:
-            row = _con.execute(
-                "SELECT date, selling FROM sbp_fx_interbank WHERE UPPER(currency)=? ORDER BY date DESC LIMIT 1",
-                (curr,),
-            ).fetchone()
-            if row:
-                fx_data.append((curr, float(row[1]), str(row[0])))
-                continue
-        except Exception:
-            pass
-        try:
-            row = _con.execute(
-                "SELECT date, selling FROM forex_kerb WHERE UPPER(currency)=? ORDER BY date DESC LIMIT 1",
-                (curr,),
-            ).fetchone()
-            if row:
-                fx_data.append((curr, float(row[1]), str(row[0])))
-        except Exception:
-            pass
-    return fx_data
+    return get_fx_strip(_con)
 
 
 @st.cache_data(ttl=60)
 def _get_market_breadth(_con):
-    """Get gainers/losers/volume from EOD data."""
+    return get_eod_breadth(_con)
+
+
+@st.cache_data(ttl=60)
+def _get_volume_leaders(_con, limit=5):
+    return get_volume_leaders(_con, limit=limit)
+
+
+@st.cache_data(ttl=60)
+def _get_52w_extremes(_con):
+    high_df = get_52w_extremes(_con, near="high", limit=3)
+    low_df = get_52w_extremes(_con, near="low", limit=3)
+    return high_df, low_df
+
+
+@st.cache_data(ttl=60)
+def _cached_market_analytics():
+    """Cached wrapper for market analytics — avoids repeated DuckDB builds."""
+    from pakfindata.api_client import get_client
+    client = get_client()
     try:
-        row = _con.execute("""
-            WITH best_date AS (
-                SELECT date FROM eod_ohlcv
-                GROUP BY date HAVING COUNT(DISTINCT symbol) >= 100
-                ORDER BY date DESC LIMIT 1
-            ),
-            today AS (
-                SELECT symbol, close, volume FROM eod_ohlcv
-                WHERE date = (SELECT date FROM best_date)
-            ),
-            prev AS (
-                SELECT symbol, close as prev_close FROM eod_ohlcv
-                WHERE date = (SELECT MAX(date) FROM eod_ohlcv WHERE date < (SELECT date FROM best_date))
-            ),
-            changes AS (
-                SELECT t.symbol, t.volume,
-                    CASE WHEN p.prev_close > 0
-                        THEN ((t.close - p.prev_close) / p.prev_close) * 100 ELSE 0
-                    END as change_percent
-                FROM today t LEFT JOIN prev p ON t.symbol = p.symbol
-            )
-            SELECT
-                COUNT(*) as total,
-                SUM(CASE WHEN change_percent > 0.01 THEN 1 ELSE 0 END) as gainers,
-                SUM(CASE WHEN change_percent < -0.01 THEN 1 ELSE 0 END) as losers,
-                SUM(CASE WHEN change_percent BETWEEN -0.01 AND 0.01 THEN 1 ELSE 0 END) as unchanged,
-                ROUND(AVG(change_percent), 2) as avg_change,
-                SUM(volume) as total_volume
-            FROM changes
-        """).fetchone()
-        if row:
-            return dict(row)
-        return None
+        client.init_analytics()
+        return client.get_latest_market_analytics()
     except Exception:
         return None
 
 
 @st.cache_data(ttl=60)
-def _get_volume_leaders(_con, limit=5):
+def _cached_top_list(list_type: str, limit: int = 5):
+    """Cached wrapper for top gainers/losers."""
+    from pakfindata.api_client import get_client
     try:
-        return pd.read_sql_query("""
-            WITH best_date AS (
-                SELECT date FROM eod_ohlcv
-                GROUP BY date HAVING COUNT(DISTINCT symbol) >= 100
-                ORDER BY date DESC LIMIT 1
-            ),
-            today AS (SELECT symbol, close, volume FROM eod_ohlcv WHERE date=(SELECT date FROM best_date)),
-            prev AS (SELECT symbol, close as prev_close FROM eod_ohlcv
-                      WHERE date=(SELECT MAX(date) FROM eod_ohlcv WHERE date < (SELECT date FROM best_date)))
-            SELECT t.symbol, t.volume, t.close as price,
-                   ROUND(((t.close - p.prev_close) / p.prev_close) * 100, 2) as change_pct
-            FROM today t LEFT JOIN prev p ON t.symbol = p.symbol
-            WHERE t.volume > 0 ORDER BY t.volume DESC LIMIT ?
-        """, _con, params=(limit,))
+        return get_client().get_top_list(list_type, limit=limit)
     except Exception:
         return pd.DataFrame()
 
 
 @st.cache_data(ttl=60)
-def _get_52w_extremes(_con):
-    """Get stocks near 52-week high and low."""
+def _cached_sector_leaderboard():
+    """Cached wrapper for sector leaderboard."""
+    from pakfindata.api_client import get_client
     try:
-        high_df = pd.read_sql_query("""
-            WITH best_date AS (
-                SELECT session_date FROM trading_sessions
-                WHERE market_type='REG' AND week_52_high > 0 AND week_52_low > 0
-                GROUP BY session_date HAVING COUNT(DISTINCT symbol) >= 100
-                ORDER BY session_date DESC LIMIT 1
-            )
-            SELECT symbol,
-                CASE WHEN (week_52_high - week_52_low) > 0
-                    THEN ROUND((COALESCE(close,high,ldcp) - week_52_low) / (week_52_high - week_52_low) * 100, 1)
-                    ELSE 50 END as pos_pct
-            FROM trading_sessions
-            WHERE session_date=(SELECT session_date FROM best_date)
-                AND market_type='REG' AND week_52_high > 0 AND week_52_low > 0
-                AND COALESCE(close,high,ldcp) > 0
-            ORDER BY pos_pct DESC LIMIT 3
-        """, _con)
+        return get_client().get_sector_leaderboard()
     except Exception:
-        high_df = pd.DataFrame()
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=300)
+def _cached_kse100():
+    """Cached KSE-100 latest."""
+    from pakfindata.api_client import get_client
     try:
-        low_df = pd.read_sql_query("""
-            WITH best_date AS (
-                SELECT session_date FROM trading_sessions
-                WHERE market_type='REG' AND week_52_high > 0 AND week_52_low > 0
-                GROUP BY session_date HAVING COUNT(DISTINCT symbol) >= 100
-                ORDER BY session_date DESC LIMIT 1
-            )
-            SELECT symbol,
-                CASE WHEN (week_52_high - week_52_low) > 0
-                    THEN ROUND((COALESCE(close,high,ldcp) - week_52_low) / (week_52_high - week_52_low) * 100, 1)
-                    ELSE 50 END as pos_pct
-            FROM trading_sessions
-            WHERE session_date=(SELECT session_date FROM best_date)
-                AND market_type='REG' AND week_52_high > 0 AND week_52_low > 0
-                AND COALESCE(close,high,ldcp) > 0
-            ORDER BY pos_pct ASC LIMIT 3
-        """, _con)
+        return get_client().get_latest_kse100()
     except Exception:
-        low_df = pd.DataFrame()
-    return high_df, low_df
+        return None
 
 
 # ── HTML building blocks ──────────────────────────────────────────────────
@@ -339,7 +261,7 @@ def _kse100_proxy_hero(breadth):
     </div>"""
 
 
-def _rates_strip_html(rates, fx_data, fx_live=None):
+def _rates_strip_html(rates, fx_data):
     """Compact rates strip: Policy | KIBOR | T-Bill | PKRV | FX."""
     items = []
 
@@ -368,14 +290,8 @@ def _rates_strip_html(rates, fx_data, fx_live=None):
     if items and fx_data:
         items.append('<span class="rs-sep">|</span>')
 
-    # FX rates -- prefer live microservice, fall back to DB
-    if fx_live:
-        for pair, idx in [("USD/PKR", 0), ("EUR/PKR", 1), ("GBP/PKR", 2)]:
-            r = fx_live.get(pair, {})
-            mid = r.get("mid")
-            if mid:
-                items.append(f'<span class="rs-label">{pair.split("/")[0]}</span><span class="rs-val">{mid:,.2f}</span>')
-    elif fx_data:
+    # FX rates from DB
+    if fx_data:
         for curr, rate, _ in fx_data[:3]:
             items.append(f'<span class="rs-label">{curr}</span><span class="rs-val">{rate:,.2f}</span>')
 
@@ -475,16 +391,13 @@ def render_dashboard():
                 st.caption(f"Data: {badge_text} | Sync: {sync_dot}")
         with h3:
             refresh_all = st.button("Refresh", type="primary", key="dash_refresh",
-                                    use_container_width=True)
+                                    width='stretch')
 
         # ══════════════════════════════════════════════════════════════
         # ROW 1: KSE-100 HERO
         # ══════════════════════════════════════════════════════════════
         breadth = _get_market_breadth(con)
-        try:
-            kse100 = client.get_latest_kse100()
-        except Exception:
-            kse100 = None
+        kse100 = _cached_kse100()
 
         if kse100:
             st.markdown(_kse100_hero(kse100, breadth), unsafe_allow_html=True)
@@ -496,22 +409,9 @@ def render_dashboard():
         # ══════════════════════════════════════════════════════════════
         rates = _get_rates_strip(con)
         fx_db = _get_fx_rates(con)
-        fx_live = None
-        try:
-            if _fx.is_healthy():
-                snap = _fx.get_snapshot()
-                if snap:
-                    fx_live = snap.get("rates", {})
-        except Exception:
-            pass
-        st.markdown(_rates_strip_html(rates, fx_db, fx_live), unsafe_allow_html=True)
+        st.markdown(_rates_strip_html(rates, fx_db), unsafe_allow_html=True)
 
-        # ══════════════════════════════════════════════════════════════
-        # ROW 3: FRESHNESS BAR (compact, non-blocking)
-        # ══════════════════════════════════════════════════════════════
-        render_domain_freshness_bar(con)
-
-        # Stale data warning
+        # Stale data warning (reads from sync_state.json — no DB scan)
         is_stale, stale_msg = check_data_staleness(con)
         if is_stale:
             render_data_warning(f"{stale_msg}. Hit Refresh to update.")
@@ -534,22 +434,31 @@ def render_dashboard():
                     except Exception as e:
                         errors.append(str(e))
                         st.write(f"{label}: FAILED - {e}")
+                # Rebuild EOD summary for the latest trading day so breadth /
+                # movers / rates strip pick up the freshest date immediately.
+                try:
+                    latest = get_latest_full_trading_day(con, min_symbols=1)
+                    if latest:
+                        status.update(label=f"Building summary for {latest}...")
+                        refresh_eod_summary(con, latest)
+                        st.write(f"EOD summary ({latest}): OK")
+                except Exception as e:
+                    errors.append(str(e))
+                    st.write(f"EOD summary: FAILED - {e}")
                 if errors:
                     status.update(label=f"Done with {len(errors)} error(s)", state="error")
                 else:
                     status.update(label="All data refreshed", state="complete")
+            # Invalidate every @st.cache_data wrapper so the page re-reads
+            # from the just-updated tables instead of the stale 60s cache.
+            st.cache_data.clear()
             st.rerun()
 
         # ══════════════════════════════════════════════════════════════
         # ROW 4: MARKET VIZ -- Breadth | Gainers | Losers
         # ══════════════════════════════════════════════════════════════
         try:
-            from pakfindata.sources.regular_market import init_regular_market_schema
-            if con:
-                init_regular_market_schema(con)
-            client.init_analytics()
-            market_analytics = client.get_latest_market_analytics()
-
+            market_analytics = _cached_market_analytics()
             if market_analytics:
                 gainers = market_analytics.get("gainers_count", 0)
                 losers = market_analytics.get("losers_count", 0)
@@ -560,21 +469,21 @@ def render_dashboard():
                 with col1:
                     fig = make_market_breadth_chart(gainers=gainers, losers=losers,
                                                     unchanged=unchanged, height=280)
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
                 with col2:
-                    top_g = client.get_top_list("gainers", limit=5)
+                    top_g = _cached_top_list("gainers", 5)
                     if not top_g.empty:
                         fig = make_top_movers_chart(top_g[["symbol", "change_pct"]],
                                                     title="Top Gainers", chart_type="gainers", height=280)
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width='stretch')
 
                 with col3:
-                    top_l = client.get_top_list("losers", limit=5)
+                    top_l = _cached_top_list("losers", 5)
                     if not top_l.empty:
                         fig = make_top_movers_chart(top_l[["symbol", "change_pct"]],
                                                     title="Top Losers", chart_type="losers", height=280)
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width='stretch')
         except Exception:
             pass
 
@@ -593,7 +502,7 @@ def render_dashboard():
 
         with c3:
             try:
-                sector_df = client.get_sector_leaderboard()
+                sector_df = _cached_sector_leaderboard()
                 if not sector_df.empty:
                     st.markdown(
                         '<div style="color:#6B7280;font-size:11px;font-weight:600;'
@@ -604,7 +513,7 @@ def render_dashboard():
                                                  "sum_volume", "top_symbol"] if c in sector_df.columns]
                     st.dataframe(
                         sector_df[display_cols].head(8),
-                        use_container_width=True,
+                        width='stretch',
                         hide_index=True,
                         height=260,
                         column_config={
@@ -670,21 +579,91 @@ def render_dashboard():
                 with rc1:
                     if st.button("Sync Rates", key="dash_sync_rates2"):
                         with st.spinner(""):
-                            _sync_rates(con)
-                        st.toast("Rates synced")
-                        st.rerun()
+                            try:
+                                _sync_rates(con)
+                                st.toast("Rates synced")
+                            except Exception as e:
+                                st.error(f"Rates sync failed: {e}")
                 with rc2:
                     if st.button("Sync Indices", key="dash_sync_idx2"):
                         with st.spinner(""):
-                            _sync_indices(con)
-                        st.toast("Indices synced")
+                            try:
+                                _sync_indices(con)
+                                st.toast("Indices synced")
+                            except Exception as e:
+                                st.error(f"Indices sync failed: {e}")
+
+            # ── EOD summary tables (precomputed breadth / movers / sectors) ──
+            st.markdown("**EOD Summary Tables**")
+            cov = summary_coverage(con)
+            mkt = cov.get("eod_market_summary", {})
+            raw = cov.get("eod_ohlcv", {})
+            built = mkt.get("rows") or 0
+            total_dates = raw.get("dates") or 0
+            missing = max(total_dates - built, 0)
+            latest = get_latest_full_trading_day(con, min_symbols=1)
+            st.caption(
+                f"**Source data** (`eod_ohlcv`): {total_dates:,} dates "
+                f"({raw.get('min_date') or '—'} → {raw.get('max_date') or '—'})"
+            )
+            st.caption(
+                f"**Summary built**: {built:,} dates "
+                f"({mkt.get('min_date') or '—'} → {mkt.get('max_date') or '—'})"
+                f"  •  {missing:,} dates not yet built"
+            )
+            if latest:
+                st.caption(f"**Rebuild Today** → `{latest}` (latest date in source)")
+
+            s1, s2, s3 = st.columns(3)
+            with s1:
+                if st.button("Rebuild Today", key="dash_sum_today",
+                             help="Refresh summaries for the latest trading day only."):
+                    with st.spinner("Rebuilding today's summary…"):
+                        try:
+                            d = get_latest_full_trading_day(con, min_symbols=1)
+                            if d:
+                                n = refresh_eod_summary(con, d)
+                                st.cache_data.clear()
+                                st.toast(f"Rebuilt {d}: {n} symbol rows")
+                            else:
+                                st.warning("No EOD data found.")
+                        except Exception as e:
+                            st.error(f"Rebuild failed: {e}")
+                        st.rerun()
+            with s2:
+                if st.button("Rebuild Missing", key="dash_sum_missing",
+                             help="Populate summaries only for dates not yet built."):
+                    with st.spinner("Populating missing dates…"):
+                        try:
+                            r = refresh_eod_summary_range(con, only_missing=True)
+                            st.cache_data.clear()
+                            st.toast(
+                                f"Processed {r['dates_processed']}/{r['dates_considered']} dates, "
+                                f"{r['rows_written']:,} rows"
+                            )
+                        except Exception as e:
+                            st.error(f"Rebuild failed: {e}")
+                        st.rerun()
+            with s3:
+                if st.button("Rebuild All", key="dash_sum_all",
+                             help="Full rebuild of every date in eod_ohlcv. Slow."):
+                    with st.spinner("Rebuilding all summaries…"):
+                        try:
+                            r = refresh_eod_summary_range(con, only_missing=False)
+                            st.cache_data.clear()
+                            st.toast(
+                                f"Rebuilt {r['dates_processed']} dates, "
+                                f"{r['rows_written']:,} rows"
+                            )
+                        except Exception as e:
+                            st.error(f"Rebuild failed: {e}")
                         st.rerun()
 
             # Recent sync runs
             runs_df = client.get_sync_runs(limit=5)
             if not runs_df.empty:
                 runs_df.columns = ["ID", "Started", "Ended", "Mode", "Total", "OK", "Failed", "Rows"]
-                st.dataframe(runs_df, use_container_width=True, hide_index=True, height=180)
+                st.dataframe(runs_df, width='stretch', hide_index=True, height=180)
 
     except Exception as e:
         st.error(f"Database error: {e}")

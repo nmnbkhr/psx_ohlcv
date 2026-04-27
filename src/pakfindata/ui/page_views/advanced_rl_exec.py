@@ -149,9 +149,9 @@ def render_page():
                     fig.add_hline(y=0, line_dash="dot", line_color=_C["dim"])
                     fig.update_layout(**PLOT_LAYOUT, height=300,
                                       title_text="Implementation Shortfall (bps) -- lower is better")
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
-                st.dataframe(day_df.round(2), use_container_width=True, hide_index=True)
+                st.dataframe(day_df.round(2), width='stretch', hide_index=True)
 
     # ------------------------------------------------------------------
     # TAB 2: Live Execution
@@ -236,7 +236,7 @@ def render_page():
             fig.add_hline(y=0, line_dash="dash", line_color=_C["dim"], row=3, col=1)
 
             fig.update_layout(**PLOT_LAYOUT, height=600, showlegend=False)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
     # ------------------------------------------------------------------
     # TAB 3: Benchmark Comparison

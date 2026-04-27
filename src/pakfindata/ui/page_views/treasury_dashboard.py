@@ -137,23 +137,23 @@ def _load_overview_kpis() -> dict:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_rate_history() -> tuple[dict, pd.DataFrame]:
-    """Load rate history overlay data (cached)."""
+    """Load rate history overlay data (cached). Last 3 years only."""
     con = get_connection()
+    cutoff = (pd.Timestamp.now() - pd.DateOffset(years=3)).strftime("%Y-%m-%d")
     rate_series = [
-        ("sbp_policy_rates", "rate_date", "policy_rate", " WHERE 1=1"),
-        ("kibor_daily", "date", "offer", " WHERE tenor='3M'"),
-        ("konia_daily", "date", "rate_pct", " WHERE 1=1"),
+        ("sbp_policy_rates", "rate_date", "policy_rate", f" WHERE rate_date >= '{cutoff}'"),
+        ("kibor_daily", "date", "offer", f" WHERE tenor='3M' AND date >= '{cutoff}'"),
+        ("konia_daily", "date", "rate_pct", f" WHERE date >= '{cutoff}'"),
     ]
     frames = {}
     for table, date_col, val_col, where in rate_series:
-        where_clause = where if "WHERE" in where else ""
         frames[table] = pd.read_sql_query(
-            f"SELECT {date_col} as date, {val_col} as rate FROM {table}{where_clause} ORDER BY {date_col}",
+            f"SELECT {date_col} as date, {val_col} as rate FROM {table}{where} ORDER BY {date_col}",
             con,
         )
     tb = pd.read_sql_query(
-        "SELECT auction_date as date, cutoff_yield as rate FROM tbill_auctions"
-        " WHERE tenor='3M' ORDER BY auction_date", con,
+        f"SELECT auction_date as date, cutoff_yield as rate FROM tbill_auctions"
+        f" WHERE tenor='3M' AND auction_date >= '{cutoff}' ORDER BY auction_date", con,
     )
     frames["tbill_auctions"] = tb
     return frames, tb
@@ -161,24 +161,22 @@ def _load_rate_history() -> tuple[dict, pd.DataFrame]:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_policy_rate_timeline() -> pd.DataFrame:
-    """Load policy rate timeline data (cached)."""
+    """Load policy rate timeline data (cached). Last 3 years."""
     con = get_connection()
     _pr_count = con.execute("SELECT COUNT(*) FROM sbp_policy_rates").fetchone()[0]
     if _pr_count < 10:
         from pakfindata.db.repositories.fixed_income import seed_sbp_policy_rates
         seed_sbp_policy_rates(con)
+    cutoff = (pd.Timestamp.now() - pd.DateOffset(years=3)).strftime("%Y-%m-%d")
     return pd.read_sql_query(
-        "SELECT rate_date, policy_rate FROM sbp_policy_rates ORDER BY rate_date", con,
+        f"SELECT rate_date, policy_rate FROM sbp_policy_rates WHERE rate_date >= '{cutoff}' ORDER BY rate_date", con,
     )
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
 def _load_pkrv_dates() -> list[str]:
-    """Load distinct PKRV dates (cached)."""
-    con = get_connection()
-    return [r["date"] for r in con.execute(
-        "SELECT DISTINCT date FROM pkrv_daily ORDER BY date DESC"
-    ).fetchall()]
+    """Load distinct PKRV dates from manifest."""
+    from pakfindata.db.date_manifest import get_dates
+    return get_dates("pkrv_daily")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -192,14 +190,12 @@ def _load_pkrv_curve(date: str) -> pd.DataFrame:
     )
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
 def _load_pkisrv_data() -> tuple[int, list[str]]:
-    """Load PKISRV count and dates (cached)."""
+    """Load PKISRV count and dates from manifest."""
+    from pakfindata.db.date_manifest import get_dates
+    isrv_dates = get_dates("pkisrv_daily")
     con = get_connection()
     isrv_count = con.execute("SELECT COUNT(*) FROM pkisrv_daily").fetchone()[0]
-    isrv_dates = [r["date"] for r in con.execute(
-        "SELECT DISTINCT date FROM pkisrv_daily ORDER BY date DESC"
-    ).fetchall()]
     return isrv_count, isrv_dates
 
 
@@ -276,14 +272,15 @@ def _load_kibor_data() -> tuple[int, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     kb_count = con.execute("SELECT COUNT(*) FROM kibor_daily").fetchone()[0]
     if kb_count == 0:
         return kb_count, pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    cutoff = (pd.Timestamp.now() - pd.DateOffset(years=3)).strftime("%Y-%m-%d")
     kdf = pd.read_sql_query(
-        "SELECT date, tenor, bid, offer FROM kibor_daily"
-        " WHERE tenor IN ('1M','3M','6M','12M') AND offer IS NOT NULL ORDER BY date",
+        f"SELECT date, tenor, bid, offer FROM kibor_daily"
+        f" WHERE tenor IN ('1M','3M','6M','12M') AND offer IS NOT NULL AND date >= '{cutoff}' ORDER BY date",
         con,
     )
     spread_df = pd.read_sql_query(
-        "SELECT date, tenor, offer - bid as spread FROM kibor_daily"
-        " WHERE tenor='3M' AND bid IS NOT NULL AND offer IS NOT NULL ORDER BY date",
+        f"SELECT date, tenor, offer - bid as spread FROM kibor_daily"
+        f" WHERE tenor='3M' AND bid IS NOT NULL AND offer IS NOT NULL AND date >= '{cutoff}' ORDER BY date",
         con,
     )
     latest = pd.read_sql_query(
@@ -301,20 +298,23 @@ def _load_kibor_data() -> tuple[int, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 def _load_spread_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     """Load T-Bill and KIBOR-Policy spread data (cached)."""
     con = get_connection()
+    cutoff = (pd.Timestamp.now() - pd.DateOffset(years=3)).strftime("%Y-%m-%d")
     tb_spread = pd.read_sql_query(
-        """SELECT a.auction_date as date, a.cutoff_yield as y6, b.cutoff_yield as y12,
+        f"""SELECT a.auction_date as date, a.cutoff_yield as y6, b.cutoff_yield as y12,
                   ROUND(b.cutoff_yield - a.cutoff_yield, 4) as spread
            FROM tbill_auctions a
            JOIN tbill_auctions b ON a.auction_date=b.auction_date
-           WHERE a.tenor='6M' AND b.tenor='12M' ORDER BY a.auction_date""",
+           WHERE a.tenor='6M' AND b.tenor='12M' AND a.auction_date >= '{cutoff}'
+           ORDER BY a.auction_date""",
         con,
     )
     kibor_policy = pd.read_sql_query(
-        """SELECT k.date, k.offer as kibor,
+        f"""SELECT k.date, k.offer as kibor,
                   (SELECT p.policy_rate FROM sbp_policy_rates p
                    WHERE p.rate_date <= k.date ORDER BY p.rate_date DESC LIMIT 1) as policy
            FROM kibor_daily k
-           WHERE k.tenor='3M' AND k.offer IS NOT NULL ORDER BY k.date""",
+           WHERE k.tenor='3M' AND k.offer IS NOT NULL AND k.date >= '{cutoff}'
+           ORDER BY k.date""",
         con,
     )
     return tb_spread, kibor_policy
@@ -324,9 +324,8 @@ def _load_spread_data() -> tuple[pd.DataFrame, pd.DataFrame]:
 def _load_curve_steepness() -> list[dict]:
     """Load yield curve steepness data (cached)."""
     con = get_connection()
-    steep_dates = con.execute(
-        "SELECT DISTINCT date FROM pkrv_daily ORDER BY date DESC LIMIT 90"
-    ).fetchall()
+    from pakfindata.db.date_manifest import get_dates
+    steep_dates = [{"date": d} for d in get_dates("pkrv_daily")[:90]]
     steepness = []
     for row in steep_dates:
         d = row["date"]
@@ -341,16 +340,14 @@ def _load_curve_steepness() -> list[dict]:
     return steepness
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
 def _load_pkfrv_data() -> tuple[int, list[str]]:
-    """Load PKFRV bond count and dates (cached)."""
+    """Load PKFRV bond count and dates from manifest."""
+    from pakfindata.db.date_manifest import get_dates
     con = get_connection()
     frv_count = con.execute("SELECT COUNT(*) FROM pkfrv_daily").fetchone()[0]
     if frv_count == 0:
         return frv_count, []
-    dates = [r["date"] for r in con.execute(
-        "SELECT DISTINCT date FROM pkfrv_daily ORDER BY date DESC"
-    ).fetchall()]
+    dates = get_dates("pkfrv_daily")
     return frv_count, dates
 
 
@@ -437,9 +434,10 @@ def _render_overview(con):
 
     kibor = kpis["kibor"]
     with mc[1]:
-        if kibor:
+        if kibor and kibor.get("offer") is not None:
             _card("KIBOR 3M", f"{kibor['offer']:.2f}%", color=_COLORS["kibor"])
-            st.caption(f"Bid: {kibor['bid']:.2f}% | {kibor['date']}")
+            bid_str = f"{kibor['bid']:.2f}%" if kibor.get("bid") is not None else "N/A"
+            st.caption(f"Bid: {bid_str} | {kibor['date']}")
         else:
             _card("KIBOR 3M", "N/A", color=_COLORS["kibor"])
 
@@ -504,7 +502,7 @@ def _render_overview(con):
             yaxis_title="Rate (%)",
             legend=dict(orientation="h", y=-0.12, bgcolor="rgba(0,0,0,0)"),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     else:
         st.info("No rate history data available")
 
@@ -531,7 +529,7 @@ def _render_overview(con):
                     font=dict(size=9, color=color), arrowcolor=color,
                 )
         fig.update_layout(yaxis_title="Rate (%)")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # AI Commentary
     render_ai_commentary(con, "TREASURY")
@@ -549,11 +547,14 @@ def _render_yield_curves(con):
         st.info("No PKRV yield curve data. Sync Yield Curves (MUFAP) to fetch.")
         return
 
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns([2, 2, 1])
     with c1:
         sel_date = st.selectbox("Curve date", dates, index=0, key="pkrv_d1")
     with c2:
         cmp_date = st.selectbox("Compare with", ["None"] + dates, index=0, key="pkrv_d2")
+    with c3:
+        from pakfindata.ui.components.helpers import render_date_refresh_button
+        render_date_refresh_button(["pkrv_daily", "pkisrv_daily", "pkfrv_daily"], key="tsy_yc_refresh")
 
     df = _load_pkrv_curve(sel_date)
     if df.empty:
@@ -589,7 +590,7 @@ def _render_yield_curves(con):
         ),
         legend=dict(orientation="h", y=-0.12, bgcolor="rgba(0,0,0,0)"),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Change bps bar
     if "change_bps" in df.columns and df["change_bps"].notna().any():
@@ -606,14 +607,14 @@ def _render_yield_curves(con):
                 textposition="outside", textfont=dict(size=9),
             ))
             fig2.update_layout(yaxis_title="Change (bps)", showlegend=False)
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, width='stretch')
 
     with st.expander("Curve Data"):
         display = df.copy()
         display["Tenor"] = display["tenor_months"].map(lambda t: _TENOR_LABELS.get(t, f"{t}M"))
         st.dataframe(display[["Tenor", "tenor_months", "yield_pct", "change_bps"]].rename(columns={
             "tenor_months": "Months", "yield_pct": "Yield (%)", "change_bps": "Change (bps)",
-        }), use_container_width=True, hide_index=True)
+        }), width='stretch', hide_index=True)
 
     # ── PKISRV (Islamic) ──
     st.markdown("### PKISRV (Islamic Yield Curve)")
@@ -655,7 +656,7 @@ def _render_yield_curves(con):
             yaxis_title="Yield (%)",
             legend=dict(orientation="h", y=-0.12, bgcolor="rgba(0,0,0,0)"),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         st.caption(f"PKISRV: {isrv_count} records | {len(isrv_dates)} dates")
 
 
@@ -716,14 +717,14 @@ def _render_auctions(con):
                     legend=dict(orientation="h", y=-0.18, bgcolor="rgba(0,0,0,0)",
                                 font=dict(size=10)),
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
                 st.caption(f"{tb_count} total records")
                 st.dataframe(df.rename(columns={
                     "auction_date": "Date", "tenor": "Tenor",
                     "cutoff_yield": "Cutoff %", "weighted_avg_yield": "WA Yield %",
                     "target_amount_billions": "Target (B)", "amount_accepted_billions": "Accepted (B)",
-                }), use_container_width=True, hide_index=True)
+                }), width='stretch', hide_index=True)
 
     # ── PIBs ──
     with ac2:
@@ -767,14 +768,14 @@ def _render_auctions(con):
                     legend=dict(orientation="h", y=-0.18, bgcolor="rgba(0,0,0,0)",
                                 font=dict(size=10)),
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
                 st.caption(f"{pib_count} total records")
                 st.dataframe(df.rename(columns={
                     "auction_date": "Date", "tenor": "Tenor", "pib_type": "Type",
                     "cutoff_yield": "Yield %", "coupon_rate": "Coupon %",
                     "amount_accepted_billions": "Accepted (B)",
-                }), use_container_width=True, hide_index=True)
+                }), width='stretch', hide_index=True)
 
     # ── Auction scatter (combined) ──
     st.markdown("### Auction Yield Map")
@@ -795,13 +796,13 @@ def _render_auctions(con):
             yaxis_title="Cutoff Yield (%)",
             legend=dict(orientation="h", y=-0.12, bgcolor="rgba(0,0,0,0)"),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # ── GIS Sukuk ──
     gis = _load_gis_auctions()
     if not gis.empty:
         st.markdown("### GIS Sukuk Auctions")
-        st.dataframe(gis, use_container_width=True, hide_index=True)
+        st.dataframe(gis, width='stretch', hide_index=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -833,7 +834,7 @@ def _render_kibor(con):
             yaxis_title="Offer Rate (%)",
             legend=dict(orientation="h", y=-0.12, bgcolor="rgba(0,0,0,0)"),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # ── Bid-Offer spread ──
     st.markdown("### Bid-Offer Spread")
@@ -846,7 +847,7 @@ def _render_kibor(con):
             fill="tozeroy", fillcolor="rgba(230,126,34,0.08)",
         ))
         fig.update_layout(yaxis_title="Spread (%)", showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # ── Latest rates table ──
     st.markdown("### Latest KIBOR Rates")
@@ -856,7 +857,7 @@ def _render_kibor(con):
         st.dataframe(latest.rename(columns={
             "date": "Date", "tenor": "Tenor", "days": "Days",
             "bid": "Bid %", "offer": "Offer %", "spread": "Spread",
-        }), use_container_width=True, hide_index=True)
+        }), width='stretch', hide_index=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -879,7 +880,7 @@ def _render_spreads(con):
             ))
             fig.add_hline(y=0, line_dash="dash", line_color=_COLORS["text_dim"])
             fig.update_layout(yaxis_title="Spread (%)")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             st.info("Need both 6M and 12M auction data")
 
@@ -896,7 +897,7 @@ def _render_spreads(con):
             ))
             fig.add_hline(y=0, line_dash="dash", line_color=_COLORS["text_dim"])
             fig.update_layout(yaxis_title="Spread (%)")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             st.info("No KIBOR-Policy spread data")
 
@@ -914,7 +915,7 @@ def _render_spreads(con):
         ))
         fig.add_hline(y=0, line_dash="dash", line_color=_COLORS["text_dim"])
         fig.update_layout(yaxis_title="10Y-2Y Spread (%)", showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
         latest_steep = sdf.iloc[-1]["steep"]
         signal = "Normal (Positive)" if latest_steep > 0.1 else "Flat" if abs(latest_steep) <= 0.1 else "Inverted"
@@ -1009,7 +1010,7 @@ def _render_global_rates(con):
         )
         fig.update_yaxes(title_text="Rate (%)", row=1, col=1)
         fig.update_yaxes(title_text="$B", row=2, col=1)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # ── SOFR-KIBOR Spread ──
     st.markdown("### SOFR-KIBOR Spread")
@@ -1051,7 +1052,7 @@ def _render_global_rates(con):
             )
             fig.update_yaxes(title_text="Rate (%)", secondary_y=False)
             fig.update_yaxes(title_text="Spread (ppts)", secondary_y=True)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
     # ── All latest rates table ──
     with st.expander("All Global Rates"):
@@ -1061,7 +1062,7 @@ def _render_global_rates(con):
         else:
             display_cols = [c for c in ["date", "rate_name", "tenor", "currency", "rate", "volume", "source"] if c in df.columns]
             st.dataframe(
-                df[display_cols], use_container_width=True, hide_index=True,
+                df[display_cols], width='stretch', hide_index=True,
                 column_config={
                     "rate": st.column_config.NumberColumn("Rate (%)", format="%.4f"),
                     "volume": st.column_config.NumberColumn("Volume ($B)", format="%.1f"),
@@ -1111,7 +1112,7 @@ def _render_bonds(con):
             yaxis_title="FMA Price", showlegend=False,
             xaxis_tickangle=-45,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # ── Maturity schedule ──
     mat_df = df.dropna(subset=["remaining_days"]).copy()
@@ -1126,14 +1127,14 @@ def _render_bonds(con):
             textposition="outside", textfont=dict(size=9),
         ))
         fig.update_layout(xaxis_title="Days to Maturity", showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     with st.expander("Bond Data"):
         st.dataframe(df.rename(columns={
             "bond_code": "Bond", "issue_date": "Issue",
             "maturity_date": "Maturity", "remaining_days": "Rem. Days",
             "coupon_frequency": "Coupon Freq", "fma_price": "FMA Price",
-        }), use_container_width=True, hide_index=True)
+        }), width='stretch', hide_index=True)
 
     # ── Bond price history ──
     bonds = df["bond_code"].tolist()
@@ -1149,7 +1150,7 @@ def _render_bonds(con):
                 ))
                 fig.add_hline(y=100, line_dash="dash", line_color=_COLORS["text_dim"])
                 fig.update_layout(yaxis_title="FMA Price")
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1220,21 +1221,50 @@ def _render_sync(con):
                 st.error(f"MUFAP sync failed: {e}")
 
     st.markdown("##### SBP EasyData (KIBOR, Policy Rate, FX, BoP, CPI, Reserves)")
-    ec1, ec2 = st.columns(2)
+    from pakfindata.sources.sbp_easydata import (
+        is_fetch_running, read_fetch_status, start_fetch_background, sync_all_to_db,
+    )
+
+    fetch_running = is_fetch_running()
+    fetch_status = read_fetch_status()
+
+    # Show live status if running or recently completed
+    if fetch_running:
+        detail = fetch_status.get("detail", "working...")
+        prog = fetch_status.get("progress", 0)
+        total = fetch_status.get("total", 1) or 1
+        st.progress(min(prog / total, 1.0), text=f"EasyData: {detail}")
+        st.caption(f"Series: {fetch_status.get('series', 0)} | Obs: {fetch_status.get('observations', 0):,}")
+    elif fetch_status.get("status") == "done":
+        st.success(f"EasyData: {fetch_status.get('detail', 'complete')}")
+
+    ec1, ec2, ec3 = st.columns(3)
     with ec1:
-        if st.button("Fetch Fresh Data from API", type="primary", key="tsy_easydata_fetch"):
-            with st.spinner("Fetching priority datasets from SBP EasyData API (250/hr limit)..."):
-                try:
-                    from pakfindata.sources.sbp_easydata import cmd_fetch_priority
-                    cmd_fetch_priority()
-                    st.success("Fetched priority datasets — now click 'Sync to DB'")
-                except Exception as e:
-                    st.error(f"EasyData fetch failed: {e}")
+        if st.button(
+            "Update Recent (1Y)", type="primary", key="tsy_easydata_recent",
+            disabled=fetch_running,
+        ):
+            ok, msg = start_fetch_background(months=12)
+            if ok:
+                st.toast(f"EasyData fetch started in background — {msg}")
+            else:
+                st.warning(msg)
+            st.rerun()
     with ec2:
+        if st.button(
+            "Full History (slow)", key="tsy_easydata_fetch",
+            disabled=fetch_running,
+        ):
+            ok, msg = start_fetch_background(months=600)  # ~50 years
+            if ok:
+                st.toast(f"Full history fetch started — {msg}")
+            else:
+                st.warning(msg)
+            st.rerun()
+    with ec3:
         if st.button("Sync CSVs to DB", key="tsy_easydata_sync"):
             with st.spinner("Syncing EasyData CSVs to local DB tables..."):
                 try:
-                    from pakfindata.sources.sbp_easydata import sync_all_to_db
                     result = sync_all_to_db(con)
                     parts = [f"{k}: {v}" for k, v in result.items()]
                     st.success(" | ".join(parts))

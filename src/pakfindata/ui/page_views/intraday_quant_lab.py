@@ -34,6 +34,7 @@ from pakfindata.engine.commentary import (
     get_mtf_confluence_commentary,
     OLLAMA_MODEL_FAST,
     OLLAMA_MODEL_DEEP,
+    OLLAMA_MODEL_GEMMA,
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -115,7 +116,7 @@ def _render_ai_commentary(key: str, commentary_fn, **kwargs):
     ss_key = f"quant_ai_{key}"
     selected_model = st.session_state.get("ql_selected_model", OLLAMA_MODEL_FAST)
     if st.button("Generate AI Commentary", key=f"btn_{key}",
-                 type="secondary", use_container_width=False):
+                 type="secondary", width='content'):
         with st.spinner(f"Querying {selected_model.split(':')[0]}..."):
             result = commentary_fn(model=selected_model, **kwargs)
             st.session_state[ss_key] = result
@@ -137,7 +138,7 @@ def _render_ai_commentary(key: str, commentary_fn, **kwargs):
 # DATA LOADING  (CSV → DataFrame, cached)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_DATA_DIR = Path(os.path.expanduser("~/psxdata/intraday"))
+_DATA_DIR = Path(os.path.expanduser("~/projects/psxdata/intraday"))
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -154,16 +155,25 @@ def _load_ticks() -> pd.DataFrame:
 @st.cache_data(ttl=300, show_spinner=False)
 def _load_ohlcv(timeframe: str) -> pd.DataFrame:
     """Load OHLCV bars for a given timeframe (1m, 5m, 15m, 1h, 1d, 1w)."""
-    if timeframe == "1m":
-        # Try today's file first, then the previous
-        files = sorted(_DATA_DIR.glob("*_1m.csv"), reverse=True)
+    # Primary: OHLCV CSVs built from tick JSONL (full volume, all symbols)
+    _ohlcv_dir = Path("/mnt/e/psxdata/ohlcv")
+    ohlcv_files = sorted(_ohlcv_dir.glob(f"psx-*-{timeframe}-ohlcv.csv"), reverse=True)
+    if ohlcv_files:
+        files = ohlcv_files
+    elif timeframe == "1m":
+        files = sorted(_DATA_DIR.glob("*_1m*.csv"), reverse=True)
     elif timeframe == "1d":
-        files = sorted(_DATA_DIR.glob("backfill_1d.csv"))
+        files = sorted(_DATA_DIR.glob("*backfill_1d*.csv"), reverse=True)
     else:
-        files = sorted(_DATA_DIR.glob(f"psxt_backfill_{timeframe}.csv"))
+        files = sorted(_DATA_DIR.glob(f"psxt_backfill_{timeframe}*.csv"), reverse=True)
     if not files:
         return pd.DataFrame()
-    df = pd.read_csv(files[0])
+    # Load all available date files for multi-day history
+    if len(files) > 1 and str(files[0]).startswith("/mnt/e/psxdata/ohlcv"):
+        dfs = [pd.read_csv(f) for f in files]
+        df = pd.concat(dfs, ignore_index=True)
+    else:
+        df = pd.read_csv(files[0])
     dt_col = "datetime" if "datetime" in df.columns else "date"
     df["dt"] = pd.to_datetime(df[dt_col])
     for c in ("open", "high", "low", "close", "volume"):
@@ -325,7 +335,7 @@ def _render_volume_profile(ticks: pd.DataFrame, ohlcv_1m: pd.DataFrame):
         yaxis=dict(title="Price"), xaxis=dict(title="Volume"),
         showlegend=False,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # AI Commentary
     _render_ai_commentary(
@@ -443,7 +453,7 @@ def _render_order_flow(ticks: pd.DataFrame):
     fig.update_yaxes(title_text="Price", row=1, col=1)
     fig.update_yaxes(title_text="Cum Delta", row=2, col=1)
     fig.update_yaxes(title_text="Signed Vol", row=3, col=1)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Divergence callout
     price_trend = sdf["price"].iloc[-1] - sdf["price"].iloc[0]
@@ -581,7 +591,7 @@ def _render_orb_scanner(ohlcv_1m: pd.DataFrame):
         "Breakout Move %": "{:+.2f}%", "Volume": "{:,.0f}",
     }).map(_color_dir, subset=["Direction"])
 
-    st.dataframe(styled, use_container_width=True, height=450)
+    st.dataframe(styled, width='stretch', height=450)
 
     # Top breakout chart
     top = rdf[rdf["Direction"].isin(["BULL", "BEAR"])].head(15)
@@ -594,7 +604,7 @@ def _render_orb_scanner(ohlcv_1m: pd.DataFrame):
             hovertemplate="%{x}: %{y:+.2f}%<extra></extra>",
         ))
         fig.update_yaxes(title_text="Breakout Move %")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # AI Commentary
     top_for_ai = rdf[rdf["Direction"].isin(["BULL", "BEAR"])].head(5).to_dict("records")
@@ -699,7 +709,7 @@ def _render_mtf_confluence(data_5m: pd.DataFrame, data_15m: pd.DataFrame,
         showscale=False,
     ))
     fig.update_yaxes(autorange="reversed", dtick=1)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Tables: top bull & top bear
     c1, c2 = st.columns(2)
@@ -709,14 +719,14 @@ def _render_mtf_confluence(data_5m: pd.DataFrame, data_15m: pd.DataFrame,
         if bulls.empty:
             st.caption("None")
         else:
-            st.dataframe(bulls, use_container_width=True, hide_index=True)
+            st.dataframe(bulls, width='stretch', hide_index=True)
     with c2:
         st.markdown("**All-Timeframe Bearish**")
         bears = cdf[cdf["Score"] == -len(available)][["Symbol", "Score"]]
         if bears.empty:
             st.caption("None")
         else:
-            st.dataframe(bears, use_container_width=True, hide_index=True)
+            st.dataframe(bears, width='stretch', hide_index=True)
 
     # AI Commentary
     bull_syms = cdf[cdf["Score"] == len(available)]["Symbol"].tolist()
@@ -817,7 +827,7 @@ def _render_vwap_terminal(ticks: pd.DataFrame, ohlcv_1m: pd.DataFrame):
                                  name=label))
 
     fig.update_yaxes(title_text="Price")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # AI Commentary
     _render_ai_commentary(
@@ -866,13 +876,13 @@ def _render_vwap_terminal(ticks: pd.DataFrame, ohlcv_1m: pd.DataFrame):
                 st.dataframe(top_5.style.format({
                     "Price": "{:.2f}", "VWAP": "{:.2f}",
                     "Deviation σ": "{:+.2f}", "Volume": "{:,.0f}",
-                }), use_container_width=True, hide_index=True)
+                }), width='stretch', hide_index=True)
             with c2:
                 st.markdown("**Most Below VWAP (oversold)**")
                 st.dataframe(bot_5.style.format({
                     "Price": "{:.2f}", "VWAP": "{:.2f}",
                     "Deviation σ": "{:+.2f}", "Volume": "{:,.0f}",
-                }), use_container_width=True, hide_index=True)
+                }), width='stretch', hide_index=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -978,7 +988,7 @@ def _render_volatility_regime(ohlcv_1h: pd.DataFrame, daily_eod: pd.DataFrame):
     fig.update_layout(title=dict(text=f"{sym} — Volatility Regime", font=dict(size=14)))
     fig.update_yaxes(title_text="Price", row=1, col=1)
     fig.update_yaxes(title_text="Ann. Vol", tickformat=".0%", row=2, col=1)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Cross-sectional vol scanner
     n_comp, n_exp = 0, 0
@@ -1007,7 +1017,7 @@ def _render_volatility_regime(ohlcv_1h: pd.DataFrame, daily_eod: pd.DataFrame):
                         f"**{(scan_df['Regime'] == 'NORMAL').sum()} normal**")
             st.dataframe(scan_df.style.format({
                 "RVol": "{:.1%}", "Avg Vol": "{:.1%}", "Ratio": "{:.2f}x",
-            }), use_container_width=True, height=350, hide_index=True)
+            }), width='stretch', height=350, hide_index=True)
             n_comp = (scan_df["Regime"] == "COMPRESSION").sum()
             n_exp = (scan_df["Regime"] == "EXPANSION").sum()
             n_comp = (scan_df["Regime"] == "COMPRESSION").sum()
@@ -1048,6 +1058,7 @@ def render_intraday_quant_lab():
     # LLM model selector
     _model_options = {
         "Llama 3.1 (fast)": OLLAMA_MODEL_FAST,
+        "Gemma 4 e2b (balanced)": OLLAMA_MODEL_GEMMA,
         "DeepSeek R1 (reasoning)": OLLAMA_MODEL_DEEP,
     }
     with st.expander("Settings", expanded=False):
@@ -1066,7 +1077,7 @@ def render_intraday_quant_lab():
         for f in sorted(csv_files):
             size_mb = f.stat().st_size / 1024 / 1024
             inv.append({"File": f.name, "Size (MB)": f"{size_mb:.1f}"})
-        st.dataframe(pd.DataFrame(inv), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(inv), width='stretch', hide_index=True)
 
     # Tabs
     tab_vp, tab_of, tab_orb, tab_mtf, tab_vwap, tab_vol = st.tabs([

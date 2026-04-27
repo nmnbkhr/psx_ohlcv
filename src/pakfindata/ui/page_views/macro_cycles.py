@@ -86,7 +86,7 @@ def _render_power_spectrum(spectrum: pd.DataFrame, dominant_cycles: list[dict]):
         yaxis_title="Amplitude",
         hovermode="x unified",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -133,7 +133,7 @@ def _render_price_with_ifft(df: pd.DataFrame, ifft_signal, dates):
         hovermode="x unified",
     )
     fig.update_yaxes(title_text="Price")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -149,20 +149,8 @@ def _get_master_symbols(_con) -> list[str]:
 
 
 def _get_intraday_dates(con) -> list[str]:
-    dates: list[str] = []
-    row = con.execute("SELECT MAX(ts) FROM intraday_bars").fetchone()
-    if not row or not row[0]:
-        return dates
-    cur = row[0][:10]
-    for _ in range(30):
-        dates.append(cur)
-        prev = con.execute(
-            "SELECT MAX(ts) FROM intraday_bars WHERE ts < ?", (cur,)
-        ).fetchone()
-        if not prev or not prev[0]:
-            break
-        cur = prev[0][:10]
-    return dates
+    from pakfindata.db.date_manifest import get_dates
+    return get_dates("intraday_bars")[:30]
 
 
 def _load_eod_ohlcv(con, symbol: str, limit: int = 500) -> pd.DataFrame:
@@ -182,10 +170,10 @@ def _load_intraday_bars(con, symbol: str, date_str: str) -> pd.DataFrame:
     """Load intraday bars for a symbol on a date."""
     df = pd.read_sql_query(
         "SELECT ts AS datetime, close, volume "
-        "FROM intraday_bars WHERE symbol=? AND ts BETWEEN ? AND ? "
+        "FROM intraday_bars WHERE symbol=? AND date=? "
         "ORDER BY ts_epoch",
         con,
-        params=(symbol, f"{date_str} 00:00:00", f"{date_str} 23:59:59"),
+        params=(symbol, date_str),
     )
     if not df.empty:
         df["datetime"] = pd.to_datetime(df["datetime"])
@@ -387,7 +375,7 @@ def render_macro_cycles():
 
     if result.dominant_cycles:
         with st.expander("Quant Analyst Commentary", expanded=True):
-            use_ai = st.toggle("Enable Deep LLM Analysis (OpenAI)", value=False,
+            use_ai = st.toggle("Enable Deep LLM Analysis (Ollama)", value=False,
                                key="fft_ai_toggle")
 
             if not use_ai:
@@ -402,8 +390,7 @@ def render_macro_cycles():
                     )
                     if ai_text is None:
                         st.warning(
-                            "OpenAI API key not found. Set `OPENAI_API_KEY` in your "
-                            "`.env` file to enable LLM analysis."
+                            "Ollama not running. Start with: `sudo systemctl start ollama`"
                         )
                         commentary = get_fft_rules_commentary(
                             cycle_days, current_price, ifft_price,

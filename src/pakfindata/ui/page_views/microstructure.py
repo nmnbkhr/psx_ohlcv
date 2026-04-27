@@ -101,7 +101,7 @@ def _render_vpin_gauge(vpin_value: float):
         font=dict(color=_COLORS["text"]),
         margin=dict(l=30, r=30, t=60, b=10),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -169,7 +169,7 @@ def _render_bucket_flow(buckets: pd.DataFrame):
     fig.update_yaxes(title_text="VPIN", range=[0, 1.05],
                      gridcolor=_COLORS["grid"], secondary_y=True)
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -197,7 +197,7 @@ def _render_vpin_timeseries(buckets: pd.DataFrame):
 
     fig.update_yaxes(range=[0, 1.05], dtick=0.2)
     fig.update_xaxes(title_text="Volume Bucket (τ)")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -260,7 +260,7 @@ def _render_payoff_matrix(vpin: float, half_spread: float, adverse_loss: float):
         .format({"VPIN (π)": "{:.3f}", "EV_make": "{:+.4f}"})
     )
 
-    st.dataframe(styled, use_container_width=True, hide_index=True, height=210)
+    st.dataframe(styled, width='stretch', hide_index=True, height=210)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -268,21 +268,13 @@ def _render_payoff_matrix(vpin: float, half_spread: float, adverse_loss: float):
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _get_intraday_dates(con) -> list[str]:
-    """Get available trading dates from intraday_bars (fast backward walk)."""
-    dates: list[str] = []
-    row = con.execute("SELECT MAX(ts) FROM intraday_bars").fetchone()
-    if not row or not row[0]:
-        return dates
-    cur = row[0][:10]
-    for _ in range(30):  # last 30 trading days max
-        dates.append(cur)
-        prev = con.execute(
-            "SELECT MAX(ts) FROM intraday_bars WHERE ts < ?", (cur,)
-        ).fetchone()
-        if not prev or not prev[0]:
-            break
-        cur = prev[0][:10]
-    return dates
+    """Dates with a pre-aggregated summary row. Fast indexed read."""
+    try:
+        from pakfindata.db.repositories import intraday_summary as _isum
+        _isum.ensure_tables(con)
+        return _isum.get_summary_dates(con)[:30]
+    except Exception:
+        return []
 
 
 @st.cache_data(ttl=300)
@@ -298,10 +290,10 @@ def _load_intraday_ticks(con, symbol: str, date_str: str) -> pd.DataFrame:
     """Load tick-level data for a symbol on a date."""
     df = pd.read_sql_query(
         "SELECT ts AS datetime, ts_epoch, close, volume "
-        "FROM intraday_bars WHERE symbol=? AND ts BETWEEN ? AND ? "
+        "FROM intraday_bars WHERE symbol=? AND date=? "
         "ORDER BY ts_epoch",
         con,
-        params=(symbol, f"{date_str} 00:00:00", f"{date_str} 23:59:59"),
+        params=(symbol, date_str),
     )
     if not df.empty:
         df["datetime"] = pd.to_datetime(df["datetime"])
@@ -439,7 +431,7 @@ def _render_volume_profile(df: pd.DataFrame):
         xaxis_title="Volume", yaxis_title="Price",
         yaxis_tickformat=".2f",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     c1, c2, c3 = st.columns(3)
     c1.metric("POC (Point of Control)", f"{poc_price:.2f}")
@@ -485,7 +477,7 @@ def _render_trade_size_distribution(df: pd.DataFrame):
         title="Trade Size Distribution",
         xaxis_title="Trade Size (shares)", yaxis_title="Count",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Retail vs institutional
     total_trades = len(tick_vol)
@@ -576,8 +568,8 @@ def _render_tick_table(df: pd.DataFrame):
             return f"color: {_COLORS['down']}"
         return ""
 
-    styled = display_df.style.applymap(_color_side, subset=["Side"])
-    st.dataframe(styled, use_container_width=True, height=400)
+    styled = display_df.style.map(_color_side, subset=["Side"])
+    st.dataframe(styled, width='stretch', height=400)
 
     # Summary
     buys = (display_df["Side"] == "BUY").sum()
@@ -747,7 +739,7 @@ def render_microstructure():
     symbol_label = sel_symbol or "DEMO"
 
     with st.expander("Quant Analyst Commentary", expanded=True):
-        use_ai = st.toggle("Enable Deep LLM Analysis (OpenAI)", value=False)
+        use_ai = st.toggle("Enable Deep LLM Analysis (Ollama)", value=False)
 
         if not use_ai:
             commentary = get_vpin_rules_commentary(
@@ -762,8 +754,7 @@ def render_microstructure():
                 )
                 if ai_text is None:
                     st.warning(
-                        "OpenAI API key not found. Set `OPENAI_API_KEY` in your "
-                        "`.env` file to enable LLM analysis."
+                        "Ollama not running. Start with: `sudo systemctl start ollama`"
                     )
                     commentary = get_vpin_rules_commentary(
                         result.current_vpin, payoff.ev_make, half_spread,

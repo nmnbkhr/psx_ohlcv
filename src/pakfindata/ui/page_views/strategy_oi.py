@@ -52,17 +52,20 @@ SIGNAL_COLORS = {
 
 def _get_futures_symbols() -> list[str]:
     """Get symbols that have futures data."""
-    import sqlite3
-    from pakfindata.engine.oi_strategy import PSX_SQLITE
-    scon = sqlite3.connect(str(PSX_SQLITE))
-    syms = [r[0] for r in scon.execute("""
-        SELECT DISTINCT base_symbol FROM futures_eod
-        WHERE market_type = 'FUT' AND volume > 0
-        GROUP BY base_symbol
-        HAVING COUNT(DISTINCT date) > 30
-        ORDER BY SUM(volume) DESC
-    """).fetchall()]
-    scon.close()
+    from pakfindata.engine.oi_strategy import _psx_con
+    scon = _psx_con()
+    try:
+        syms = [r[0] for r in scon.execute("""
+            SELECT DISTINCT base_symbol FROM futures_eod
+            WHERE market_type = 'FUT' AND volume > 0
+            GROUP BY base_symbol
+            HAVING COUNT(DISTINCT date) > 30
+            ORDER BY SUM(volume) DESC
+        """).fetchall()]
+    except Exception:
+        syms = []
+    finally:
+        scon.close()
     return syms
 
 
@@ -178,7 +181,7 @@ def _render_live_tab():
 
     fig.update_layout(**PLOT_LAYOUT, height=600, showlegend=True,
                       legend=dict(orientation="h", y=1.02))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # -- Signal history table --
     st.subheader("Signal History (last 20 days)")
@@ -189,11 +192,11 @@ def _render_live_tab():
     display["confidence"] = display["confidence"].map(lambda x: f"{x:.0%}")
     display["oi"] = display["oi"].map(lambda x: f"{x:,}")
     display["volume"] = display["volume"].map(lambda x: f"{x:,}")
-    st.dataframe(display, use_container_width=True, hide_index=True)
+    st.dataframe(display, width='stretch', hide_index=True)
 
     # -- Rollover calendar --
     with st.expander("Rollover Calendar"):
-        st.dataframe(get_rollover_calendar(3), use_container_width=True, hide_index=True)
+        st.dataframe(get_rollover_calendar(3), width='stretch', hide_index=True)
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +227,7 @@ def _render_backtest_tab():
         days_map = {"6 months": 180, "1 year": 365, "2 years": 730}
         days_label = st.selectbox("Lookback", list(days_map.keys()), index=1)
 
-    if st.button("Run Backtest", type="primary", use_container_width=True):
+    if st.button("Run Backtest", type="primary", width='stretch'):
         with st.spinner("Running backtest..."):
             result = backtest_oi_strategy(
                 symbol, min_streak=min_streak,
@@ -259,7 +262,7 @@ def _render_backtest_tab():
             if m["by_state"]:
                 state_df = pd.DataFrame(m["by_state"]).T
                 state_df.index.name = "State"
-                st.dataframe(state_df, use_container_width=True)
+                st.dataframe(state_df, width='stretch')
 
         # Exit reason pie
         if m["by_exit_reason"]:
@@ -269,7 +272,7 @@ def _render_backtest_tab():
                 marker_colors=["#22c55e", "#ef4444", "#eab308", "#3b82f6", "#a855f7", "#6b7280"],
             ))
             fig_pie.update_layout(**PLOT_LAYOUT, height=300, title="Exit Reasons")
-            st.plotly_chart(fig_pie, use_container_width=True)
+            st.plotly_chart(fig_pie, width='stretch')
 
         # Equity curve
         fig_eq = go.Figure()
@@ -281,7 +284,7 @@ def _render_backtest_tab():
         fig_eq.add_hline(y=1.0, line_dash="dash", line_color="#666")
         fig_eq.update_layout(**PLOT_LAYOUT, height=350, title="Equity Curve",
                              yaxis_title="Growth of $1")
-        st.plotly_chart(fig_eq, use_container_width=True)
+        st.plotly_chart(fig_eq, width='stretch')
 
         # Trade log
         st.subheader("Trade Log")
@@ -289,7 +292,7 @@ def _render_backtest_tab():
                               "exit_price", "pnl_pct", "days_held", "exit_reason",
                               "entry_state", "exit_state"]].copy()
         display["pnl_pct"] = display["pnl_pct"].map(lambda x: f"{x:+.2%}")
-        st.dataframe(display, use_container_width=True, hide_index=True)
+        st.dataframe(display, width='stretch', hide_index=True)
 
 
 # ---------------------------------------------------------------------------
@@ -328,9 +331,9 @@ def _render_scanner_tab():
                             "oi", "oi_change_pct", "price_change_pct", "basis_pct",
                             "days_to_expiry", "in_rollover", "spot_price", "futures_price"]].copy()
 
-        styled = display.style.applymap(
+        styled = display.style.map(
             _color_state, subset=["state"]
-        ).applymap(
+        ).map(
             _color_signal, subset=["signal"]
         ).format({
             "confidence": "{:.0%}",
@@ -342,7 +345,7 @@ def _render_scanner_tab():
             "futures_price": "{:,.2f}",
         })
 
-        st.dataframe(styled, use_container_width=True, hide_index=True, height=600)
+        st.dataframe(styled, width='stretch', hide_index=True, height=600)
 
         # Summary
         buys = len(scan_df[scan_df["signal"] == "BUY"])
@@ -369,8 +372,8 @@ def _render_research_tab():
             return "color: #eab308"
         return "color: #22c55e"
 
-    styled_cal = cal.style.applymap(_color_status, subset=["status"])
-    st.dataframe(styled_cal, use_container_width=True, hide_index=True)
+    styled_cal = cal.style.map(_color_status, subset=["status"])
+    st.dataframe(styled_cal, width='stretch', hide_index=True)
 
     # OI Matrix explanation
     st.markdown("### OI Interpretation Matrix")
@@ -405,7 +408,7 @@ def _render_research_tab():
                 marker_color=[STATE_COLORS.get(s, "#666") for s in states_df["state"].value_counts().index],
             ))
             fig_dist.update_layout(**PLOT_LAYOUT, height=300, title="OI State Distribution (Top 10 symbols, 60d)")
-            st.plotly_chart(fig_dist, use_container_width=True)
+            st.plotly_chart(fig_dist, width='stretch')
 
             # Transition matrix
             transitions = {}
@@ -435,7 +438,7 @@ def _render_research_tab():
                 fig_tm.update_layout(**PLOT_LAYOUT, height=400,
                                      title="State Transition Probabilities",
                                      xaxis_title="To State", yaxis_title="From State")
-                st.plotly_chart(fig_tm, use_container_width=True)
+                st.plotly_chart(fig_tm, width='stretch')
 
     # Methodology
     with st.expander("Methodology"):

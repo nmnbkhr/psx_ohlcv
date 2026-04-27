@@ -317,7 +317,7 @@ def _render_overview(con):
                 st.dataframe(df.rename(columns={
                     "currency": "Currency", "date": "Date",
                     "buying": "Buying", "selling": "Selling", "spread": "Spread",
-                }), use_container_width=True, hide_index=True)
+                }), width='stretch', hide_index=True)
         except Exception:
             pass
 
@@ -361,7 +361,7 @@ def _render_charts(con):
             yaxis_title=f"{currency}/PKR",
             legend=dict(orientation="h", y=-0.12, bgcolor="rgba(0,0,0,0)"),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     else:
         # Candlestick from fx_ohlcv
         pair = f"{currency}/PKR"
@@ -382,7 +382,7 @@ def _render_charts(con):
                 xaxis_rangeslider_visible=False,
                 yaxis_title="PKR",
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
     # ── DXY + major pairs ──
     st.markdown("### Global FX (yfinance)")
@@ -404,7 +404,7 @@ def _render_charts(con):
                 yaxis_title="Rate",
                 legend=dict(orientation="h", y=-0.12, bgcolor="rgba(0,0,0,0)"),
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -440,7 +440,7 @@ def _render_spreads(con):
             barmode="group", yaxis_title="PKR (Selling)",
             legend=dict(orientation="h", y=-0.12, bgcolor="rgba(0,0,0,0)"),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
         # Spread bar
         fig2 = _styled_fig(height=220)
@@ -452,7 +452,7 @@ def _render_spreads(con):
             textposition="outside",
         ))
         fig2.update_layout(yaxis_title="Kerb Premium (PKR)", showlegend=False)
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width='stretch')
     else:
         st.info("No spread data — sync both interbank and kerb rates first")
 
@@ -470,7 +470,7 @@ def _render_spreads(con):
             ))
             fig.update_layout(**_CHART_LAYOUT, height=400, yaxis=dict(autorange="reversed", gridcolor=_COLORS["grid"]))
             fig.update_xaxes(**_AXIS_STYLE)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
     else:
         st.info("Need overlapping interbank + kerb dates for heatmap")
 
@@ -498,7 +498,7 @@ def _render_spreads(con):
             barmode="group", yaxis_title="Buy/Sell Spread (PKR)",
             legend=dict(orientation="h", y=-0.12, bgcolor="rgba(0,0,0,0)"),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -545,7 +545,7 @@ def _render_volatility(con):
     fig.update_xaxes(**_AXIS_STYLE)
     fig.update_yaxes(title_text="USD/PKR", row=1, col=1, **_AXIS_STYLE)
     fig.update_yaxes(title_text="Ann. Vol %", row=2, col=1, **_AXIS_STYLE)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
     st.caption(f"Source: {source_label} | {len(df)} data points")
 
     # ── Vol metrics ──
@@ -579,7 +579,7 @@ def _render_volatility(con):
             xaxis_title="Daily Return %", yaxis_title="Frequency",
             showlegend=False,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
         rc1, rc2, rc3 = st.columns(3)
         with rc1:
@@ -597,9 +597,9 @@ def _render_volatility(con):
 def _render_carry(con):
     st.markdown("### Carry Trade Analysis")
 
-    # KIBOR as PKR rate
+    # KIBOR as PKR rate — get latest with non-null offer
     kibor = con.execute(
-        "SELECT date, offer FROM kibor_daily WHERE tenor='3M' ORDER BY date DESC LIMIT 1"
+        "SELECT date, offer FROM kibor_daily WHERE tenor='3M' AND offer IS NOT NULL ORDER BY date DESC LIMIT 1"
     ).fetchone()
 
     policy = con.execute(
@@ -608,17 +608,22 @@ def _render_carry(con):
 
     kc1, kc2, kc3 = st.columns(3)
     with kc1:
-        val = f"{policy['policy_rate']:.1f}%" if policy else "N/A"
+        val = f"{policy['policy_rate']:.1f}%" if policy and policy['policy_rate'] else "N/A"
         _card("SBP Policy Rate", val, color=_COLORS["policy"])
     with kc2:
-        val = f"{kibor['offer']:.2f}%" if kibor else "N/A"
-        _card("KIBOR 3M (Offer)", val, color=_COLORS["kibor"])
+        if kibor and kibor['offer']:
+            val = f"{kibor['offer']:.2f}%"
+            lbl = f"KIBOR 3M ({kibor['date']})"
+        else:
+            val = "N/A"
+            lbl = "KIBOR 3M (Offer)"
+        _card(lbl, val, color=_COLORS["kibor"])
     with kc3:
         konia = con.execute("SELECT rate_pct FROM konia_daily ORDER BY date DESC LIMIT 1").fetchone()
-        _card("KONIA (O/N)", f"{konia['rate_pct']:.2f}%" if konia else "N/A")
+        _card("KONIA (O/N)", f"{konia['rate_pct']:.2f}%" if konia and konia['rate_pct'] else "N/A")
 
-    if not kibor:
-        st.info("No KIBOR data for carry calculation")
+    if not kibor or not kibor["offer"]:
+        st.info("No KIBOR offer data for carry calculation")
         return
 
     pkr_rate = kibor["offer"]
@@ -665,13 +670,13 @@ def _render_carry(con):
     ))
     fig.add_hline(y=0, line_dash="dash", line_color=_COLORS["text_dim"])
     fig.update_layout(yaxis_title="Carry Spread (%)", showlegend=False)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     st.dataframe(
         cdf.rename(columns={
             "Foreign Rate": "Foreign (%)", "PKR Rate": "PKR (%)", "Carry": "Carry (%)",
         }),
-        use_container_width=True, hide_index=True,
+        width='stretch', hide_index=True,
     )
 
     # ── NPC Certificate Rates ──
@@ -679,7 +684,7 @@ def _render_carry(con):
     if not npc.empty:
         st.markdown("### NPC Certificate Rates")
         st.caption("National Prize Certificate / PKR deposit alternatives for NRPs")
-        st.dataframe(npc, use_container_width=True, hide_index=True)
+        st.dataframe(npc, width='stretch', hide_index=True)
 
     # ── KIBOR History chart ──
     st.markdown("### KIBOR Term Structure History")
@@ -699,19 +704,117 @@ def _render_carry(con):
             yaxis_title="Offer Rate (%)",
             legend=dict(orientation="h", y=-0.12, bgcolor="rgba(0,0,0,0)"),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 6: FX SIGNALS (microservice)
 # ═════════════════════════════════════════════════════════════════════════════
 
+FX_SERVICE_DIR = "/mnt/e/projects/fx-trading-module"
+FX_SERVICE_PORT = 8100
+
+
+def _render_service_controls():
+    """Start / Stop / Kill controls for the FX microservice."""
+    import subprocess, signal, os
+
+    is_running = _fx.is_healthy()
+    status_color = "green" if is_running else "red"
+    status_text = "RUNNING" if is_running else "STOPPED"
+
+    st.markdown(f"""
+    <div style="background:#141820;padding:12px 16px;border-radius:8px;border-left:4px solid {'#22C55E' if is_running else '#EF4444'};margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
+        <div>
+            <span style="color:#6B7280;font-size:0.75em;text-transform:uppercase;">FX Microservice</span><br/>
+            <span style="color:{'#22C55E' if is_running else '#EF4444'};font-weight:700;">{status_text}</span>
+            <span style="color:#6B7280;font-size:0.8em;"> — port {FX_SERVICE_PORT}</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        if st.button("Start Service", type="primary", key="fx_svc_start", disabled=is_running):
+            import socket
+            # Find available port starting from FX_SERVICE_PORT
+            port = FX_SERVICE_PORT
+            for p in range(FX_SERVICE_PORT, FX_SERVICE_PORT + 10):
+                try:
+                    s = socket.socket()
+                    s.bind(("127.0.0.1", p))
+                    s.close()
+                    port = p
+                    break
+                except OSError:
+                    continue
+            try:
+                log_path = f"/tmp/fx_service_{port}.log"
+                log_file = open(log_path, "w")
+                import sys
+                proc = subprocess.Popen(
+                    [sys.executable, "-m", "uvicorn", "api.service:app", "--port", str(port), "--host", "0.0.0.0"],
+                    cwd=FX_SERVICE_DIR,
+                    stdout=log_file, stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+                st.success(f"Started PID {proc.pid} on port {port} — log: {log_path}")
+                import time; time.sleep(2)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to start: {e}")
+    with c2:
+        if st.button("Stop Service", key="fx_svc_stop", disabled=not is_running):
+            _stop_fx_service(graceful=True)
+            _fx._health_cache = None
+            st.success("Service stopped (SIGTERM — graceful shutdown)")
+            import time; time.sleep(2)
+            st.rerun()
+    with c3:
+        if st.button("Force Kill", key="fx_svc_kill"):
+            _stop_fx_service(graceful=False)
+            _fx._health_cache = None
+            st.success("Service force-killed (SIGKILL)")
+            import time; time.sleep(1)
+            st.rerun()
+
+
+def _stop_fx_service(graceful: bool = True):
+    """Stop FX service. Graceful sends SIGTERM (like Ctrl+C), force sends SIGKILL."""
+    import os, signal as sig
+    kill_sig = sig.SIGTERM if graceful else sig.SIGKILL
+    killed = []
+    for pid_dir in os.listdir("/proc"):
+        if not pid_dir.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid_dir}/cmdline") as f:
+                cmd = f.read().replace("\x00", " ")
+            if ("uvicorn" in cmd and (str(FX_SERVICE_PORT) in cmd or "api.service" in cmd or "fx-trading" in cmd)):
+                os.kill(int(pid_dir), kill_sig)
+                killed.append(int(pid_dir))
+        except (PermissionError, FileNotFoundError, ProcessLookupError, ValueError):
+            pass
+    # Also stop child workers
+    for pid_dir in os.listdir("/proc"):
+        if not pid_dir.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid_dir}/stat") as f:
+                stat = f.read().split()
+            ppid = int(stat[3])
+            if ppid in killed:
+                os.kill(int(pid_dir), kill_sig)
+        except (PermissionError, FileNotFoundError, ProcessLookupError, ValueError, IndexError):
+            pass
+
+
 def _render_fx_signals(con):
+    # ── Service control panel ──
+    _render_service_controls()
+
     if not _fx.is_healthy():
-        st.info(
-            "FX microservice not running — showing DB-sourced rates only. "
-            "Start it: `uvicorn api.service:app --port 8100`"
-        )
+        st.warning("FX microservice not running — showing DB-sourced rates only.")
         return
 
     st.markdown("### FX Trading Signals")
@@ -726,7 +829,7 @@ def _render_fx_signals(con):
                       "Offer": r.get("offer"), "Mid": r.get("mid")}
                     for r in rates if isinstance(r, dict)]
             if rows:
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
     # Regime
     regime_data = _fx.get_regime()
@@ -762,7 +865,7 @@ def _render_fx_signals(con):
                              "Signal": s.get("signal")}
                             for s in signals if isinstance(s, dict)]
                     if rows:
-                        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                        st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
         with sc2:
             prem = report.get("premium_spread", report.get("premium", {}))
@@ -780,7 +883,7 @@ def _render_fx_signals(con):
                              "Gap %": p.get("gap_pct", p.get("premium_pct"))}
                             for p in pairs if isinstance(p, dict)]
                     if rows:
-                        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                        st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
     # Intervention
     intv_data = _fx.get_intervention()
@@ -866,4 +969,4 @@ def _render_sync(con):
     runs = _load_fx_sync_runs()
     if not runs.empty:
         st.markdown("#### Recent Sync Runs")
-        st.dataframe(runs, use_container_width=True, hide_index=True)
+        st.dataframe(runs, width='stretch', hide_index=True)

@@ -234,4 +234,4 @@ def _render_results_table(df: pd.DataFrame):
         show["financial_urls"] = show["financial_urls"].apply(_format_urls)
 
     show.columns = [c.replace("_", " ").title() for c in show.columns]
-    st.dataframe(show, use_container_width=True, hide_index=True)
+    st.dataframe(show, width='stretch', hide_index=True)

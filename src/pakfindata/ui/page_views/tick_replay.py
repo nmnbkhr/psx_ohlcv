@@ -119,7 +119,15 @@ def _load_ticks_fallback(path: str, symbol: str) -> list[dict]:
     return ticks
 
 
-def _build_replay_html(ticks_json: str, symbol: str, date_str: str) -> str:
+def _build_replay_html(
+    ticks_json: str,
+    symbol: str,
+    date_str: str,
+    predictions_json: str = "[]",
+    bayesian_json: str = "[]",
+    comments_json: str = "[]",
+    show_predictions: bool = False,
+) -> str:
     return f"""<!DOCTYPE html>
 <html><head>
 <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
@@ -173,8 +181,14 @@ body{{background:#0B0E11;color:#E0E0E0;font-family:'JetBrains Mono','Courier New
 <div class="stat"><span class="stat-label">Trades</span><span id="s_trades" class="stat-value">—</span></div>
 <div class="stat"><span class="stat-label">VWAP</span><span id="s_vwap" class="stat-value gold">—</span></div>
 <div class="stat"><span class="stat-label">Time</span><span id="s_time" class="stat-value">—</span></div>
+<div class="stat" id="predStats" style="display:{'flex' if show_predictions else 'none'}"><span class="stat-label">ML Accuracy</span><span class="stat-value gold" id="predAccuracy">—</span></div>
+<div class="stat" id="predNext" style="display:{'flex' if show_predictions else 'none'}"><span class="stat-label">Next Pred</span><span class="stat-value" id="nextPred">—</span></div>
+<div class="stat" id="predCred" style="display:{'flex' if show_predictions else 'none'}"><span class="stat-label">Credibility</span><span class="stat-value" id="credLabel" style="font-size:11px">—</span></div>
 </div>
 <div id="chart"></div>
+<div id="pred-chart" style="width:100%;height:180px;border-top:1px solid #1E2530;display:{'block' if show_predictions else 'none'}"></div>
+<div id="bayes-chart" style="width:100%;height:80px;border-top:1px solid #1E2530;display:{'block' if show_predictions else 'none'}"></div>
+<div id="llmBar" style="display:{'block' if show_predictions else 'none'};padding:4px 16px;background:#0F1318;border-top:1px solid #1E2530;font-size:11px;color:#888;min-height:20px;transition:opacity 0.5s"><span id="llmComment" style="opacity:0.3">—</span></div>
 <div class="orderbook">
 <span>Bid: <span id="ob_bid" class="ob-bid">—</span> (<span id="ob_bidvol">—</span>)</span>
 <span>Ask: <span id="ob_ask" class="ob-ask">—</span> (<span id="ob_askvol">—</span>)</span>
@@ -189,6 +203,9 @@ body{{background:#0B0E11;color:#E0E0E0;font-family:'JetBrains Mono','Courier New
 <div id="ticklog" class="ticklog"></div>
 <script>
 const allTicks={ticks_json};
+const predictions={predictions_json};
+const bayesianData={bayesian_json};
+const llmComments={comments_json};
 const totalTicks=allTicks.length;
 let currentIdx=0,playing=false,speed=25,animFrameId=null;
 let cumPV=0,cumVol=0,prevVol=0,recentTrades=[];
@@ -232,7 +249,7 @@ cumPV+=t.price*tv;cumVol+=tv;
 currentIdx++;
 }}
 if(changed)needsChartRebuild=true;
-if(currentIdx>0)updateStats(allTicks[currentIdx-1]);
+if(currentIdx>0){{updateStats(allTicks[currentIdx-1]);if(predictions.length>0)updatePredictions(allTicks[currentIdx-1].timestamp);}}
 }}
 
 // Rebuild chart data arrays from maps — called less frequently for performance
@@ -326,7 +343,21 @@ function resetReplay(){{currentIdx=0;cumPV=0;cumVol=0;prevVol=0;recentTrades=[];
 Object.keys(priceBySecond).forEach(k=>delete priceBySecond[k]);
 Object.keys(volBySecond).forEach(k=>delete volBySecond[k]);
 priceData=[];volData=[];needsChartRebuild=false;
-lineSeries.setData([]);volumeSeries.setData([]);}}
+lineSeries.setData([]);volumeSeries.setData([]);
+// Reset prediction state
+nextPredIdx=0;nextBayesIdx=0;predCorrect=0;predTotal=0;predMarkers=[];
+revealedForecasts=[];revealedActuals=[];revealedCITop=[];revealedCIBot=[];
+revealedBayesMean=[];revealedBayesHDITop=[];revealedBayesHDIBot=[];
+predictions.forEach(p=>delete p._resolved);
+llmComments.forEach(c=>delete c._shown);
+if(predForecastSeries){{predForecastSeries.setData([]);predForecastSeries.setMarkers([]);}}
+if(predActualSeries)predActualSeries.setData([]);
+if(predCITopSeries)predCITopSeries.setData([]);
+if(predCIBotSeries)predCIBotSeries.setData([]);
+if(bayesMeanSeries)bayesMeanSeries.setData([]);
+if(bayesHDITopSeries)bayesHDITopSeries.setData([]);
+if(bayesHDIBotSeries)bayesHDIBotSeries.setData([]);
+lineSeries.setMarkers([]);}}
 
 if(totalTicks>0){{
 const fmt=ts=>new Date(ts*1000).toLocaleTimeString('en-GB',{{hour12:false,timeZone:'Asia/Karachi'}});
@@ -334,6 +365,235 @@ document.getElementById('tl_start').textContent=fmt(allTicks[0].timestamp);
 document.getElementById('tl_end').textContent=fmt(allTicks[totalTicks-1].timestamp);
 document.getElementById('tickCounter').textContent='0 / '+totalTicks.toLocaleString()+' — Ready';
 updateStats(allTicks[0]);
+}}
+
+// ══════════════════════════════════════════════════════════
+// CHART 2 — PREDICTION ACCURACY (predicted vs actual returns)
+// ══════════════════════════════════════════════════════════
+
+const predEl=document.getElementById('pred-chart');
+let predChart=null,predActualSeries=null,predForecastSeries=null;
+let predCITopSeries=null,predCIBotSeries=null;
+
+if(predEl&&predictions.length>0){{
+  predChart=LightweightCharts.createChart(predEl,{{
+    width:predEl.clientWidth,height:180,
+    layout:{{background:{{type:'solid',color:'#0B0E11'}},textColor:'#555'}},
+    grid:{{vertLines:{{color:'#0F1318'}},horzLines:{{color:'#0F1318'}}}},
+    rightPriceScale:{{borderColor:'#1E2530'}},
+    timeScale:{{borderColor:'#1E2530',timeVisible:true,secondsVisible:false}},
+  }});
+  predCITopSeries=predChart.addAreaSeries({{
+    topColor:'rgba(255,179,0,0.12)',bottomColor:'rgba(255,179,0,0.0)',
+    lineColor:'rgba(255,179,0,0.25)',lineWidth:1,lineStyle:2,
+    priceScaleId:'right',lastValueVisible:false,priceLineVisible:false,
+  }});
+  predCIBotSeries=predChart.addLineSeries({{
+    color:'rgba(255,179,0,0.25)',lineWidth:1,lineStyle:2,
+    priceScaleId:'right',lastValueVisible:false,priceLineVisible:false,
+  }});
+  predForecastSeries=predChart.addLineSeries({{
+    color:'#FFB300',lineWidth:2,lineStyle:2,
+    priceScaleId:'right',lastValueVisible:false,priceLineVisible:false,
+  }});
+  predActualSeries=predChart.addLineSeries({{
+    color:'#E0E0E0',lineWidth:2,
+    priceScaleId:'right',lastValueVisible:true,priceLineVisible:false,
+  }});
+  const zeroS=predChart.addLineSeries({{
+    color:'#333',lineWidth:1,priceScaleId:'right',lastValueVisible:false,priceLineVisible:false,
+  }});
+  const allPredTimes=predictions.map(p=>Math.floor(p.timestamp));
+  if(allPredTimes.length>=2)zeroS.setData(allPredTimes.map(t=>({{time:t,value:0}})));
+}}
+
+// ══════════════════════════════════════════════════════════
+// CHART 3 — BAYESIAN CREDIBILITY
+// ══════════════════════════════════════════════════════════
+
+const bayesEl=document.getElementById('bayes-chart');
+let bayesChart=null,bayesMeanSeries=null,bayesHDITopSeries=null,bayesHDIBotSeries=null;
+
+if(bayesEl&&bayesianData.length>0){{
+  bayesChart=LightweightCharts.createChart(bayesEl,{{
+    width:bayesEl.clientWidth,height:80,
+    layout:{{background:{{type:'solid',color:'#0B0E11'}},textColor:'#555'}},
+    grid:{{vertLines:{{color:'#0F1318'}},horzLines:{{color:'#0F1318'}}}},
+    rightPriceScale:{{borderColor:'#1E2530',scaleMargins:{{top:0.1,bottom:0.1}}}},
+    timeScale:{{borderColor:'#1E2530',visible:false}},
+  }});
+  bayesHDITopSeries=bayesChart.addAreaSeries({{
+    topColor:'rgba(0,188,212,0.15)',bottomColor:'rgba(0,188,212,0.02)',
+    lineColor:'rgba(0,188,212,0.3)',lineWidth:1,
+    priceScaleId:'right',lastValueVisible:false,priceLineVisible:false,
+  }});
+  bayesHDIBotSeries=bayesChart.addLineSeries({{
+    color:'rgba(0,188,212,0.3)',lineWidth:1,
+    priceScaleId:'right',lastValueVisible:false,priceLineVisible:false,
+  }});
+  bayesMeanSeries=bayesChart.addLineSeries({{
+    color:'#00BCD4',lineWidth:2,
+    priceScaleId:'right',lastValueVisible:true,priceLineVisible:false,
+  }});
+  const chanceS=bayesChart.addLineSeries({{
+    color:'#FF525255',lineWidth:1,lineStyle:2,
+    priceScaleId:'right',lastValueVisible:false,priceLineVisible:false,
+  }});
+  const credThreshS=bayesChart.addLineSeries({{
+    color:'#00E67633',lineWidth:1,lineStyle:2,
+    priceScaleId:'right',lastValueVisible:false,priceLineVisible:false,
+  }});
+  if(bayesianData.length>=2){{
+    const bTimes=bayesianData.map(b=>Math.floor(b.timestamp));
+    chanceS.setData(bTimes.map(t=>({{time:t,value:50}})));
+    credThreshS.setData(bTimes.map(t=>({{time:t,value:60}})));
+  }}
+}}
+
+// ══════════════════════════════════════════════════════════
+// SYNC ALL 3 CHARTS
+// ══════════════════════════════════════════════════════════
+
+function syncFromMain(range){{
+  if(range&&predChart)predChart.timeScale().setVisibleRange(range);
+  if(range&&bayesChart)bayesChart.timeScale().setVisibleRange(range);
+}}
+chart.timeScale().subscribeVisibleTimeRangeChange(syncFromMain);
+if(predChart){{
+  predChart.timeScale().subscribeVisibleTimeRangeChange(function(range){{
+    if(range)chart.timeScale().setVisibleRange(range);
+    if(range&&bayesChart)bayesChart.timeScale().setVisibleRange(range);
+  }});
+}}
+
+// ══════════════════════════════════════════════════════════
+// RESIZE ALL CHARTS
+// ══════════════════════════════════════════════════════════
+
+const _ro=new ResizeObserver(function(){{
+  chart.applyOptions({{width:chartEl.clientWidth}});
+  if(predChart)predChart.applyOptions({{width:predEl.clientWidth}});
+  if(bayesChart)bayesChart.applyOptions({{width:bayesEl.clientWidth}});
+}});
+_ro.observe(chartEl);
+
+// ══════════════════════════════════════════════════════════
+// PROGRESSIVE PREDICTION REVEAL
+// ══════════════════════════════════════════════════════════
+
+let nextPredIdx=0,nextBayesIdx=0,predCorrect=0,predTotal=0;
+let predMarkers=[];
+let revealedForecasts=[],revealedActuals=[];
+let revealedCITop=[],revealedCIBot=[];
+let revealedBayesMean=[],revealedBayesHDITop=[],revealedBayesHDIBot=[];
+
+function updatePredictions(currentTs){{
+  if(!predictions.length)return;
+
+  // Reveal new predictions as replay crosses their timestamp
+  while(nextPredIdx<predictions.length&&predictions[nextPredIdx].timestamp<=currentTs){{
+    const pred=predictions[nextPredIdx];
+    const t=Math.floor(pred.timestamp);
+    predMarkers.push({{
+      time:t,
+      position:pred.direction==='UP'?'belowBar':'aboveBar',
+      color:'#FFB300',
+      shape:pred.direction==='UP'?'arrowUp':'arrowDown',
+      text:pred.direction+' '+Math.round(pred.probability*100)+'%',
+    }});
+    revealedForecasts.push({{time:t,value:(pred.predicted_return||0)}});
+    revealedCITop.push({{time:t,value:pred.ci_high?((pred.ci_high/pred.price-1)*100):1}});
+    revealedCIBot.push({{time:t,value:pred.ci_low?((pred.ci_low/pred.price-1)*100):-1}});
+    if(predForecastSeries)predForecastSeries.setData([...revealedForecasts]);
+    if(predCITopSeries)predCITopSeries.setData([...revealedCITop]);
+    if(predCIBotSeries)predCIBotSeries.setData([...revealedCIBot]);
+    nextPredIdx++;
+  }}
+
+  // Resolve predictions (replay passed their target time)
+  for(const pred of predictions){{
+    if(pred.resolve_ts&&currentTs>=pred.resolve_ts&&!pred._resolved){{
+      pred._resolved=true;
+      const t=Math.floor(pred.resolve_ts);
+      if(pred.actual_return!==null){{
+        revealedActuals.push({{time:t,value:pred.actual_return}});
+        if(predActualSeries)predActualSeries.setData([...revealedActuals]);
+      }}
+      if(pred.correct!==null){{
+        predTotal++;
+        if(pred.correct)predCorrect++;
+        const idx=predMarkers.findIndex(m=>m.time===Math.floor(pred.timestamp));
+        if(idx>=0)predMarkers[idx].color=pred.correct?'#00E676':'#FF5252';
+        // Hit/miss dot markers
+        if(predForecastSeries){{
+          const dots=predictions.filter(p=>p._resolved&&p.correct!==null)
+            .map(p=>({{time:Math.floor(p.timestamp),position:'inBar',
+              color:p.correct?'#00E676':'#FF5252',
+              shape:p.correct?'circle':'square',
+              text:p.correct?'OK':'X'}}))
+            .sort((a,b)=>a.time-b.time);
+          predForecastSeries.setMarkers(dots);
+        }}
+      }}
+      const accEl=document.getElementById('predAccuracy');
+      if(accEl&&predTotal>0){{
+        const pct=(predCorrect/predTotal*100).toFixed(0);
+        accEl.innerHTML=predCorrect+'/'+predTotal+' ('+pct+'%)';
+        accEl.style.color=predCorrect/predTotal>0.55?'#00E676':'#FF5252';
+      }}
+    }}
+  }}
+
+  // Update Bayesian chart progressively
+  while(nextBayesIdx<bayesianData.length&&bayesianData[nextBayesIdx].timestamp<=currentTs){{
+    const b=bayesianData[nextBayesIdx];
+    const t=Math.floor(b.timestamp);
+    revealedBayesMean.push({{time:t,value:b.posterior_mean*100}});
+    revealedBayesHDITop.push({{time:t,value:b.hdi_high*100}});
+    revealedBayesHDIBot.push({{time:t,value:b.hdi_low*100}});
+    if(bayesMeanSeries)bayesMeanSeries.setData([...revealedBayesMean]);
+    if(bayesHDITopSeries)bayesHDITopSeries.setData([...revealedBayesHDITop]);
+    if(bayesHDIBotSeries)bayesHDIBotSeries.setData([...revealedBayesHDIBot]);
+    const credEl=document.getElementById('credLabel');
+    if(credEl){{
+      const clr=b.label==='CREDIBLE'?'#00E676':b.label==='MARGINAL'?'#FFB300':'#FF5252';
+      credEl.innerHTML='<span style="color:'+clr+'">'+b.label+'</span> ('+
+        (b.posterior_mean*100).toFixed(0)+'% n='+b.n+')';
+    }}
+    nextBayesIdx++;
+  }}
+
+  // Update markers on price chart
+  if(predMarkers.length>0){{
+    lineSeries.setMarkers([...predMarkers].sort((a,b)=>a.time-b.time));
+  }}
+
+  // Show next prediction info
+  if(nextPredIdx<predictions.length){{
+    const next=predictions[nextPredIdx];
+    const nextEl=document.getElementById('nextPred');
+    if(nextEl){{
+      const arrow=next.direction==='UP'?'A':'V';
+      const clr=next.direction==='UP'?'#00E676':'#FF5252';
+      nextEl.innerHTML='<span style="color:'+clr+'">'+arrow+' '+
+        next.direction+' '+Math.round(next.probability*100)+'%</span>'+
+        ' -> '+(next.predicted_price?next.predicted_price.toFixed(2):'?');
+    }}
+  }}
+
+  // LLM commentary
+  for(const comment of llmComments){{
+    if(Math.abs(currentTs-comment.timestamp)<5&&!comment._shown){{
+      comment._shown=true;
+      const el=document.getElementById('llmComment');
+      if(el){{
+        const clr=comment.correct?'#00E676':'#FF5252';
+        el.innerHTML='<span style="color:'+clr+'">*</span> '+comment.comment;
+        el.style.opacity=1;
+        setTimeout(function(){{el.style.opacity=0.3;}},8000);
+      }}
+    }}
+  }}
 }}
 </script></body></html>"""
 
@@ -361,6 +621,21 @@ def render_tick_replay():
         default = "HUBC" if "HUBC" in symbols else symbols[0]
         sel_sym = st.selectbox("Symbol", symbols, index=symbols.index(default) if default in symbols else 0, key="replay_sym")
 
+    # ── ML Prediction overlay controls ──
+    pred_col1, pred_col2, pred_col3 = st.columns([1, 1, 1])
+    with pred_col1:
+        show_predictions = st.checkbox("Show ML Predictions", value=False, key="tr_ml")
+    with pred_col2:
+        pred_interval = st.selectbox(
+            "Predict every", [5, 10, 15, 30], index=2,
+            key="tr_pred_int", disabled=not show_predictions,
+        )
+    with pred_col3:
+        show_llm = st.checkbox(
+            "LLM Commentary", value=False, key="tr_llm",
+            disabled=not show_predictions,
+        )
+
     if st.button("Load Replay", type="primary"):
         ticks = _load_ticks(sel_date, sel_sym)
         if not ticks:
@@ -374,8 +649,51 @@ def render_tick_replay():
         else:
             st.success(f"Loaded **{len(ticks):,}** ticks for **{sel_sym}**")
 
+        # Generate predictions if enabled
+        predictions_json = "[]"
+        bayesian_json = "[]"
+        comments_json = "[]"
+
+        if show_predictions and len(ticks) > 100:
+            with st.spinner(f"Running ML predictions every {pred_interval} min..."):
+                from pakfindata.engine.tick_predictor import (
+                    generate_replay_predictions,
+                    generate_llm_commentary,
+                )
+                result = generate_replay_predictions(
+                    ticks, sel_sym, interval_minutes=pred_interval,
+                )
+                predictions_json = json.dumps(result["predictions"], default=str)
+                bayesian_json = json.dumps(result["bayesian"], default=str)
+
+                s = result.get("summary", {})
+                if s.get("resolved", 0) > 0:
+                    st.caption(
+                        f"Generated {s['total_predictions']} predictions — "
+                        f"{s['correct']}/{s['resolved']} correct "
+                        f"({s['accuracy']:.0%}) — "
+                        f"Credibility: **{s['final_credibility']}** "
+                        f"(posterior: {s['final_posterior']:.0%})"
+                    )
+
+                if show_llm:
+                    with st.spinner("Generating LLM commentary..."):
+                        comments = generate_llm_commentary(
+                            result["predictions"], sel_sym,
+                        )
+                        comments_json = json.dumps(comments, default=str)
+
         ticks_json = json.dumps(ticks, default=str)
-        html = _build_replay_html(ticks_json, sel_sym, sel_date)
-        components.html(html, height=700, scrolling=False)
+        html = _build_replay_html(
+            ticks_json, sel_sym, sel_date,
+            predictions_json=predictions_json,
+            bayesian_json=bayesian_json,
+            comments_json=comments_json,
+            show_predictions=show_predictions,
+        )
+        panel_height = 700
+        if show_predictions:
+            panel_height += 280  # prediction (180) + Bayesian (80) + borders (20)
+        components.html(html, height=panel_height, scrolling=False)
 
     render_footer()

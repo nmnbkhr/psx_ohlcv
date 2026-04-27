@@ -93,7 +93,7 @@ def _render_scanner():
     fig.add_vline(x=-0.3, line_dash="dash", line_color=_C["down"])
     fig.update_layout(**_CHART, height=200, xaxis=dict(title="Sentiment Score", range=[-1.1, 1.1], gridcolor=_C["grid"]),
                       yaxis=dict(gridcolor=_C["grid"]))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Signals table
     df = pd.DataFrame([s.to_dict() for s in signals])
@@ -107,7 +107,7 @@ def _render_scanner():
         return f"background-color: {c.get(val, '#333')}"
 
     styled = show.style.map(_color_signal, subset=["Signal"])
-    st.dataframe(styled, use_container_width=True, hide_index=True, height=400)
+    st.dataframe(styled, width='stretch', hide_index=True, height=400)
 
 
 def _render_symbol():
@@ -142,7 +142,7 @@ def _render_symbol():
             show = sdf[["date", "title", "sentiment_score", "sentiment_label", "signal", "reason", "cached"]].copy()
             show["sentiment_score"] = show["sentiment_score"].map(lambda x: f"{x:+.2f}")
             show.columns = ["Date", "Title", "Score", "Sentiment", "Signal", "Reason", "Cached"]
-            st.dataframe(show, use_container_width=True, hide_index=True)
+            st.dataframe(show, width='stretch', hide_index=True)
 
             # Score timeline
             fig = go.Figure()
@@ -153,12 +153,12 @@ def _render_symbol():
             fig.add_hline(y=0.3, line_dash="dash", line_color=_C["up"])
             fig.add_hline(y=-0.3, line_dash="dash", line_color=_C["down"])
             fig.update_layout(**_CHART, height=250, yaxis=dict(gridcolor=_C["grid"], range=[-1.1, 1.1]))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
     else:
         # Show raw announcements
         show = df[["announcement_date", "title", "category"]].copy()
         show.columns = ["Date", "Title", "Category"]
-        st.dataframe(show, use_container_width=True, hide_index=True)
+        st.dataframe(show, width='stretch', hide_index=True)
 
 
 def _render_cache():

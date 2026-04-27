@@ -109,7 +109,7 @@ def render_symbols():
                 "Symbol", "Name", "Sector",
                 "Active", "Discovered", "Updated"
             ]
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            st.dataframe(display_df, width='stretch', hide_index=True)
 
             # Actions
             col1, col2 = st.columns(2)

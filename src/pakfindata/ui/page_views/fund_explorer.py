@@ -247,11 +247,14 @@ def _render_sync_tools(con):
     rm_c1, rm_c2 = st.columns([1, 3])
     with rm_c1:
         if st.button("Recompute Risk Metrics", type="primary", key="fexp_recompute_risk"):
-            with st.spinner("Computing risk metrics for all funds (may take 2-4 min)..."):
+            with st.spinner("Computing risk metrics (parallel CPU)..."):
                 try:
                     from pakfindata.engine.compute_risk_batch import run_batch
-                    run_batch()
-                    st.success("Risk metrics recomputed for all funds")
+                    result = run_batch()
+                    st.success(
+                        f"Risk metrics recomputed: {result['computed']} funds "
+                        f"in {result['elapsed']:.0f}s ({result['errors']} errors)"
+                    )
                 except Exception as e:
                     st.error(f"Risk batch failed: {e}")
     with rm_c2:
@@ -530,7 +533,7 @@ def _render_fund_directory(con):
         {c: "{:+.1f}" for c in ret_cols}, na_rep="---",
     ).format({"NAV": "{:.4f}"}, na_rep="---")
 
-    st.dataframe(styled, use_container_width=True, hide_index=True, height=480)
+    st.dataframe(styled, width='stretch', hide_index=True, height=480)
 
     # Fund detail selector
     fund_options = {
@@ -646,7 +649,7 @@ def _render_fund_detail(con, fund_id):
                     xaxis=dict(tickfont=dict(family=MONO, size=10)),
                     bargap=0.3,
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
     except Exception:
         pass
 
@@ -698,7 +701,7 @@ def _render_fund_detail(con, fund_id):
                    showgrid=True, gridcolor=C_BORDER),
         xaxis=dict(showgrid=False),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -795,7 +798,7 @@ def _render_fund_comparison(con):
         yaxis=dict(title=dict(text="Indexed (Base=100)"), side="right"),
         legend=dict(orientation="h", y=-0.12, font=dict(size=10)),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # ── Side-by-side metrics table ──
     if nav_frames:
@@ -827,7 +830,7 @@ def _render_fund_comparison(con):
                 else f"color:{C_DN}" if isinstance(v, (int, float)) and v < 0 else "",
                 subset=ret_cols,
             ).format(na_rep="---")
-            st.dataframe(styled, use_container_width=True, hide_index=True)
+            st.dataframe(styled, width='stretch', hide_index=True)
 
     # ── Correlation heatmap ──
     if len(nav_frames) >= 2:
@@ -858,7 +861,7 @@ def _render_fund_comparison(con):
                 margin=dict(l=10, r=10, t=10, b=10),
                 xaxis=dict(tickangle=-30),
             )
-            st.plotly_chart(fig_hm, use_container_width=True)
+            st.plotly_chart(fig_hm, width='stretch')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -973,7 +976,7 @@ def _render_risk_metrics(con):
         .map(_color_sharpe, subset=["Sharpe"])
         .format({"Ann. Ret %": "{:+.2f}", "Vol %": "{:.2f}", "Sharpe": "{:.2f}", "Max DD %": "{:.2f}"})
     )
-    st.dataframe(styled, use_container_width=True, hide_index=True, height=420)
+    st.dataframe(styled, width='stretch', hide_index=True, height=420)
 
     # ── Risk-return scatter ──
     st.markdown(_section_label("RISK-RETURN SCATTER"), unsafe_allow_html=True)
@@ -1004,7 +1007,7 @@ def _render_risk_metrics(con):
         xaxis=dict(title=dict(text="VOLATILITY %"), showgrid=True, gridcolor=C_BORDER),
         yaxis=dict(title=dict(text="ANN. RETURN %"), showgrid=True, gridcolor=C_BORDER, side="right"),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1088,7 +1091,7 @@ def _render_etf_section(con):
             yaxis=dict(title=dict(text="PREMIUM / DISCOUNT %"), showgrid=True, gridcolor=C_BORDER),
             xaxis=dict(tickfont=dict(family=MONO, size=10)),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # ── Per-ETF detail section ──
     st.markdown(_section_label("ETF DETAIL"), unsafe_allow_html=True)
@@ -1141,7 +1144,7 @@ def _render_etf_section(con):
                     margin=dict(l=10, r=10, t=40, b=30),
                     showlegend=True, legend=dict(x=0, y=1, font=dict(size=10)),
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
             elif not hist.empty:
                 st.metric("NAV Data Points", len(hist))
 
@@ -1173,7 +1176,7 @@ def _render_etf_section(con):
                     margin=dict(l=10, r=10, t=40, b=30),
                     showlegend=False, yaxis=dict(ticksuffix="%"),
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
             else:
                 st.info("Not enough premium/discount history for chart")
 
@@ -1185,7 +1188,7 @@ def _render_etf_section(con):
                         "date": "Date", "nav": "NAV", "market_price": "Market Price",
                         "premium_discount": "Prem/Disc %",
                     }),
-                    use_container_width=True, hide_index=True,
+                    width='stretch', hide_index=True,
                 )
 
 
@@ -1243,7 +1246,7 @@ def _render_vps_section(con):
                 "category": "Sub-Fund Type", "funds": "Funds",
                 "avg_ytd": "Avg YTD %", "best_ytd": "Best YTD %", "worst_ytd": "Worst YTD %",
             }),
-            use_container_width=True, hide_index=True,
+            width='stretch', hide_index=True,
         )
 
     # Full fund table with color-coded returns
@@ -1259,7 +1262,7 @@ def _render_vps_section(con):
         else f"color: {C_DN}" if isinstance(v, (int, float)) and v < 0 else "",
         subset=ret_cols,
     )
-    st.dataframe(styled_vps, use_container_width=True, hide_index=True, height=420)
+    st.dataframe(styled_vps, width='stretch', hide_index=True, height=420)
 
     # Gold/Commodity sub-funds highlight
     gold_mask = df["category"].str.contains("Commodit|Gold", case=False, na=False)
@@ -1276,7 +1279,7 @@ def _render_vps_section(con):
             else f"color: {C_DN}" if isinstance(v, (int, float)) and v < 0 else "",
             subset=gold_ret_cols,
         )
-        st.dataframe(styled_gold, use_container_width=True, hide_index=True)
+        st.dataframe(styled_gold, width='stretch', hide_index=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1376,7 +1379,7 @@ def _render_top_performers(con):
                    zerolinecolor=C_NEU, zerolinewidth=1),
         yaxis=dict(tickfont=dict(size=10)),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # ── Styled table ──
     tbl = df.rename(columns={
@@ -1390,7 +1393,7 @@ def _render_top_performers(con):
         else f"color:{C_DN}" if isinstance(v, (int, float)) and v < 0 else "",
         subset=[ret_col],
     ).format({ret_col: "{:+.2f}", "NAV": "{:.4f}"}, na_rep="---")
-    st.dataframe(styled, use_container_width=True, hide_index=True)
+    st.dataframe(styled, width='stretch', hide_index=True)
 
     # Rate benchmarks
     try:
@@ -1450,7 +1453,7 @@ def _render_top_performers_fallback(con):
             "amc_name": "AMC", "latest_nav": "NAV",
             "return_pct": f"Return ({period})",
         }),
-        use_container_width=True, hide_index=True,
+        width='stretch', hide_index=True,
     )
 
 
@@ -1644,7 +1647,7 @@ def _render_risk_analytics(con):
             height=280, margin=dict(l=10, r=10, t=40, b=30),
             showlegend=False,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # ── Drawdown Chart ──
     dd = maximum_drawdown(nav)
@@ -1664,7 +1667,7 @@ def _render_risk_analytics(con):
             height=250, margin=dict(l=10, r=10, t=40, b=30),
             yaxis=dict(ticksuffix="%"),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # ── Rolling 1Y Return Chart ──
     from pakfindata.engine.fund_risk import compute_rolling_returns
@@ -1694,7 +1697,7 @@ def _render_risk_analytics(con):
             height=280, margin=dict(l=10, r=10, t=40, b=30),
             showlegend=False, yaxis=dict(ticksuffix="%"),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # ── Calendar Year Returns ──
     from pakfindata.engine.fund_risk import compute_calendar_year_returns
@@ -1802,7 +1805,7 @@ def _render_factor_analysis(con):
             margin=dict(l=10, r=10, t=30, b=30),
             legend=dict(orientation="h", y=-0.15),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
         # Current signal
         last_pos = int(ma["position"].iloc[-1])
@@ -1840,7 +1843,7 @@ def _render_factor_analysis(con):
             yaxis=dict(ticksuffix="%", title=dict(text="Ann. Volatility")),
             legend=dict(orientation="h", y=-0.15),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # Volatility regime
     regime = volatility_regime(nav)

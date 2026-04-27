@@ -191,7 +191,7 @@ def render_ai_insights():
             if st.button(
                 f"{details['icon']} {details['title']}",
                 key=f"mode_{mode}",
-                use_container_width=True,
+                width='stretch',
                 type="primary" if is_selected else "secondary",
             ):
                 st.session_state.ai_insight_mode = mode
@@ -322,7 +322,7 @@ def render_ai_insights():
         generate_clicked = st.button(
             "✨ Generate AI Insight",
             type="primary",
-            use_container_width=True,
+            width='stretch',
             help="Generate AI-powered analysis using GPT-5.2",
         )
 
@@ -657,11 +657,11 @@ def render_ai_insights():
 
                 btn_col1, btn_col2 = st.columns(2)
                 with btn_col1:
-                    if st.button("🧹 Clear Expired", use_container_width=True):
+                    if st.button("🧹 Clear Expired", width='stretch'):
                         cleared = cache.cleanup_expired()
                         st.success(f"Cleared {cleared} expired entries")
                 with btn_col2:
-                    if st.button("🗑️ Clear All", type="secondary", use_container_width=True):
+                    if st.button("🗑️ Clear All", type="secondary", width='stretch'):
                         cleared = cache.clear_all()
                         st.success(f"Cleared {cleared} entries")
 

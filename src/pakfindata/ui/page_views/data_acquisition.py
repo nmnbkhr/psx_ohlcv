@@ -356,7 +356,7 @@ def render_data_acquisition():
                     "Started": job.get("started_at", "")[:16] if job.get("started_at") else "",
                     "Ended": job.get("ended_at", "")[:16] if job.get("ended_at") else "-",
                 })
-            st.dataframe(job_data, use_container_width=True, hide_index=True)
+            st.dataframe(job_data, width='stretch', hide_index=True)
         else:
             st.info("No jobs yet. Start a background job above.")
 
@@ -457,7 +457,7 @@ def render_data_acquisition():
                                 # Reorder columns
                                 display_cols = ["period_end", "sales", "profit_after_tax", "eps"]
                                 display_cols = [c for c in display_cols if c in fin_df.columns]
-                                st.dataframe(fin_df[display_cols], use_container_width=True, hide_index=True)
+                                st.dataframe(fin_df[display_cols], width='stretch', hide_index=True)
 
                     # Ratios Summary
                     ratios = snapshot.get("ratios_data", {})
@@ -469,7 +469,7 @@ def render_data_acquisition():
                             if not ratio_df.empty:
                                 display_cols = ["period_end", "gross_profit_margin", "net_profit_margin", "eps_growth", "peg_ratio"]
                                 display_cols = [c for c in display_cols if c in ratio_df.columns]
-                                st.dataframe(ratio_df[display_cols], use_container_width=True, hide_index=True)
+                                st.dataframe(ratio_df[display_cols], width='stretch', hide_index=True)
 
                     # Raw JSON viewer
                     with st.expander("View Raw JSON Data"):
@@ -523,7 +523,7 @@ def render_data_acquisition():
 
             st.dataframe(
                 df[display_cols],
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
                 column_config={
                     "open": st.column_config.NumberColumn(format="%.2f"),
@@ -594,7 +594,7 @@ def render_data_acquisition():
 
             st.dataframe(
                 ann_df[display_cols],
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
                 column_config={
                     "title": st.column_config.TextColumn(width="large"),

@@ -119,7 +119,7 @@ def _render_live():
                           legend=dict(orientation="h", y=1.05, bgcolor="rgba(0,0,0,0)"),
                           yaxis=dict(gridcolor=_C["grid"], title="Price"),
                           yaxis2=dict(gridcolor=_C["grid"], title="CVD"))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # Divergence details
     if divs:
@@ -177,7 +177,7 @@ def _render_scanner():
         show["cvd_slope"] = show["cvd_slope"].map(lambda x: f"{x:+,.0f}")
         show["buy_sell_ratio"] = show["buy_sell_ratio"].map(lambda x: f"{x:.0%}")
         show["confidence"] = show["confidence"].map(lambda x: f"{x:.0%}")
-        st.dataframe(show, use_container_width=True, hide_index=True)
+        st.dataframe(show, width='stretch', hide_index=True)
 
     st.markdown(f"**{len(no_div)} symbols aligned** (no divergence)")
     # Show top by CVD slope (strongest buyers/sellers)
@@ -190,13 +190,13 @@ def _render_scanner():
         show = top_buy[["symbol", "cvd_slope", "buy_sell_ratio"]].copy()
         show["cvd_slope"] = show["cvd_slope"].map(lambda x: f"{x:+,.0f}")
         show["buy_sell_ratio"] = show["buy_sell_ratio"].map(lambda x: f"{x:.0%}")
-        st.dataframe(show, use_container_width=True, hide_index=True)
+        st.dataframe(show, width='stretch', hide_index=True)
     with c2:
         st.markdown("**Strongest net selling (CVD slope)**")
         show = top_sell[["symbol", "cvd_slope", "buy_sell_ratio"]].copy()
         show["cvd_slope"] = show["cvd_slope"].map(lambda x: f"{x:+,.0f}")
         show["buy_sell_ratio"] = show["buy_sell_ratio"].map(lambda x: f"{x:.0%}")
-        st.dataframe(show, use_container_width=True, hide_index=True)
+        st.dataframe(show, width='stretch', hide_index=True)
 
 
 def _render_methodology():
