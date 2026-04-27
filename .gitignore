@@ -88,3 +88,6 @@ coe_marketing_assets.*
 # Pre-commit audit reports (kept outside repo)
 INVESTIGATION_REPORT*.md
 KNOWN_TEST_FAILURES.md
+
+# Developer-local Claude Code config (varies per machine)
+.claude/settings.json
