@@ -230,9 +230,15 @@ def get_tick_ohlcv_symbol(
 def promote_tick_ohlcv_to_eod(
     con: sqlite3.Connection, date: str | None = None
 ) -> int:
-    """Copy tick-built OHLCV into eod_ohlcv table with source='tick_aggregation'.
+    """DEPRECATED — tick→EOD promotion path. Canonical EOD population is
+    `market_summary fetch → disk → ingest_market_summary_csv` (source=
+    'market_summary'), which gives accurate H/L from the daily bulk file.
+    Only caller today is the hidden Live OHLCV page. Do not invoke from new
+    paths; existing button preserved so the page keeps working.
 
-    This solves the fake H/L problem: tick-collected OHLCV gives REAL high/low.
+    Copy tick-built OHLCV into eod_ohlcv table with source='tick_aggregation'.
+    Originally added to solve the fake-H/L problem when EOD was sourced from
+    the per-symbol API only.
 
     Args:
         con: Database connection
@@ -264,35 +270,7 @@ def promote_tick_ohlcv_to_eod(
     )
     con.commit()
 
-    # Dual-write to DuckDB: read promoted rows from SQLite tick_ohlcv
-    try:
-        from pakfindata.db.connections import has_duckdb, duck_write
-        import pandas as _pd
-        if has_duckdb() and cur.rowcount > 0:
-            promoted = _pd.read_sql_query(
-                "SELECT symbol, date, open, high, low, close, volume FROM tick_ohlcv WHERE date = ?",
-                con, params=[date],
-            )
-            if not promoted.empty:
-                promoted["ingested_at"] = now
-                promoted["source"] = "tick_aggregation"
-                promoted["processname"] = "tick_collector"
-                for c in ("prev_close", "sector_code", "company_name", "turnover"):
-                    promoted[c] = None
-                dcon = duck_write()
-                dcon.register("_tick_eod", promoted)
-                dcon.execute("""
-                    INSERT INTO eod_ohlcv SELECT * FROM _tick_eod
-                    ON CONFLICT (symbol, date) DO UPDATE SET
-                        open = excluded.open, high = excluded.high,
-                        low = excluded.low, close = excluded.close,
-                        volume = excluded.volume, ingested_at = excluded.ingested_at,
-                        source = excluded.source, processname = excluded.processname
-                """)
-                dcon.unregister("_tick_eod")
-                dcon.close()
-    except Exception:
-        pass
+    # DuckDB dual-write removed — data flows through SQLite → Parquet now
 
     return cur.rowcount
 

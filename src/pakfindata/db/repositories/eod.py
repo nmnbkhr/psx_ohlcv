@@ -123,42 +123,6 @@ def upsert_eod(
             count += cur.rowcount
 
     con.commit()
-
-    # Dual-write to DuckDB (primary analytics store)
-    try:
-        from pakfindata.db.connections import has_duckdb, duck_write
-        if has_duckdb():
-            duck_df = df.copy()
-            duck_df["ingested_at"] = now
-            duck_df["source"] = source
-            duck_df["processname"] = processname
-            for col in ("prev_close", "sector_code", "company_name", "turnover"):
-                if col not in duck_df.columns:
-                    duck_df[col] = None
-            cols = ["symbol", "date", "open", "high", "low", "close", "volume",
-                    "prev_close", "sector_code", "company_name", "ingested_at",
-                    "source", "processname", "turnover"]
-            duck_df = duck_df[[c for c in cols if c in duck_df.columns]]
-            dcon = duck_write()
-            dcon.register("_eod_df", duck_df)
-            if source == "per_symbol_api":
-                dcon.execute("INSERT OR IGNORE INTO eod_ohlcv SELECT * FROM _eod_df")
-            else:
-                dcon.execute("""
-                    INSERT INTO eod_ohlcv SELECT * FROM _eod_df
-                    ON CONFLICT (symbol, date) DO UPDATE SET
-                        open = excluded.open, high = excluded.high,
-                        low = excluded.low, close = excluded.close,
-                        volume = excluded.volume, prev_close = excluded.prev_close,
-                        sector_code = excluded.sector_code, company_name = excluded.company_name,
-                        ingested_at = excluded.ingested_at, source = excluded.source,
-                        processname = excluded.processname
-                """)
-            dcon.unregister("_eod_df")
-            dcon.close()
-    except Exception:
-        pass  # DuckDB write failure is not fatal
-
     return count
 
 
@@ -884,6 +848,12 @@ def verify_eod_data_sources(
 
 def backfill_eod_sources(con: sqlite3.Connection, dry_run: bool = True) -> dict:
     """
+    DEPRECATED — one-off source-column backfill, zero callers in the codebase.
+    Kept for reference / manual invocation only. The canonical EOD population
+    path is `market_summary fetch → disk CSV → ingest_market_summary_csv`; new
+    rows get `source='market_summary'` (or `'closing_rates_pdf'` on fallback)
+    at ingest time, so this backfill isn't needed on fresh data.
+
     Backfill source column for existing data based on available files.
 
     Logic:

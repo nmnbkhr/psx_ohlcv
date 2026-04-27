@@ -53,12 +53,12 @@ def _parse_ts_to_epoch(ts: str) -> int:
 
 def upsert_intraday(con: sqlite3.Connection, df: pd.DataFrame) -> int:
     """
-    Upsert intraday bars data from DataFrame.
+    Upsert intraday bars data from DataFrame (v3 schema: market + interval).
 
     Args:
         con: Database connection
         df: DataFrame with columns: symbol, ts, open, high, low, close, volume
-            Optionally ts_epoch (will be computed if missing)
+            Optional: ts_epoch, date, market (default 'REG'), interval (default '1s')
 
     Returns:
         Number of rows inserted or updated
@@ -66,7 +66,6 @@ def upsert_intraday(con: sqlite3.Connection, df: pd.DataFrame) -> int:
     if df.empty:
         return 0
 
-    now = now_iso()
     count = 0
 
     required_cols = {"symbol", "ts"}
@@ -75,55 +74,43 @@ def upsert_intraday(con: sqlite3.Connection, df: pd.DataFrame) -> int:
         raise ValueError(f"DataFrame missing columns: {missing}")
 
     for _, row in df.iterrows():
-        # Compute ts_epoch if not provided
+        ts_str = str(row["ts"])
         ts_epoch = row.get("ts_epoch")
         if ts_epoch is None or pd.isna(ts_epoch):
-            ts_epoch = _parse_ts_to_epoch(row["ts"])
+            ts_epoch = _parse_ts_to_epoch(ts_str)
+
+        # Derive date from ts if not supplied (v3 schema requires NOT NULL)
+        date_val = row.get("date")
+        if date_val is None or pd.isna(date_val) or not str(date_val).strip():
+            date_val = ts_str[:10]
+
+        market = row.get("market") or "REG"
+        interval = row.get("interval") or "1s"
 
         cur = con.execute(
             """
             INSERT OR IGNORE INTO intraday_bars
-                (symbol, ts, ts_epoch, open, high, low, close, volume,
-                 interval, ingested_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'int', ?)
+                (symbol, market, date, ts, ts_epoch, interval,
+                 open, high, low, close, volume, source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'upsert_intraday')
             """,
             (
                 row["symbol"],
-                row["ts"],
+                str(market),
+                str(date_val),
+                ts_str,
                 int(ts_epoch),
+                str(interval),
                 row.get("open"),
                 row.get("high"),
                 row.get("low"),
                 row.get("close"),
                 row.get("volume"),
-                now,
             ),
         )
         count += cur.rowcount
 
     con.commit()
-
-    # Dual-write to DuckDB
-    try:
-        from pakfindata.db.connections import has_duckdb, duck_insert
-        if has_duckdb():
-            duck_df = df.copy()
-            if "ts_epoch" not in duck_df.columns:
-                duck_df["ts_epoch"] = duck_df["ts"].apply(_parse_ts_to_epoch)
-            duck_df["ts_epoch"] = duck_df["ts_epoch"].astype(int)
-            duck_df["interval"] = "int"
-            duck_df["ingested_at"] = now
-            duck_df["operation"] = "insert"
-            duck_df["process_ts"] = ""
-            cols = ["symbol", "ts", "ts_epoch", "open", "high", "low", "close",
-                    "volume", "interval", "ingested_at", "operation", "process_ts"]
-            for c in cols:
-                if c not in duck_df.columns:
-                    duck_df[c] = None
-            duck_insert("intraday_bars", duck_df[cols])
-    except Exception:
-        pass
-
     return count
 
 
@@ -305,7 +292,13 @@ def get_intraday_stats(con: sqlite3.Connection, symbol: str) -> dict:
 def promote_intraday_to_eod(
     con: sqlite3.Connection, date: str | None = None
 ) -> int:
-    """Aggregate intraday_bars into eod_ohlcv with REAL high/low from actual trades.
+    """DEPRECATED as a population path for eod_ohlcv — canonical flow is
+    `market_summary fetch → disk → ingest_market_summary_csv` (source=
+    'market_summary'), which already carries real H/L. Kept for the existing
+    Intraday page buttons ([intraday.py:1963, 2426]) and the hidden Live
+    OHLCV page. Do not call from new code paths.
+
+    Aggregate intraday_bars into eod_ohlcv with REAL high/low from actual trades.
 
     For each symbol on the given date:
     - open  = close price of the FIRST tick (earliest ts_epoch)
@@ -439,42 +432,7 @@ def promote_intraday_to_eod(
 
     con.commit()
 
-    # Dual-write aggregated EOD to DuckDB
-    try:
-        from pakfindata.db.connections import has_duckdb, duck_write
-        if has_duckdb() and rows:
-            import pandas as _pd
-            eod_rows = []
-            for r in rows:
-                sym = r["symbol"]
-                eod_rows.append({
-                    "symbol": sym, "date": date,
-                    "open": r["open"], "high": r["high"], "low": r["low"],
-                    "close": r["close"], "volume": r["volume"],
-                    "prev_close": prev_close_map.get(sym),
-                    "sector_code": sector_map.get(sym),
-                    "company_name": name_map.get(sym),
-                    "ingested_at": now, "source": "intraday_aggregation",
-                    "processname": "sync_timeseries", "turnover": None,
-                })
-            eod_df = _pd.DataFrame(eod_rows)
-            dcon = duck_write()
-            dcon.register("_eod_agg", eod_df)
-            dcon.execute("""
-                INSERT INTO eod_ohlcv SELECT * FROM _eod_agg
-                ON CONFLICT (symbol, date) DO UPDATE SET
-                    open = excluded.open, high = excluded.high,
-                    low = excluded.low, close = excluded.close,
-                    volume = excluded.volume, prev_close = excluded.prev_close,
-                    sector_code = COALESCE(excluded.sector_code, eod_ohlcv.sector_code),
-                    company_name = COALESCE(excluded.company_name, eod_ohlcv.company_name),
-                    ingested_at = excluded.ingested_at, source = excluded.source,
-                    processname = excluded.processname
-            """)
-            dcon.unregister("_eod_agg")
-            dcon.close()
-    except Exception:
-        pass
+    # DuckDB dual-write removed — data flows through SQLite → Parquet now
 
     con.row_factory = old_factory
     return count
@@ -489,7 +447,7 @@ def get_intraday_dates(con: sqlite3.Connection) -> list[str]:
     old_factory = con.row_factory
     con.row_factory = sqlite3.Row
     rows = con.execute(
-        "SELECT DISTINCT DATE(ts) AS d FROM intraday_bars ORDER BY d DESC"
+        "SELECT DISTINCT date AS d FROM intraday_bars ORDER BY d DESC"
     ).fetchall()
     con.row_factory = old_factory
     return [r["d"] for r in rows if r["d"]]

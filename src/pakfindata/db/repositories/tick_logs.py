@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS tick_logs (
     prev_close  REAL,
     source_file TEXT,
     ingested_at TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (symbol, market, timestamp, price)
+    PRIMARY KEY (symbol, market, timestamp, price, volume, trades)
 );
 CREATE INDEX IF NOT EXISTS idx_tick_logs_ts_date ON tick_logs(_ts, timestamp);
 CREATE INDEX IF NOT EXISTS idx_tick_logs_sym_market ON tick_logs(symbol, market, timestamp);
@@ -120,7 +120,7 @@ _INSERT_SQL = """
 
 BATCH_SIZE = 10_000  # Smaller batches = shorter write locks
 
-DB_PATH = Path("/mnt/e/psxdata/psx.sqlite")
+DB_PATH = Path("/home/smnb/psxdata_rescue/psx.sqlite")
 
 
 def _wal_connection() -> sqlite3.Connection:
@@ -160,29 +160,6 @@ def insert_ticks_from_file(con: sqlite3.Connection, path: Path) -> int:
 
     after = wcon.execute("SELECT COUNT(*) FROM tick_logs").fetchone()[0]
     wcon.close()
-
-    # Dual-write to DuckDB
-    try:
-        from pakfindata.db.connections import has_duckdb, duck_write
-        if has_duckdb() and rows:
-            import pandas as _pd
-            duck_df = _pd.DataFrame(rows, columns=[
-                "symbol", "market", "timestamp", "_ts", "price",
-                "open", "high", "low", "change", "change_pct",
-                "volume", "value", "trades", "bid", "ask",
-                "bid_vol", "ask_vol", "prev_close", "source_file"])
-            duck_df["ingested_at"] = _pd.Timestamp.now().isoformat()
-            dcon = duck_write()
-            dcon.register("_tl_df", duck_df)
-            for i in range(0, len(duck_df), BATCH_SIZE):
-                dcon.execute(f"""
-                    INSERT OR IGNORE INTO tick_logs
-                    SELECT * FROM _tl_df LIMIT {BATCH_SIZE} OFFSET {i}
-                """)
-            dcon.unregister("_tl_df")
-            dcon.close()
-    except Exception:
-        pass
 
     return after - before
 

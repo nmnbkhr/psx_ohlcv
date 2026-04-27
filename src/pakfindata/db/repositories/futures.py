@@ -311,7 +311,13 @@ def migrate_from_eod_ohlcv(
     con: sqlite3.Connection,
     dry_run: bool = True,
 ) -> dict:
-    """Migrate FUT/CONT/IDX_FUT/ODL rows from eod_ohlcv to futures_eod.
+    """DEPRECATED — one-off migration from the legacy shape where derivatives
+    lived in `eod_ohlcv` alongside REG equities. `ingest_market_summary_csv`
+    now routes FUT/CONT/IDX_FUT/ODL straight to `futures_eod`, so this
+    function should be a no-op on currently-loaded data. Wired to the Futures
+    page button for safety; do not invoke from new code paths.
+
+    Migrate FUT/CONT/IDX_FUT/ODL rows from eod_ohlcv to futures_eod.
 
     Args:
         con: Database connection.

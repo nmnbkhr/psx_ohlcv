@@ -16,7 +16,7 @@ import pandas as pd
 
 logger = logging.getLogger("pakfindata.tick_summary")
 
-TICK_BARS_DB = Path("/mnt/e/psxdata/tick_bars.db")
+TICK_BARS_DB = Path("/home/smnb/psxdata_rescue/tick_bars.db")
 
 _CREATE_SQL = """\
 CREATE TABLE IF NOT EXISTS tick_daily_summary (
@@ -65,23 +65,18 @@ def get_summary_dates(con: sqlite3.Connection) -> list[str]:
 
 
 def get_available_dates(con: sqlite3.Connection) -> list[str]:
-    """Get all dates available in ohlcv_5s. DuckDB primary, tick_bars.db fallback."""
-    # DuckDB primary — instant columnar DISTINCT
-    try:
-        from pakfindata.db.connections import has_duckdb
-        if has_duckdb():
-            import duckdb
-            from pakfindata.db.duckdb_manager import DUCKDB_PATH
-            dcon = duckdb.connect(str(DUCKDB_PATH), read_only=True)
-            rows = dcon.execute(
-                "SELECT DISTINCT SUBSTR(ts, 1, 10) AS d FROM ohlcv_5s ORDER BY d DESC"
-            ).fetchall()
-            dcon.close()
-            return [r[0] for r in rows]
-    except Exception:
-        pass
+    """Dates available in ohlcv_5s. Filesystem glob first (instant), then fallbacks."""
+    # Primary: filesystem glob of per-date Parquet files (no DB scan)
+    pq_dir = Path("/mnt/e/psxdata/parquet/ohlcv_5s")
+    if pq_dir.is_dir():
+        dates = sorted(
+            (p.stem for p in pq_dir.glob("*.parquet") if len(p.stem) == 10),
+            reverse=True,
+        )
+        if dates:
+            return dates
 
-    # SQLite fallback
+    # Fallback: SQLite probe (avoid DISTINCT scan on multi-GB Parquet view)
     if not TICK_BARS_DB.exists():
         return []
     try:
@@ -136,10 +131,9 @@ def compute_daily_summary(con: sqlite3.Connection, date_str: str) -> int:
 
 def _compute_summary_duckdb(date_str: str) -> list[tuple] | None:
     """Compute daily summary from DuckDB ohlcv_5s — single vectorized query."""
-    import duckdb
-    from pakfindata.db.duckdb_manager import DUCKDB_PATH
+    from pakfindata.db.connections import _duck_con
 
-    dcon = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    dcon = _duck_con()
     ts_prefix = date_str
 
     # Single query: aggregate all symbols at once
@@ -161,11 +155,11 @@ def _compute_summary_duckdb(date_str: str) -> list[tuple] | None:
         GROUP BY symbol, market
         HAVING COUNT(*) >= 1
     """, [ts_prefix]).df()
-    dcon.close()
 
     if df.empty:
         # Fallback: aggregate directly from tick_logs
-        dcon = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+        from pakfindata.db.connections import analytics_con
+        dcon = analytics_con()
         src_file = f"ticks_{date_str}.jsonl"
         df = dcon.execute("""
             SELECT
