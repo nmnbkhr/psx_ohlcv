@@ -64,6 +64,7 @@ _register(
         symbol="COPPER", name="Copper", category="metals",
         unit="USD/lb", pk_relevance="HIGH",
         yf_ticker="HG=F",
+        fred_series="PCOPPUSDM",
     ),
     CommodityDef(
         symbol="IRON_ORE", name="Iron Ore 62%", category="metals",
@@ -75,7 +76,7 @@ _register(
         symbol="ALUMINUM", name="Aluminum", category="metals",
         unit="USD/ton", pk_relevance="MEDIUM",
         yf_ticker="ALI=F",
-        fred_series="PAABORUSDM",
+        fred_series="PALUMUSDM",
     ),
     CommodityDef(
         symbol="ZINC", name="Zinc", category="metals",
@@ -105,7 +106,7 @@ _register(
         symbol="STEEL_HRC", name="Steel (HRC)", category="metals",
         unit="USD/ton", pk_relevance="HIGH",
         yf_ticker=None,
-        fred_series="PSTEEUSDM",
+        fred_series=None,  # No global steel price series on FRED
     ),
 )
 
@@ -189,7 +190,7 @@ _register(
         symbol="CORN", name="Corn", category="agriculture",
         unit="USD/bu", pk_relevance="MEDIUM",
         yf_ticker="ZC=F",
-        fred_series="PMAABORUSDM",
+        fred_series="PMAIZMTUSDM",
     ),
     CommodityDef(
         symbol="SOYBEANS", name="Soybeans", category="agriculture",
@@ -216,7 +217,7 @@ _register(
         symbol="RUBBER", name="Rubber", category="agriculture",
         unit="USD/kg", pk_relevance="LOW",
         yf_ticker=None,
-        fred_series="PRUBBSLUSDM",
+        fred_series="PRUBBUSDM",
     ),
 )
 

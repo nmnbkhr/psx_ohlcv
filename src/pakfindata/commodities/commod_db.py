@@ -1,6 +1,6 @@
 """Commodity database module for PMEX OHLC and Margins data.
 
-Separate SQLite database at /mnt/e/psxdata/commod/commod.db.
+Separate SQLite database at /home/smnb/psxdata_rescue/commod/commod.db.
 Tables: pmex_ohlc, pmex_margins.
 """
 
@@ -17,7 +17,7 @@ logger = logging.getLogger("pakfindata.commodities.commod_db")
 # ─────────────────────────────────────────────────────────────────────────────
 
 COMMOD_DATA_ROOT = Path("/mnt/e/psxdata/commod")
-COMMOD_DB_PATH = COMMOD_DATA_ROOT / "commod.db"
+COMMOD_DB_PATH = Path("/home/smnb/psxdata_rescue/commod/commod.db")
 PMEX_OHLC_DIR = COMMOD_DATA_ROOT / "pmex_ohlc"
 PMEX_MARGINS_DIR = COMMOD_DATA_ROOT / "pmex_margins"
 
@@ -61,6 +61,34 @@ CREATE TABLE IF NOT EXISTS pmex_margins (
 );
 CREATE INDEX IF NOT EXISTS idx_pmex_margins_date ON pmex_margins(report_date);
 CREATE INDEX IF NOT EXISTS idx_pmex_margins_code ON pmex_margins(contract_code);
+
+CREATE TABLE IF NOT EXISTS pmex_intraday_snapshots (
+    contract         TEXT NOT NULL,
+    snapshot_ts      TEXT NOT NULL,
+    snapshot_date    TEXT NOT NULL,
+    category         TEXT,
+    bid              REAL,
+    ask              REAL,
+    open             REAL,
+    high             REAL,
+    low              REAL,
+    close            REAL,
+    last_price       REAL,
+    last_vol         INTEGER,
+    total_vol        INTEGER,
+    change           REAL,
+    change_pct       REAL,
+    bid_diff         REAL,
+    ask_diff         REAL,
+    mid_price        REAL,
+    spread           REAL,
+    spread_pct       REAL,
+    source           TEXT NOT NULL DEFAULT 'pmex_poller',
+    PRIMARY KEY (contract, snapshot_ts)
+);
+CREATE INDEX IF NOT EXISTS idx_pmex_intra_date ON pmex_intraday_snapshots(snapshot_date);
+CREATE INDEX IF NOT EXISTS idx_pmex_intra_contract ON pmex_intraday_snapshots(contract);
+CREATE INDEX IF NOT EXISTS idx_pmex_intra_cat ON pmex_intraday_snapshots(category);
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -269,3 +297,93 @@ def save_margins_excel(
 
     logger.info("Saved Margins Excel: %s (%d bytes)", fpath, len(raw_bytes))
     return fpath
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Intraday Snapshots Upsert & Query
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def upsert_pmex_intraday(con: sqlite3.Connection, rows: list[dict]) -> int:
+    """Bulk upsert intraday snapshot rows. Returns row count."""
+    if not rows:
+        return 0
+    con.executemany(
+        """
+        INSERT OR REPLACE INTO pmex_intraday_snapshots
+            (contract, snapshot_ts, snapshot_date, category,
+             bid, ask, open, high, low, close, last_price,
+             last_vol, total_vol, change, change_pct,
+             bid_diff, ask_diff, mid_price, spread, spread_pct, source)
+        VALUES
+            (:contract, :snapshot_ts, :snapshot_date, :category,
+             :bid, :ask, :open, :high, :low, :close, :last_price,
+             :last_vol, :total_vol, :change, :change_pct,
+             :bid_diff, :ask_diff, :mid_price, :spread, :spread_pct, :source)
+        """,
+        rows,
+    )
+    con.commit()
+    return len(rows)
+
+
+def query_pmex_intraday(
+    con: sqlite3.Connection,
+    contract: str | None = None,
+    snapshot_date: str | None = None,
+    category: str | None = None,
+    limit: int = 1000,
+) -> list[dict]:
+    """Query intraday snapshots with optional filters."""
+    conditions = []
+    params: list = []
+
+    if contract:
+        conditions.append("contract = ?")
+        params.append(contract)
+    if snapshot_date:
+        conditions.append("snapshot_date = ?")
+        params.append(snapshot_date)
+    if category:
+        conditions.append("category = ?")
+        params.append(category)
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    sql = f"SELECT * FROM pmex_intraday_snapshots {where} ORDER BY snapshot_ts DESC LIMIT ?"
+    params.append(limit)
+
+    return [dict(r) for r in con.execute(sql, params).fetchall()]
+
+
+def get_pmex_intraday_latest(con: sqlite3.Connection) -> list[dict]:
+    """Get the most recent intraday snapshot (all contracts from latest poll)."""
+    rows = con.execute(
+        """
+        SELECT s.* FROM pmex_intraday_snapshots s
+        INNER JOIN (
+            SELECT MAX(snapshot_ts) as max_ts FROM pmex_intraday_snapshots
+        ) latest
+        WHERE s.snapshot_ts = latest.max_ts
+        ORDER BY s.category, s.contract
+        """
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_pmex_intraday_stats(con: sqlite3.Connection) -> dict:
+    """Return summary stats for pmex_intraday_snapshots table."""
+    row = con.execute(
+        """
+        SELECT COUNT(*) as total_rows,
+               COUNT(DISTINCT contract) as contracts,
+               COUNT(DISTINCT snapshot_date) as days,
+               COUNT(DISTINCT snapshot_ts) as polls,
+               MIN(snapshot_ts) as first_ts,
+               MAX(snapshot_ts) as last_ts
+        FROM pmex_intraday_snapshots
+        """
+    ).fetchone()
+    return dict(row) if row else {
+        "total_rows": 0, "contracts": 0, "days": 0,
+        "polls": 0, "first_ts": None, "last_ts": None,
+    }

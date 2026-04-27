@@ -274,7 +274,7 @@ def _render_dashboard(con):
             textposition="outside", textfont=dict(size=11),
         ))
         fig.update_layout(xaxis_title="Avg Daily Change %", showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # ── PKR prices summary ──
     pkr_rows = con.execute(
@@ -293,7 +293,7 @@ def _render_dashboard(con):
         )
         pkr_df = pkr_df[["name", "symbol", "pkr_price", "pk_unit", "date", "usd_pkr"]]
         pkr_df.columns = ["Commodity", "Symbol", "PKR Price", "Unit", "Date", "USD/PKR"]
-        st.dataframe(pkr_df, use_container_width=True, hide_index=True)
+        st.dataframe(pkr_df, width='stretch', hide_index=True)
 
 
 def _render_sparkline(con, symbol: str):
@@ -335,7 +335,7 @@ def _render_sparkline(con, symbol: str):
         xaxis=dict(visible=False), yaxis=dict(visible=False),
         showlegend=False, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -445,7 +445,7 @@ def _render_charts(con):
     fig.update_yaxes(title_text="Price", row=1, col=1)
     if has_volume:
         fig.update_yaxes(title_text="Vol", row=2, col=1)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Range analysis cards
     if len(df) > 1:
@@ -464,7 +464,7 @@ def _render_charts(con):
             _metric_card("Avg Volume", f"{avg_vol:,.0f}" if avg_vol else "—")
 
     with st.expander("Raw Data"):
-        st.dataframe(df.sort_values("date", ascending=False), use_container_width=True, hide_index=True)
+        st.dataframe(df.sort_values("date", ascending=False), width='stretch', hide_index=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -514,12 +514,12 @@ def _render_categories(con):
         textposition="outside", textfont=dict(size=10),
     ))
     fig.update_layout(xaxis_title="Daily Change %", showlegend=False)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # ── Data table ──
     display_df = df[["name", "symbol", "category", "close", "change_pct", "unit", "pk_relevance", "date"]].copy()
     display_df.columns = ["Commodity", "Symbol", "Category", "Price", "Change %", "Unit", "PK Relevance", "Date"]
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    st.dataframe(display_df, width='stretch', hide_index=True)
 
     # ── Correlation matrix (30-day) ──
     if selected_cat == "All" and len(df) >= 5:
@@ -557,7 +557,7 @@ def _render_categories(con):
                     **_CHART_LAYOUT, height=400,
                     title=dict(text="Return Correlation (30d)", font=dict(size=13)),
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -653,13 +653,13 @@ def _render_pakistan_view(con):
             title=dict(text="PKR Prices (90d)", font=dict(size=13)),
             yaxis_title="PKR",
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # ── Full table ──
     display = df[["name", "symbol", "pkr_price", "pk_unit", "usd_price", "usd_pkr", "date"]].copy()
     display.columns = ["Commodity", "Symbol", "PKR Price", "Unit", "USD Price", "USD/PKR", "Date"]
     display["PKR Price"] = display["PKR Price"].apply(lambda x: f"{x:,.0f}" if x else "N/A")
-    st.dataframe(display, use_container_width=True, hide_index=True)
+    st.dataframe(display, width='stretch', hide_index=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -747,7 +747,7 @@ def _render_local_markets(con):
                     hovertemplate="<b>%{y}</b><br>Change: %{x:.2f}%<extra></extra>",
                 ))
                 fig.update_layout(xaxis_title="Change %", showlegend=False)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
         # Table
         if "lme" in feed_name:
@@ -764,7 +764,7 @@ def _render_local_markets(con):
 
         available = [c for c in cols if c in group.columns]
         display = group[available].copy().dropna(axis=1, how="all")
-        st.dataframe(display, use_container_width=True, hide_index=True)
+        st.dataframe(display, width='stretch', hide_index=True)
 
     # ── History drill-down ──
     st.markdown("---")
@@ -792,11 +792,11 @@ def _render_local_markets(con):
                     title=dict(text=f"{selected_sym} — Price History", font=dict(size=13)),
                     yaxis_title="Price",
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
             with st.expander("Raw Data"):
                 st.dataframe(hist_df.sort_values("date", ascending=False),
-                             use_container_width=True, hide_index=True)
+                             width='stretch', hide_index=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -909,7 +909,7 @@ def _render_pmex_portal(con):
             fig.update_layout(
                 **_CHART_LAYOUT, height=350, showlegend=False,
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
     # ── Change distribution scatter ──
     if "change_pct" in df.columns and df["change_pct"].notna().any():
@@ -939,7 +939,7 @@ def _render_pmex_portal(con):
             )
             # Add zero line
             fig.add_vline(x=0, line_dash="dash", line_color=_COLORS["text_dim"], opacity=0.5)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
     # ── Tables by category ──
     for cat_name, group in df.groupby("category"):
@@ -958,7 +958,7 @@ def _render_pmex_portal(con):
             "change": "Change", "change_pct": "Chg%",
             "total_vol": "Volume", "state": "State",
         })
-        st.dataframe(display, use_container_width=True, hide_index=True)
+        st.dataframe(display, width='stretch', hide_index=True)
 
     # ── Contract history ──
     st.markdown("---")
@@ -997,11 +997,11 @@ def _render_pmex_portal(con):
                     title=dict(text=f"{selected_contract} — Price History", font=dict(size=13)),
                     yaxis_title="Price",
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
             with st.expander("Raw Data"):
                 st.dataframe(hist_df.sort_values("snapshot_date", ascending=False),
-                             use_container_width=True, hide_index=True)
+                             width='stretch', hide_index=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1039,7 +1039,7 @@ def _render_export(con):
         return
 
     st.text(f"{len(df)} rows")
-    st.dataframe(df.head(100), use_container_width=True, hide_index=True)
+    st.dataframe(df.head(100), width='stretch', hide_index=True)
 
     csv = df.to_csv(index=False)
     st.download_button(
@@ -1157,4 +1157,4 @@ def _render_sync_controls(con):
         if sync_rows:
             st.markdown("#### Recent Sync Runs")
             sync_df = pd.DataFrame([dict(r) for r in sync_rows])
-            st.dataframe(sync_df, use_container_width=True, hide_index=True)
+            st.dataframe(sync_df, width='stretch', hide_index=True)

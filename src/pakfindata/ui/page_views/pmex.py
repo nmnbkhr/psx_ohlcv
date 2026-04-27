@@ -8,7 +8,7 @@ Tabs:
   5. Margins         — Risk dashboard, margin-to-price ratio, limit bands
   6. Data Sync       — OHLC/Margins fetch, backfill, DB browser
 
-Data stored in separate DB: /mnt/e/psxdata/commod/commod.db
+Data stored in separate DB: /home/smnb/psxdata_rescue/commod/commod.db
 """
 
 import sqlite3
@@ -75,7 +75,7 @@ def _styled_fig(height=380, **kwargs) -> go.Figure:
 # Constants & Schema
 # ─────────────────────────────────────────────────────────────────────────────
 
-COMMOD_DB_PATH = Path("/mnt/e/psxdata/commod/commod.db")
+COMMOD_DB_PATH = Path("/home/smnb/psxdata_rescue/commod/commod.db")
 COMMOD_DATA_ROOT = Path("/mnt/e/psxdata/commod")
 PMEX_OHLC_DIR = COMMOD_DATA_ROOT / "pmex_ohlc"
 PMEX_MARGINS_DIR = COMMOD_DATA_ROOT / "pmex_margins"
@@ -261,9 +261,8 @@ def _load_quote_strip_data() -> list[tuple[str, str, float, float, float]] | Non
     con = _get_commod_con()
     if con is None:
         return None
-    dates = [r[0] for r in con.execute(
-        "SELECT DISTINCT trading_date FROM pmex_ohlc ORDER BY trading_date DESC LIMIT 2"
-    ).fetchall()]
+    from pakfindata.db.date_manifest import get_dates
+    dates = get_dates("pmex_ohlc")[:2]
     if not dates:
         return None
 
@@ -401,9 +400,8 @@ def _load_margin_data() -> tuple | None:
     con = _get_commod_con()
     if con is None:
         return None
-    dates = [r[0] for r in con.execute(
-        "SELECT DISTINCT report_date FROM pmex_margins ORDER BY report_date DESC LIMIT 30"
-    ).fetchall()]
+    from pakfindata.db.date_manifest import get_dates
+    dates = get_dates("pmex_margins")[:30]
     if not dates:
         return None
     latest_date = dates[0]
@@ -534,7 +532,7 @@ def _render_market_overview(con: sqlite3.Connection):
             height=500, margin=dict(l=2, r=2, t=30, b=2),
             paper_bgcolor="rgba(0,0,0,0)",
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # ── Session movers: gainers & losers ──
     if "chg_pct" in active.columns and active["chg_pct"].notna().any():
@@ -578,7 +576,7 @@ def _render_market_overview(con: sqlite3.Connection):
             textfont=dict(size=11),
         ))
         fig.update_layout(xaxis_title="Contracts Traded", showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # ── Full quote board ──
     with st.expander("Full Quote Board", expanded=False):
@@ -587,7 +585,7 @@ def _render_market_overview(con: sqlite3.Connection):
         display.columns = ["Symbol", "Class", "Open", "High", "Low", "Close",
                            "Chg %", "Volume", "Settlement"]
         display = display.sort_values("Volume", ascending=False)
-        st.dataframe(display, use_container_width=True, hide_index=True)
+        st.dataframe(display, width='stretch', hide_index=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -694,7 +692,7 @@ def _render_price_charts(con: sqlite3.Connection):
     fig.update_yaxes(title_text="Price", row=1, col=1)
     fig.update_yaxes(title_text="Vol", row=2, col=1)
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # ── Range analysis cards ──
     if len(df) > 1:
@@ -728,7 +726,7 @@ def _render_price_charts(con: sqlite3.Connection):
                     marker=dict(size=5),
                 ))
             fig.add_hline(y=100, line_dash="dot", line_color="rgba(255,255,255,0.2)")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -851,7 +849,7 @@ def _render_gold_terminal(con: sqlite3.Connection):
                 title=dict(text=f"{top_sym} — Gold USD/oz", font=dict(size=12)),
                 xaxis_rangeslider_visible=False,
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
     with col_pkr:
         tola_syms = gold_df[gold_df["symbol"].str.startswith("TOLAGOLD")]["symbol"].value_counts()
@@ -870,7 +868,7 @@ def _render_gold_terminal(con: sqlite3.Connection):
                 title=dict(text=f"{top_sym} — Tola Gold PKR", font=dict(size=12)),
                 xaxis_rangeslider_visible=False,
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
     # ── Gold cross-rate matrix ──
     fx_gold = latest[latest["symbol"].str.startswith("GOLD") & latest["symbol"].str.contains("USD|GBP|EUR|JPY|CHF|CAD|AUD")]
@@ -879,7 +877,7 @@ def _render_gold_terminal(con: sqlite3.Connection):
         display = fx_gold[["symbol", "close", "traded_volume", "settlement_price"]].copy()
         display.columns = ["Contract", "Price", "Volume", "Settlement"]
         display = display.sort_values("Volume", ascending=False)
-        st.dataframe(display, use_container_width=True, hide_index=True)
+        st.dataframe(display, width='stretch', hide_index=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -978,7 +976,7 @@ def _render_returns(con: sqlite3.Connection):
             xaxis_title="Return %", yaxis=dict(autorange="reversed"),
         )
         fig.add_vline(x=0, line_dash="dash", line_color="rgba(255,255,255,0.2)")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # ── Risk-return scatter ──
     if len(ret_df) >= 3:
@@ -1009,11 +1007,11 @@ def _render_returns(con: sqlite3.Connection):
         fig.add_hline(y=0, line_dash="dot", line_color="rgba(255,255,255,0.15)")
         fig.add_vline(x=ret_df["Vol %"].median(), line_dash="dot",
                       line_color="rgba(255,255,255,0.1)")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # ── Full table ──
     with st.expander("Full Returns Table", expanded=True):
-        st.dataframe(ret_df, use_container_width=True, hide_index=True)
+        st.dataframe(ret_df, width='stretch', hide_index=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1114,7 +1112,7 @@ def _render_margin_monitor(con: sqlite3.Connection):
             height=450, margin=dict(l=5, r=5, t=5, b=5),
             paper_bgcolor="rgba(0,0,0,0)",
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # ── Summary by group ──
     group_summary = latest_df.groupby("product_group").agg(
@@ -1126,7 +1124,7 @@ def _render_margin_monitor(con: sqlite3.Connection):
     ).round(1).reset_index()
     group_summary.columns = ["Product Group", "Contracts", "Avg Margin",
                              "Max Margin", "Avg Ref Price", "Avg Margin/Price %"]
-    st.dataframe(group_summary, use_container_width=True, hide_index=True)
+    st.dataframe(group_summary, width='stretch', hide_index=True)
 
     # ── Margin changes ──
     if prev_date:
@@ -1176,7 +1174,7 @@ def _render_margin_monitor(con: sqlite3.Connection):
                     xaxis_tickangle=-45,
                 )
                 fig.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,0.15)")
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
                 with st.expander("Change Details"):
                     display = changed[["contract_code", "product_group", "reference_price",
@@ -1185,7 +1183,7 @@ def _render_margin_monitor(con: sqlite3.Connection):
                                        "margin_chg", "margin_chg_pct"]].copy()
                     display.columns = ["Contract", "Group", "Price", "Prev Price", "Price Chg %",
                                        "Margin", "Prev Margin", "Margin Chg", "Margin Chg %"]
-                    st.dataframe(display, use_container_width=True, hide_index=True)
+                    st.dataframe(display, width='stretch', hide_index=True)
             else:
                 st.success(f"No margin changes between sessions")
 
@@ -1217,7 +1215,7 @@ def _render_margin_monitor(con: sqlite3.Connection):
             xaxis_title="Band Width %",
             yaxis=dict(autorange="reversed"),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # ── Full table ──
     with st.expander("All Active Contracts"):
@@ -1227,7 +1225,7 @@ def _render_margin_monitor(con: sqlite3.Connection):
         display.columns = ["Contract", "Group", "Ref Price", "Margin",
                            "Margin/Price %", "WCM", "Lower", "Upper", "FX"]
         st.dataframe(display.sort_values("Margin", ascending=False),
-                     use_container_width=True, hide_index=True)
+                     width='stretch', hide_index=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1259,13 +1257,13 @@ def _render_ohlc_section(con: sqlite3.Connection):
 
     btn1, btn2, btn3 = st.columns(3)
     with btn1:
-        if st.button("Get OHLC Data", type="primary", use_container_width=True):
+        if st.button("Get OHLC Data", type="primary", width='stretch'):
             _do_ohlc_fetch(ohlc_from, ohlc_to)
     with btn2:
-        if st.button("Save to Disk", disabled=not has_data, use_container_width=True):
+        if st.button("Save to Disk", disabled=not has_data, width='stretch'):
             _do_ohlc_save(ohlc_from, ohlc_to)
     with btn3:
-        if st.button("Populate to DB", disabled=not has_data, use_container_width=True):
+        if st.button("Populate to DB", disabled=not has_data, width='stretch'):
             _do_ohlc_populate(con)
 
     if has_data:
@@ -1278,7 +1276,7 @@ def _render_ohlc_section(con: sqlite3.Connection):
             mc1.metric("Rows", len(display_df))
             mc2.metric("Active", len(display_df[display_df["traded_volume"] > 0]))
             mc3.metric("Symbols", display_df["symbol"].nunique())
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            st.dataframe(display_df, width='stretch', hide_index=True)
 
 
 def _do_ohlc_fetch(from_date, to_date):
@@ -1345,13 +1343,13 @@ def _render_margins_section(con):
 
     btn4, btn5, btn6 = st.columns(3)
     with btn4:
-        if st.button("Get Margins", type="primary", use_container_width=True):
+        if st.button("Get Margins", type="primary", width='stretch'):
             _do_margins_fetch(margins_date)
     with btn5:
-        if st.button("Save to Disk", disabled=not has_data, use_container_width=True, key="margins_save_btn"):
+        if st.button("Save to Disk", disabled=not has_data, width='stretch', key="margins_save_btn"):
             _do_margins_save()
     with btn6:
-        if st.button("Populate to DB", disabled=not has_data, use_container_width=True, key="margins_pop_btn"):
+        if st.button("Populate to DB", disabled=not has_data, width='stretch', key="margins_pop_btn"):
             _do_margins_populate(con)
 
     from pakfindata.commodities.fetcher_pmex_margins import margins_url
@@ -1370,7 +1368,7 @@ def _render_margins_section(con):
             mc1.metric("Contracts", len(display_df))
             mc2.metric("Active", int(display_df["is_active"].sum()))
             mc3.metric("Groups", display_df["product_group"].dropna().nunique())
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            st.dataframe(display_df, width='stretch', hide_index=True)
 
 
 def _do_margins_fetch(target_date):
@@ -1585,14 +1583,13 @@ def _render_view_ohlc(con):
     rows = con.execute(f"SELECT * FROM pmex_ohlc {where} ORDER BY trading_date DESC, symbol LIMIT ?", params).fetchall()
     if rows:
         df = pd.DataFrame([dict(r) for r in rows])
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
         st.download_button("CSV", df.to_csv(index=False), "pmex_ohlc.csv", "text/csv")
 
 
 def _render_view_margins(con):
-    dates = [r[0] for r in con.execute(
-        "SELECT DISTINCT report_date FROM pmex_margins ORDER BY report_date DESC LIMIT 30"
-    ).fetchall()]
+    from pakfindata.db.date_manifest import get_dates
+    dates = get_dates("pmex_margins")[:30]
     if not dates:
         st.info("No data.")
         return
@@ -1612,5 +1609,5 @@ def _render_view_margins(con):
     ).fetchall()
     if rows:
         df = pd.DataFrame([dict(r) for r in rows])
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
         st.download_button("CSV", df.to_csv(index=False), f"margins_{sel_dt}.csv", "text/csv")

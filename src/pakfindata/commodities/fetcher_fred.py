@@ -24,6 +24,14 @@ def _get_fred_client(api_key: str | None = None):
 
     key = api_key or os.environ.get("FRED_API_KEY")
     if not key:
+        try:
+            from dotenv import load_dotenv
+            from pathlib import Path
+            load_dotenv(Path.home() / "projects" / "pakfindata" / ".env")
+            key = os.environ.get("FRED_API_KEY")
+        except Exception:
+            pass
+    if not key:
         raise ValueError(
             "FRED API key required. Set FRED_API_KEY env var or pass api_key parameter. "
             "Register free at https://fred.stlouisfed.org/docs/api/api_key.html"
