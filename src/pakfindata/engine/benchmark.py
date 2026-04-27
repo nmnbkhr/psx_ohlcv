@@ -19,13 +19,13 @@ import pandas as pd
 # Mapping from benchmark names to DB query strategies
 _BENCHMARK_MAP = {
     # Index-based benchmarks (from psx_indices table)
-    "KSE-100": {"table": "psx_indices", "symbol": "KSE100", "col": "value", "date_col": "index_date"},
-    "KSE100": {"table": "psx_indices", "symbol": "KSE100", "col": "value", "date_col": "index_date"},
-    "KSE-30": {"table": "psx_indices", "symbol": "KSE30", "col": "value", "date_col": "index_date"},
-    "KSE30": {"table": "psx_indices", "symbol": "KSE30", "col": "value", "date_col": "index_date"},
-    "KMI-30": {"table": "psx_indices", "symbol": "KMI30", "col": "value", "date_col": "index_date"},
-    "KMI30": {"table": "psx_indices", "symbol": "KMI30", "col": "value", "date_col": "index_date"},
-    "ALLSHR": {"table": "psx_indices", "symbol": "ALLSHR", "col": "value", "date_col": "index_date"},
+    "KSE-100": {"table": "psx_indices", "symbol": "KSE100", "col": "value", "date_col": "index_date", "symbol_col": "index_code"},
+    "KSE100": {"table": "psx_indices", "symbol": "KSE100", "col": "value", "date_col": "index_date", "symbol_col": "index_code"},
+    "KSE-30": {"table": "psx_indices", "symbol": "KSE30", "col": "value", "date_col": "index_date", "symbol_col": "index_code"},
+    "KSE30": {"table": "psx_indices", "symbol": "KSE30", "col": "value", "date_col": "index_date", "symbol_col": "index_code"},
+    "KMI-30": {"table": "psx_indices", "symbol": "KMI30", "col": "value", "date_col": "index_date", "symbol_col": "index_code"},
+    "KMI30": {"table": "psx_indices", "symbol": "KMI30", "col": "value", "date_col": "index_date", "symbol_col": "index_code"},
+    "ALLSHR": {"table": "psx_indices", "symbol": "ALLSHR", "col": "value", "date_col": "index_date", "symbol_col": "index_code"},
 }
 
 # Fund-based proxies (from mutual_fund_nav)
@@ -78,7 +78,8 @@ def get_benchmark_nav(
 def _query_index(con, spec: dict, start_date, end_date) -> pd.Series:
     """Query index table for benchmark values."""
     try:
-        where = [f"symbol = '{spec['symbol']}'", f"{spec['col']} > 0"]
+        sym_col = spec.get("symbol_col", "symbol")
+        where = [f"{sym_col} = '{spec['symbol']}'", f"{spec['col']} > 0"]
         if start_date:
             where.append(f"{spec['date_col']} >= '{start_date}'")
         if end_date:

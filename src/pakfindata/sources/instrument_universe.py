@@ -405,6 +405,18 @@ def seed_universe(
         totals["failed"] += counts.get("failed", 0)
 
     results["totals"] = totals
+
+    # Update instrument registry
+    try:
+        from ..db.repositories.instrument_registry import (
+            sync_registry_from_symbols,
+            sync_registry_from_indices,
+        )
+        sync_registry_from_symbols(con)
+        sync_registry_from_indices(con)
+    except Exception:
+        pass  # non-critical
+
     return results
 
 

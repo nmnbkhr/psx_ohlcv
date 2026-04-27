@@ -12,13 +12,13 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import duckdb
 from pathlib import Path
 from datetime import timezone, timedelta
 from dataclasses import dataclass, asdict
 
+from pakfindata.db.connections import analytics_con
+
 PKT = timezone(timedelta(hours=5))
-DUCKDB_PATH = Path("/mnt/e/psxdata/pakfindata.duckdb")
 TRADING_DAYS = 245
 
 
@@ -39,7 +39,7 @@ class OFISignal:
 
 
 def _duck_con():
-    return duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    return analytics_con()
 
 
 def load_ticks_for_ofi(symbol: str, date_str: str) -> pd.DataFrame:
@@ -47,7 +47,7 @@ def load_ticks_for_ofi(symbol: str, date_str: str) -> pd.DataFrame:
     con = _duck_con()
     df = con.execute(
         "SELECT price, volume, bid, ask, bid_vol, ask_vol, timestamp, _ts "
-        "FROM tick_logs WHERE symbol = ? AND SUBSTR(_ts, 1, 10) = ? "
+        "FROM tick_logs WHERE symbol = ? AND date = ? "
         "AND bid_vol > 0 AND ask_vol > 0 ORDER BY timestamp",
         [symbol, date_str],
     ).df()
@@ -164,7 +164,7 @@ def backtest_ofi_strategy(
     """Backtest OFI strategy across all available tick dates."""
     con = _duck_con()
     dates = [r[0] for r in con.execute(
-        "SELECT DISTINCT SUBSTR(_ts, 1, 10) AS d FROM tick_logs "
+        "SELECT DISTINCT date AS d FROM tick_logs "
         "WHERE symbol = ? ORDER BY d", [symbol],
     ).fetchall()]
     con.close()
@@ -292,11 +292,11 @@ def backtest_ofi_strategy(
 def scan_current_ofi(symbols: list[str] | None = None, bar_minutes: int = 15) -> pd.DataFrame:
     """Scan current OFI for multiple symbols on latest date."""
     con = _duck_con()
-    latest = con.execute("SELECT MAX(SUBSTR(_ts, 1, 10)) FROM tick_logs").fetchone()[0]
+    latest = con.execute("SELECT MAX(date) FROM tick_logs").fetchone()[0]
     if symbols is None:
         symbols = [r[0] for r in con.execute(
             "SELECT symbol, COUNT(*) AS c FROM tick_logs "
-            "WHERE SUBSTR(_ts, 1, 10) = ? AND market = 'REG' "
+            "WHERE date = ? AND market = 'REG' "
             "GROUP BY symbol ORDER BY c DESC LIMIT 50", [latest],
         ).fetchall()]
     con.close()

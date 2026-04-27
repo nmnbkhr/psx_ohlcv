@@ -36,14 +36,14 @@ References:
 
 import numpy as np
 import pandas as pd
-import duckdb
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from scipy.optimize import minimize
 
+from pakfindata.db.connections import analytics_con
+
 PKT = timezone(timedelta(hours=5))
-DUCKDB_PATH = Path("/mnt/e/psxdata/pakfindata.duckdb")
 
 # Market hours in seconds from midnight (PKT)
 MARKET_OPEN = 9 * 3600 + 30 * 60     # 09:30 = 34200
@@ -93,7 +93,7 @@ def load_tick_times(
     Returns DataFrame with: ts_seconds (seconds since midnight), price, volume,
     timestamp (epoch), _ts (ISO string).
     """
-    con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    con = analytics_con()
 
     if date is None:
         # Get the latest date with data for this symbol
@@ -439,7 +439,7 @@ def scan_symbols(
     Scan multiple symbols for Hawkes parameters.
     Returns DataFrame ranked by branching_ratio.
     """
-    con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    con = analytics_con()
 
     if date is None:
         date = str(con.execute("SELECT MAX(CAST(_ts AS DATE)) FROM tick_logs").fetchone()[0])
@@ -482,7 +482,7 @@ def backtest_burst_signals(
 
     For each burst, measure realized vol before and after.
     """
-    con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    con = analytics_con()
 
     dates = con.execute(f"""
         SELECT DISTINCT CAST(_ts AS DATE) as d

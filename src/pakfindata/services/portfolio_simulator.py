@@ -365,8 +365,8 @@ class PortfolioSimulator:
             pass
 
         try:
-            import duckdb
-            con = duckdb.connect(str(DATA_ROOT / "pakfindata.duckdb"), read_only=True)
+            from pakfindata.db.connections import analytics_con
+            con = analytics_con()
             max_ts = con.execute("SELECT MAX(CAST(_ts AS DATE)) FROM tick_logs").fetchone()[0]
             rows = con.execute("""
                 SELECT symbol,

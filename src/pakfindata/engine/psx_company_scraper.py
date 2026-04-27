@@ -20,7 +20,7 @@ import requests
 from lxml import html as lxml_html
 
 PKT = timezone(timedelta(hours=5))
-PSX_SQLITE = Path("/mnt/e/psxdata/psx.sqlite")
+PSX_SQLITE = Path("/home/smnb/psxdata_rescue/psx.sqlite")
 BASE_URL = "https://dps.psx.com.pk"
 RATE_LIMIT_DELAY = 0.5
 HEADERS = {

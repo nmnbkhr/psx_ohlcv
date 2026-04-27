@@ -9,12 +9,12 @@ All features are computed in raw numpy/pandas -- NO TA libraries.
 
 import numpy as np
 import pandas as pd
-import duckdb
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
+from pakfindata.db.connections import analytics_con
+
 PKT = timezone(timedelta(hours=5))
-DUCKDB_PATH = Path("/mnt/e/psxdata/pakfindata.duckdb")
 TRADING_DAYS = 245
 
 
@@ -23,7 +23,7 @@ def get_eod_features(symbol: str, lookback_days: int = 500) -> pd.DataFrame:
     Extract EOD features for a symbol from DuckDB.
     Returns DataFrame with date, OHLCV, and 40+ computed features.
     """
-    con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    con = analytics_con()
 
     df = con.execute("""
         SELECT date, open, high, low, close, volume
@@ -33,7 +33,7 @@ def get_eod_features(symbol: str, lookback_days: int = 500) -> pd.DataFrame:
         LIMIT ?
     """, [symbol, lookback_days]).df()
 
-    con.close()
+    # con is cached singleton — do not close
 
     if df.empty:
         return df
@@ -130,7 +130,7 @@ def get_tick_features(symbol: str, date_str: str) -> dict:
     Returns a dict of features to be merged with EOD data.
     """
     try:
-        con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+        con = analytics_con()
 
         source_file = f"ticks_{date_str}.jsonl"
         df = con.execute("""
@@ -141,7 +141,7 @@ def get_tick_features(symbol: str, date_str: str) -> dict:
             ORDER BY timestamp
         """, [symbol, source_file]).df()
 
-        con.close()
+        # con is cached singleton — do not close
 
         if df.empty or len(df) < 10:
             return {}
@@ -159,7 +159,7 @@ def get_tick_features_batch(symbol: str, dates: list[str]) -> dict[str, dict]:
     Returns {date_str: {feature_dict}} for dates that have data.
     """
     try:
-        con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+        con = analytics_con()
 
         source_files = [f"ticks_{d}.jsonl" for d in dates]
         df = con.execute("""
@@ -169,7 +169,7 @@ def get_tick_features_batch(symbol: str, dates: list[str]) -> dict[str, dict]:
             WHERE symbol = ? AND source_file = ANY(?)
             ORDER BY source_file, timestamp
         """, [symbol, source_files]).df()
-        con.close()
+        # con is cached singleton — do not close
 
         if df.empty:
             return {}
@@ -256,15 +256,15 @@ def build_dataset(
         DataFrame with features + target column
     """
     if symbols is None:
-        con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+        con = analytics_con()
         symbols = [r[0] for r in con.execute("""
             SELECT symbol FROM eod_ohlcv
-            WHERE CAST(date AS DATE) >= CAST((SELECT MAX(date) FROM eod_ohlcv) AS DATE) - INTERVAL '30 days'
+            WHERE date >= (SELECT MAX(date) FROM eod_ohlcv)
             GROUP BY symbol
             ORDER BY SUM(volume) DESC
             LIMIT 50
         """).fetchall()]
-        con.close()
+        # con is cached singleton — do not close
 
     all_data = []
 
@@ -300,6 +300,37 @@ def build_dataset(
     combined = combined.dropna(subset=["target"])
 
     return combined
+
+
+def compute_return_targets(df: pd.DataFrame) -> pd.DataFrame:
+    """Add historical move-size stats for expected value computation.
+
+    New columns:
+      - hist_up_move_avg: rolling 60d average of positive daily returns (%)
+      - hist_dn_move_avg: rolling 60d average of negative daily returns (%, positive number)
+      - hist_volatility:  rolling 20d realized volatility (annualized %)
+    """
+    df = df.copy()
+    df = df.sort_values("date").reset_index(drop=True)
+
+    returns = df["close"].pct_change() * 100
+
+    # Rolling average of positive returns (last 60 days)
+    pos_ret = returns.where(returns > 0)
+    df["hist_up_move_avg"] = pos_ret.rolling(60, min_periods=20).mean()
+
+    # Rolling average of negative returns (absolute value)
+    neg_ret = returns.where(returns < 0)
+    df["hist_dn_move_avg"] = neg_ret.rolling(60, min_periods=20).mean().abs()
+
+    # Realized volatility (20-day, annualized)
+    df["hist_volatility"] = returns.rolling(20, min_periods=10).std() * np.sqrt(245)
+
+    # Forward-fill for last row (today's prediction)
+    for col in ["hist_up_move_avg", "hist_dn_move_avg", "hist_volatility"]:
+        df[col] = df[col].ffill()
+
+    return df
 
 
 # Feature columns for ML (exclude date, symbol, target, raw OHLCV)

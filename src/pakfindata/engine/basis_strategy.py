@@ -19,7 +19,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
 
-SQLITE_PATH = Path("/mnt/e/psxdata/psx.sqlite")
+SQLITE_PATH = Path("/home/smnb/psxdata_rescue/psx.sqlite")
 KIBOR_3M = 12.0  # fallback KIBOR 3M rate (%)
 
 

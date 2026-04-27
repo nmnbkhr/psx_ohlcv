@@ -24,7 +24,6 @@ PSX-Specific:
 
 import numpy as np
 import pandas as pd
-import duckdb
 import sqlite3
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -33,12 +32,36 @@ from enum import Enum
 import calendar
 import os
 
+from pakfindata.db.connections import analytics_con
+
 PKT = timezone(timedelta(hours=5))
-DUCKDB_PATH = Path("/mnt/e/psxdata/pakfindata.duckdb")
-PSX_SQLITE = Path("/mnt/e/psxdata/psx.sqlite")
+PSX_SQLITE = Path("/home/smnb/psxdata_rescue/psx.sqlite")
 DFC_BASE = Path("/mnt/e/psxdata/downloads/daily")
 TRADING_DAYS = 245
 ROLLOVER_WINDOW_DAYS = 5
+
+
+def _psx_con() -> sqlite3.Connection:
+    """Open a fresh SQLite connection without renegotiating WAL.
+
+    The DB is already in WAL mode persistently. Re-issuing PRAGMA journal_mode
+    on every fresh connection while another (Streamlit-cached) connection has
+    pending schema work triggers a transient `malformed database schema` race.
+    We skip journal_mode and only set the read-side pragmas, each guarded.
+    """
+    con = sqlite3.connect(str(PSX_SQLITE), timeout=30, check_same_thread=False)
+    for pragma in ("busy_timeout=30000", "cache_size=-32000"):
+        try:
+            con.execute(f"PRAGMA {pragma}")
+        except sqlite3.DatabaseError:
+            # Schema cookie race — recover by reopening once.
+            con.close()
+            con = sqlite3.connect(str(PSX_SQLITE), timeout=30, check_same_thread=False)
+            try:
+                con.execute(f"PRAGMA {pragma}")
+            except sqlite3.DatabaseError:
+                pass
+    return con
 
 
 class OIState(Enum):
@@ -203,7 +226,7 @@ def load_futures_eod(symbol: str = None, days: int = 365) -> pd.DataFrame:
     """
     cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
-    scon = sqlite3.connect(str(PSX_SQLITE))
+    scon = _psx_con()
     where = f"WHERE market_type = 'FUT' AND date >= '{cutoff}'"
     if symbol:
         where += f" AND base_symbol = '{symbol}'"
@@ -249,13 +272,13 @@ def load_futures_eod(symbol: str = None, days: int = 365) -> pd.DataFrame:
 def _load_spot(symbols: list[str], days: int = 365) -> pd.DataFrame:
     """Load spot OHLCV from DuckDB eod_ohlcv."""
     cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-    con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    con = analytics_con()
     placeholders = ",".join(f"'{s}'" for s in symbols)
     df = con.execute(f"""
         SELECT date, symbol, close AS spot_close, volume AS spot_volume
         FROM eod_ohlcv
         WHERE symbol IN ({placeholders})
-          AND CAST(date AS DATE) >= '{cutoff}'::DATE
+          AND date >= '{cutoff}'
         ORDER BY date
     """).df()
     con.close()
@@ -749,7 +772,7 @@ def scan_oi_signals(symbols: list[str] = None, days: int = 30) -> pd.DataFrame:
     """Scan multiple symbols for current OI signals. Returns table sorted by confidence."""
     if symbols is None:
         # Get symbols with futures data
-        scon = sqlite3.connect(str(PSX_SQLITE))
+        scon = _psx_con()
         symbols = [r[0] for r in scon.execute("""
             SELECT DISTINCT base_symbol FROM futures_eod
             WHERE market_type = 'FUT' AND date >= date('now', '-7 days')

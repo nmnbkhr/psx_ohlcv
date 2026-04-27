@@ -92,6 +92,9 @@ STRATEGY_CATALOG = {
     "ml_predictions":  {"wt": 0.08, "cat": "ALPHA",     "on": False, "label": "ML"},
     "sentiment":       {"wt": 0.07, "cat": "ALPHA",     "on": False, "label": "Sentiment"},
     "hawkes":          {"wt": 0.03, "cat": "RESEARCH",  "on": False, "label": "Hawkes"},
+    "lead_lag":        {"wt": 0.08, "cat": "INTELLIGENCE", "on": True,  "label": "Lead-Lag"},
+    "corr_breakout":   {"wt": 0.07, "cat": "INTELLIGENCE", "on": True,  "label": "CorrBreak"},
+    "contagion":       {"wt": 0.05, "cat": "INTELLIGENCE", "on": True,  "label": "Contagion"},
 }
 
 
@@ -199,6 +202,41 @@ def _call(name: str, symbol: str) -> dict:
                             "confidence": min(float(s.get("max_intensity_ratio", 1)) / 5, 1.0),
                             "signal": f"BURST {s['n_bursts']}x"}
                 return {"direction": 0, "confidence": 0, "signal": "CALM"}
+
+        elif name == "lead_lag":
+            from pakfindata.engine.lead_lag_detector import scan_lead_lag
+            signals = scan_lead_lag(symbols=[symbol], top_n=5)
+            if signals:
+                for s in signals:
+                    if s.follower == symbol and s.confidence > 0.3:
+                        return {"direction": s.direction, "confidence": s.confidence,
+                                "signal": f"follows {s.leader} ({s.lag_minutes}min lag)"}
+            return {"direction": 0, "confidence": 0, "signal": "no_lead_lag"}
+
+        elif name == "corr_breakout":
+            from pakfindata.engine.correlation_breakout import compute_correlation_regime
+            alerts = compute_correlation_regime()
+            for a in alerts:
+                if symbol in a.cluster:
+                    d = 1 if a.direction == "CONVERGING" else -1
+                    return {"direction": d, "confidence": a.confidence,
+                            "signal": f"{a.direction} {a.sigma:.1f}s ({len(a.cluster)} syms)"}
+            return {"direction": 0, "confidence": 0, "signal": "normal_corr"}
+
+        elif name == "contagion":
+            from pakfindata.engine.announcement_contagion import scan_contagion
+            signals = scan_contagion(days_back=3)
+            for s in signals:
+                for peer in s.affected_peers:
+                    if peer["symbol"] == symbol:
+                        return {"direction": peer["direction"],
+                                "confidence": peer["confidence"],
+                                "signal": f"{s.announcement_type} at {s.source_symbol}"}
+                if s.source_symbol == symbol:
+                    d = 1 if s.sentiment > 0 else -1
+                    return {"direction": d, "confidence": abs(s.sentiment),
+                            "signal": f"own {s.announcement_type}"}
+            return {"direction": 0, "confidence": 0, "signal": "no_contagion"}
 
     except Exception as e:
         logger.debug("Strategy %s error: %s", name, e)
@@ -314,8 +352,8 @@ class ReplayEngine:
 
     def _load_replay_data(self):
         try:
-            import duckdb
-            con = duckdb.connect(str(DATA_ROOT / "pakfindata.duckdb"), read_only=True)
+            from pakfindata.db.connections import analytics_con
+            con = analytics_con()
             row = con.execute(
                 "SELECT MAX(SUBSTR(ts,1,10)) FROM ohlcv_5s WHERE symbol=?",
                 [self.symbol]).fetchone()

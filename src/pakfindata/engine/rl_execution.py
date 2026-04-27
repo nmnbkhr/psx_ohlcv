@@ -33,13 +33,13 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import duckdb
 from pathlib import Path
 from datetime import timezone, timedelta
 from dataclasses import dataclass
 
+from pakfindata.db.connections import analytics_con
+
 PKT = timezone(timedelta(hours=5))
-DUCKDB_PATH = Path("/mnt/e/psxdata/pakfindata.duckdb")
 MODEL_DIR = Path("/mnt/e/psxdata/models/rl_execution")
 DECISION_INTERVAL = 15  # seconds between agent decisions
 MARKET_OPEN_MIN = 570   # 09:30 in minutes
@@ -49,7 +49,7 @@ STEPS_PER_EPISODE = SESSION_SECONDS // DECISION_INTERVAL  # 1440
 
 
 def _duck_con():
-    return duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    return analytics_con()
 
 
 # ═══════════════════════════════════════════════════════

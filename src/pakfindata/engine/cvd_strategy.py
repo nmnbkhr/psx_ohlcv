@@ -12,14 +12,14 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import duckdb
 from pathlib import Path
 from datetime import timezone, timedelta
 from dataclasses import dataclass, asdict
 from enum import Enum
 
+from pakfindata.db.connections import analytics_con
+
 PKT = timezone(timedelta(hours=5))
-DUCKDB_PATH = Path("/mnt/e/psxdata/pakfindata.duckdb")
 
 
 class DivType(Enum):
@@ -51,14 +51,14 @@ class CVDDivergence:
 
 
 def _duck_con():
-    return duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    return analytics_con()
 
 
 def load_ticks(symbol: str, date_str: str) -> pd.DataFrame:
     con = _duck_con()
     df = con.execute(
         "SELECT price, volume, bid, ask, bid_vol, ask_vol, change, timestamp, _ts "
-        "FROM tick_logs WHERE symbol = ? AND SUBSTR(_ts, 1, 10) = ? "
+        "FROM tick_logs WHERE symbol = ? AND date = ? "
         "ORDER BY timestamp", [symbol, date_str],
     ).df()
     con.close()
@@ -68,7 +68,7 @@ def load_ticks(symbol: str, date_str: str) -> pd.DataFrame:
 def get_tick_dates(symbol: str) -> list[str]:
     con = _duck_con()
     rows = con.execute(
-        "SELECT DISTINCT SUBSTR(_ts, 1, 10) AS d FROM tick_logs "
+        "SELECT DISTINCT date AS d FROM tick_logs "
         "WHERE symbol = ? ORDER BY d DESC", [symbol],
     ).fetchall()
     con.close()
@@ -79,7 +79,7 @@ def get_liquid_symbols(date_str: str, top_n: int = 50) -> list[str]:
     con = _duck_con()
     rows = con.execute(
         "SELECT symbol, COUNT(*) AS c FROM tick_logs "
-        "WHERE SUBSTR(_ts, 1, 10) = ? AND market = 'REG' "
+        "WHERE date = ? AND market = 'REG' "
         "GROUP BY symbol HAVING c >= 200 ORDER BY c DESC LIMIT ?",
         [date_str, top_n],
     ).fetchall()
@@ -257,7 +257,7 @@ def scan_divergences(date_str: str | None = None, top_n: int = 40) -> list[dict]
     """Scan top symbols for CVD divergences."""
     if date_str is None:
         con = _duck_con()
-        r = con.execute("SELECT MAX(SUBSTR(_ts, 1, 10)) FROM tick_logs").fetchone()
+        r = con.execute("SELECT MAX(date) FROM tick_logs").fetchone()
         con.close()
         date_str = r[0] if r and r[0] else None
         if not date_str:

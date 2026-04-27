@@ -19,7 +19,7 @@ from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass, asdict
 
-PSX_SQLITE = Path("/mnt/e/psxdata/psx.sqlite")
+PSX_SQLITE = Path("/home/smnb/psxdata_rescue/psx.sqlite")
 
 # Sector code -> name mapping (PSX codes without leading zero)
 SECTOR_NAMES = {
@@ -65,11 +65,10 @@ class SectorSignal:
 
 def compute_sector_returns(lookback_months: int = 12) -> pd.DataFrame:
     """Compute monthly equal-weighted sector returns from EOD data."""
-    import duckdb
-    DUCKDB_PATH = Path("/mnt/e/psxdata/pakfindata.duckdb")
+    from pakfindata.db.connections import analytics_con
 
-    if DUCKDB_PATH.exists():
-        con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    try:
+        con = analytics_con()
         cutoff = (datetime.now() - pd.DateOffset(months=lookback_months + 2)).strftime("%Y-%m-%d")
         df = con.execute("""
             SELECT symbol, sector_code, date, close, volume
@@ -79,7 +78,7 @@ def compute_sector_returns(lookback_months: int = 12) -> pd.DataFrame:
             ORDER BY date
         """, [cutoff]).df()
         con.close()
-    else:
+    except Exception:
         con = _sqlite_con()
         df = pd.read_sql_query("""
             SELECT symbol, sector_code, date, close, volume

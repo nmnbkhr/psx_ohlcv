@@ -23,13 +23,7 @@ from typing import Optional
 
 import numpy as np
 
-# IMPORT the existing commentary engine — DO NOT DUPLICATE
-try:
-    from pakfindata.engine.commentary import _llm_call
-
-    HAS_LLM = True
-except ImportError:
-    HAS_LLM = False
+from pakfindata.services.llm_client import llm
 
 
 @dataclass
@@ -250,11 +244,11 @@ def render_batch_commentary(narrative: BatchNarrative) -> tuple[str, Optional[st
     """
     template = generate_batch_summary_text(narrative)
 
-    if HAS_LLM:
+    if llm.is_running():
         try:
             system, user = _build_llm_prompt(narrative)
-            ai_text = _llm_call(system, user, max_tokens=300)
-            if ai_text and not ai_text.startswith("LLM Error"):
+            ai_text = llm.complete_chat_text(system, user, max_tokens=300, use_case="commentary")
+            if ai_text:
                 return ai_text, template
         except Exception:
             pass

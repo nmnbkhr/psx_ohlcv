@@ -21,9 +21,12 @@ import csv
 import time
 import argparse
 import sys
+import urllib3
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ═══════════════════════════════════════════════════════
 # CONFIG
@@ -331,6 +334,162 @@ def cmd_fetch_priority():
                 print(f"  ⚠️ {series_key}: no data")
 
     print(f"\n✅ Total: {total_series} series, {total_obs:,} observations")
+
+
+_FETCH_CHECKPOINT = OUTPUT_DIR / "fetch_checkpoint.json"
+_FETCH_STATUS = OUTPUT_DIR / "fetch_status.json"
+_FETCH_PID = OUTPUT_DIR / "fetch.pid"
+
+
+def _write_status(status: str, detail: str = "", progress: int = 0, total: int = 0, **extra):
+    """Write status file for UI polling."""
+    data = {
+        "status": status,
+        "detail": detail,
+        "progress": progress,
+        "total": total,
+        "updated": datetime.now().isoformat(),
+        **extra,
+    }
+    _FETCH_STATUS.write_text(json.dumps(data, default=str))
+
+
+def read_fetch_status() -> dict:
+    """Read fetch status (for UI). Returns empty dict if not running."""
+    if not _FETCH_STATUS.exists():
+        return {}
+    try:
+        return json.loads(_FETCH_STATUS.read_text())
+    except Exception:
+        return {}
+
+
+def is_fetch_running() -> bool:
+    """Check if background fetch is alive."""
+    if not _FETCH_PID.exists():
+        return False
+    try:
+        pid = int(_FETCH_PID.read_text().strip())
+        import os
+        os.kill(pid, 0)  # Check if process exists
+        return True
+    except (ValueError, ProcessLookupError, PermissionError):
+        _FETCH_PID.unlink(missing_ok=True)
+        return False
+
+
+def start_fetch_background(months: int = 12) -> tuple[bool, str]:
+    """Launch fetch as a background subprocess that survives page navigation."""
+    if is_fetch_running():
+        return False, "Fetch already running"
+
+    import subprocess
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "pakfindata.sources.sbp_easydata", "fetch-recent",
+         "--months", str(months)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    _FETCH_PID.write_text(str(proc.pid))
+    return True, f"Started (PID {proc.pid})"
+
+
+def _load_checkpoint() -> dict:
+    if _FETCH_CHECKPOINT.exists():
+        try:
+            return json.loads(_FETCH_CHECKPOINT.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def _save_checkpoint(data: dict):
+    _FETCH_CHECKPOINT.parent.mkdir(parents=True, exist_ok=True)
+    _FETCH_CHECKPOINT.write_text(json.dumps(data, default=str))
+
+
+def cmd_fetch_recent(months: int = 12, on_progress=None):
+    """Download recent data for priority datasets with per-dataset checkpointing.
+
+    Resumes from where it left off if interrupted. Each completed dataset
+    is saved to checkpoint so re-running skips already-fetched datasets.
+
+    Args:
+        months: How many months of history to fetch.
+        on_progress: Optional callback(dataset_name, series_done, total_obs)
+    """
+    from dateutil.relativedelta import relativedelta
+
+    start = (datetime.now() - relativedelta(months=months)).strftime("%Y-%m-%d")
+    end = datetime.now().strftime("%Y-%m-%d")
+    run_key = f"recent_{start}_{end}"
+
+    checkpoint = _load_checkpoint()
+    done_codes = set(checkpoint.get(run_key, {}).get("done", []))
+
+    if not CATALOG_FILE.exists():
+        cmd_discover()
+
+    with open(CATALOG_FILE) as f:
+        catalog = json.load(f)
+
+    total_series = 0
+    total_obs = 0
+    priority_codes = [c for c in catalog.get("datasets", {}) if c in PRIORITY_DATASETS]
+    skipped = 0
+
+    _write_status("running", f"0/{len(priority_codes)} datasets", 0, len(priority_codes))
+
+    for idx, code in enumerate(priority_codes):
+        info = catalog["datasets"][code]
+        ds_name = PRIORITY_DATASETS.get(code, code)
+
+        # Skip already-completed datasets
+        if code in done_codes:
+            skipped += 1
+            continue
+
+        _write_status("running", f"[{idx+1}/{len(priority_codes)}] {ds_name}",
+                       idx + 1, len(priority_codes),
+                       series=total_series, observations=total_obs)
+
+        if on_progress:
+            on_progress(f"[{idx+1}/{len(priority_codes)}] {ds_name}", total_series, total_obs)
+
+        ds_series = 0
+        for series_key in info.get("series_keys", []):
+            data = get_series_data(series_key, start_date=start, end_date=end)
+
+            if data and data.get("rows"):
+                fp = SERIES_DIR / f"{series_key.replace('.', '_')}.json"
+                with open(fp, "w") as f:
+                    json.dump(data, f, indent=2)
+
+                fp_csv = SERIES_DIR / f"{series_key.replace('.', '_')}.csv"
+                with open(fp_csv, "w", newline="") as f:
+                    w = csv.writer(f)
+                    w.writerow(data.get("columns", []))
+                    w.writerows(data.get("rows", []))
+
+                obs = len(data["rows"])
+                total_obs += obs
+                total_series += 1
+                ds_series += 1
+
+        # Checkpoint this dataset as done
+        if run_key not in checkpoint:
+            checkpoint[run_key] = {"done": [], "started": datetime.now().isoformat()}
+        checkpoint[run_key]["done"].append(code)
+        checkpoint[run_key]["last_updated"] = datetime.now().isoformat()
+        _save_checkpoint(checkpoint)
+
+    result = {"series": total_series, "observations": total_obs, "skipped_datasets": skipped}
+    _write_status("done", f"{total_series} series, {total_obs:,} obs ({skipped} cached)",
+                   len(priority_codes), len(priority_codes), **result)
+    _FETCH_PID.unlink(missing_ok=True)
+    print(f"Done: {total_series} series, {total_obs:,} obs ({skipped} datasets skipped/cached)")
+    return result
 
 
 def cmd_fetch_series(series_key: str, start_date: str = None):
@@ -711,10 +870,14 @@ def sync_kibor_to_db(con, since: str = "") -> dict:
 
 
 def sync_fx_to_db(con, since: str = "") -> dict:
-    """Load FX avg rates from EasyData CSVs into sbp_fx_interbank table."""
+    """Load FX monthly avg rates from EasyData into sbp_fx_monthly_avg table.
+
+    NOTE: These are monthly weighted averages — NOT interbank spot rates.
+    Stored in a separate table to avoid corrupting sbp_fx_interbank.
+    """
     import sqlite3
-    con.execute("""CREATE TABLE IF NOT EXISTS sbp_fx_interbank (
-        date TEXT, currency TEXT, buying REAL, selling REAL, mid REAL, scraped_at TEXT,
+    con.execute("""CREATE TABLE IF NOT EXISTS sbp_fx_monthly_avg (
+        date TEXT, currency TEXT, avg_rate REAL, scraped_at TEXT,
         PRIMARY KEY (date, currency)
     )""")
 
@@ -729,14 +892,13 @@ def sync_fx_to_db(con, since: str = "") -> dict:
         for r in rows:
             if since and r["date"] < since:
                 continue
-            mid = r["value"]
             try:
                 con.execute("""
-                    INSERT INTO sbp_fx_interbank (date, currency, buying, selling, mid, scraped_at)
-                    VALUES (?, ?, ?, ?, ?, 'easydata')
+                    INSERT INTO sbp_fx_monthly_avg (date, currency, avg_rate, scraped_at)
+                    VALUES (?, ?, ?, 'easydata')
                     ON CONFLICT(date, currency) DO UPDATE SET
-                        mid=excluded.mid, scraped_at='easydata'
-                """, (r["date"], currency, mid, mid, mid))
+                        avg_rate=excluded.avg_rate
+                """, (r["date"], currency, r["value"]))
                 inserted += 1
             except sqlite3.IntegrityError:
                 pass
@@ -779,10 +941,14 @@ def sync_policy_rate_to_db(con, since: str = "") -> dict:
 
 
 def sync_daily_fx_to_db(con, since: str = "") -> dict:
-    """Load daily average FX rates from EasyData CSVs into sbp_fx_interbank table."""
+    """Load daily average FX rates from EasyData into sbp_fx_daily_avg table.
+
+    NOTE: These are daily weighted averages — NOT interbank spot rates.
+    Stored in a separate table to avoid corrupting sbp_fx_interbank.
+    """
     import sqlite3
-    con.execute("""CREATE TABLE IF NOT EXISTS sbp_fx_interbank (
-        date TEXT, currency TEXT, buying REAL, selling REAL, mid REAL, scraped_at TEXT,
+    con.execute("""CREATE TABLE IF NOT EXISTS sbp_fx_daily_avg (
+        date TEXT, currency TEXT, avg_rate REAL, scraped_at TEXT,
         PRIMARY KEY (date, currency)
     )""")
 
@@ -796,14 +962,13 @@ def sync_daily_fx_to_db(con, since: str = "") -> dict:
         for r in rows:
             if since and r["date"] < since:
                 continue
-            mid = r["value"]
             try:
                 con.execute("""
-                    INSERT INTO sbp_fx_interbank (date, currency, buying, selling, mid, scraped_at)
-                    VALUES (?, ?, ?, ?, ?, 'easydata-daily')
+                    INSERT INTO sbp_fx_daily_avg (date, currency, avg_rate, scraped_at)
+                    VALUES (?, ?, ?, 'easydata-daily')
                     ON CONFLICT(date, currency) DO UPDATE SET
-                        mid=excluded.mid, scraped_at='easydata-daily'
-                """, (r["date"], currency, mid, mid, mid))
+                        avg_rate=excluded.avg_rate
+                """, (r["date"], currency, r["value"]))
                 inserted += 1
             except sqlite3.IntegrityError:
                 pass
@@ -831,10 +996,11 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="SBP EasyData API Scraper")
     parser.add_argument("command",
-                        choices=["discover", "fetch-priority", "fetch-all",
+                        choices=["discover", "fetch-priority", "fetch-recent", "fetch-all",
                                  "fetch-series", "update", "status", "sync-db"])
     parser.add_argument("args", nargs="*", help="Series key (for fetch-series)")
     parser.add_argument("--start-date", default=None, help="Start date YYYY-MM-DD")
+    parser.add_argument("--months", type=int, default=12, help="Months for fetch-recent")
 
     args = parser.parse_args()
 
@@ -847,6 +1013,15 @@ if __name__ == "__main__":
 
     if args.command == "discover":
         cmd_discover()
+    elif args.command == "fetch-recent":
+        result = cmd_fetch_recent(months=args.months)
+        # Auto sync to DB after fetch
+        import sqlite3
+        con = sqlite3.connect(str(Path("/home/smnb/psxdata_rescue/psx.sqlite")))
+        con.row_factory = sqlite3.Row
+        db_result = sync_all_to_db(con)
+        con.close()
+        print(f"DB sync: {db_result}")
     elif args.command == "fetch-priority":
         cmd_fetch_priority()
     elif args.command == "fetch-all":
@@ -869,7 +1044,7 @@ if __name__ == "__main__":
         cmd_status()
     elif args.command == "sync-db":
         import sqlite3
-        db_path = args.args[0] if args.args else "/mnt/e/psxdata/psx.sqlite"
+        db_path = args.args[0] if args.args else "/home/smnb/psxdata_rescue/psx.sqlite"
         con = sqlite3.connect(db_path)
         con.row_factory = sqlite3.Row
         r = sync_all_to_db(con)

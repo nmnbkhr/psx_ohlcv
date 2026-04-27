@@ -15,14 +15,14 @@ Trading logic:
 
 import numpy as np
 import pandas as pd
-import duckdb
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from itertools import combinations
 
+from pakfindata.db.connections import analytics_con
+
 PKT = timezone(timedelta(hours=5))
-DUCKDB_PATH = Path("/mnt/e/psxdata/pakfindata.duckdb")
 TRADING_DAYS = 245
 TRANSACTION_COST_PCT = 0.005  # 0.5% round-trip
 
@@ -52,6 +52,8 @@ class PairStats:
     lookback_days: int
     adf_statistic: float
     adf_pvalue: float
+    composite_score: float = 0.0
+    pair_type: str = "COINT"  # COINT / CORR / HURST
 
 
 @dataclass
@@ -77,17 +79,17 @@ class PairsSignal:
 
 def load_pair_prices(symbol_a: str, symbol_b: str, days: int = 500):
     """Load aligned close prices for a pair from DuckDB."""
-    con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    con = analytics_con()
     cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
     df_a = con.execute("""
         SELECT date, close FROM eod_ohlcv
-        WHERE symbol = ? AND CAST(date AS DATE) >= ?::DATE ORDER BY date
+        WHERE symbol = ? AND date >= ? ORDER BY date
     """, [symbol_a, cutoff]).df()
 
     df_b = con.execute("""
         SELECT date, close FROM eod_ohlcv
-        WHERE symbol = ? AND CAST(date AS DATE) >= ?::DATE ORDER BY date
+        WHERE symbol = ? AND date >= ? ORDER BY date
     """, [symbol_b, cutoff]).df()
 
     con.close()
@@ -245,31 +247,78 @@ def kalman_hedge_ratio(prices_a: pd.Series, prices_b: pd.Series) -> pd.Series:
 # Pair discovery
 # ---------------------------------------------------------------------------
 
+def _bulk_load_prices(symbols: list[str], cutoff: str) -> dict[str, pd.DataFrame]:
+    """Load close prices for all symbols in a single DuckDB query."""
+    con = analytics_con()
+    placeholders = ",".join(f"'{s}'" for s in symbols)
+    df = con.execute(f"""
+        SELECT symbol, date, close FROM eod_ohlcv
+        WHERE symbol IN ({placeholders}) AND date >= ?
+        ORDER BY date
+    """, [cutoff]).df()
+    con.close()
+    return {sym: grp[["date", "close"]].reset_index(drop=True)
+            for sym, grp in df.groupby("symbol")}
+
+
+def _composite_score(coint_pvalue: float, correlation: float, hurst: float,
+                     half_life: float, max_pvalue: float = 0.10) -> float:
+    """Multi-criteria pair quality score (0-100).
+
+    Weights: cointegration 40%, correlation 25%, hurst 20%, half-life 15%.
+    """
+    # Cointegration: lower p-value → higher score
+    coint_s = max(0.0, 1.0 - coint_pvalue / max_pvalue) * 100
+
+    # Correlation: higher absolute correlation → higher score (0.5-1.0 mapped to 0-100)
+    corr_s = max(0.0, min(100.0, (abs(correlation) - 0.5) / 0.5 * 100))
+
+    # Hurst: lower → more mean-reverting → better (0.0-0.5 mapped to 100-0)
+    hurst_s = max(0.0, min(100.0, (0.5 - hurst) / 0.5 * 100))
+
+    # Half-life: sweet spot 10-40d scores highest, tails off outside
+    if half_life < 3 or half_life > 120:
+        hl_s = 0.0
+    elif 10 <= half_life <= 40:
+        hl_s = 100.0
+    elif half_life < 10:
+        hl_s = (half_life - 3) / 7 * 100
+    else:
+        hl_s = max(0.0, (120 - half_life) / 80 * 100)
+
+    return 0.40 * coint_s + 0.25 * corr_s + 0.20 * hurst_s + 0.15 * hl_s
+
+
 def find_cointegrated_pairs(
-    min_correlation: float = 0.7,
-    max_pvalue: float = 0.05,
-    min_half_life: float = 5,
-    max_half_life: float = 60,
+    min_correlation: float = 0.6,
+    max_pvalue: float = 0.10,
+    min_half_life: float = 3,
+    max_half_life: float = 120,
     min_days: int = 250,
     sector_only: bool = True,
-    top_n: int = 20,
+    top_n: int = 40,
+    min_score: float = 30.0,
 ) -> list[PairStats]:
-    """Scan liquid PSX pairs for cointegration."""
-    con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    """Scan liquid PSX pairs for cointegration with multi-criteria scoring.
+
+    Relaxed thresholds compared to strict p<0.05 gate — pairs are ranked by
+    a composite score (coint 40%, corr 25%, hurst 20%, half-life 15%) and
+    filtered by min_score instead.
+    """
+    con = analytics_con()
     cutoff = (datetime.now() - timedelta(days=int(min_days * 1.5))).strftime("%Y-%m-%d")
 
-    symbols_df = con.execute(f"""
+    symbols_df = con.execute("""
         SELECT symbol,
                COUNT(*) as days,
                AVG(volume) as avg_vol,
                MAX(sector_code) as sector
         FROM eod_ohlcv
-        WHERE CAST(date AS DATE) >= '{cutoff}'::DATE
+        WHERE date >= ?
         GROUP BY symbol
-        HAVING COUNT(*) >= {min_days} AND AVG(volume) > 100000
+        HAVING COUNT(*) >= ? AND AVG(volume) > 100000
         ORDER BY AVG(volume) DESC
-        LIMIT 100
-    """).df()
+    """, [cutoff, min_days]).df()
 
     con.close()
 
@@ -296,10 +345,25 @@ def find_cointegrated_pairs(
         if a in symbols and b in symbols and (a, b) not in candidates and (b, a) not in candidates:
             candidates.append((a, b))
 
+    # Bulk-load all prices once instead of per-pair DuckDB round-trips
+    needed = {s for pair in candidates for s in pair}
+    price_cache = _bulk_load_prices(list(needed), cutoff)
+
     results = []
 
     for sym_a, sym_b in candidates:
-        prices_a, prices_b, merged = load_pair_prices(sym_a, sym_b, days=min_days)
+        df_a = price_cache.get(sym_a)
+        df_b = price_cache.get(sym_b)
+        if df_a is None or df_b is None:
+            continue
+
+        merged = df_a.rename(columns={"close": "price_a"}).merge(
+            df_b.rename(columns={"close": "price_b"}), on="date", how="inner",
+        ).sort_values("date").reset_index(drop=True)
+
+        prices_a = merged["price_a"]
+        prices_b = merged["price_b"]
+
         if len(prices_a) < min_days * 0.8:
             continue
 
@@ -308,11 +372,27 @@ def find_cointegrated_pairs(
             continue
 
         coint_result = test_cointegration(prices_a, prices_b)
-        if not coint_result.get("is_cointegrated", False):
+        coint_pv = coint_result.get("coint_pvalue", 1.0)
+        half_life = coint_result.get("half_life", 999)
+        hurst = coint_result.get("hurst", 0.5)
+
+        # Classify pair type — qualifies if ANY criterion passes
+        pair_type = "NONE"
+        if coint_pv < max_pvalue and min_half_life <= half_life <= max_half_life:
+            pair_type = "COINT"
+        elif abs(corr) > 0.80:
+            pair_type = "CORR"
+
+        # Hurst override: mean-reverting spread regardless of cointegration
+        if hurst < 0.45 and 0 < half_life < 30:
+            if pair_type == "NONE":
+                pair_type = "HURST"
+
+        if pair_type == "NONE":
             continue
 
-        half_life = coint_result.get("half_life", 999)
-        if half_life < min_half_life or half_life > max_half_life:
+        score = _composite_score(coint_pv, corr, hurst, half_life, max_pvalue)
+        if score < min_score:
             continue
 
         kalman_ratios = kalman_hedge_ratio(prices_a, prices_b)
@@ -333,20 +413,22 @@ def find_cointegrated_pairs(
         results.append(PairStats(
             symbol_a=sym_a, symbol_b=sym_b, sector=sector,
             correlation=corr,
-            cointegration_pvalue=coint_result["coint_pvalue"],
-            is_cointegrated=True,
+            cointegration_pvalue=coint_pv,
+            is_cointegrated=pair_type == "COINT",
             hedge_ratio_static=coint_result["hedge_ratio"],
             hedge_ratio_kalman=float(latest_kalman),
             half_life=half_life,
             spread_mean=spread_mean, spread_std=spread_std,
             current_zscore=float(current_z),
-            hurst_exponent=coint_result.get("hurst", 0.5),
+            hurst_exponent=hurst,
             lookback_days=len(prices_a),
             adf_statistic=coint_result.get("adf_statistic", 0),
             adf_pvalue=coint_result.get("adf_pvalue", 1),
+            composite_score=score,
+            pair_type=pair_type,
         ))
 
-    results.sort(key=lambda x: x.half_life)
+    results.sort(key=lambda x: x.composite_score, reverse=True)
     return results[:top_n]
 
 

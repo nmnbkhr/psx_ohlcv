@@ -17,15 +17,15 @@ PSX Order Book Characteristics:
 import numpy as np
 import pandas as pd
 import json
-import duckdb
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
 from collections import deque
 
+from pakfindata.db.connections import analytics_con
+
 PKT = timezone(timedelta(hours=5))
-DUCKDB_PATH = Path("/mnt/e/psxdata/pakfindata.duckdb")
 JSONL_DIR = Path("/mnt/e/psxdata/tick_logs_cloud")
 SIM_DIR = Path("/mnt/e/psxdata/simulation")
 BOOK_CACHE_DIR = SIM_DIR / "book_snapshots"
@@ -218,7 +218,7 @@ def reconstruct_book_history(
     Reconstruct order book history for a symbol on a given date.
     Returns list of ReconstructedBook snapshots.
     """
-    con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    con = analytics_con()
 
     if date_str is None:
         # Derive latest date from timestamp (epoch seconds -> date)
@@ -382,7 +382,7 @@ class PSXMarketSimulator:
         self.book_history: list[ReconstructedBook] = []
 
         # Load real tick data
-        con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+        con = analytics_con()
         if date_str is None:
             date_str = str(con.execute(
                 "SELECT CAST(to_timestamp(MAX(timestamp)) AS DATE) FROM tick_logs WHERE symbol = ?",

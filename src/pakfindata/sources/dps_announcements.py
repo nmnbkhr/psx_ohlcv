@@ -299,31 +299,134 @@ def download_dps_financials(
     return summary
 
 
-def download_dps_financials_batch(
-    con,
-    symbols: list[str] | None = None,
-    progress_cb: Callable[[int, int, str, int], None] | None = None,
-) -> dict[str, Any]:
-    """Download financial results for symbols without website financial pages.
+def _upsert_sync_status(
+    con, symbol: str, pdfs_found: int, status: str = "completed", error: str | None = None,
+) -> None:
+    """Record per-symbol sync status in announcements_sync_status."""
+    from datetime import datetime as _dt
+    now = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
+    today = _dt.now().strftime("%Y-%m-%d")
+    con.execute(
+        """INSERT INTO announcements_sync_status
+           (sync_type, symbol, last_sync_date, total_records, status, error_message, started_at, completed_at)
+           VALUES ('financial_results', ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(sync_type, symbol) DO UPDATE SET
+             last_sync_date = excluded.last_sync_date,
+             total_records = excluded.total_records,
+             status = excluded.status,
+             error_message = excluded.error_message,
+             completed_at = excluded.completed_at,
+             scraped_at = datetime('now')""",
+        (symbol, today, pdfs_found, status, error, now, now),
+    )
+    con.commit()
 
-    If symbols is None, automatically selects all symbols from company_website_scan
-    where has_financial_page = 0.
+
+def get_stale_symbols(
+    con, stale_days: int = 7,
+) -> tuple[list[str], dict]:
+    """Get symbols that need DPS announcements checking.
+
+    Returns symbols not checked in `stale_days` days, ordered by
+    never-checked first, then oldest-checked.
 
     Args:
         con: SQLite connection.
-        symbols: Optional list of symbols. If None, uses all without financials.
-        progress_cb: Progress callback.
+        stale_days: Re-check after this many days.
+
+    Returns:
+        (symbols_list, metrics_dict) where metrics has:
+        total, never_checked, stale, up_to_date counts.
+    """
+    from ..db.repositories.symbols import get_scrapable_symbols
+
+    all_symbols = get_scrapable_symbols(con)
+    all_set = set(all_symbols)
+
+    # Get last sync dates
+    rows = con.execute(
+        "SELECT symbol, last_sync_date FROM announcements_sync_status "
+        "WHERE sync_type = 'financial_results'"
+    ).fetchall()
+    sync_dates: dict[str, str] = {r[0]: r[1] for r in rows}
+
+    from datetime import datetime as _dt, timedelta
+    cutoff = (_dt.now() - timedelta(days=stale_days)).strftime("%Y-%m-%d")
+
+    never: list[str] = []
+    stale: list[str] = []
+    up_to_date = 0
+
+    for sym in all_symbols:
+        last = sync_dates.get(sym)
+        if last is None:
+            never.append(sym)
+        elif last < cutoff:
+            stale.append(sym)
+        else:
+            up_to_date += 1
+
+    # Never-checked first, then oldest stale
+    stale.sort(key=lambda s: sync_dates.get(s, ""))
+    result = never + stale
+
+    metrics = {
+        "total": len(all_symbols),
+        "never_checked": len(never),
+        "stale": len(stale),
+        "up_to_date": up_to_date,
+    }
+    return result, metrics
+
+
+def download_dps_financials_batch(
+    con,
+    symbols: list[str] | None = None,
+    stale_days: int = 7,
+    progress_cb: Callable[[int, int, str, int], None] | None = None,
+) -> dict[str, Any]:
+    """Download financial results PDFs from DPS announcements.
+
+    Smart mode (symbols=None): only checks symbols not synced in `stale_days` days.
+    Tracks per-symbol sync status in `announcements_sync_status` table.
+
+    Args:
+        con: SQLite connection.
+        symbols: Explicit list of symbols. If None, uses smart stale detection.
+        stale_days: Days before re-checking a symbol (used when symbols=None).
+        progress_cb: Progress callback (done, total, symbol, found_count).
 
     Returns:
         Summary dict.
     """
     if symbols is None:
-        rows = con.execute(
-            "SELECT symbol FROM company_website_scan WHERE has_financial_page = 0 OR has_financial_page IS NULL ORDER BY symbol"
-        ).fetchall()
-        symbols = [r[0] for r in rows]
+        symbols, _ = get_stale_symbols(con, stale_days)
 
     if not symbols:
         return {"total_symbols": 0, "message": "No symbols to process."}
 
-    return download_dps_financials([s.upper() for s in symbols], progress_cb=progress_cb)
+    # Normalize to base symbols (strip XD/XB/XR/NC/WU suffixes)
+    from ..db.repositories.symbols import normalize_symbol
+    seen: set[str] = set()
+    clean: list[str] = []
+    for s in symbols:
+        base, _ = normalize_symbol(s.upper())
+        if base not in seen:
+            seen.add(base)
+            clean.append(base)
+
+    result = download_dps_financials(clean, progress_cb=progress_cb)
+
+    # Record sync status per symbol
+    for detail in result.get("details", []):
+        sym = detail.get("symbol", "")
+        if not sym:
+            continue
+        found = detail.get("found", 0)
+        errors = detail.get("errors", 0)
+        if errors > 0 and found == 0:
+            _upsert_sync_status(con, sym, found, "failed", f"{errors} errors")
+        else:
+            _upsert_sync_status(con, sym, found, "completed")
+
+    return result

@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import sqlite3
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 
 import numpy as np
@@ -40,6 +42,17 @@ from pakfindata.engine.fund_factors import single_factor_regression
 
 
 MIN_NAV_RECORDS = 30
+
+# Shared state for worker processes (set via initializer, avoids pickling)
+_shared_benchmark: pd.Series | None = None
+_shared_rf: float = 0.0
+
+
+def _init_worker(benchmark_nav: pd.Series | None, rf: float):
+    """Initializer for worker processes — sets shared benchmark data."""
+    global _shared_benchmark, _shared_rf
+    _shared_benchmark = benchmark_nav
+    _shared_rf = rf
 
 
 def _period_return(nav: pd.Series, days: int | None = None) -> float | None:
@@ -201,10 +214,21 @@ def compute_fund_metrics(
     return result
 
 
+def _compute_one(args: tuple) -> tuple[str, str, dict | None, str | None]:
+    """Worker: compute metrics for one fund. Returns (fund_id, fund_name, metrics_dict, error)."""
+    fund_id, fund_name, category, nav_series = args
+    try:
+        metrics = compute_fund_metrics(fund_id, fund_name, category, nav_series, _shared_benchmark, _shared_rf)
+        return (fund_id, fund_name, metrics, None)
+    except Exception as e:
+        return (fund_id, fund_name, None, str(e))
+
+
 def run_batch(
     fund_id: str | None = None,
     since: str | None = None,
-) -> None:
+    workers: int | None = None,
+) -> dict:
     db_path = str(get_db_path())
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
@@ -265,52 +289,80 @@ def run_batch(
     errors = 0
     t0 = time.time()
 
-    for i, fund in enumerate(funds):
-        fid = fund["fund_id"]
-        fname = fund["fund_name"]
-        cat = fund["category"]
+    # Set shared state for in-process fallback
+    global _shared_benchmark, _shared_rf
+    _shared_benchmark = benchmark_nav
+    _shared_rf = rf
 
-        nav_series = nav_grouped.get(fid)
-        if nav_series is None or len(nav_series) < MIN_NAV_RECORDS:
+    # Build work items (only funds with enough NAV — benchmark/rf via shared globals)
+    work_items = []
+    for fund in funds:
+        fid = fund["fund_id"]
+        nav_s = nav_grouped.get(fid)
+        if nav_s is None or len(nav_s) < MIN_NAV_RECORDS:
             skipped += 1
             continue
+        work_items.append((fid, fund["fund_name"], fund["category"], nav_s))
 
-        try:
-            metrics = compute_fund_metrics(fid, fname, cat, nav_series, benchmark_nav, rf)
+    max_workers = workers or min(os.cpu_count() or 4, 8)
+    use_parallel = len(work_items) > 1 and max_workers > 1
+    print(f"Computing {len(work_items)} funds with {max_workers if use_parallel else 1} worker(s)...")
 
-            # INSERT OR REPLACE into fund_risk_metrics
-            cols = list(metrics.keys())
-            placeholders = ", ".join(["?"] * len(cols))
-            col_names = ", ".join(cols)
+    def _write_results(fund_id: str, fund_name: str, metrics: dict | None, error: str | None):
+        nonlocal computed, errors
+        if error:
+            errors += 1
+            print(f"  ERROR {fund_name}: {error}")
+            return
+        if not metrics:
+            return
+
+        # Write risk metrics to DB
+        cols = list(metrics.keys())
+        placeholders = ", ".join(["?"] * len(cols))
+        col_names = ", ".join(cols)
+        con.execute(
+            f"INSERT OR REPLACE INTO fund_risk_metrics ({col_names}) VALUES ({placeholders})",
+            [metrics.get(c) for c in cols],
+        )
+
+        # Calendar year returns
+        nav_s = nav_grouped[fund_id]
+        cal_returns = compute_calendar_year_returns(nav_s)
+        now_str = datetime.now().isoformat(timespec="seconds")
+        for year, ret_pct in cal_returns.items():
+            year_nav = nav_s[nav_s.index.year == year]
             con.execute(
-                f"INSERT OR REPLACE INTO fund_risk_metrics ({col_names}) VALUES ({placeholders})",
-                [metrics.get(c) for c in cols],
+                """INSERT OR REPLACE INTO fund_calendar_returns
+                   (fund_id, year, return_pct, first_nav, last_nav, trading_days, computed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (fund_id, year, ret_pct, float(year_nav.iloc[0]), float(year_nav.iloc[-1]),
+                 len(year_nav), now_str),
             )
 
-            # Calendar year returns
-            cal_returns = compute_calendar_year_returns(nav_series)
-            now_str = datetime.now().isoformat(timespec="seconds")
-            for year, ret_pct in cal_returns.items():
-                year_nav = nav_series[nav_series.index.year == year]
-                con.execute(
-                    """INSERT OR REPLACE INTO fund_calendar_returns
-                       (fund_id, year, return_pct, first_nav, last_nav, trading_days, computed_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (fid, year, ret_pct, float(year_nav.iloc[0]), float(year_nav.iloc[-1]),
-                     len(year_nav), now_str),
-                )
+        computed += 1
+        sharpe_str = f"Sharpe: {metrics.get('sharpe_ratio', 'N/A')}"
+        dd_str = f"MaxDD: {metrics.get('max_drawdown', 0)*100:.1f}%" if metrics.get("max_drawdown") else "MaxDD: N/A"
+        print(f"  [{computed:4d}/{len(work_items)}] {fund_name[:40]:<40s} — {sharpe_str}, {dd_str}")
 
-            sharpe_str = f"Sharpe: {metrics.get('sharpe_ratio', 'N/A')}"
-            dd_str = f"MaxDD: {metrics.get('max_drawdown', 0)*100:.1f}%" if metrics.get("max_drawdown") else "MaxDD: N/A"
-            print(f"  [{i+1:4d}/{total}] {fname[:40]:<40s} — {sharpe_str}, {dd_str}")
-            computed += 1
+        if computed % 50 == 0:
+            con.commit()
 
-            if computed % 50 == 0:
-                con.commit()
-
-        except Exception as e:
-            errors += 1
-            print(f"  [{i+1:4d}/{total}] ERROR {fname}: {e}")
+    if use_parallel:
+        with ProcessPoolExecutor(
+            max_workers=max_workers,
+            initializer=_init_worker,
+            initargs=(benchmark_nav, rf),
+        ) as executor:
+            futures = {executor.submit(_compute_one, item): item[0] for item in work_items}
+            for future in as_completed(futures):
+                fid, fname, metrics, error = future.result()
+                _write_results(fid, fname, metrics, error)
+    else:
+        # Single fund or single worker — no multiprocessing overhead
+        for item in work_items:
+            fid, fname, metrics, error = _compute_one(item)
+            _write_results(fid, fname, metrics, error)
 
     con.commit()
     elapsed = time.time() - t0
@@ -319,18 +371,23 @@ def run_batch(
     print(f"  Computed: {computed} funds")
     print(f"  Skipped:  {skipped} (< {MIN_NAV_RECORDS} NAV records)")
     print(f"  Errors:   {errors}")
+    if use_parallel:
+        print(f"  Workers:  {max_workers}")
 
     final = con.execute("SELECT COUNT(*) FROM fund_risk_metrics").fetchone()[0]
     print(f"  fund_risk_metrics: {final} rows total")
     con.close()
+
+    return {"computed": computed, "skipped": skipped, "errors": errors, "elapsed": elapsed}
 
 
 def main():
     parser = argparse.ArgumentParser(description="Batch compute fund risk metrics")
     parser.add_argument("--fund-id", help="Compute for a single fund ID")
     parser.add_argument("--since", help="Only recompute funds with NAV data since date (YYYY-MM-DD)")
+    parser.add_argument("--workers", type=int, default=None, help="CPU workers (default: auto, max 8)")
     args = parser.parse_args()
-    run_batch(fund_id=args.fund_id, since=args.since)
+    run_batch(fund_id=args.fund_id, since=args.since, workers=args.workers)
 
 
 if __name__ == "__main__":

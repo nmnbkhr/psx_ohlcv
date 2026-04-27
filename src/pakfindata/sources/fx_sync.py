@@ -11,6 +11,13 @@ Usage:
     sync_fx_rates(con)                                # daily snapshot
     backfill_fx_history(con, "2025-01-01")            # full backfill
     backfill_fx_history(con, "2026-02-01", "2026-02-15")  # date range
+
+NOTE(market-sync-v1): This module uses inline INSERTs that duplicate the
+canonical repo writers (``upsert_fx_interbank`` in fx_extended.py,
+``upsert_kibor_point`` in yield_curves.py). Both are legitimate sources
+(microservice vs SBP EasyData API) but should converge on the repo upsert
+functions for consistency when Market Sync v1 lands. Callers: FX Dashboard
+"Sync from FX Microservice" button, api/routers/fx.py, cli.py.
 """
 
 import sqlite3

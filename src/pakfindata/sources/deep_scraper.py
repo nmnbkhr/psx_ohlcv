@@ -13,16 +13,20 @@ Data is stored in a flexible JSON document format for quant analysis.
 """
 
 import hashlib
+import json
 import re
 import sqlite3
+import threading
 import time
 from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import requests
 from lxml import html
 
+from ..config import DATA_ROOT
 from ..models import now_iso
 
 # PSX company page URL template
@@ -151,6 +155,20 @@ def parse_quote_data(tree: html.HtmlElement) -> dict[str, Any]:
     if change_pct:
         pct_str = change_pct[0].strip().replace("(", "").replace(")", "")
         data["change_percent"] = _parse_numeric(pct_str)
+
+    # Company listing status tags (SUSPENDED, WINDING-UP, DEFAULTER, etc.)
+    # These are inside the quote__name div, separate from trading statuses (XD/XB/XR)
+    listing_tags = tree.xpath(
+        '//div[contains(@class, "quote__name")]//div[contains(@class, "tag")]/text()'
+    )
+    # Filter out per-day trading statuses — keep only company-level statuses
+    trading_statuses = {"XD", "XB", "XR", "NC", "XA", "XI", "XW"}
+    company_statuses = [
+        t.strip() for t in listing_tags
+        if t.strip() and t.strip() not in trading_statuses
+    ]
+    if company_statuses:
+        data["listing_status"] = ",".join(company_statuses)
 
     # As-of date
     date_elem = tree.xpath('//div[contains(@class, "quote__date")]//text()')
@@ -980,6 +998,10 @@ def save_company_snapshot(
     )
     result["snapshot_saved"] = snapshot_result.get("status") == "ok"
 
+    # Save company listing status (SUSPENDED, WINDING-UP, DEFAULTER, etc.)
+    listing_status = data.get("quote_data", {}).get("listing_status")
+    _save_listing_status(con, symbol, listing_status, snapshot_date)
+
     # Save quote snapshot (for charts)
     quote_data = data.get("quote_data", {})
     trading_data = data.get("trading_data", {})
@@ -1145,6 +1167,311 @@ def save_company_snapshot(
     return result
 
 
+# ═══════════════════════════════════════════════════════════════════
+# COMPANY LISTING STATUS (SUSPENDED, WINDING-UP, DEFAULTER, etc.)
+# ═══════════════════════════════════════════════════════════════════
+
+# Statuses that mean the company should be marked inactive
+INACTIVE_LISTING_STATUSES = {"SUSPENDED", "WINDING-UP", "DELISTED"}
+
+
+def _ensure_listing_status_table(con: sqlite3.Connection) -> None:
+    """Create company_listing_status table if it doesn't exist."""
+    con.executescript("""
+        CREATE TABLE IF NOT EXISTS company_listing_status (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol      TEXT NOT NULL,
+            status      TEXT NOT NULL,
+            is_current  INTEGER DEFAULT 1,
+            first_seen  TEXT NOT NULL,
+            last_seen   TEXT NOT NULL,
+            removed_at  TEXT,
+            source      TEXT DEFAULT 'PSX_DPS',
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(symbol, status, first_seen)
+        );
+        CREATE INDEX IF NOT EXISTS idx_cls_symbol ON company_listing_status(symbol);
+        CREATE INDEX IF NOT EXISTS idx_cls_current ON company_listing_status(is_current) WHERE is_current = 1;
+        CREATE INDEX IF NOT EXISTS idx_cls_status ON company_listing_status(status);
+    """)
+    # Add listing_status column to company_profile if missing
+    try:
+        con.execute("SELECT listing_status FROM company_profile LIMIT 1")
+    except sqlite3.OperationalError:
+        con.execute("ALTER TABLE company_profile ADD COLUMN listing_status TEXT")
+
+
+def _save_listing_status(
+    con: sqlite3.Connection,
+    symbol: str,
+    listing_status: str | None,
+    check_date: str,
+) -> None:
+    """
+    Persist company listing status tags to DB.
+
+    - Upserts into company_listing_status (SCD-style tracking).
+    - Updates company_profile.listing_status.
+    - Marks is_active=0 in symbols table for SUSPENDED/WINDING-UP/DELISTED.
+    """
+    _ensure_listing_status_table(con)
+    now = now_iso()
+    current_tags = set(listing_status.split(",")) if listing_status else set()
+
+    # Get existing current statuses for this symbol
+    existing = {
+        row[0]: row[1]
+        for row in con.execute(
+            "SELECT status, id FROM company_listing_status WHERE symbol = ? AND is_current = 1",
+            (symbol,),
+        ).fetchall()
+    }
+
+    # Close statuses that are no longer present
+    removed = set(existing.keys()) - current_tags
+    for status in removed:
+        con.execute(
+            """UPDATE company_listing_status
+               SET is_current = 0, removed_at = ?, updated_at = ?
+               WHERE id = ?""",
+            (check_date, now, existing[status]),
+        )
+
+    # Upsert current statuses
+    for status in current_tags:
+        if status in existing:
+            # Still active — update last_seen
+            con.execute(
+                "UPDATE company_listing_status SET last_seen = ?, updated_at = ? WHERE id = ?",
+                (check_date, now, existing[status]),
+            )
+        else:
+            # New status
+            con.execute(
+                """INSERT OR IGNORE INTO company_listing_status
+                   (symbol, status, is_current, first_seen, last_seen, source, created_at, updated_at)
+                   VALUES (?, ?, 1, ?, ?, 'PSX_DPS', ?, ?)""",
+                (symbol, status, check_date, check_date, now, now),
+            )
+
+    # Update company_profile.listing_status
+    ls_value = ",".join(sorted(current_tags)) if current_tags else None
+    try:
+        con.execute(
+            "UPDATE company_profile SET listing_status = ? WHERE symbol = ?",
+            (ls_value, symbol),
+        )
+    except sqlite3.OperationalError:
+        pass  # column might not exist yet
+
+    # Update is_active in symbols table
+    should_deactivate = bool(current_tags & INACTIVE_LISTING_STATUSES)
+    if should_deactivate:
+        con.execute("UPDATE symbols SET is_active = 0 WHERE symbol = ?", (symbol,))
+        try:
+            con.execute(
+                "UPDATE instrument_registry SET is_active = 0 WHERE symbol = ?",
+                (symbol,),
+            )
+        except sqlite3.OperationalError:
+            pass
+    else:
+        # Re-activate if no blocking statuses (company may have been unsuspended)
+        if not current_tags or not (current_tags & INACTIVE_LISTING_STATUSES):
+            con.execute(
+                "UPDATE symbols SET is_active = 1 WHERE symbol = ? AND is_active = 0",
+                (symbol,),
+            )
+
+    con.commit()
+
+
+_listing_session: requests.Session | None = None
+
+
+def _get_listing_session() -> requests.Session:
+    global _listing_session
+    if _listing_session is None:
+        _listing_session = requests.Session()
+        _listing_session.headers.update(HEADERS)
+        _listing_session.verify = False
+    return _listing_session
+
+
+def check_listing_status_single(symbol: str) -> list[str]:
+    """
+    Quick check: fetch a single symbol's company-level listing tags from PSX.
+    Returns list of statuses, e.g. ['SUSPENDED', 'WINDING-UP'] or [].
+    """
+    try:
+        s = _get_listing_session()
+        r = s.get(DPS_COMPANY_URL.format(symbol=symbol), timeout=15)
+        if r.status_code != 200:
+            return []
+        tree = html.fromstring(r.text)
+        tags = tree.xpath(
+            '//div[contains(@class, "quote__name")]//div[contains(@class, "tag")]/text()'
+        )
+        trading = {"XD", "XB", "XR", "NC", "XA", "XI", "XW"}
+        return [t.strip() for t in tags if t.strip() and t.strip() not in trading]
+    except Exception:
+        return []
+
+
+# ── Bulk listing status checker (resumable) ─────────────────────────
+
+LISTING_STATUS_PROGRESS_FILE = DATA_ROOT / "listing_status_progress.json"
+
+
+def _write_listing_progress(data: dict) -> None:
+    tmp = LISTING_STATUS_PROGRESS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, default=str))
+    tmp.replace(LISTING_STATUS_PROGRESS_FILE)
+
+
+def read_listing_status_progress() -> dict | None:
+    if not LISTING_STATUS_PROGRESS_FILE.exists():
+        return None
+    try:
+        return json.loads(LISTING_STATUS_PROGRESS_FILE.read_text())
+    except Exception:
+        return None
+
+
+def check_all_listing_statuses(
+    con: sqlite3.Connection,
+    delay: float = 0.4,
+) -> dict:
+    """
+    Scan all symbols for company-level listing status tags.
+
+    Resumable: tracks progress in a JSON file so it can restart from
+    where it left off if interrupted. Only fully-processed symbols
+    are saved to state.
+
+    Returns summary dict.
+    """
+    _ensure_listing_status_table(con)
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # Get all symbols to check (exclude suffix duplicates)
+    all_symbols = [
+        r[0]
+        for r in con.execute(
+            """SELECT DISTINCT symbol FROM symbols
+               WHERE symbol NOT LIKE '%XD' AND symbol NOT LIKE '%XB'
+                 AND symbol NOT LIKE '%XR' AND symbol NOT LIKE '%NC'
+                 AND symbol NOT LIKE '%XA'
+               ORDER BY symbol"""
+        ).fetchall()
+    ]
+
+    # Load resume state
+    progress = read_listing_status_progress() or {}
+    completed_today = set(progress.get("completed", {}).get(today, []))
+
+    pending = [s for s in all_symbols if s not in completed_today]
+
+    summary = {
+        "total": len(all_symbols),
+        "already_done": len(completed_today),
+        "pending": len(pending),
+        "found": {},
+        "errors": [],
+        "status": "running",
+        "started_at": now_iso(),
+    }
+
+    # Write initial progress
+    _write_listing_progress({
+        "status": "running",
+        "date": today,
+        "total": len(all_symbols),
+        "processed": len(completed_today),
+        "pending": len(pending),
+        "found": progress.get("found", {}),
+        "completed": progress.get("completed", {}),
+    })
+
+    for i, symbol in enumerate(pending):
+        try:
+            tags = check_listing_status_single(symbol)
+            listing_status = ",".join(tags) if tags else None
+
+            # Save to DB (atomic per symbol)
+            _save_listing_status(con, symbol, listing_status, today)
+
+            # Mark as completed in progress file
+            completed_today.add(symbol)
+
+            if tags:
+                summary["found"][symbol] = tags
+
+            # Update progress file after each successful symbol
+            prog = read_listing_status_progress() or {}
+            prog_completed = prog.get("completed", {})
+            prog_completed[today] = list(completed_today)
+            found = prog.get("found", {})
+            if tags:
+                found[symbol] = tags
+            _write_listing_progress({
+                "status": "running",
+                "date": today,
+                "total": len(all_symbols),
+                "processed": len(completed_today),
+                "pending": len(pending) - i - 1,
+                "found": found,
+                "completed": prog_completed,
+            })
+
+            time.sleep(delay)
+
+        except Exception as e:
+            summary["errors"].append({"symbol": symbol, "error": str(e)})
+
+    # Final progress
+    prog = read_listing_status_progress() or {}
+    prog["status"] = "completed"
+    prog["completed_at"] = now_iso()
+    prog["pending"] = 0
+    _write_listing_progress(prog)
+
+    summary["status"] = "completed"
+    return summary
+
+
+_listing_status_thread: threading.Thread | None = None
+
+
+def start_listing_status_check_background(con_path: str | Path) -> bool:
+    """
+    Launch listing status check in a background thread.
+    Independent of Streamlit — survives reruns.
+    """
+    global _listing_status_thread
+
+    if _listing_status_thread and _listing_status_thread.is_alive():
+        return False  # Already running
+
+    def _run():
+        bg_con = sqlite3.connect(str(con_path), check_same_thread=False)
+        bg_con.execute("PRAGMA journal_mode=WAL")
+        bg_con.execute("PRAGMA busy_timeout=30000")
+        try:
+            check_all_listing_statuses(bg_con)
+        finally:
+            bg_con.close()
+
+    _listing_status_thread = threading.Thread(target=_run, daemon=True, name="listing-status-check")
+    _listing_status_thread.start()
+    return True
+
+
+def is_listing_status_check_running() -> bool:
+    return _listing_status_thread is not None and _listing_status_thread.is_alive()
+
+
 def deep_scrape_symbol(
     con: sqlite3.Connection,
     symbol: str,
@@ -1202,6 +1529,21 @@ def deep_scrape_batch(
         Summary dict with results
     """
     from ..db import create_scrape_job, update_scrape_job
+    from ..db.repositories.symbols import get_scrapable_symbols, normalize_symbol
+
+    # Normalize symbols to base form (strip XD/XB/XR/NC/WU suffixes)
+    master_rows = con.execute(
+        "SELECT symbol FROM symbols WHERE source = 'LISTED_CMP' AND is_active = 1"
+    ).fetchall()
+    master_set = {r[0] if isinstance(r, (tuple, list)) else r["symbol"] for r in master_rows}
+    seen: set[str] = set()
+    clean_symbols: list[str] = []
+    for sym in symbols:
+        base, _ = normalize_symbol(sym, master_set if master_set else None)
+        if base not in seen:
+            seen.add(base)
+            clean_symbols.append(base)
+    symbols = clean_symbols
 
     # Create job
     job_id = create_scrape_job(con, "company_snapshot", {
@@ -1267,12 +1609,7 @@ def deep_scrape_batch(
 # Background Deep Scrape (thread-based, progress via JSON file)
 # =============================================================================
 
-import json
 import logging
-import threading
-from pathlib import Path
-
-from ..config import DATA_ROOT
 
 _log = logging.getLogger("pakfindata.deep_scraper")
 

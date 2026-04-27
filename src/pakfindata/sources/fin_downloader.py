@@ -310,9 +310,12 @@ def download_financials(
     """
     params: list = []
     if symbols:
+        # Normalize to base symbols (strip XD/XB/XR/NC/WU suffixes)
+        from ..db.repositories.symbols import normalize_symbol
+        symbols = list({normalize_symbol(s.upper())[0] for s in symbols})
         placeholders = ",".join("?" for _ in symbols)
         query += f" AND symbol IN ({placeholders})"
-        params = [s.upper() for s in symbols]
+        params = symbols
 
     rows = con.execute(query, params).fetchall()
 

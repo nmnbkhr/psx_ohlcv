@@ -11,18 +11,18 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import duckdb
 from pathlib import Path
 from datetime import timezone, timedelta
 from dataclasses import dataclass, field, asdict
 
+from pakfindata.db.connections import analytics_con
+
 PKT = timezone(timedelta(hours=5))
-DUCKDB_PATH = Path("/mnt/e/psxdata/pakfindata.duckdb")
 SLICE_MINUTES = 15
 
 
 def _duck_con():
-    return duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    return analytics_con()
 
 
 @dataclass

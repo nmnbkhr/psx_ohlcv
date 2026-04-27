@@ -34,7 +34,6 @@ Published methods implemented:
 import numpy as np
 import pandas as pd
 import json
-import duckdb
 import sqlite3
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -42,9 +41,10 @@ from dataclasses import dataclass, field
 from typing import Optional, Tuple
 from collections import defaultdict
 
+from pakfindata.db.connections import analytics_con
+
 PKT = timezone(timedelta(hours=5))
-DUCKDB_PATH = Path("/mnt/e/psxdata/pakfindata.duckdb")
-PSX_SQLITE = Path("/mnt/e/psxdata/psx.sqlite")
+PSX_SQLITE = Path("/home/smnb/psxdata_rescue/psx.sqlite")
 GNN_DIR = Path("/mnt/e/psxdata/simulation/gnn_results")
 TRADING_DAYS = 245
 
@@ -138,7 +138,7 @@ def build_stock_graph(
       nodes: list of StockNode with feature vectors
       edges: list of StockEdge with types and weights
     """
-    con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    con = analytics_con()
 
     if as_of_date is None:
         as_of_date = str(con.execute("SELECT MAX(date) FROM eod_ohlcv").fetchone()[0])
@@ -571,7 +571,7 @@ def train_gnn(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Build temporal graph snapshots
-    con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    con = analytics_con()
     cutoff = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
 
     dates = [r[0] for r in con.execute(f"""
@@ -932,10 +932,10 @@ def propagation_analysis(nodes, edges, source_symbol: str, hops: int = 3) -> dic
 
 def get_available_symbols() -> list[str]:
     """Get all symbols with recent EOD data."""
-    con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    con = analytics_con()
     syms = [r[0] for r in con.execute("""
         SELECT DISTINCT symbol FROM eod_ohlcv
-        WHERE CAST(date AS DATE) >= CURRENT_DATE - INTERVAL '90 days'
+        WHERE date >= CAST(CURRENT_DATE - INTERVAL '90 days' AS VARCHAR)
         ORDER BY symbol
     """).fetchall()]
     con.close()
@@ -954,12 +954,12 @@ def get_symbols_by_sector(sector_name: str) -> list[str]:
     if not codes:
         return []
 
-    con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    con = analytics_con()
     placeholders = ",".join(f"'{c}'" for c in codes)
     syms = [r[0] for r in con.execute(f"""
         SELECT DISTINCT symbol FROM eod_ohlcv
         WHERE sector_code IN ({placeholders})
-        AND CAST(date AS DATE) >= CURRENT_DATE - INTERVAL '90 days'
+        AND date >= CAST(CURRENT_DATE - INTERVAL '90 days' AS VARCHAR)
         ORDER BY symbol
     """).fetchall()]
     con.close()
@@ -987,7 +987,7 @@ def build_custom_graph(
     if edge_types is None:
         edge_types = ["SECTOR", "SUPPLY_CHAIN", "COMMON_DIRECTORS", "CORRELATION"]
 
-    con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    con = analytics_con()
 
     cutoff_days = max(correlation_window, feature_window) * 2
     cutoff = (datetime.now() - timedelta(days=cutoff_days)).strftime("%Y-%m-%d")
@@ -1195,7 +1195,7 @@ def train_custom_gnn(
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    con = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    con = analytics_con()
     cutoff = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
     dates = [r[0] for r in con.execute(f"""
         SELECT DISTINCT date FROM eod_ohlcv WHERE date >= '{cutoff}' ORDER BY date

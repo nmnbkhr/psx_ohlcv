@@ -12,88 +12,14 @@ OpenAI functions require OPENAI_API_KEY in .env.
 
 from __future__ import annotations
 
-import json
-import os
-import urllib.request
-import urllib.error
 from typing import Optional
 
-# ═════════════════════════════════════════════════════════════════════════════
-# LLM BACKENDS
-# ═════════════════════════════════════════════════════════════════════════════
-
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-OLLAMA_MODEL_FAST = "llama3.1:8b-instruct-q4_K_M"   # fast, good for structured commentary
-OLLAMA_MODEL_DEEP = "deepseek-r1:latest"             # reasoning-heavy, good for analysis
-
-
-def _ollama_call(
-    system: str,
-    user: str,
-    model: str = OLLAMA_MODEL_FAST,
-    max_tokens: int = 600,
-    temperature: float = 0.4,
-) -> Optional[str]:
-    """Call local Ollama API. Returns None on failure."""
-    import re as _re
-
-    # DeepSeek reasoning models need extra tokens for the <think> block
-    is_reasoning = "deepseek" in model.lower() or "r1" in model.lower()
-    actual_tokens = max_tokens * 3 if is_reasoning else max_tokens
-
-    payload = json.dumps({
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "stream": False,
-        "options": {
-            "num_predict": actual_tokens,
-            "temperature": temperature,
-        },
-    }).encode()
-    req = urllib.request.Request(
-        f"{OLLAMA_URL}/api/chat",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-    )
-    timeout = 120 if is_reasoning else 60
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read())
-        content = data.get("message", {}).get("content", "")
-        # deepseek-r1 wraps reasoning in <think>...</think> — strip it
-        if "<think>" in content:
-            # Handle both closed and unclosed think blocks
-            content = _re.sub(r"<think>.*?</think>", "", content, flags=_re.DOTALL).strip()
-            # If think block was never closed (truncated), strip from <think> to end
-            content = _re.sub(r"<think>.*", "", content, flags=_re.DOTALL).strip()
-        return content or None
-    except (urllib.error.URLError, TimeoutError, Exception) as e:
-        return f"Ollama Error: {str(e)[:200]}"
-
-
-def _llm_call(system: str, user: str, max_tokens: int = 600) -> Optional[str]:
-    """Shared OpenAI call with error handling. Returns None if no key."""
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        return None
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            temperature=0.6,
-            max_tokens=max_tokens,
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"LLM Error: {str(e)[:200]}"
+from pakfindata.services.llm_client import (
+    llm,
+    OLLAMA_MODEL_FAST,
+    OLLAMA_MODEL_DEEP,
+    OLLAMA_MODEL_GEMMA,
+)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -239,7 +165,7 @@ def get_vpin_ai_commentary(
         "Provide your comprehensive analysis following the structured format."
     )
 
-    return _llm_call(system, user, max_tokens=600)
+    return llm.complete_chat_text(system, user, max_tokens=600, use_case="commentary")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -380,7 +306,7 @@ def get_fft_ai_commentary(
         "Provide your comprehensive analysis following the structured format."
     )
 
-    return _llm_call(system, user, max_tokens=600)
+    return llm.complete_chat_text(system, user, max_tokens=600, use_case="commentary")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -421,7 +347,7 @@ def get_volume_profile_commentary(
         "Interpret: Is price accepting or rejecting value? "
         "Where are institutional levels? What's the likely move?"
     )
-    return _ollama_call(_QUANT_SYSTEM, user, model=model)
+    return llm.complete_chat_text(_QUANT_SYSTEM, user, model=model)
 
 
 def get_order_flow_commentary(
@@ -448,7 +374,7 @@ def get_order_flow_commentary(
         "Is smart money accumulating or distributing? "
         "Flag any divergence implications."
     )
-    return _ollama_call(_QUANT_SYSTEM, user, model=model)
+    return llm.complete_chat_text(_QUANT_SYSTEM, user, model=model)
 
 
 def get_orb_commentary(
@@ -475,7 +401,7 @@ def get_orb_commentary(
         "What does the bull/bear ratio tell us about market sentiment? "
         "Which breakouts look real vs. likely to fade?"
     )
-    return _ollama_call(_QUANT_SYSTEM, user, model=model)
+    return llm.complete_chat_text(_QUANT_SYSTEM, user, model=model)
 
 
 def get_vwap_commentary(
@@ -497,7 +423,7 @@ def get_vwap_commentary(
         "Is this stock stretched? Mean-reversion or trend continuation? "
         "At what sigma level should traders fade the move?"
     )
-    return _ollama_call(_QUANT_SYSTEM, user, model=model)
+    return llm.complete_chat_text(_QUANT_SYSTEM, user, model=model)
 
 
 def get_vol_regime_commentary(
@@ -523,7 +449,7 @@ def get_vol_regime_commentary(
         "What's the options/position-sizing implication? "
         "Compare to market-wide vol state."
     )
-    return _ollama_call(_QUANT_SYSTEM, user, model=model, max_tokens=400)
+    return llm.complete_chat_text(_QUANT_SYSTEM, user, model=model, max_tokens=400)
 
 
 def get_mtf_confluence_commentary(
@@ -546,4 +472,4 @@ def get_mtf_confluence_commentary(
         "What does the bull/bear balance say about broad market trend? "
         "Which names have the strongest setup?"
     )
-    return _ollama_call(_QUANT_SYSTEM, user, model=model)
+    return llm.complete_chat_text(_QUANT_SYSTEM, user, model=model)

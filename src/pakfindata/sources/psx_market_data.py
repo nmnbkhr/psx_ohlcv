@@ -28,6 +28,7 @@ import csv
 import json
 import time
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -38,11 +39,13 @@ from pathlib import Path
 DPS_BASE = "https://dps.psx.com.pk"
 PSXT_BASE = "https://psxterminal.com/api"
 
-DATA_DIR = Path.home() / "psxdata" / "intraday"
-DB_PATH = Path("/mnt/e/psxdata/psx.sqlite")
+_INTRADAY_ROOT = Path.home() / "psxdata" / "intraday"
+DATA_DIR = _INTRADAY_ROOT / datetime.now(timezone(timedelta(hours=5))).strftime("%Y-%m-%d")
+DB_PATH = Path("/home/smnb/psxdata_rescue/psx.sqlite")
 
 PKT = timezone(timedelta(hours=5))
-RATE_LIMIT = 0.3  # seconds between requests
+RATE_LIMIT = 0.05  # seconds between requests (per-thread)
+WORKERS = 10       # parallel fetch threads
 
 # Skip index symbols (no trade data)
 INDEX_SYMBOLS = {
@@ -111,36 +114,42 @@ def get_all_symbols(client: HTTPClient) -> list[str]:
 
 def fetch_dps_eod(client: HTTPClient, symbols: list[str]) -> list[dict]:
     """
-    Fetch daily OHLCV from DPS for all symbols.
+    Fetch daily OHLCV from DPS for all symbols (parallel).
 
     DPS format: [[timestamp, close, volume, open], ...]
     NOTE: DPS does NOT provide high/low — only open, close, volume.
-    We store what we get and supplement with PSX Terminal for full OHLCV.
     """
     all_bars = []
     total = len(symbols)
+    done = [0]  # mutable counter for progress
 
-    for i, sym in enumerate(symbols, 1):
+    def _fetch_one(sym):
+        time.sleep(RATE_LIMIT)
         data = client.get_dps(f"timeseries/eod/{sym}")
+        bars = []
         if data and data.get("data"):
             for row in data["data"]:
-                # DPS EOD: [timestamp_seconds, close, volume, open]
-                ts = row[0]
-                all_bars.append({
+                bars.append({
                     "symbol": sym,
                     "source": "dps",
                     "timeframe": "1d",
-                    "timestamp": ts * 1000,  # convert to ms for consistency
+                    "timestamp": row[0] * 1000,
                     "open": row[3],
-                    "high": None,  # DPS doesn't provide high
-                    "low": None,   # DPS doesn't provide low
+                    "high": None,
+                    "low": None,
                     "close": row[1],
                     "volume": row[2],
                 })
+        return bars
 
-        if i % 25 == 0:
-            print(f"  [{i}/{total}] {len(all_bars):,} bars")
-        time.sleep(RATE_LIMIT)
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        futures = {pool.submit(_fetch_one, sym): sym for sym in symbols}
+        for fut in as_completed(futures):
+            bars = fut.result()
+            all_bars.extend(bars)
+            done[0] += 1
+            if done[0] % 50 == 0:
+                print(f"  [{done[0]}/{total}] {len(all_bars):,} bars")
 
     return all_bars
 
@@ -151,28 +160,36 @@ def fetch_dps_eod(client: HTTPClient, symbols: list[str]) -> list[dict]:
 
 def fetch_dps_ticks(client: HTTPClient, symbols: list[str]) -> list[dict]:
     """
-    Fetch today's tick-level trade data from DPS for all symbols.
+    Fetch today's tick-level trade data from DPS for all symbols (parallel).
 
     DPS format: [[timestamp_seconds, price, volume], ...]
-    Each row is a single trade execution — this is the richest data available.
     """
     all_ticks = []
     total = len(symbols)
+    done = [0]
 
-    for i, sym in enumerate(symbols, 1):
+    def _fetch_one(sym):
+        time.sleep(RATE_LIMIT)
         data = client.get_dps(f"timeseries/int/{sym}")
+        ticks = []
         if data and data.get("data"):
             for row in data["data"]:
-                all_ticks.append({
+                ticks.append({
                     "symbol": sym,
                     "timestamp": row[0],
                     "price": row[1],
                     "volume": row[2],
                 })
+        return ticks
 
-        if i % 25 == 0:
-            print(f"  [{i}/{total}] {len(all_ticks):,} ticks")
-        time.sleep(RATE_LIMIT)
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        futures = {pool.submit(_fetch_one, sym): sym for sym in symbols}
+        for fut in as_completed(futures):
+            ticks = fut.result()
+            all_ticks.extend(ticks)
+            done[0] += 1
+            if done[0] % 50 == 0:
+                print(f"  [{done[0]}/{total}] {len(all_ticks):,} ticks")
 
     return all_ticks
 
@@ -184,24 +201,18 @@ def fetch_dps_ticks(client: HTTPClient, symbols: list[str]) -> list[dict]:
 def fetch_psxt_klines(client: HTTPClient, symbols: list[str],
                       timeframe: str, deep: bool = False) -> list[dict]:
     """
-    Fetch OHLCV klines from PSX Terminal.
+    Fetch OHLCV klines from PSX Terminal (parallel).
 
     Max 100 bars per request. With deep=True, paginates BACKWARDS
     using endTimestamp to get ALL available history.
-
-    Deep pagination strategy:
-      1. First request: latest 100 bars (no startTimestamp)
-      2. Get earliest timestamp from batch
-      3. Next request: endTimestamp = earliest - 1
-      4. Repeat until empty response or < 100 bars returned
-      5. Deduplicate by (symbol, timeframe, timestamp)
     """
     all_bars = []
     total = len(symbols)
+    done = [0]
 
-    for i, sym in enumerate(symbols, 1):
+    def _fetch_one(sym):
         sym_bars = []
-        end_ts = None  # start from latest
+        end_ts = None
 
         while True:
             params = {"limit": 100}
@@ -215,31 +226,33 @@ def fetch_psxt_klines(client: HTTPClient, symbols: list[str],
             batch = data["data"]
             sym_bars.extend(batch)
 
-            # If not deep mode, just grab one batch
             if not deep:
                 break
-
-            # If we got less than 100, we've reached the beginning
             if len(batch) < 100:
                 break
 
-            # Paginate backwards
             earliest = min(b["timestamp"] for b in batch)
             end_ts = earliest - 1
-
             time.sleep(RATE_LIMIT)
 
         # Deduplicate
         seen = set()
+        unique = []
         for bar in sym_bars:
             key = (bar["symbol"], bar["timeframe"], bar["timestamp"])
             if key not in seen:
                 seen.add(key)
-                all_bars.append(bar)
+                unique.append(bar)
+        return unique
 
-        if i % 25 == 0:
-            print(f"  [{i}/{total}] {len(all_bars):,} bars")
-        time.sleep(RATE_LIMIT)
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        futures = {pool.submit(_fetch_one, sym): sym for sym in symbols}
+        for fut in as_completed(futures):
+            bars = fut.result()
+            all_bars.extend(bars)
+            done[0] += 1
+            if done[0] % 50 == 0:
+                print(f"  [{done[0]}/{total}] {len(all_bars):,} bars")
 
     return all_bars
 

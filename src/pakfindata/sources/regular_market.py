@@ -472,6 +472,14 @@ def upsert_current(con: sqlite3.Connection, df: pd.DataFrame) -> int:
         count += 1
 
     con.commit()
+
+    # Update SCD2 symbol status history after market data refresh
+    try:
+        from ..db.repositories.symbols import refresh_symbol_status
+        refresh_symbol_status(con)
+    except Exception:
+        pass  # non-critical — don't break market data flow
+
     return count
 
 

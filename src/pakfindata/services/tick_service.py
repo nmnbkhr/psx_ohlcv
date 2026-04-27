@@ -51,14 +51,14 @@ try:
     from pakfindata.config import DATA_ROOT, DEFAULT_DB_PATH
 except ImportError:
     DATA_ROOT = Path("/mnt/e/psxdata")
-    DEFAULT_DB_PATH = DATA_ROOT / "psx.sqlite"
+    DEFAULT_DB_PATH = Path("/home/smnb/psxdata_rescue/psx.sqlite")
 
 SERVICE_DIR = DATA_ROOT / "services"
 PID_FILE = SERVICE_DIR / "tick_service.pid"
 STATUS_FILE = SERVICE_DIR / "tick_service_status.json"
 SNAPSHOT_PATH = DATA_ROOT / "live_snapshot.json"
 TICK_LOG_DIR = Path.home() / "psxdata" / "tick_logs"
-EOD_DB_PATH = DATA_ROOT / "tick_bars.db"
+EOD_DB_PATH = Path("/home/smnb/psxdata_rescue/tick_bars.db")
 
 
 # =========================================================================
@@ -868,52 +868,6 @@ class TickService:
             f"{total_ticks:,} stock ticks, "
             f"{total_idx_ticks:,} index ticks -> {self.db_path}"
         )
-
-        # Dual-write to DuckDB
-        try:
-            from pakfindata.db.connections import has_duckdb, duck_write
-            import pandas as _pd
-            if has_duckdb():
-                dcon = duck_write()
-                if stock_bars:
-                    sdf = _pd.DataFrame([
-                        (b["symbol"], b["market"], b["timestamp"],
-                         b["open"], b["high"], b["low"], b["close"],
-                         b["volume"], b["trades"])
-                        for b in stock_bars
-                    ], columns=["symbol", "market", "ts", "o", "h", "l", "c", "v", "trades"])
-                    dcon.register("_sb", sdf)
-                    dcon.execute("INSERT OR IGNORE INTO ohlcv_5s SELECT * FROM _sb")
-                    dcon.unregister("_sb")
-
-                if index_bars:
-                    idf = _pd.DataFrame([
-                        (b["symbol"], b["timestamp"],
-                         b["open"], b["high"], b["low"], b["close"],
-                         b.get("volume", 0), b.get("turnover", 0))
-                        for b in index_bars
-                    ], columns=["symbol", "ts", "o", "h", "l", "c", "v", "turnover"])
-                    dcon.register("_ib", idf)
-                    dcon.execute("INSERT OR IGNORE INTO index_ohlcv_5s SELECT * FROM _ib")
-                    dcon.unregister("_ib")
-
-                if self.index_ticks:
-                    itdf = _pd.DataFrame([
-                        (t.get("symbol", ""), t.get("timestamp", 0),
-                         t.get("price", t.get("value", 0)),
-                         t.get("change", 0), t.get("changePercent", 0),
-                         t.get("volume", 0),
-                         t.get("turnover", t.get("value", 0)))
-                        for t in self.index_ticks
-                    ], columns=["symbol", "ts", "value", "change", "change_pct", "volume", "turnover"])
-                    dcon.register("_it", itdf)
-                    dcon.execute("INSERT OR IGNORE INTO index_raw_ticks SELECT * FROM _it")
-                    dcon.unregister("_it")
-
-                dcon.close()
-                print(f"DuckDB dual-write done")
-        except Exception as e:
-            print(f"DuckDB dual-write failed: {e}")
 
         # Compute daily summary for today (tick_bars.db -> psx.sqlite)
         try:

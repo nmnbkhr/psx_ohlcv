@@ -14,16 +14,15 @@ Announcement types that move prices:
 
 from __future__ import annotations
 
-import os
+import json
 import numpy as np
 import pandas as pd
 import sqlite3
-import json
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass, asdict
 
-PSX_SQLITE = Path("/mnt/e/psxdata/psx.sqlite")
+PSX_SQLITE = Path("/home/smnb/psxdata_rescue/psx.sqlite")
 CACHE_DIR = Path.home() / "pakfindata" / "models" / "sentiment_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -55,118 +54,30 @@ def _sqlite_con():
 # LLM SENTIMENT SCORING
 # ═══════════════════════════════════════════════════════
 
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-OLLAMA_MODEL = "llama3.1:8b-instruct-q4_K_M"
-
-_SENTIMENT_SYSTEM = """You are a Pakistan stock market analyst. Score the sentiment of PSX company announcements.
-
-Return ONLY valid JSON: {"score": float, "label": str, "reason": str}
-
-score: -1.0 (very bearish) to +1.0 (very bullish)
-label: BULLISH, BEARISH, or NEUTRAL
-reason: one-line explanation
-
-Pakistan market context:
-- Cash dividends above 20% are bullish
-- Rights issues are usually bearish (dilution)
-- Board meetings signal upcoming corporate action
-- Director buying is bullish, selling is bearish
-- Earnings above market expectations: bullish
-- Debt restructuring: mixed but usually short-term negative"""
-
-
-def _parse_llm_json(text: str) -> dict:
-    """Extract JSON from LLM response."""
-    if text.startswith("```"):
-        text = text.split("```")[1].strip()
-        if text.startswith("json"):
-            text = text[4:].strip()
-    # Find first { and last }
-    start = text.find("{")
-    end = text.rfind("}")
-    if start >= 0 and end > start:
-        text = text[start:end + 1]
-    result = json.loads(text)
-    return {
-        "score": float(result.get("score", 0)),
-        "label": str(result.get("label", "NEUTRAL")),
-        "confidence": min(1.0, abs(float(result.get("score", 0)))),
-        "reason": str(result.get("reason", "")),
-    }
-
-
-def _ollama_score(user: str) -> dict | None:
-    """Try local Ollama first (free, fast)."""
-    import requests
-    try:
-        r = requests.post(
-            f"{OLLAMA_URL}/api/chat",
-            json={
-                "model": OLLAMA_MODEL,
-                "messages": [
-                    {"role": "system", "content": _SENTIMENT_SYSTEM},
-                    {"role": "user", "content": user},
-                ],
-                "stream": False,
-                "options": {"temperature": 0.3, "num_predict": 150},
-            },
-            timeout=30,
-        )
-        if r.status_code == 200:
-            text = r.json().get("message", {}).get("content", "")
-            return _parse_llm_json(text)
-    except Exception:
-        pass
-    return None
-
-
-def _openai_score(user: str) -> dict | None:
-    """Fallback to OpenAI API."""
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        try:
-            from dotenv import load_dotenv
-            load_dotenv(Path.home() / "pakfindata" / ".env")
-            api_key = os.environ.get("OPENAI_API_KEY")
-        except Exception:
-            pass
-    if not api_key:
-        return None
-
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": _SENTIMENT_SYSTEM},
-                {"role": "user", "content": user},
-            ],
-            temperature=0.3,
-            max_tokens=150,
-        )
-        return _parse_llm_json(response.choices[0].message.content.strip())
-    except Exception:
-        return None
-
-
 def _llm_score(title: str, category: str = "", symbol: str = "") -> dict:
-    """Score announcement sentiment. Ollama first (free), OpenAI fallback."""
-    user = f"Symbol: {symbol}\nCategory: {category}\nAnnouncement: {title}"
+    """Score announcement sentiment via central LLM client.
 
-    # Try Ollama (local, free)
-    result = _ollama_score(user)
-    if result:
-        result["provider"] = "ollama"
-        return result
+    Uses Ollama (local, free) with automatic model selection and fallback.
+    """
+    from pakfindata.services.llm_client import llm
 
-    # Fallback to OpenAI
-    result = _openai_score(user)
-    if result:
-        result["provider"] = "openai"
-        return result
+    result = llm.score_announcement(
+        text=title,
+        ann_type=category,
+        symbol=symbol,
+    )
 
-    return {"score": 0, "label": "NEUTRAL", "confidence": 0, "reason": "No LLM available", "provider": "none"}
+    return {
+        "score": result.get("sentiment", 0),
+        "label": (
+            "BULLISH" if result.get("sentiment", 0) > 0.15
+            else "BEARISH" if result.get("sentiment", 0) < -0.15
+            else "NEUTRAL"
+        ),
+        "confidence": result.get("confidence", 0),
+        "reason": result.get("reason", ""),
+        "provider": result.get("method", "none"),
+    }
 
 
 def _cache_key(symbol: str, date: str, title: str) -> str:

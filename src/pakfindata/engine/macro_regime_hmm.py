@@ -13,16 +13,16 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import sqlite3
-import duckdb
 import joblib
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, asdict
 from enum import Enum
 
+from pakfindata.db.connections import analytics_con
+
 PKT = timezone(timedelta(hours=5))
-DUCKDB_PATH = Path("/mnt/e/psxdata/pakfindata.duckdb")
-PSX_SQLITE = Path("/mnt/e/psxdata/psx.sqlite")
+PSX_SQLITE = Path("/home/smnb/psxdata_rescue/psx.sqlite")
 MODEL_DIR = Path.home() / "pakfindata" / "models"
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 MODEL_PATH = MODEL_DIR / "hmm_regime.pkl"
@@ -79,7 +79,7 @@ def load_macro_features() -> pd.DataFrame:
     scon.row_factory = sqlite3.Row
 
     # 1. KSE-100 from eod_ohlcv (use OGDC as proxy if no index)
-    dcon = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+    dcon = analytics_con()
     kse = dcon.execute("""
         SELECT SUBSTR(date,1,7) AS month,
                LAST(close ORDER BY date) AS kse_close,
@@ -107,13 +107,20 @@ def load_macro_features() -> pd.DataFrame:
     kibor["kibor_change"] = kibor["kibor_3m"].diff()
     kibor["kibor_direction"] = np.where(kibor["kibor_change"] > 0.1, 1, np.where(kibor["kibor_change"] < -0.1, -1, 0))
 
-    # 3. PKR/USD
+    # 3. PKR/USD — use daily avg (EasyData historical) with interbank fallback
     fx = pd.read_sql_query(
-        """SELECT SUBSTR(date,1,7) AS month, AVG(mid) AS pkr_usd
-           FROM sbp_fx_interbank WHERE currency='USD' AND mid > 0
+        """SELECT SUBSTR(date,1,7) AS month, AVG(avg_rate) AS pkr_usd
+           FROM sbp_fx_daily_avg WHERE currency='USD' AND avg_rate > 0
            GROUP BY month ORDER BY month""",
         scon,
     )
+    if fx.empty:
+        fx = pd.read_sql_query(
+            """SELECT SUBSTR(date,1,7) AS month, AVG(mid) AS pkr_usd
+               FROM sbp_fx_interbank WHERE currency='USD' AND mid > 0
+               GROUP BY month ORDER BY month""",
+            scon,
+        )
     fx["pkr_change"] = fx["pkr_usd"].pct_change()
 
     # 4. SBP Policy Rate

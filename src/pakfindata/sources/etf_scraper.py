@@ -15,7 +15,7 @@ from pakfindata.db.repositories.etf import (
 
 ETF_SYMBOLS = [
     "MZNPETF", "NBPGETF", "NITGETF", "UBLPETF", "MIIETF",
-    "ACIETF", "HBLETF", "JSMFETF",  # 3 additional ETFs
+    "ACIETF", "HBLTETF", "JSMFETF",  # 3 additional ETFs
 ]
 BASE_URL = "https://dps.psx.com.pk/etf"
 TIMEOUT = 30
@@ -28,7 +28,7 @@ ETF_PSX_TO_MUFAP = {
     "NITGETF": "G66C",   # NIT Pakistan Gateway ETF
     "UBLPETF": "CCDB",   # UBL Pakistan Enterprise ETF
     "ACIETF":  "328H",   # Alfalah Consumer Index ETF
-    "HBLETF":  "1DDB",   # HBL Total Treasury ETF
+    "HBLTETF":  "1DDB",   # HBL Total Treasury ETF
     "JSMFETF": "A171",   # JS Momentum Factor ETF
 }
 
@@ -40,7 +40,7 @@ ETF_PSX_TO_MUFAP_NAME = {
     "UBLPETF": "UBL Pakistan Enterprise Exchange Traded Fund",
     "MIIETF": "Mahaana Islamic Index Exchange Traded Fund",
     "ACIETF": "Alfalah Consumer Index Exchange Traded Fund",
-    "HBLETF": "HBL Total Treasury Exchange Traded Fund",
+    "HBLTETF": "HBL Total Treasury Exchange Traded Fund",
     "JSMFETF": "JS Momentum Factor Exchange Traded Fund",
 }
 
@@ -92,7 +92,7 @@ KNOWN_ETFS = {
         "inception_date": "2022-01-18",
         "shariah_compliant": False,
     },
-    "HBLETF": {
+    "HBLTETF": {
         "name": "HBL Total Treasury Exchange Traded Fund",
         "amc": "HBL Asset Management Limited",
         "benchmark_index": "Treasury Index",

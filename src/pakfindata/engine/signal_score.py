@@ -977,15 +977,21 @@ def batch_score_symbols(
     idx = index_df if not index_df.empty else None
 
     # --- Check intraday/tick availability (bulk) ---
+    # Read from tiny pre-aggregated summary tables rather than scanning
+    # 24M-row intraday_bars / 2.5M-row tick_logs.
     intraday_syms: set[str] = set()
     tick_syms: set[str] = set()
     try:
-        rows = con.execute("SELECT DISTINCT symbol FROM intraday_bars").fetchall()
+        rows = con.execute(
+            "SELECT DISTINCT symbol FROM intraday_daily_summary"
+        ).fetchall()
         intraday_syms = {r["symbol"] for r in rows}
     except Exception:
         pass
     try:
-        rows = con.execute("SELECT DISTINCT symbol FROM tick_logs").fetchall()
+        rows = con.execute(
+            "SELECT DISTINCT symbol FROM tick_daily_summary"
+        ).fetchall()
         tick_syms = {r["symbol"] for r in rows}
     except Exception:
         pass
