@@ -25,6 +25,9 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import msgpack
+import requests
+
 logger = logging.getLogger(__name__)
 
 # WebSocket relay — real-time push to clients
@@ -44,21 +47,33 @@ MARKETS = ["REG", "FUT", "ODL", "BNB", "IDX"]
 BAR_INTERVAL = 5        # seconds per OHLCV bar
 SNAPSHOT_INTERVAL = 2    # seconds between snapshot writes
 STATUS_PRINT_INTERVAL = 30  # console status line interval
+
+# psxterminal.com WebSocket protocol (post 2026-04-29 vendor migration)
+INIT_URL = "https://psxterminal.com/api/init"
+WS_URL_TEMPLATE = "wss://psxterminal.com/rt?t={token}"
+MAX_WS_MESSAGE_SIZE = 50 * 1024 * 1024
+RECONNECT_BASE = 1.0
+RECONNECT_MAX = 60.0
+STUCK_DEADLINE = 60 * 60      # exit if no ticks for 60 min during market hours
+RECV_TIMEOUT = 60             # idle timeout per recv; server should ping within this
+
+# Legacy: only referenced by debug_ws() diagnostic (pre-migration protocol)
 WSS_URL = "wss://psxterminal.com/"
 
 # Paths — derived from config at import time
 try:
     from pakfindata.config import DATA_ROOT, DEFAULT_DB_PATH
 except ImportError:
-    DATA_ROOT = Path("/mnt/e/psxdata")
-    DEFAULT_DB_PATH = Path("/home/smnb/psxdata_rescue/psx.sqlite")
+    import os
+    DATA_ROOT = Path(os.environ.get("PSXDATA_ROOT", "/mnt/e/psxdata"))
+    DEFAULT_DB_PATH = Path(os.environ.get("PSX_DB_PATH", "/home/smnb/psxdata_rescue/psx.sqlite"))
 
 SERVICE_DIR = DATA_ROOT / "services"
 PID_FILE = SERVICE_DIR / "tick_service.pid"
 STATUS_FILE = SERVICE_DIR / "tick_service_status.json"
 SNAPSHOT_PATH = DATA_ROOT / "live_snapshot.json"
 TICK_LOG_DIR = Path.home() / "psxdata" / "tick_logs"
-EOD_DB_PATH = Path("/home/smnb/psxdata_rescue/tick_bars.db")
+EOD_DB_PATH = Path(os.environ.get("PSX_TICK_BARS_DB", "/home/smnb/psxdata_rescue/tick_bars.db"))
 
 
 # =========================================================================
@@ -350,13 +365,14 @@ class TickService:
         self.db_path = db_path or EOD_DB_PATH
         self.builder = BarBuilder(BAR_INTERVAL)
         self.live: dict[str, dict] = {}      # "MARKET:SYMBOL" → latest tick
-        self.raw_ticks: list[dict] = []       # ALL raw ticks for the day
+        self.raw_ticks: deque = deque(maxlen=200_000)  # ~3.5 hr at 55 ticks/s
         self.completed_bars: list[dict] = []  # ALL completed 5s bars
         self.tick_count = 0
         self.connected = False
         self.last_tick_time: str | None = None
         self._raw_msg_count = 0
         self._last_checkpoint = time.time()
+        self._shutdown: asyncio.Event = asyncio.Event()
         self._last_tick_ts = time.time()  # monotonic heartbeat tracker
 
         # Index-specific tracking (separate from stocks)
@@ -882,7 +898,7 @@ class TickService:
 
         # Clear ALL memory for next day
         self.completed_bars = []
-        self.raw_ticks = []
+        self.raw_ticks.clear()
         self.live = {}
         self.builder = BarBuilder(BAR_INTERVAL)
         self.tick_count = 0
@@ -891,8 +907,8 @@ class TickService:
         self.index_sparklines = {}
         self.index_ticks = []
 
-    def _sleep_until_next_session(self):
-        """Sleep until 9:14 AM PKT next trading day."""
+    async def _sleep_until_next_session(self):
+        """Async sleep until 9:14 AM PKT next trading day. Wakes on shutdown."""
         now = datetime.now(PKT)
 
         # Find next trading day (skip weekends)
@@ -902,14 +918,22 @@ class TickService:
 
         # Target: 9:14 AM PKT on next trading day
         target = next_day.replace(hour=9, minute=14, second=0, microsecond=0)
-        sleep_seconds = (target - now).total_seconds()
+        target_ts = target.timestamp()
+        total = target_ts - time.time()
 
-        if sleep_seconds > 0:
-            print(
-                f"\U0001f4a4 Sleeping until {target.strftime('%A %Y-%m-%d %H:%M')} PKT "
-                f"({sleep_seconds / 3600:.1f} hours)"
-            )
-            time.sleep(sleep_seconds)
+        if total <= 0:
+            return
+
+        print(
+            f"\U0001f4a4 Sleeping until {target.strftime('%A %Y-%m-%d %H:%M')} PKT "
+            f"({total / 3600:.1f} hours)"
+        )
+
+        while not self._shutdown.is_set():
+            remaining = target_ts - time.time()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(60, remaining))
 
     def _is_market_hours(self) -> bool:
         """True if current time is within PSX trading hours (Mon-Fri 9:00-17:30)."""
@@ -1104,6 +1128,29 @@ def _safe_int(val, default=0) -> int:
 
 
 # =========================================================================
+# psxterminal.com protocol helpers (post 2026-04-29 migration)
+# =========================================================================
+
+async def _get_token_async() -> str:
+    """Fetch a fresh single-use connection token from /api/init."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: requests.get(INIT_URL, timeout=10).json()["token"],
+    )
+
+
+def _is_market_hours_pkt() -> bool:
+    """True during PSX trading hours (Mon–Fri, 09:30 ≤ now < 16:00 PKT)."""
+    now = datetime.now(PKT)
+    if now.weekday() >= 5:
+        return False
+    if now.hour < 9 or (now.hour == 9 and now.minute < 30):
+        return False
+    return now.hour < 16
+
+
+# =========================================================================
 # Debug mode — connect, print first N raw messages, exit
 # =========================================================================
 
@@ -1169,19 +1216,17 @@ async def main(db_path: Path | None = None):
     write_pid(os.getpid())
     write_status(status)
 
-    # Graceful shutdown
-    shutdown = asyncio.Event()
-
+    # Graceful shutdown — service._shutdown is the canonical event
     def _signal_handler(*_):
         logger.info("Shutdown signal received")
-        shutdown.set()
+        service._shutdown.set()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             asyncio.get_event_loop().add_signal_handler(sig, _signal_handler)
         except NotImplementedError:
             # Windows doesn't support add_signal_handler
-            signal.signal(sig, lambda *_: shutdown.set())
+            signal.signal(sig, lambda *_: service._shutdown.set())
 
     print(f"🚀 PSX Tick Collector (memory mode) — PID {os.getpid()}")
     print(f"  Snapshot: {SNAPSHOT_PATH}")
@@ -1204,37 +1249,65 @@ async def main(db_path: Path | None = None):
     print(f"  📝 Raw WS logger → {TICK_LOG_DIR}/raw_ws_*.jsonl")
     print()
 
-    while not shutdown.is_set():
+    backoff = RECONNECT_BASE
+    last_tick_ts_outer = time.time()
+
+    while not service._shutdown.is_set():
         try:
+            # 1. Fresh single-use token per connection
+            token = await _get_token_async()
+            url = WS_URL_TEMPLATE.format(token=token)
+            print(f"🔗 Connecting to psxterminal.com (token={token[:8]}...)")
+
             async with websockets.connect(
-                WSS_URL,
-                ping_interval=20,
-                ping_timeout=10,
-                max_size=2**20,
+                url,
+                open_timeout=15,
+                max_size=MAX_WS_MESSAGE_SIZE,
                 close_timeout=5,
                 additional_headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
             ) as ws:
                 service.connected = True
                 status.connected = True
                 write_status(status)
-                print(f"🔗 Connected to {WSS_URL}")
 
-                # Subscribe to all markets
-                for mkt in MARKETS:
-                    await ws.send(json.dumps({
-                        "type": "subscribe",
-                        "subscriptionType": "marketData",
-                        "params": {"marketType": mkt},
-                    }))
-                print(f"  ✅ Subscribed: {' '.join(MARKETS)}")
+                # 2. Welcome message — server sends binary msgpack
+                welcome_raw = await asyncio.wait_for(ws.recv(), timeout=10)
+                welcome = msgpack.unpackb(welcome_raw, raw=False)
+                client_id = welcome.get("clientId", "?") if isinstance(welcome, dict) else "?"
+                print(f"  ✓ Welcome received. clientId={client_id}")
+                # Mirror welcome frame to raw_ws JSONL
+                try:
+                    _raw_ws_queue.put_nowait(json.dumps(welcome))
+                except queue.Full:
+                    pass
+
+                # 3. Single-shot subscribe — empty symbols list = ALL markets (REG/FUT/ODL/BNB/IDX)
+                await ws.send(json.dumps({
+                    "type": "subscribe",
+                    "subscriptionType": "marketData",
+                    "params": {"symbols": []},
+                    "requestId": 1,
+                }))
+                print(f"  ✅ Subscribed (single shot, all symbols)")
+
+                # Reset backoff after successful subscribe
+                backoff = RECONNECT_BASE
+                last_tick_ts_outer = time.time()
 
                 last_snapshot = datetime.now(PKT)
                 last_status_print = datetime.now(PKT)
                 post_market_done = False
 
-                while not shutdown.is_set():
+                while not service._shutdown.is_set():
+                    # OUTER stuck-state guard — exit so systemd Restart=on-failure recycles
+                    if _is_market_hours_pkt() and (time.time() - last_tick_ts_outer) > STUCK_DEADLINE:
+                        print(
+                            f"❌ Stuck: no ticks for {STUCK_DEADLINE}s during market hours — exiting (1)"
+                        )
+                        raise SystemExit(1)
+
                     try:
-                        raw = await asyncio.wait_for(ws.recv(), timeout=15)
+                        raw_bytes = await asyncio.wait_for(ws.recv(), timeout=RECV_TIMEOUT)
                     except asyncio.TimeoutError:
                         now = datetime.now(PKT)
                         # Smart EOD: after 4 PM, if no ticks for 30 min → market closed
@@ -1247,40 +1320,84 @@ async def main(db_path: Path | None = None):
                             service.connected = False
                             service.write_snapshot()
                             post_market_done = True
-                            service._sleep_until_next_session()
+                            await service._sleep_until_next_session()
                             continue
 
-                        # Heartbeat: no ticks for 60s during market hours → dead WS, reconnect
+                        # Inner heartbeat: 60s silence during market hours → reconnect
                         if service._is_market_hours() and silence > 60:
                             print(
                                 f"💀 No ticks for {silence:.0f}s — "
                                 f"WebSocket may be dead. Forcing reconnect..."
                             )
-                            service._last_tick_ts = time.time()  # avoid rapid retries
-                            break  # exit inner loop → ws closes → outer loop reconnects
+                            service._last_tick_ts = time.time()
+                            break  # inner loop exits → ws closes → outer reconnects
 
                         service.write_snapshot()
                         continue
 
-                    # Save raw WS message (non-blocking)
+                    # Decode binary msgpack frame
                     try:
-                        _raw_ws_queue.put_nowait(raw)
+                        decoded = msgpack.unpackb(raw_bytes, raw=False)
+                    except Exception as e:
+                        logger.warning("msgpack decode failed: %s", e)
+                        continue
+
+                    if not isinstance(decoded, dict):
+                        continue
+
+                    # JSON-encode for raw_ws JSONL queue (preserves on-disk shape)
+                    raw_json_str = json.dumps(decoded)
+                    try:
+                        _raw_ws_queue.put_nowait(raw_json_str)
                     except queue.Full:
                         pass
 
-                    # Debug: print first 10 raw messages
+                    # Debug: print first 10 frames
                     if service._raw_msg_count < 10:
                         service._raw_msg_count += 1
-                        print(f"  RAW[{service._raw_msg_count}]: {raw[:500]}")
+                        print(f"  RAW[{service._raw_msg_count}]: {raw_json_str[:500]}")
 
-                    # Parse tick(s)
-                    tick = _parse_ws_message(raw)
-                    if tick:
-                        service.process(tick)
+                    mtype = decoded.get("type")
+
+                    if mtype == "tickUpdate":
+                        # Defensive: synthesize wrapper timestamp if vendor drops it.
+                        # Live-verified Wed May 6 16:31 PKT that vendor DOES preserve
+                        # `timestamp` (epoch ms), but a future protocol change
+                        # could omit it — fall back to wall-clock so downstream
+                        # readers that key on this field don't crash.
+                        if "timestamp" not in decoded:
+                            decoded["timestamp"] = int(time.time() * 1000)
+                            tick = _parse_ws_message(json.dumps(decoded))
+                        else:
+                            tick = _parse_ws_message(raw_json_str)
+                        if tick:
+                            service.process(tick)
+                            last_tick_ts_outer = time.time()
+                        else:
+                            # Future-proof: handle array shapes via existing batch parser
+                            batch = _parse_ws_batch(raw_json_str)
+                            if batch:
+                                for t in batch:
+                                    service.process(t)
+                                last_tick_ts_outer = time.time()
+
+                    elif mtype == "ping":
+                        await ws.send(json.dumps({
+                            "type": "pong",
+                            "timestamp": int(time.time() * 1000),
+                        }))
+
+                    elif mtype == "subscribeResponse":
+                        if decoded.get("status") != "success":
+                            logger.error("Subscribe failed: %s", decoded)
+                            raise RuntimeError(f"subscribe failed: {decoded}")
+                        print(f"  ✓ subscribeResponse (key={decoded.get('subscriptionKey')})")
+
+                    elif mtype == "welcome":
+                        logger.debug("Late welcome: clientId=%s", decoded.get("clientId", "?"))
+
                     else:
-                        batch = _parse_ws_batch(raw)
-                        for t in batch:
-                            service.process(t)
+                        logger.debug("Unknown msg type: %s", mtype)
 
                     now = datetime.now(PKT)
 
@@ -1311,7 +1428,7 @@ async def main(db_path: Path | None = None):
                     if time.time() - service._last_checkpoint >= 1800:
                         service._checkpoint_flush()
 
-                    # Heartbeat: no valid ticks for 60s during market hours
+                    # Inner heartbeat (post-message): 60s silence during market hours → reconnect
                     if service._is_market_hours():
                         silence = time.time() - service._last_tick_ts
                         if silence > 60:
@@ -1322,17 +1439,20 @@ async def main(db_path: Path | None = None):
                             service._last_tick_ts = time.time()
                             break
 
+        except SystemExit:
+            raise
         except Exception as e:
             service.connected = False
             status.connected = False
-            status.error_message = str(e)
+            status.error_message = f"{type(e).__name__}: {e}"
             write_status(status)
-            print(f"⚠️ Disconnected: {e}. Reconnecting in 1s...")
+            print(f"⚠️ WS loop error: {type(e).__name__}: {e}. Reconnect in {backoff:.1f}s")
             service.write_snapshot()
             try:
-                await asyncio.wait_for(shutdown.wait(), timeout=1)
+                await asyncio.wait_for(service._shutdown.wait(), timeout=backoff)
             except asyncio.TimeoutError:
                 pass
+            backoff = min(backoff * 2, RECONNECT_MAX)
 
     # Graceful shutdown — flush remaining data
     print("🛑 Shutting down...")
