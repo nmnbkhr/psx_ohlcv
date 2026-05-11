@@ -90,6 +90,7 @@ def render_benchmark_monitor():
                 try:
                     from pakfindata.sources.sbp_bond_market import SBPBondMarketScraper
                     result = SBPBondMarketScraper().sync_benchmark(con)
+                    con.commit()
                     if result["status"] == "ok":
                         st.success(f"Stored {result['metrics_stored']} metrics for {result['date']}")
                     else:

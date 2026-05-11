@@ -65,6 +65,7 @@ def render_bond_market():
                     init_bond_market_schema(con)
                     scraper = SBPBondMarketScraper()
                     result = scraper.sync_benchmark(con)
+                    con.commit()
                     if result["status"] == "ok":
                         st.success(
                             f"Stored {result['metrics_stored']} metrics for {result['date']}"

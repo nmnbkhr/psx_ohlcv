@@ -6473,6 +6473,7 @@ def handle_bonds_benchmark_sync(args: argparse.Namespace) -> int:
     print("Scraping SBP benchmark rates (MSM sidebar)...")
     scraper = SBPBondMarketScraper()
     result = scraper.sync_benchmark(con)
+    con.commit()
 
     if result["status"] == "ok":
         print(f"  Date:    {result['date']}")
