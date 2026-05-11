@@ -510,13 +510,14 @@ def render_sync_monitor():
         st.session_state.announcements_sync_result = None
 
         with st.status("Syncing announcements...", expanded=True) as status:
+            from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
             try:
                 from datetime import timedelta
 
-                con = get_client().connection
                 stats = {"announcements": 0, "events": 0, "dividends": 0}
 
-                # Sync announcements
+                # Fetch all HTTP data first (outside the write lock) ───────────
+                ann_records = []
                 if sync_announcements_flag:
                     st.write("📣 Fetching company announcements...")
                     offset = 0
@@ -524,45 +525,64 @@ def render_sync_monitor():
                         records, total = fetch_announcements(announcement_type="C", offset=offset)
                         if not records:
                             break
-                        for record in records:
-                            if save_announcement(con, record):
-                                stats["announcements"] += 1
+                        ann_records.extend(records)
                         offset += len(records)
                         if offset >= total or len(records) < 20:
                             break
-                    st.write(f"   ✅ {stats['announcements']} announcements saved")
 
-                # Sync corporate events
+                events = []
                 if sync_events_flag:
                     st.write("📅 Fetching corporate events...")
                     from_date = datetime.now().strftime("%Y-%m-%d")
                     to_date = (datetime.now() + timedelta(days=365)).strftime("%Y-%m-%d")
                     events = fetch_corporate_events(from_date, to_date)
-                    for event in events:
-                        if save_corporate_event(con, event):
-                            stats["events"] += 1
-                    st.write(f"   ✅ {stats['events']} events saved")
 
-                # Sync dividends
+                symbol_payouts = []
                 if sync_dividends_flag:
                     st.write("💰 Fetching dividend payouts...")
-                    cur = con.execute("SELECT symbol FROM symbols WHERE is_active = 1")
-                    symbols = [row[0] for row in cur.fetchall()]
+                    from pakfindata.config import get_db_path
+                    import sqlite3
+                    rcon = sqlite3.connect(f"file:{get_db_path()}?mode=ro", uri=True)
+                    try:
+                        cur = rcon.execute("SELECT symbol FROM symbols WHERE is_active = 1")
+                        symbols = [row[0] for row in cur.fetchall()]
+                    finally:
+                        rcon.close()
                     progress_bar = st.progress(0)
                     for i, symbol in enumerate(symbols):
                         try:
-                            payouts = fetch_company_payouts(symbol)
-                            for payout in payouts:
-                                if save_dividend_payout(con, payout):
-                                    stats["dividends"] += 1
+                            symbol_payouts.append((symbol, fetch_company_payouts(symbol)))
                         except Exception:
-                            pass
+                            symbol_payouts.append((symbol, []))
                         progress_bar.progress((i + 1) / len(symbols))
-                    st.write(f"   ✅ {stats['dividends']} payouts saved from {len(symbols)} symbols")
 
+                # Single safe_writer block for ALL writes ──────────────────────
+                with safe_writer() as wcon:
+                    for record in ann_records:
+                        if save_announcement(wcon, record):
+                            stats["announcements"] += 1
+                    for event in events:
+                        if save_corporate_event(wcon, event):
+                            stats["events"] += 1
+                    for _symbol, payouts in symbol_payouts:
+                        for payout in payouts:
+                            if save_dividend_payout(wcon, payout):
+                                stats["dividends"] += 1
+
+                if sync_announcements_flag:
+                    st.write(f"   ✅ {stats['announcements']} announcements saved")
+                if sync_events_flag:
+                    st.write(f"   ✅ {stats['events']} events saved")
+                if sync_dividends_flag:
+                    st.write(f"   ✅ {stats['dividends']} payouts saved from {len(symbol_payouts)} symbols")
+
+                st.cache_data.clear()
                 st.session_state.announcements_sync_result = {"success": True, "stats": stats}
                 status.update(label="✅ Announcements sync completed!", state="complete")
 
+            except SafeWriterBusyError:
+                st.session_state.announcements_sync_result = {"success": False, "error": "Another sync is running. Wait and retry."}
+                status.update(label="⏳ Another sync running — retry shortly", state="error")
             except Exception as e:
                 st.session_state.announcements_sync_result = {"success": False, "error": str(e)}
                 status.update(label="❌ Sync failed!", state="error")

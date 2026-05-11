@@ -462,7 +462,7 @@ def _parse_datetime(text: str) -> tuple[str, str | None]:
 
 
 def save_announcement(con: sqlite3.Connection, record: AnnouncementRecord) -> bool:
-    """Save announcement to database."""
+    """Save announcement to database. Caller commits via pakfindata.db.safe_writer."""
     try:
         con.execute("""
             INSERT OR REPLACE INTO company_announcements (
@@ -479,7 +479,6 @@ def save_announcement(con: sqlite3.Connection, record: AnnouncementRecord) -> bo
             record.image_id,
             record.pdf_id,
         ))
-        con.commit()
         return True
     except sqlite3.Error as e:
         logger.error(f"Failed to save announcement: {e}")
@@ -487,7 +486,7 @@ def save_announcement(con: sqlite3.Connection, record: AnnouncementRecord) -> bo
 
 
 def save_corporate_event(con: sqlite3.Connection, event: CorporateEvent) -> bool:
-    """Save corporate event to database."""
+    """Save corporate event to database. Caller commits via pakfindata.db.safe_writer."""
     try:
         con.execute("""
             INSERT OR REPLACE INTO corporate_events (
@@ -504,7 +503,6 @@ def save_corporate_event(con: sqlite3.Connection, event: CorporateEvent) -> bool
             event.city,
             event.period_end,
         ))
-        con.commit()
         return True
     except sqlite3.Error as e:
         logger.error(f"Failed to save corporate event: {e}")
@@ -512,7 +510,7 @@ def save_corporate_event(con: sqlite3.Connection, event: CorporateEvent) -> bool
 
 
 def save_dividend_payout(con: sqlite3.Connection, payout: DividendPayout) -> bool:
-    """Save dividend payout to database."""
+    """Save dividend payout to database. Caller commits via pakfindata.db.safe_writer."""
     try:
         con.execute("""
             INSERT OR REPLACE INTO dividend_payouts (
@@ -532,7 +530,6 @@ def save_dividend_payout(con: sqlite3.Connection, payout: DividendPayout) -> boo
             payout.book_closure_from,
             payout.book_closure_to,
         ))
-        con.commit()
         return True
     except sqlite3.Error as e:
         logger.error(f"Failed to save dividend payout: {e}")

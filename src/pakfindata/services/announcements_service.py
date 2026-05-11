@@ -401,6 +401,11 @@ def run_service(
                 if sync_dividends_flag and not shutdown_requested:
                     sync_dividend_payouts(con, status, logger)
 
+                # Commit all writes (save_* leaves had their commits stripped
+                # for safe_writer migration; this daemon owns its own con and
+                # is not composed inside safe_writer, so commit at boundary).
+                con.commit()
+
                 # Update status
                 status.last_run_at = datetime.now().isoformat()
                 status.total_runs += 1

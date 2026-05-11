@@ -4765,6 +4765,10 @@ def handle_announcements_sync(args: argparse.Namespace) -> int:
                     pass  # Skip failed symbols silently
             print(f"  Dividend payouts: {stats['dividends']} saved from {stats['symbols_processed']} symbols")
 
+        # Commit all writes (save_* leaves had their commits stripped for
+        # safe_writer migration; this CLI owns its own con).
+        con.commit()
+
     finally:
         con.close()
 
