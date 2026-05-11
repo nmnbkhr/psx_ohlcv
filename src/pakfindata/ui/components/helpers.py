@@ -363,23 +363,14 @@ def get_connection():
 @st.cache_data(ttl=60)
 def get_data_freshness(_con) -> tuple[int | None, str | None]:
     """
-    Get data freshness info. Reads from sync_state.json (fast) first,
-    falls back to DB scan only if the file is missing.
+    Get data freshness info. Queries the DB first — SELECT MAX(date) is
+    cheap and always authoritative. Falls back to sync_state.json only
+    when the DB scan returns nothing (e.g. empty table, schema missing).
 
     Returns:
         Tuple of (days_old, latest_date_str) or (None, None) if no data.
     """
-    # Fast path: read from sync state file (written by sync jobs)
-    try:
-        from pakfindata.services.sync_state import get_last_eod_date
-        last_date = get_last_eod_date()
-        if last_date:
-            days_old = (datetime.now() - datetime.strptime(last_date, "%Y-%m-%d")).days
-            return days_old, last_date
-    except Exception:
-        pass
-
-    # Fallback: DB scan (only runs if file missing)
+    # Primary: DB scan — authoritative, no staleness risk.
     try:
         result = _con.execute(
             "SELECT MAX(date) as max_date FROM eod_ohlcv"
@@ -388,13 +379,23 @@ def get_data_freshness(_con) -> tuple[int | None, str | None]:
             most_recent = str(result["max_date"])[:10]
             latest_date = datetime.strptime(most_recent, "%Y-%m-%d")
             days_old = (datetime.now() - latest_date).days
-            # Seed the state file so next call is fast
+            # Keep the state file aligned so other consumers stay in sync.
             try:
                 from pakfindata.services.sync_state import set_last_eod_date
                 set_last_eod_date(most_recent)
             except Exception:
                 pass
             return days_old, most_recent
+    except Exception:
+        pass
+
+    # Fallback: sync_state.json — only used when DB scan failed or empty.
+    try:
+        from pakfindata.services.sync_state import get_last_eod_date
+        last_date = get_last_eod_date()
+        if last_date:
+            days_old = (datetime.now() - datetime.strptime(last_date, "%Y-%m-%d")).days
+            return days_old, last_date
     except Exception:
         pass
 
