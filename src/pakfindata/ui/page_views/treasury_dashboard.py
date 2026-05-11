@@ -1165,11 +1165,16 @@ def _render_sync(con):
     with c1:
         if st.button("Sync T-Bill / PIB", type="primary", key="tsy_sync_treasury"):
             with st.spinner("Syncing treasury auctions from SBP..."):
+                from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
                 try:
-                    result = SBPTreasuryScraper().sync_treasury(con)
-                    con.commit()
+                    scraper = SBPTreasuryScraper()  # init outside lock
+                    with safe_writer() as wcon:
+                        result = scraper.sync_treasury(wcon)
+                    st.cache_data.clear()
                     st.success(f"T-Bills: {result['tbills_ok']}, PIBs: {result['pibs_ok']}")
                     st.rerun()
+                except SafeWriterBusyError:
+                    st.error("Another sync is running. Wait a moment and retry.")
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
     with c2:
@@ -1265,12 +1270,16 @@ def _render_sync(con):
     with ec3:
         if st.button("Sync CSVs to DB", key="tsy_easydata_sync"):
             with st.spinner("Syncing EasyData CSVs to local DB tables..."):
+                from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
                 try:
-                    result = sync_all_to_db(con)
-                    con.commit()
+                    with safe_writer() as wcon:
+                        result = sync_all_to_db(wcon)
+                    st.cache_data.clear()
                     parts = [f"{k}: {v}" for k, v in result.items()]
                     st.success(" | ".join(parts))
                     st.rerun()
+                except SafeWriterBusyError:
+                    st.error("Another sync is running. Wait a moment and retry.")
                 except Exception as e:
                     st.error(f"EasyData sync failed: {e}")
 
