@@ -1889,6 +1889,11 @@ def _render_sync(con, sel_date):
                 with st.spinner(f"Loading ticks from disk for {load_disk_date}..."):
                     try:
                         result = load_ticks_from_disk(con, load_disk_date)
+                        # load_ticks_from_disk no longer commits (parallel
+                        # bulk_con removed to fix bus error). Commit on the
+                        # caller's con as Option-A scaffolding until this
+                        # button is migrated to safe_writer in Market Sync v1.
+                        con.commit()
                         if result.get("error"):
                             st.error(result["error"])
                         else:

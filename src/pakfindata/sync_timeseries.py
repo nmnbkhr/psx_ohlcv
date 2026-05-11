@@ -376,10 +376,12 @@ def load_ticks_from_disk(
 ) -> dict:
     """Load tick JSON files from disk into intraday_bars + tick_data.
 
-    Batches all inserts and commits once at the end for speed.
+    Batches all inserts into a single executemany on the passed connection.
+    The CALLER manages the transaction (typically a safe_writer block, or
+    an explicit con.commit() at the call site).
 
     Args:
-        con: DB connection
+        con: DB connection. Caller owns the transaction.
         target_date: Date folder to load from
 
     Returns:
@@ -431,22 +433,16 @@ def load_ticks_from_disk(
         )
 
     if all_intraday_rows:
-        db_path = con.execute("PRAGMA database_list").fetchone()[2]
-        bulk_con = sqlite3.connect(db_path)
-        # NORMAL (not OFF): WAL-safe durability; OFF previously caused page corruption.
-        bulk_con.execute("PRAGMA journal_mode=WAL")
-        bulk_con.execute("PRAGMA synchronous=NORMAL")
-        bulk_con.execute("PRAGMA cache_size=-64000")
-
-        bulk_con.executemany(
+        # Use the caller's connection — the caller owns the transaction
+        # (a safe_writer block, or an explicit con.commit() at the call
+        # site). Opening a parallel connection here previously caused a
+        # SIGBUS race on the WAL mmap.
+        con.executemany(
             """INSERT OR IGNORE INTO intraday_bars
                (symbol, date, ts, ts_epoch, open, high, low, close, volume)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             all_intraday_rows,
         )
-
-        bulk_con.commit()
-        bulk_con.close()
 
     return {"total_files": len(json_files), "ok": ok, "fail": fail, "rows_total": rows_total}
 
