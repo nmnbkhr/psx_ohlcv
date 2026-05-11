@@ -586,12 +586,20 @@ def render_dashboard():
                                 st.error(f"Rates sync failed: {e}")
                 with rc2:
                     if st.button("Sync Indices", key="dash_sync_idx2"):
-                        with st.spinner(""):
+                        with st.spinner("Syncing indices..."):
+                            from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                            from pakfindata.sources.indices import fetch_indices_data, save_index_data
                             try:
-                                _sync_indices(con)
-                                st.toast("Indices synced")
+                                data = fetch_indices_data()  # HTTP fetch outside lock
+                                with safe_writer() as wcon:
+                                    count = sum(1 for d in data if save_index_data(wcon, d))
+                                st.cache_data.clear()
+                                st.toast(f"Synced {count} indices")
+                            except SafeWriterBusyError:
+                                st.error("Another sync is running. Wait a moment and retry.")
                             except Exception as e:
-                                st.error(f"Indices sync failed: {e}")
+                                st.error(f"Sync failed: {e}")
+                        st.rerun()
 
             # ── EOD summary tables (precomputed breadth / movers / sectors) ──
             st.markdown("**EOD Summary Tables**")

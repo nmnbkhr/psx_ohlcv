@@ -257,6 +257,7 @@ def run_service(
                     indices_data = fetch_indices_data(timeout=30)
                     for idx_data in indices_data:
                         save_index_data(con, idx_data)
+                    con.commit()
                     con.close()
                     logger.info("KSE-100 index synced")
                 except Exception as idx_err:

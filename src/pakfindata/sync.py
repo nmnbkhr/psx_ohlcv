@@ -101,6 +101,7 @@ def sync_all(
         for idx_data in indices_data:
             if save_index_data(con, idx_data):
                 indices_synced += 1
+        con.commit()
         logger.info("Synced %d indices", indices_synced)
     except Exception as e:
         logger.warning("Failed to sync indices: %s", e)

@@ -309,6 +309,8 @@ def save_index_data(con: sqlite3.Connection, index_data: dict[str, Any]) -> bool
     """
     Save index data to database.
 
+    Caller commits via pakfindata.db.safe_writer.
+
     Args:
         con: Database connection
         index_data: Index data dict
@@ -344,7 +346,6 @@ def save_index_data(con: sqlite3.Connection, index_data: dict[str, Any]) -> bool
             index_data.get("week_52_low"),
             index_data.get("week_52_high"),
         ))
-        con.commit()
         return True
     except Exception as e:
         logger.error(f"Failed to save index data: {e}")
@@ -352,7 +353,10 @@ def save_index_data(con: sqlite3.Connection, index_data: dict[str, Any]) -> bool
 
 
 def save_market_stats(con: sqlite3.Connection, stats: dict[str, Any]) -> bool:
-    """Save market summary stats to database."""
+    """Save market summary stats to database.
+
+    Caller commits via pakfindata.db.safe_writer.
+    """
     try:
         con.execute("""
             INSERT OR REPLACE INTO psx_market_stats (
@@ -389,7 +393,6 @@ def save_market_stats(con: sqlite3.Connection, stats: dict[str, Any]) -> bool:
             stats.get("squareup_value"),
             stats.get("squareup_state"),
         ))
-        con.commit()
         return True
     except Exception as e:
         logger.error(f"Failed to save market stats: {e}")
