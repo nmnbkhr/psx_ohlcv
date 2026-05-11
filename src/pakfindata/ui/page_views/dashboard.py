@@ -442,6 +442,7 @@ def render_dashboard():
                     if latest:
                         status.update(label=f"Building summary for {latest}...")
                         refresh_eod_summary(con, latest)
+                        con.commit()
                         st.write(f"EOD summary ({latest}): OK")
                 except Exception as e:
                     errors.append(str(e))
@@ -639,14 +640,22 @@ def render_dashboard():
                 if st.button("Rebuild Today", key="dash_sum_today",
                              help="Refresh summaries for the latest trading day only."):
                     with st.spinner("Rebuilding today's summary…"):
+                        from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                        from pakfindata.db.repositories.market_summary import (
+                            init_eod_summary_schema,
+                        )
                         try:
                             d = get_latest_full_trading_day(con, min_symbols=1)
                             if d:
-                                n = refresh_eod_summary(con, d)
+                                with safe_writer() as wcon:
+                                    init_eod_summary_schema(wcon)
+                                    n = refresh_eod_summary(wcon, d)
                                 st.cache_data.clear()
                                 st.toast(f"Rebuilt {d}: {n} symbol rows")
                             else:
                                 st.warning("No EOD data found.")
+                        except SafeWriterBusyError:
+                            st.error("Another sync is running. Wait a moment and retry.")
                         except Exception as e:
                             st.error(f"Rebuild failed: {e}")
                         st.rerun()
@@ -654,12 +663,15 @@ def render_dashboard():
                 if st.button("Rebuild Missing", key="dash_sum_missing",
                              help="Populate summaries only for dates not yet built."):
                     with st.spinner("Populating missing dates…"):
+                        from pakfindata.db.repositories.market_summary import (
+                            refresh_eod_summary_bulk,
+                        )
                         try:
-                            r = refresh_eod_summary_range(con, only_missing=True)
+                            r = refresh_eod_summary_bulk(only_missing=True, batch_size=50)
                             st.cache_data.clear()
                             st.toast(
-                                f"Processed {r['dates_processed']}/{r['dates_considered']} dates, "
-                                f"{r['rows_written']:,} rows"
+                                f"Processed {r['dates_processed']}/{r['dates_considered']} "
+                                f"dates in {r['batches']} batches, {r['rows_written']:,} rows"
                             )
                         except Exception as e:
                             st.error(f"Rebuild failed: {e}")
@@ -668,11 +680,14 @@ def render_dashboard():
                 if st.button("Rebuild All", key="dash_sum_all",
                              help="Full rebuild of every date in eod_ohlcv. Slow."):
                     with st.spinner("Rebuilding all summaries…"):
+                        from pakfindata.db.repositories.market_summary import (
+                            refresh_eod_summary_bulk,
+                        )
                         try:
-                            r = refresh_eod_summary_range(con, only_missing=False)
+                            r = refresh_eod_summary_bulk(only_missing=False, batch_size=50)
                             st.cache_data.clear()
                             st.toast(
-                                f"Rebuilt {r['dates_processed']} dates, "
+                                f"Rebuilt {r['dates_processed']} dates in {r['batches']} batches, "
                                 f"{r['rows_written']:,} rows"
                             )
                         except Exception as e:

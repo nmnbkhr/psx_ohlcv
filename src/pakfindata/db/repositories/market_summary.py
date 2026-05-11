@@ -98,8 +98,18 @@ CREATE INDEX IF NOT EXISTS idx_sec_date ON eod_sector_summary(date);
 
 
 def init_eod_summary_schema(con: sqlite3.Connection) -> None:
-    """Create the three summary tables and their indexes (idempotent)."""
-    con.executescript(_SCHEMA_DDL)
+    """Create the three summary tables and their indexes (idempotent).
+
+    Caller commits via pakfindata.db.safe_writer.
+
+    Splits _SCHEMA_DDL on semicolons rather than using con.executescript() —
+    executescript() implicitly commits any pending transaction first, which
+    would end a safe_writer BEGIN IMMEDIATE transaction prematurely.
+    """
+    for stmt in _SCHEMA_DDL.split(";"):
+        stmt = stmt.strip()
+        if stmt:
+            con.execute(stmt)
 
 
 # =============================================================================
@@ -108,6 +118,10 @@ def init_eod_summary_schema(con: sqlite3.Connection) -> None:
 
 def refresh_eod_summary(con: sqlite3.Connection, date: str) -> int:
     """Rebuild ``eod_{symbol,market,sector}_summary`` rows for a single date.
+
+    Caller commits via pakfindata.db.safe_writer. For batched bulk rebuilds
+    over many dates, use :func:`refresh_eod_summary_bulk` instead — it
+    manages its own safe_writer sub-blocks per batch.
 
     Reads raw rows from ``eod_ohlcv`` (joined to ``symbols.sector_name``),
     computes derived columns and dense ranks in pandas, then replaces any
@@ -212,7 +226,6 @@ def refresh_eod_summary(con: sqlite3.Connection, date: str) -> int:
         ],
     )
 
-    con.commit()
     return total
 
 
@@ -225,6 +238,12 @@ def refresh_eod_summary_range(
     """Rebuild summaries for every trading date in ``eod_ohlcv`` within the
     range ``[start_date, end_date]`` (both inclusive; both optional — defaults
     walk the entire table).
+
+    DEPRECATED: use :func:`refresh_eod_summary_bulk` for bulk rebuilds — it
+    opens batched safe_writer sub-blocks (commits + WAL checkpoint per batch),
+    bounding WAL growth and writer-lock hold time. Kept for back-compat.
+
+    Caller commits via pakfindata.db.safe_writer.
 
     Args:
         con: Database connection.
@@ -268,6 +287,88 @@ def refresh_eod_summary_range(
         "skipped": len(dates) - processed,
         "first_date": dates[0] if dates else None,
         "last_date": dates[-1] if dates else None,
+    }
+
+
+def refresh_eod_summary_bulk(
+    start_date: str | None = None,
+    end_date: str | None = None,
+    only_missing: bool = False,
+    batch_size: int = 50,
+) -> dict:
+    """Batched EOD summary rebuild — opens its own safe_writer sub-blocks.
+
+    Commits every ``batch_size`` dates so WAL stays bounded and the writer
+    lock is released between batches (lets other writers in, prevents
+    multi-minute lock holds on long rebuilds).
+
+    Does NOT accept a connection — opens its own. Use this for bulk rebuilds
+    from UI (Rebuild Missing, Rebuild All) and CLI. For single-date refresh,
+    call :func:`refresh_eod_summary` inside a caller-managed safe_writer
+    block.
+
+    Args:
+        start_date: Inclusive lower bound (``YYYY-MM-DD``) or None for earliest.
+        end_date:   Inclusive upper bound (``YYYY-MM-DD``) or None for latest.
+        only_missing: When True, skip dates that already have a row in
+            ``eod_market_summary``.
+        batch_size: Number of dates per safe_writer transaction. Default 50.
+
+    Returns dict with ``dates_processed``, ``dates_considered``,
+    ``rows_written``, ``skipped``, ``first_date``, ``last_date``,
+    ``batch_size``, ``batches``.
+    """
+    from pakfindata.db.safe_writer import safe_writer
+    from pakfindata.config import get_db_path
+
+    db_path = str(get_db_path())
+
+    # Step 1: enumerate dates using a fresh read-only connection
+    rcon = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        q = "SELECT DISTINCT date FROM eod_ohlcv WHERE 1=1"
+        params: list = []
+        if start_date:
+            q += " AND date >= ?"
+            params.append(start_date)
+        if end_date:
+            q += " AND date <= ?"
+            params.append(end_date)
+        q += " ORDER BY date"
+        dates = [r[0] for r in rcon.execute(q, params).fetchall() if r[0]]
+        if only_missing:
+            existing = {
+                r[0] for r in rcon.execute(
+                    "SELECT date FROM eod_market_summary"
+                ).fetchall()
+            }
+            dates = [d for d in dates if d not in existing]
+    finally:
+        rcon.close()
+
+    # Step 2: process in batches, each batch = one safe_writer transaction
+    processed = 0
+    rows_written = 0
+    for i in range(0, len(dates), batch_size):
+        chunk = dates[i:i + batch_size]
+        with safe_writer() as wcon:
+            init_eod_summary_schema(wcon)
+            for d in chunk:
+                n = refresh_eod_summary(wcon, d)
+                rows_written += n
+                if n:
+                    processed += 1
+        # safe_writer auto-commits + checkpoints + closes after each batch
+
+    return {
+        "dates_processed": processed,
+        "dates_considered": len(dates),
+        "rows_written": rows_written,
+        "skipped": len(dates) - processed,
+        "first_date": dates[0] if dates else None,
+        "last_date": dates[-1] if dates else None,
+        "batch_size": batch_size,
+        "batches": (len(dates) + batch_size - 1) // batch_size,
     }
 
 
