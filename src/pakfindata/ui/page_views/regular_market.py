@@ -60,6 +60,7 @@ def render_regular_market():
 
     try:
         from pakfindata.analytics import compute_all_analytics
+        from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
         from pakfindata.sources.regular_market import (
             fetch_regular_market,
             get_all_current_hashes,
@@ -70,9 +71,7 @@ def render_regular_market():
         )
 
         client = get_client()
-        con = client.connection  # For write operations (fetch, upsert, snapshots)
-        init_regular_market_schema(con)
-        client.init_analytics()
+        con = client.connection  # Read-only — writes go through safe_writer below
 
         # Initialize session state
         if "rm_fetch_result" not in st.session_state:
@@ -114,7 +113,7 @@ def render_regular_market():
                 st.write("🔄 Fetching from PSX market-watch...")
 
                 try:
-                    df = fetch_regular_market()
+                    df = fetch_regular_market()  # HTTP fetch outside lock
 
                     if df.empty:
                         st.session_state.rm_fetch_result = {
@@ -123,24 +122,30 @@ def render_regular_market():
                         }
                         status.update(label="❌ No data returned", state="error")
                     else:
-                        # CRITICAL: Load previous hashes BEFORE upsert
-                        prev_hashes = get_all_current_hashes(con)
+                        # All writes go through safe_writer (fresh connection,
+                        # BEGIN IMMEDIATE, commit + wal_checkpoint on exit).
+                        with safe_writer() as wcon:
+                            init_regular_market_schema(wcon)
 
-                        # Insert snapshots first (using pre-loaded hashes)
-                        snapshots_saved = insert_snapshots(
-                            con, df,
-                            save_unchanged=save_unchanged,
-                            prev_hashes=prev_hashes,
-                        )
+                            # CRITICAL: Load previous hashes BEFORE upsert
+                            prev_hashes = get_all_current_hashes(wcon)
 
-                        # Then upsert current data
-                        rows_upserted = upsert_current(con, df)
+                            # Insert snapshots first (using pre-loaded hashes)
+                            snapshots_saved = insert_snapshots(
+                                wcon, df,
+                                save_unchanged=save_unchanged,
+                                prev_hashes=prev_hashes,
+                            )
 
-                        # Compute analytics
-                        ts = df["ts"].iloc[0] if not df.empty else None
-                        if ts:
-                            compute_all_analytics(con, ts)
+                            # Then upsert current data
+                            rows_upserted = upsert_current(wcon, df)
 
+                            # Compute analytics (init_analytics_schema runs inside)
+                            ts = df["ts"].iloc[0] if not df.empty else None
+                            if ts:
+                                compute_all_analytics(wcon, ts)
+
+                        st.cache_data.clear()
                         st.session_state.rm_fetch_result = {
                             "success": True,
                             "symbols": len(df),
@@ -151,6 +156,13 @@ def render_regular_market():
                             label=f"✅ Fetched {len(df)} symbols",
                             state="complete"
                         )
+
+                except SafeWriterBusyError:
+                    st.session_state.rm_fetch_result = {
+                        "success": False,
+                        "error": "Another sync is running. Wait a moment and retry.",
+                    }
+                    status.update(label="❌ Writer busy", state="error")
 
                 except Exception as e:
                     st.session_state.rm_fetch_result = {

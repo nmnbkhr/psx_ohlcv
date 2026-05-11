@@ -3633,6 +3633,7 @@ def handle_regular_market_snapshot(args: argparse.Namespace) -> int:
     else:
         df.to_csv(csv_path, index=False)
 
+    con.commit()
     con.close()
 
     # Print summary
@@ -3712,6 +3713,8 @@ def handle_regular_market_listen(args: argparse.Namespace) -> int:
                     if ts_full:
                         analytics_result = compute_all_analytics(con, ts_full)
 
+                    con.commit()
+
                     # Save current.csv with sector names
                     current_csv = csv_dir / "current.csv"
                     df_with_sectors = get_current_market_with_sectors(con)
@@ -3763,6 +3766,7 @@ def handle_regular_market_show(args: argparse.Namespace) -> int:
     init_schema(con)
     init_regular_market_schema(con)
     init_analytics_schema(con)
+    con.commit()
 
     # Get data with sector names joined
     df = get_current_market_with_sectors(con)

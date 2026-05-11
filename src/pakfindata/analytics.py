@@ -68,9 +68,19 @@ CREATE INDEX IF NOT EXISTS idx_analytics_sector_ts
 
 
 def init_analytics_schema(con: sqlite3.Connection) -> None:
-    """Initialize analytics tables if they don't exist."""
-    con.executescript(ANALYTICS_SCHEMA_SQL)
-    con.commit()
+    """Initialize analytics tables if they don't exist.
+
+    Caller commits via pakfindata.db.safe_writer.
+
+    Splits ANALYTICS_SCHEMA_SQL on semicolons rather than using
+    con.executescript() — executescript() implicitly commits any pending
+    transaction first, which would end a safe_writer BEGIN IMMEDIATE
+    transaction prematurely.
+    """
+    for stmt in ANALYTICS_SCHEMA_SQL.split(";"):
+        stmt = stmt.strip()
+        if stmt:
+            con.execute(stmt)
 
 
 # =============================================================================
@@ -148,6 +158,8 @@ def compute_market_analytics(con: sqlite3.Connection, ts: str) -> dict[str, Any]
 def store_market_analytics(con: sqlite3.Connection, analytics: dict[str, Any]) -> None:
     """Store market analytics to database.
 
+    Caller commits via pakfindata.db.safe_writer.
+
     Args:
         con: Database connection
         analytics: Dict from compute_market_analytics
@@ -182,7 +194,6 @@ def store_market_analytics(con: sqlite3.Connection, analytics: dict[str, Any]) -
             now,
         ),
     )
-    con.commit()
 
 
 # =============================================================================
@@ -258,6 +269,8 @@ def store_top_lists(
 ) -> int:
     """Store top lists to database.
 
+    Caller commits via pakfindata.db.safe_writer.
+
     Args:
         con: Database connection
         ts: Timestamp
@@ -296,7 +309,6 @@ def store_top_lists(
             )
             count += 1
 
-    con.commit()
     return count
 
 
@@ -383,6 +395,8 @@ def compute_sector_rollups(con: sqlite3.Connection, ts: str) -> pd.DataFrame:
 def store_sector_rollups(con: sqlite3.Connection, df: pd.DataFrame) -> int:
     """Store sector rollups to database.
 
+    Caller commits via pakfindata.db.safe_writer.
+
     Args:
         con: Database connection
         df: DataFrame from compute_sector_rollups
@@ -403,9 +417,11 @@ def store_sector_rollups(con: sqlite3.Connection, df: pd.DataFrame) -> int:
 
     count = 0
     for _, row in df.iterrows():
+        # INSERT OR REPLACE tolerates duplicate (ts, sector_code) from
+        # compute_sector_rollups (separate ticket: dedup at compute time).
         con.execute(
             """
-            INSERT INTO analytics_sector_snapshot (
+            INSERT OR REPLACE INTO analytics_sector_snapshot (
                 ts, sector_code, sector_name, symbols_count,
                 avg_change_pct, sum_volume, top_symbol
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -422,7 +438,6 @@ def store_sector_rollups(con: sqlite3.Connection, df: pd.DataFrame) -> int:
         )
         count += 1
 
-    con.commit()
     return count
 
 
@@ -437,6 +452,8 @@ def compute_all_analytics(
     top_n: int = 10,
 ) -> dict[str, Any]:
     """Run the full analytics pipeline for a timestamp.
+
+    Caller commits via pakfindata.db.safe_writer.
 
     Computes and stores:
     - Market analytics (breadth)
