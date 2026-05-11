@@ -81,10 +81,18 @@ _tables_ready = False
 
 
 def ensure_tables(con: sqlite3.Connection) -> None:
+    """Create intraday summary tables if missing. Caller commits via pakfindata.db.safe_writer.
+
+    Uses split execute() per statement instead of executescript() so the call
+    is safe to invoke inside a safe_writer's BEGIN IMMEDIATE transaction.
+    """
     global _tables_ready
     if _tables_ready:
         return
-    con.executescript(_CREATE_SQL)
+    for stmt in _CREATE_SQL.split(";"):
+        stmt = stmt.strip()
+        if stmt:
+            con.execute(stmt)
     _tables_ready = True
 
 
@@ -264,6 +272,7 @@ def _compute_index_minute_from_jsonl(date_str: str) -> list[tuple]:
 
 
 def compute_daily_summary(con: sqlite3.Connection, date_str: str) -> int:
+    """Caller commits via pakfindata.db.safe_writer."""
     ensure_tables(con)
     if not jsonl_path(date_str).exists():
         logger.warning("JSONL missing for %s", date_str)
@@ -279,11 +288,11 @@ def compute_daily_summary(con: sqlite3.Connection, date_str: str) -> int:
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         rows,
     )
-    con.commit()
     return len(rows)
 
 
 def compute_minute_breadth(con: sqlite3.Connection, date_str: str, market: str = "REG") -> int:
+    """Caller commits via pakfindata.db.safe_writer."""
     ensure_tables(con)
     if not jsonl_path(date_str).exists():
         return 0
@@ -296,11 +305,11 @@ def compute_minute_breadth(con: sqlite3.Connection, date_str: str, market: str =
            VALUES (?,?,?,?,?,?,?,?)""",
         rows,
     )
-    con.commit()
     return len(rows)
 
 
 def compute_hourly_summary(con: sqlite3.Connection, date_str: str, market: str = "REG") -> int:
+    """Caller commits via pakfindata.db.safe_writer."""
     ensure_tables(con)
     if not jsonl_path(date_str).exists():
         return 0
@@ -313,11 +322,11 @@ def compute_hourly_summary(con: sqlite3.Connection, date_str: str, market: str =
            VALUES (?,?,?,?,?)""",
         rows,
     )
-    con.commit()
     return len(rows)
 
 
 def compute_index_minute(con: sqlite3.Connection, date_str: str) -> int:
+    """Caller commits via pakfindata.db.safe_writer."""
     ensure_tables(con)
     if not jsonl_path(date_str).exists():
         return 0
@@ -330,7 +339,6 @@ def compute_index_minute(con: sqlite3.Connection, date_str: str) -> int:
            VALUES (?,?,?,?)""",
         rows,
     )
-    con.commit()
     return len(rows)
 
 

@@ -1909,8 +1909,13 @@ def _render_sync(con, sel_date):
                 try:
                     from pakfindata.db.repositories import intraday_summary as _isum
                     if _isum.source_available(load_disk_date) == "jsonl":
+                        from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
                         with st.spinner(f"Building summaries for {load_disk_date}..."):
-                            sres = _isum.compute_all(con, load_disk_date)
+                            try:
+                                with safe_writer() as wcon:
+                                    sres = _isum.compute_all(wcon, load_disk_date)
+                            except SafeWriterBusyError:
+                                sres = {"error": "Another writer holds the lock; retry shortly."}
                         if "error" in sres:
                             st.warning(f"Summary build skipped: {sres['error']}")
                         else:
@@ -1919,6 +1924,7 @@ def _render_sync(con, sel_date):
                                 f"Summaries built in {t['total_s']}s — "
                                 f"daily: {sres['daily']}, minute: {sres['minute_breadth']}, hourly: {sres['hourly']}"
                             )
+                            st.cache_data.clear()
                     else:
                         st.info(
                             f"No JSONL for {load_disk_date} — run tick log sync to enable summary build."
@@ -2035,9 +2041,11 @@ def _render_sync(con, sel_date):
                 help="Runs daily / minute breadth / hourly aggregations for this date.",
             ):
                 from pakfindata.db.repositories import intraday_summary as _isum
+                from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
                 with st.spinner(f"Aggregating {_sum_date}..."):
                     try:
-                        result = _isum.compute_all(con, _sum_date)
+                        with safe_writer() as wcon:
+                            result = _isum.compute_all(wcon, _sum_date)
                         if "error" in result:
                             st.error(result["error"])
                         else:
@@ -2048,6 +2056,9 @@ def _render_sync(con, sel_date):
                                 f"minute: {result['minute_breadth']} rows ({t['minute_breadth_s']}s), "
                                 f"hourly: {result['hourly']} rows ({t['hourly_s']}s)"
                             )
+                            st.cache_data.clear()
+                    except SafeWriterBusyError:
+                        st.error("Another writer holds the lock; retry shortly.")
                     except Exception as e:
                         import traceback
                         st.error(f"Build failed: {e}")
@@ -2060,6 +2071,7 @@ def _render_sync(con, sel_date):
                 help="Runs aggregations for every JSONL date not yet in the summary table.",
             ):
                 from pakfindata.db.repositories import intraday_summary as _isum
+                from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
                 _existing = set(_isum.get_summary_dates(con))
                 _missing = [d for d in _jl_dates if d not in _existing]
                 if not _missing:
@@ -2069,11 +2081,15 @@ def _render_sync(con, sel_date):
                     _ok = 0
                     for _i, _d in enumerate(_missing):
                         try:
-                            _isum.compute_all(con, _d)
+                            with safe_writer() as wcon:
+                                _isum.compute_all(wcon, _d)
                             _ok += 1
+                        except SafeWriterBusyError:
+                            st.warning(f"{_d}: another writer holds the lock; skipped.")
                         except Exception as _e:
                             st.warning(f"{_d}: {_e}")
                         _prog.progress((_i + 1) / len(_missing), text=f"{_i+1}/{len(_missing)} ({_d})")
+                    st.cache_data.clear()
                     st.success(f"Built summaries for {_ok}/{len(_missing)} dates.")
 
     st.markdown("---")
