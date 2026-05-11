@@ -414,12 +414,20 @@ def render_indices():
         with col2:
             if st.button("Sync Index Membership → instrument_membership", key="idx_membership"):
                 with st.spinner("Parsing listed_in → instrument_membership..."):
-                    result = sync_index_membership(con)
-                    st.success(
-                        "{} indices, {} memberships synced, {} skipped → instrument_membership".format(
-                            result["indices"], result["memberships"], result["skipped"]
+                    from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                    try:
+                        with safe_writer() as wcon:
+                            result = sync_index_membership(wcon)
+                        st.cache_data.clear()
+                        st.success(
+                            "{} indices, {} memberships synced, {} skipped → instrument_membership".format(
+                                result["indices"], result["memberships"], result["skipped"]
+                            )
                         )
-                    )
+                    except SafeWriterBusyError:
+                        st.error("Another sync is running. Wait a moment and retry.")
+                    except Exception as e:
+                        st.error(f"Sync failed: {e}")
                     st.rerun()
 
         with col3:
