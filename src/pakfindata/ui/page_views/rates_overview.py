@@ -217,6 +217,7 @@ def render_rates_overview():
                     try:
                         from pakfindata.sources.sbp_easydata import sync_kibor_to_db
                         result = sync_kibor_to_db(con)
+                        con.commit()
                         st.success(f"KIBOR synced: {result.get('kibor_rows', 0)} rows")
                     except Exception as e:
                         st.error(f"Failed: {e}")
@@ -238,6 +239,7 @@ def render_rates_overview():
                     try:
                         from pakfindata.sources.sbp_treasury import SBPTreasuryScraper
                         result = SBPTreasuryScraper().sync_treasury(con)
+                        con.commit()
                         st.success(f"Auctions synced: {result}")
                     except Exception as e:
                         st.error(f"Failed: {e}")

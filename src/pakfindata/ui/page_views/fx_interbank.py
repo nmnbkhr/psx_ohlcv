@@ -90,6 +90,7 @@ def render_fx_interbank():
                         from pakfindata.sources.sbp_easydata import sync_fx_to_db, sync_kibor_to_db
                         r1 = sync_fx_to_db(con)
                         r2 = sync_kibor_to_db(con)
+                        con.commit()
                         st.success(f"EasyData: {r1.get('fx_rows',0)} FX + {r2.get('kibor_rows',0)} KIBOR rows")
                     except Exception as e:
                         st.error(f"Sync failed: {e}")

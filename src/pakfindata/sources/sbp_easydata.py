@@ -837,7 +837,10 @@ _DAILY_FX_MAP = {
 
 
 def sync_kibor_to_db(con, since: str = "") -> dict:
-    """Load KIBOR/KIBID from EasyData CSVs into kibor_daily table."""
+    """Load KIBOR/KIBID from EasyData CSVs into kibor_daily table.
+
+    Caller commits via pakfindata.db.safe_writer.
+    """
     import sqlite3
     con.execute("""CREATE TABLE IF NOT EXISTS kibor_daily (
         date TEXT, tenor TEXT, bid REAL, offer REAL, scraped_at TEXT,
@@ -865,12 +868,13 @@ def sync_kibor_to_db(con, since: str = "") -> dict:
                 inserted += 1
             except sqlite3.IntegrityError:
                 pass
-    con.commit()
     return {"kibor_rows": inserted}
 
 
 def sync_fx_to_db(con, since: str = "") -> dict:
     """Load FX monthly avg rates from EasyData into sbp_fx_monthly_avg table.
+
+    Caller commits via pakfindata.db.safe_writer.
 
     NOTE: These are monthly weighted averages — NOT interbank spot rates.
     Stored in a separate table to avoid corrupting sbp_fx_interbank.
@@ -902,12 +906,14 @@ def sync_fx_to_db(con, since: str = "") -> dict:
                 inserted += 1
             except sqlite3.IntegrityError:
                 pass
-    con.commit()
     return {"fx_rows": inserted}
 
 
 def sync_policy_rate_to_db(con, since: str = "") -> dict:
-    """Load SBP policy rates from EasyData CSVs into sbp_policy_rates table."""
+    """Load SBP policy rates from EasyData CSVs into sbp_policy_rates table.
+
+    Caller commits via pakfindata.db.safe_writer.
+    """
     import sqlite3
     con.execute("""CREATE TABLE IF NOT EXISTS sbp_policy_rates (
         rate_date TEXT PRIMARY KEY, policy_rate REAL, ceiling_rate REAL,
@@ -936,12 +942,13 @@ def sync_policy_rate_to_db(con, since: str = "") -> dict:
                 inserted += 1
             except sqlite3.IntegrityError:
                 pass
-    con.commit()
     return {"policy_rows": inserted}
 
 
 def sync_daily_fx_to_db(con, since: str = "") -> dict:
     """Load daily average FX rates from EasyData into sbp_fx_daily_avg table.
+
+    Caller commits via pakfindata.db.safe_writer.
 
     NOTE: These are daily weighted averages — NOT interbank spot rates.
     Stored in a separate table to avoid corrupting sbp_fx_interbank.
@@ -972,7 +979,6 @@ def sync_daily_fx_to_db(con, since: str = "") -> dict:
                 inserted += 1
             except sqlite3.IntegrityError:
                 pass
-    con.commit()
     return {"daily_fx_rows": inserted}
 
 

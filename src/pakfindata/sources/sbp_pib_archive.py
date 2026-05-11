@@ -169,6 +169,7 @@ class SBPPibArchiveScraper:
             else:
                 counts["failed"] += 1
 
+        con.commit()
         return counts
 
     @staticmethod

@@ -918,6 +918,7 @@ def _render_sync(con):
                 try:
                     from pakfindata.sources.sbp_easydata import sync_all_to_db
                     result = sync_all_to_db(con)
+                    con.commit()
                     st.success(
                         f"EasyData: {result.get('fx_rows', 0)} FX, "
                         f"{result.get('kibor_rows', 0)} KIBOR, "

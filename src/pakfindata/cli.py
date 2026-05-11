@@ -7400,6 +7400,7 @@ def handle_treasury(args: argparse.Namespace) -> int:
         print("Scraping latest T-Bill + PIB rates from SBP PMA page...")
         scraper = SBPTreasuryScraper()
         result = scraper.sync_treasury(con)
+        con.commit()
         print(
             f"Done: {result['tbills_ok']} T-Bills, {result['pibs_ok']} PIBs saved, "
             f"{result['failed']} failed"
@@ -7991,6 +7992,7 @@ def handle_sync_all(args: argparse.Namespace) -> int:
         print(f"  [{i}/{len(steps)}] {name}...", end=" ", flush=True)
         try:
             result = fn()
+            con.commit()
             print(f"OK {result}")
             ok_count += 1
         except Exception as e:

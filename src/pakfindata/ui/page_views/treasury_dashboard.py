@@ -1167,6 +1167,7 @@ def _render_sync(con):
             with st.spinner("Syncing treasury auctions from SBP..."):
                 try:
                     result = SBPTreasuryScraper().sync_treasury(con)
+                    con.commit()
                     st.success(f"T-Bills: {result['tbills_ok']}, PIBs: {result['pibs_ok']}")
                     st.rerun()
                 except Exception as e:
@@ -1266,6 +1267,7 @@ def _render_sync(con):
             with st.spinner("Syncing EasyData CSVs to local DB tables..."):
                 try:
                     result = sync_all_to_db(con)
+                    con.commit()
                     parts = [f"{k}: {v}" for k, v in result.items()]
                     st.success(" | ".join(parts))
                     st.rerun()

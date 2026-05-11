@@ -579,12 +579,23 @@ def render_dashboard():
                 rc1, rc2 = st.columns(2)
                 with rc1:
                     if st.button("Sync Rates", key="dash_sync_rates2"):
-                        with st.spinner(""):
+                        with st.spinner("Syncing rates..."):
+                            from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                            from pakfindata.sources.sbp_easydata import sync_kibor_to_db, sync_policy_rate_to_db
+                            from pakfindata.sources.sbp_treasury import SBPTreasuryScraper
                             try:
-                                _sync_rates(con)
-                                st.toast("Rates synced")
+                                scraper = SBPTreasuryScraper()  # init outside lock
+                                with safe_writer() as wcon:
+                                    sync_kibor_to_db(wcon)
+                                    scraper.sync_treasury(wcon)
+                                    sync_policy_rate_to_db(wcon)
+                                st.cache_data.clear()
+                                st.toast("Rates synced: KIBOR + treasury + policy")
+                            except SafeWriterBusyError:
+                                st.error("Another sync is running. Wait a moment and retry.")
                             except Exception as e:
                                 st.error(f"Rates sync failed: {e}")
+                        st.rerun()
                 with rc2:
                     if st.button("Sync Indices", key="dash_sync_idx2"):
                         with st.spinner("Syncing indices..."):
