@@ -700,6 +700,27 @@ def render_dashboard():
                 runs_df.columns = ["ID", "Started", "Ended", "Mode", "Total", "OK", "Failed", "Rows"]
                 st.dataframe(runs_df, width='stretch', hide_index=True, height=180)
 
+        with st.expander("Database Health (Advanced)", expanded=False):
+            st.caption(
+                "Use before sleep / shutdown / backup to flush WAL into the main DB "
+                "file. Prevents the May 9 2026 corruption pattern (long-lived WAL "
+                "across overnight idle)."
+            )
+            if st.button("Force WAL Checkpoint", key="dash_wal_checkpoint"):
+                from pakfindata.db.safe_writer import checkpoint_wal
+                try:
+                    busy, log_frames, ckpt = checkpoint_wal()
+                    if busy == 0:
+                        st.success(
+                            f"WAL fully checkpointed ({ckpt}/{log_frames} frames flushed)."
+                        )
+                    else:
+                        st.warning(
+                            f"Partial checkpoint — {busy} pending. Another writer active."
+                        )
+                except Exception as e:
+                    st.error(f"Checkpoint failed: {e}")
+
     except Exception as e:
         st.error(f"Database error: {e}")
         st.info(f"Expected database at: {get_db_path()}")
