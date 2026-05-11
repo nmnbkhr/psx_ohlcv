@@ -430,6 +430,7 @@ def render_dashboard():
                     status.update(label=f"Fetching {label}...")
                     try:
                         fn()
+                        con.commit()
                         st.write(f"{label}: OK")
                     except Exception as e:
                         errors.append(str(e))

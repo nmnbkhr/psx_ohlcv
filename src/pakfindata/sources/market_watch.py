@@ -178,6 +178,7 @@ def refresh_symbols(db_path: Path | str | None = None) -> RefreshResult:
     # Update SCD2 status history (XD/XB/XR/NC tracking)
     from ..db.repositories.symbols import refresh_symbol_status
     refresh_symbol_status(con)
+    con.commit()
 
     con.close()
 

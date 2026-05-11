@@ -201,8 +201,15 @@ _ALL_STATUS_SUFFIXES = tuple(k for k in _DEFAULT_STATUSES if k != "NORMAL")
 
 
 def init_status_history_schema(con: sqlite3.Connection) -> None:
-    """Create symbol status tables and seed default status definitions."""
-    con.executescript("""
+    """Create symbol status tables and seed default status definitions.
+
+    Caller commits via pakfindata.db.safe_writer.
+
+    Uses individual con.execute() calls rather than con.executescript() —
+    executescript() implicitly commits any pending transaction first, which
+    would end a safe_writer BEGIN IMMEDIATE transaction prematurely.
+    """
+    con.execute("""
         CREATE TABLE IF NOT EXISTS symbol_status_definitions (
             status          TEXT PRIMARY KEY,
             label           TEXT NOT NULL,
@@ -210,8 +217,9 @@ def init_status_history_schema(con: sqlite3.Connection) -> None:
             is_suffix       INTEGER DEFAULT 1,
             created_at      TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-
+        )
+    """)
+    con.execute("""
         CREATE TABLE IF NOT EXISTS symbol_status_history (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             symbol          TEXT NOT NULL,
@@ -223,12 +231,16 @@ def init_status_history_schema(con: sqlite3.Connection) -> None:
             created_at      TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(symbol, status, start_date)
-        );
-        CREATE INDEX IF NOT EXISTS idx_ssh_symbol
-            ON symbol_status_history(symbol);
-        CREATE INDEX IF NOT EXISTS idx_ssh_current
-            ON symbol_status_history(is_current) WHERE is_current = 1;
+        )
     """)
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ssh_symbol "
+        "ON symbol_status_history(symbol)"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ssh_current "
+        "ON symbol_status_history(is_current) WHERE is_current = 1"
+    )
 
     # Seed defaults (INSERT OR IGNORE so user edits are preserved)
     for status, (label, desc) in _DEFAULT_STATUSES.items():
@@ -238,7 +250,6 @@ def init_status_history_schema(con: sqlite3.Connection) -> None:
                VALUES (?, ?, ?, ?)""",
             (status, label, desc, 0 if status == "NORMAL" else 1),
         )
-    con.commit()
 
 
 def get_status_definitions(con: sqlite3.Connection) -> dict[str, dict]:
@@ -313,6 +324,8 @@ def refresh_symbol_status(
     today: str | None = None,
 ) -> dict:
     """Detect status CHANGES and update SCD2 history.
+
+    Caller commits via pakfindata.db.safe_writer.
 
     Only writes when a symbol's status actually changes:
       - NBP was NORMAL, now NBPXD appears → close NORMAL row, open XD row
@@ -416,7 +429,6 @@ def refresh_symbol_status(
         )
         result["closed"] += 1
 
-    con.commit()
     return result
 
 
