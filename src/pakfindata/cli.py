@@ -557,6 +557,48 @@ def main(argv: list[str] | None = None) -> int:
         help="Quiet mode - minimal output (useful for cron)",
     )
 
+    # intraday ticks-fetch (HTTP → JSON on disk, no DB writes)
+    intraday_ticks_fetch_parser = intraday_sub.add_parser(
+        "ticks-fetch",
+        help="Fetch all active symbols' intraday ticks → JSON on disk",
+    )
+    intraday_ticks_fetch_parser.add_argument(
+        "--date",
+        type=str,
+        required=True,
+        help="Target date (YYYY-MM-DD) for the JSON output folder",
+    )
+    intraday_ticks_fetch_parser.add_argument(
+        "--shards",
+        type=int,
+        default=3,
+        help="Number of parallel shard groups (default: 3)",
+    )
+
+    # intraday ticks-load (disk → intraday_bars + tick_data)
+    intraday_ticks_load_parser = intraday_sub.add_parser(
+        "ticks-load",
+        help="Load tick JSON files from disk → intraday_bars + tick_data",
+    )
+    intraday_ticks_load_parser.add_argument(
+        "--date",
+        type=str,
+        required=True,
+        help="Date folder to load (YYYY-MM-DD)",
+    )
+
+    # intraday summaries-build (base tables → intraday_*_summary)
+    intraday_summaries_build_parser = intraday_sub.add_parser(
+        "summaries-build",
+        help="Build daily/minute/hourly intraday summary tables for one date",
+    )
+    intraday_summaries_build_parser.add_argument(
+        "--date",
+        type=str,
+        required=True,
+        help="Date to build summaries for (YYYY-MM-DD)",
+    )
+
     # regular-market command
     rm_parser = subparsers.add_parser(
         "regular-market",
@@ -2526,6 +2568,83 @@ def main(argv: list[str] | None = None) -> int:
         "status", help="Show commodity data status and recent syncs"
     )
 
+    # ─────────────────────────────────────────────────────────────────────
+    # Phase 0.3 cron-parity subparsers
+    # Every UI sync button has a matching CLI subcommand here. All handlers
+    # write to data_freshness inside the same safe_writer transaction.
+    # ─────────────────────────────────────────────────────────────────────
+
+    # indices command
+    indices_parser = subparsers.add_parser(
+        "indices",
+        help="PSX indices (KSE100, ALLSHR, KMI30, …) operations",
+    )
+    indices_sub = indices_parser.add_subparsers(
+        dest="indices_command", required=True
+    )
+    indices_sub.add_parser(
+        "sync",
+        help="Fetch all PSX indices from DPS and upsert into psx_indices",
+    )
+
+    # summary command (EOD breadth / movers / sectors)
+    summary_parser = subparsers.add_parser(
+        "summary",
+        help="EOD summary table operations (symbol/market/sector)",
+    )
+    summary_sub = summary_parser.add_subparsers(
+        dest="summary_command", required=True
+    )
+    summary_today_parser = summary_sub.add_parser(
+        "rebuild-today",
+        help="Rebuild the three EOD summary tables for the latest trading day",
+    )
+    summary_today_parser.add_argument(
+        "--date",
+        type=str,
+        default=None,
+        help="Override the trading-day auto-detect (YYYY-MM-DD)",
+    )
+    summary_missing_parser = summary_sub.add_parser(
+        "rebuild-missing",
+        help="Populate summaries for any dates that have eod_ohlcv but no summary row",
+    )
+    summary_missing_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=50,
+        help="Dates per safe_writer batch (default: 50)",
+    )
+
+    # parquet command (analytics export to /mnt/e/psxdata/parquet/)
+    parquet_parser = subparsers.add_parser(
+        "parquet",
+        help="Parquet store operations (analytics export)",
+    )
+    parquet_sub = parquet_parser.add_subparsers(
+        dest="parquet_command", required=True
+    )
+    parquet_today_parser = parquet_sub.add_parser(
+        "export-today",
+        help="Export today's data for every registered table",
+    )
+    parquet_today_parser.add_argument(
+        "--date",
+        type=str,
+        default=None,
+        help="Override today's date (YYYY-MM-DD)",
+    )
+    parquet_sub.add_parser(
+        "export-all", help="Full re-export — every table, every date"
+    )
+    parquet_sub.add_parser(
+        "sync-missing",
+        help="Export only dates present in date_manifest but missing from parquet",
+    )
+    parquet_sub.add_parser(
+        "status", help="Show parquet store status (files + size + date range)"
+    )
+
     args = parser.parse_args(argv)
 
     try:
@@ -2601,6 +2720,13 @@ def main(argv: list[str] | None = None) -> int:
             return handle_npc(args)
         elif args.command == "commodity":
             return handle_commodity(args)
+        # Phase 0.3 cron-parity commands
+        elif args.command == "indices":
+            return handle_indices(args)
+        elif args.command == "summary":
+            return handle_summary(args)
+        elif args.command == "parquet":
+            return handle_parquet(args)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         return 130
@@ -3415,6 +3541,12 @@ def handle_intraday(args: argparse.Namespace) -> int:
         return handle_intraday_show(args)
     elif args.intraday_command == "sync-all":
         return handle_intraday_sync_all(args)
+    elif args.intraday_command == "ticks-fetch":
+        return handle_intraday_ticks_fetch(args)
+    elif args.intraday_command == "ticks-load":
+        return handle_intraday_ticks_load(args)
+    elif args.intraday_command == "summaries-build":
+        return handle_intraday_summaries_build(args)
     return EXIT_ERROR
 
 
@@ -8978,6 +9110,476 @@ def _handle_pmex_margins(args) -> int:
         return 0
 
     return 0
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Phase 0.3 cron-parity handlers
+#
+# Every handler in this block:
+#   - Uses safe_writer for any DB write
+#   - Writes data_freshness inside the SAME transaction (catalog parity)
+#   - Records status='failed' on exception via record_catalog_failure
+#   - Prints ONE structured line to stdout: STEP=… STATUS=… ROWS=… LATEST=…
+#     DURATION_MS=… — parsed by scripts/daily_sync.sh log post-processing
+#   - Returns EXIT_SUCCESS / EXIT_ERROR
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _emit_step(
+    step: str,
+    status: str,
+    *,
+    rows: int | None = None,
+    latest: str | None = None,
+    duration_ms: int | None = None,
+    error: str | None = None,
+) -> None:
+    """Emit one structured KEY=value line for daily_sync.sh log parsing."""
+    parts = [f"STEP={step}", f"STATUS={status}"]
+    if rows is not None:
+        parts.append(f"ROWS={rows}")
+    if latest:
+        parts.append(f"LATEST={latest}")
+    if duration_ms is not None:
+        parts.append(f"DURATION_MS={duration_ms}")
+    if error:
+        parts.append(f"ERROR={error!r}")
+    print(" ".join(parts))
+
+
+# ── indices ──────────────────────────────────────────────────────────────
+
+
+def handle_indices(args: argparse.Namespace) -> int:
+    """Dispatch for `pfsync indices …`."""
+    if args.indices_command == "sync":
+        return handle_indices_sync(args)
+    return EXIT_ERROR
+
+
+def handle_indices_sync(args: argparse.Namespace) -> int:
+    """Fetch + persist all 18 PSX indices from DPS; update data_freshness."""
+    import time as _time
+
+    from .db.catalog import record_catalog_failure, update_catalog_from_table
+    from .db.safe_writer import safe_writer
+    from .sources.indices import fetch_indices_data, save_index_data
+
+    setup_logging()
+    t0 = _time.time()
+    try:
+        # HTTP fetch outside the write lock — same pattern as the UI button.
+        data = fetch_indices_data()
+        with safe_writer() as wcon:
+            count = sum(1 for d in data if save_index_data(wcon, d))
+            update_catalog_from_table(wcon, "indices", source="psx_dps")
+        _emit_step(
+            "indices_sync",
+            "ok",
+            rows=count,
+            duration_ms=int((_time.time() - t0) * 1000),
+        )
+        return EXIT_SUCCESS
+    except Exception as e:  # noqa: BLE001 — cron must record failure path
+        record_catalog_failure("indices", source="psx_dps", error=e)
+        _emit_step(
+            "indices_sync",
+            "failed",
+            duration_ms=int((_time.time() - t0) * 1000),
+            error=str(e),
+        )
+        return EXIT_ERROR
+
+
+# ── summary ──────────────────────────────────────────────────────────────
+
+
+def handle_summary(args: argparse.Namespace) -> int:
+    """Dispatch for `pfsync summary …`."""
+    if args.summary_command == "rebuild-today":
+        return handle_summary_rebuild_today(args)
+    elif args.summary_command == "rebuild-missing":
+        return handle_summary_rebuild_missing(args)
+    return EXIT_ERROR
+
+
+def _get_latest_full_trading_day(con) -> str | None:
+    """Find the most recent date in eod_ohlcv. Returns None if empty."""
+    row = con.execute(
+        "SELECT MAX(date) FROM eod_ohlcv WHERE prev_close > 0"
+    ).fetchone()
+    return row[0] if row and row[0] else None
+
+
+def handle_summary_rebuild_today(args: argparse.Namespace) -> int:
+    """Rebuild eod_{symbol,market,sector}_summary for latest trading day."""
+    import time as _time
+
+    from .db.catalog import record_catalog_failure, update_catalog_from_table
+    from .db.connections import sqlite_con
+    from .db.repositories.market_summary import (
+        init_eod_summary_schema,
+        refresh_eod_summary,
+    )
+    from .db.safe_writer import safe_writer
+
+    setup_logging()
+    t0 = _time.time()
+    target = args.date
+    try:
+        if target is None:
+            con = sqlite_con()
+            try:
+                target = _get_latest_full_trading_day(con)
+            finally:
+                con.close()
+        if not target:
+            _emit_step(
+                "summary_rebuild_today",
+                "skipped",
+                duration_ms=int((_time.time() - t0) * 1000),
+                error="no eod_ohlcv rows",
+            )
+            return EXIT_SUCCESS
+
+        with safe_writer() as wcon:
+            init_eod_summary_schema(wcon)
+            n = refresh_eod_summary(wcon, target)
+            update_catalog_from_table(wcon, "eod_market_summary", source="computed")
+            update_catalog_from_table(wcon, "eod_sector_summary", source="computed")
+            update_catalog_from_table(wcon, "eod_symbol_summary", source="computed")
+
+        _emit_step(
+            "summary_rebuild_today",
+            "ok",
+            rows=n,
+            latest=target,
+            duration_ms=int((_time.time() - t0) * 1000),
+        )
+        return EXIT_SUCCESS
+    except Exception as e:  # noqa: BLE001
+        for ds in ("eod_market_summary", "eod_sector_summary", "eod_symbol_summary"):
+            record_catalog_failure(ds, source="computed", error=e)
+        _emit_step(
+            "summary_rebuild_today",
+            "failed",
+            duration_ms=int((_time.time() - t0) * 1000),
+            error=str(e),
+        )
+        return EXIT_ERROR
+
+
+def handle_summary_rebuild_missing(args: argparse.Namespace) -> int:
+    """Populate eod_*_summary for any dates that have eod_ohlcv but no summary."""
+    import time as _time
+
+    from .db.catalog import record_catalog_failure, update_catalog_from_table
+    from .db.repositories.market_summary import refresh_eod_summary_bulk
+    from .db.safe_writer import safe_writer
+
+    setup_logging()
+    t0 = _time.time()
+    try:
+        # refresh_eod_summary_bulk opens its own safe_writer per batch.
+        r = refresh_eod_summary_bulk(
+            only_missing=True, batch_size=args.batch_size
+        )
+        # Catalog write in a small, separate safe_writer block — the bulk
+        # function's batches have already committed by the time we get here.
+        with safe_writer() as wcon:
+            for ds in (
+                "eod_market_summary",
+                "eod_sector_summary",
+                "eod_symbol_summary",
+            ):
+                update_catalog_from_table(wcon, ds, source="computed")
+        _emit_step(
+            "summary_rebuild_missing",
+            "ok",
+            rows=r.get("rows_written", 0),
+            duration_ms=int((_time.time() - t0) * 1000),
+        )
+        print(
+            f"  processed {r.get('dates_processed', 0)}/{r.get('dates_considered', 0)} "
+            f"dates in {r.get('batches', 0)} batches"
+        )
+        return EXIT_SUCCESS
+    except Exception as e:  # noqa: BLE001
+        for ds in (
+            "eod_market_summary",
+            "eod_sector_summary",
+            "eod_symbol_summary",
+        ):
+            record_catalog_failure(ds, source="computed", error=e)
+        _emit_step(
+            "summary_rebuild_missing",
+            "failed",
+            duration_ms=int((_time.time() - t0) * 1000),
+            error=str(e),
+        )
+        return EXIT_ERROR
+
+
+# ── intraday tick-disk pipeline ─────────────────────────────────────────
+
+
+def handle_intraday_ticks_fetch(args: argparse.Namespace) -> int:
+    """HTTP fetch every active symbol's intraday ticks → JSON on disk."""
+    import time as _time
+
+    from .db.connections import sqlite_con
+    from .sync_timeseries import fetch_ticks_to_disk_parallel
+
+    setup_logging()
+    t0 = _time.time()
+    try:
+        # The fetch function needs a connection to read the active-symbols
+        # list and the skip filter. It does not write to the DB.
+        con = sqlite_con()
+        try:
+            result = fetch_ticks_to_disk_parallel(
+                con, target_date=args.date, n_shards=args.shards
+            )
+        finally:
+            con.close()
+        _emit_step(
+            "intraday_ticks_fetch",
+            "ok",
+            rows=result.get("ticks", 0),
+            latest=args.date,
+            duration_ms=int((_time.time() - t0) * 1000),
+        )
+        print(
+            f"  symbols={result.get('symbols_total', 0)} "
+            f"ok={result.get('ok', 0)} fail={result.get('fail', 0)} "
+            f"json_dir={result.get('json_dir', '?')}"
+        )
+        return EXIT_SUCCESS
+    except Exception as e:  # noqa: BLE001
+        _emit_step(
+            "intraday_ticks_fetch",
+            "failed",
+            latest=args.date,
+            duration_ms=int((_time.time() - t0) * 1000),
+            error=str(e),
+        )
+        return EXIT_ERROR
+
+
+def handle_intraday_ticks_load(args: argparse.Namespace) -> int:
+    """Load tick JSON files from disk → intraday_bars + tick_data; update catalog."""
+    import time as _time
+
+    from .db.catalog import record_catalog_failure, update_catalog_from_table
+    from .db.safe_writer import safe_writer
+    from .sync_timeseries import load_ticks_from_disk
+
+    setup_logging()
+    t0 = _time.time()
+    try:
+        with safe_writer() as wcon:
+            result = load_ticks_from_disk(wcon, target_date=args.date)
+            if result.get("rows_total", 0) > 0:
+                update_catalog_from_table(wcon, "intraday", source="psx_api")
+                update_catalog_from_table(wcon, "tick_data", source="psx_api")
+        _emit_step(
+            "intraday_ticks_load",
+            "ok",
+            rows=result.get("rows_total", 0),
+            latest=args.date,
+            duration_ms=int((_time.time() - t0) * 1000),
+        )
+        print(
+            f"  files={result.get('total_files', 0)} "
+            f"ok={result.get('ok', 0)} fail={result.get('fail', 0)}"
+        )
+        if result.get("error"):
+            print(f"  note: {result['error']}")
+        return EXIT_SUCCESS
+    except Exception as e:  # noqa: BLE001
+        for ds in ("intraday", "tick_data"):
+            record_catalog_failure(ds, source="psx_api", error=e)
+        _emit_step(
+            "intraday_ticks_load",
+            "failed",
+            latest=args.date,
+            duration_ms=int((_time.time() - t0) * 1000),
+            error=str(e),
+        )
+        return EXIT_ERROR
+
+
+def handle_intraday_summaries_build(args: argparse.Namespace) -> int:
+    """Build daily/minute/hourly intraday summary tables for one date."""
+    import time as _time
+
+    from .db.catalog import record_catalog_failure, update_catalog_from_table
+    from .db.repositories.intraday_summary import compute_all
+    from .db.safe_writer import safe_writer
+
+    setup_logging()
+    t0 = _time.time()
+    try:
+        with safe_writer() as wcon:
+            result = compute_all(wcon, args.date)
+            update_catalog_from_table(
+                wcon, "intraday_daily_summary", source="computed"
+            )
+            update_catalog_from_table(
+                wcon, "intraday_minute_breadth", source="computed"
+            )
+            update_catalog_from_table(
+                wcon, "intraday_hourly_summary", source="computed"
+            )
+        total_rows = sum(v for v in result.values() if isinstance(v, int))
+        _emit_step(
+            "intraday_summaries_build",
+            "ok",
+            rows=total_rows,
+            latest=args.date,
+            duration_ms=int((_time.time() - t0) * 1000),
+        )
+        print(f"  {result}")
+        return EXIT_SUCCESS
+    except Exception as e:  # noqa: BLE001
+        for ds in (
+            "intraday_daily_summary",
+            "intraday_minute_breadth",
+            "intraday_hourly_summary",
+        ):
+            record_catalog_failure(ds, source="computed", error=e)
+        _emit_step(
+            "intraday_summaries_build",
+            "failed",
+            latest=args.date,
+            duration_ms=int((_time.time() - t0) * 1000),
+            error=str(e),
+        )
+        return EXIT_ERROR
+
+
+# ── parquet store ────────────────────────────────────────────────────────
+
+
+def handle_parquet(args: argparse.Namespace) -> int:
+    """Dispatch for `pfsync parquet …`."""
+    if args.parquet_command == "export-today":
+        return handle_parquet_export_today(args)
+    elif args.parquet_command == "export-all":
+        return handle_parquet_export_all(args)
+    elif args.parquet_command == "sync-missing":
+        return handle_parquet_sync_missing(args)
+    elif args.parquet_command == "status":
+        return handle_parquet_status(args)
+    return EXIT_ERROR
+
+
+def handle_parquet_export_today(args: argparse.Namespace) -> int:
+    """Export today's data (or --date) for every registered parquet table."""
+    import time as _time
+
+    from .db.parquet_store import export_today
+
+    setup_logging()
+    t0 = _time.time()
+    try:
+        result = export_today(date_str=args.date)
+        total = sum(v for v in result.values() if isinstance(v, int))
+        _emit_step(
+            "parquet_export_today",
+            "ok",
+            rows=total,
+            latest=args.date or "today",
+            duration_ms=int((_time.time() - t0) * 1000),
+        )
+        return EXIT_SUCCESS
+    except Exception as e:  # noqa: BLE001
+        _emit_step(
+            "parquet_export_today",
+            "failed",
+            duration_ms=int((_time.time() - t0) * 1000),
+            error=str(e),
+        )
+        return EXIT_ERROR
+
+
+def handle_parquet_export_all(args: argparse.Namespace) -> int:
+    """Full re-export of every table for every date. Heavy — use sparingly."""
+    import time as _time
+
+    from .db.parquet_store import export_all
+
+    setup_logging()
+    t0 = _time.time()
+    try:
+        result = export_all()
+        total = sum(v for v in result.values() if isinstance(v, int))
+        _emit_step(
+            "parquet_export_all",
+            "ok",
+            rows=total,
+            duration_ms=int((_time.time() - t0) * 1000),
+        )
+        return EXIT_SUCCESS
+    except Exception as e:  # noqa: BLE001
+        _emit_step(
+            "parquet_export_all",
+            "failed",
+            duration_ms=int((_time.time() - t0) * 1000),
+            error=str(e),
+        )
+        return EXIT_ERROR
+
+
+def handle_parquet_sync_missing(args: argparse.Namespace) -> int:
+    """Export only dates present in date_manifest but missing on disk."""
+    import time as _time
+
+    from .db.parquet_store import sync_missing
+
+    setup_logging()
+    t0 = _time.time()
+    try:
+        result = sync_missing()
+        exported = sum(
+            v.get("exported", 0) for v in result.values() if isinstance(v, dict)
+        )
+        missing = sum(
+            v.get("missing", 0) for v in result.values() if isinstance(v, dict)
+        )
+        _emit_step(
+            "parquet_sync_missing",
+            "ok",
+            rows=exported,
+            duration_ms=int((_time.time() - t0) * 1000),
+        )
+        print(f"  missing={missing} exported={exported}")
+        return EXIT_SUCCESS
+    except Exception as e:  # noqa: BLE001
+        _emit_step(
+            "parquet_sync_missing",
+            "failed",
+            duration_ms=int((_time.time() - t0) * 1000),
+            error=str(e),
+        )
+        return EXIT_ERROR
+
+
+def handle_parquet_status(args: argparse.Namespace) -> int:
+    """Print parquet store file count / size / date range per table."""
+    from .db.parquet_store import status
+
+    setup_logging()
+    info = status()
+    print(f"{'table':<32}{'files':>8}{'size_mb':>10}  date range")
+    print("-" * 72)
+    for table, d in sorted(info.items()):
+        files = d.get("files", 0)
+        size = d.get("size_mb", 0)
+        dmin = d.get("oldest") or "—"
+        dmax = d.get("newest") or "—"
+        print(f"{table:<32}{files:>8}{size:>10.1f}  {dmin} → {dmax}")
+    return EXIT_SUCCESS
 
 
 if __name__ == "__main__":
