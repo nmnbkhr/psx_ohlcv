@@ -50,7 +50,9 @@ def fx_sync():
         raise HTTPException(503, "FX service unavailable")
     con = connect()
     init_schema(con)
-    return sync_fx_rates(con)
+    result = sync_fx_rates(con)
+    con.commit()
+    return result
 
 
 @router.post("/backfill")
@@ -67,4 +69,6 @@ def fx_backfill(
         raise HTTPException(503, "FX service unavailable")
     con = connect()
     init_schema(con)
-    return backfill_fx_history(con, from_date, to_date)
+    result = backfill_fx_history(con, from_date, to_date)
+    con.commit()
+    return result

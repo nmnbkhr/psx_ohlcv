@@ -18,6 +18,11 @@ canonical repo writers (``upsert_fx_interbank`` in fx_extended.py,
 (microservice vs SBP EasyData API) but should converge on the repo upsert
 functions for consistency when Market Sync v1 lands. Callers: FX Dashboard
 "Sync from FX Microservice" button, api/routers/fx.py, cli.py.
+
+Caller commits via pakfindata.db.safe_writer (or an explicit con.commit()
+at API / CLI entry points). sync_fx_rates and backfill_fx_history no
+longer commit internally so they compose cleanly inside a safe_writer
+BEGIN IMMEDIATE block.
 """
 
 import sqlite3
@@ -89,7 +94,6 @@ def sync_fx_rates(con: sqlite3.Connection) -> dict:
                 )
                 kibor_stored += 1
 
-    con.commit()
     logger.info("FX sync: %d rates, %d KIBOR tenors stored for %s",
                 rates_stored, kibor_stored, today)
     return {
@@ -152,7 +156,6 @@ def backfill_fx_history(
         else:
             skipped += 1
 
-    con.commit()
     logger.info("FX backfill: %d inserted, %d skipped (%s to %s)",
                 inserted, skipped, from_date, to_date)
     return {

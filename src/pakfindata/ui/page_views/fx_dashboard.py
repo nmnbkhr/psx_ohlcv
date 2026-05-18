@@ -915,25 +915,35 @@ def _render_sync(con):
     with col1:
         if st.button("Sync SBP EasyData (FX + KIBOR + Policy)", type="primary", key="fx_sync_interbank"):
             with st.spinner("Syncing from SBP EasyData CSVs..."):
+                from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
                 try:
                     from pakfindata.sources.sbp_easydata import sync_all_to_db
-                    result = sync_all_to_db(con)
-                    con.commit()
+                    with safe_writer() as wcon:
+                        result = sync_all_to_db(wcon)
+                    st.cache_data.clear()
                     st.success(
                         f"EasyData: {result.get('fx_rows', 0)} FX, "
                         f"{result.get('kibor_rows', 0)} KIBOR, "
                         f"{result.get('policy_rows', 0)} policy rate rows synced"
                     )
                     st.rerun()
+                except SafeWriterBusyError:
+                    st.error("Another sync is running. Wait a moment and retry.")
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
     with col2:
         if st.button("Sync Kerb (forex.pk)", key="fx_sync_kerb"):
             with st.spinner("Syncing kerb rates from forex.pk..."):
+                from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
                 try:
-                    result = ForexPKScraper().sync_kerb(con)
+                    scraper = ForexPKScraper()  # HTTP init outside lock
+                    with safe_writer() as wcon:
+                        result = scraper.sync_kerb(wcon)
+                    st.cache_data.clear()
                     st.success(f"Kerb: {result.get('ok', 0)} rates synced")
                     st.rerun()
+                except SafeWriterBusyError:
+                    st.error("Another sync is running. Wait a moment and retry.")
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
 
@@ -942,27 +952,37 @@ def _render_sync(con):
         with col3:
             if st.button("Sync from FX Microservice", key="fx_sync_micro"):
                 with st.spinner("Syncing rates from FX microservice..."):
+                    from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
                     try:
                         from pakfindata.sources.fx_sync import sync_fx_rates
-                        result = sync_fx_rates(con)
+                        with safe_writer() as wcon:
+                            result = sync_fx_rates(wcon)
+                        st.cache_data.clear()
                         st.success(
                             f"FX micro: {result.get('rates_stored', 0)} rates, "
                             f"{result.get('kibor_stored', 0)} KIBOR tenors"
                         )
                         st.rerun()
+                    except SafeWriterBusyError:
+                        st.error("Another sync is running. Wait a moment and retry.")
                     except Exception as e:
                         st.error(f"FX micro sync failed: {e}")
         with col4:
             if st.button("Backfill FX History", key="fx_backfill"):
                 with st.spinner("Backfilling FX history from microservice..."):
+                    from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
                     try:
                         from pakfindata.sources.fx_sync import backfill_fx_history
-                        result = backfill_fx_history(con)
+                        with safe_writer() as wcon:
+                            result = backfill_fx_history(wcon)
+                        st.cache_data.clear()
                         st.success(
                             f"Backfill: {result.get('inserted', 0)} inserted, "
                             f"{result.get('skipped', 0)} skipped"
                         )
                         st.rerun()
+                    except SafeWriterBusyError:
+                        st.error("Another sync is running. Wait a moment and retry.")
                     except Exception as e:
                         st.error(f"Backfill failed: {e}")
 
