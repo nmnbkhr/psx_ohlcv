@@ -533,6 +533,12 @@ def render_dashboard():
         # ROW 6: SYNC CONTROLS (collapsed)
         # ══════════════════════════════════════════════════════════════
         with st.expander("Sync & Data Management", expanded=False):
+            st.caption(
+                "🕒 Automatic refresh runs nightly at 03:45 PKT via cron "
+                "(weekends + PSX holidays skipped). The buttons below are "
+                "for manual backfill, troubleshooting, or intraday "
+                "refreshes during market hours."
+            )
             sync_c1, sync_c2, sync_c3 = st.columns(3)
 
             with sync_c1:
