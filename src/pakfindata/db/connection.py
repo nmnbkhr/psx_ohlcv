@@ -94,6 +94,7 @@ def init_schema(con: sqlite3.Connection) -> None:
     _migrate_eod_ohlcv_table(con)
     _migrate_scrape_jobs_table(con)
     _migrate_mutual_funds_table(con)
+    _migrate_data_freshness_table(con)
 
     # Initialize new domain schemas (v3.0+)
     from .repositories.etf import init_etf_schema
@@ -328,6 +329,51 @@ def _migrate_scrape_jobs_table(con: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_job_notifications_unread
         ON job_notifications(read_at) WHERE read_at IS NULL
     """)
+
+    con.commit()
+
+
+def _migrate_data_freshness_table(con: sqlite3.Connection) -> None:
+    """Extend data_freshness with catalog columns: last_sync_error, source,
+    schema_version, notes, updated_at + supporting indexes.
+
+    Idempotent — uses PRAGMA table_info to skip columns that already exist.
+    Pre-existing 15 seeded rows (from migration v1) are preserved.
+
+    SQLite quirk: ALTER TABLE ADD COLUMN cannot use non-constant DEFAULT
+    (datetime('now')) — adds without default and backfills existing rows
+    with a single UPDATE. New rows still get datetime('now') because
+    update_catalog passes it explicitly.
+    """
+    cursor = con.execute("PRAGMA table_info(data_freshness)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+
+    new_columns = [
+        ("last_sync_error", "TEXT"),
+        ("source", "TEXT"),
+        ("schema_version", "INTEGER NOT NULL DEFAULT 1"),
+        ("notes", "TEXT"),
+        ("updated_at", "TEXT"),
+    ]
+
+    added: list[str] = []
+    for col_name, col_def in new_columns:
+        if col_name not in existing_cols:
+            con.execute(f"ALTER TABLE data_freshness ADD COLUMN {col_name} {col_def}")
+            added.append(col_name)
+
+    # Backfill updated_at on existing rows when it was just added (NULL otherwise)
+    if "updated_at" in added:
+        con.execute(
+            "UPDATE data_freshness SET updated_at = datetime('now') WHERE updated_at IS NULL"
+        )
+
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_data_freshness_source ON data_freshness(source)"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_data_freshness_status ON data_freshness(status)"
+    )
 
     con.commit()
 

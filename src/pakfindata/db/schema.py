@@ -106,16 +106,27 @@ CREATE TABLE IF NOT EXISTS sync_failures (
 
 CREATE INDEX IF NOT EXISTS idx_sync_failures_run ON sync_failures(run_id);
 
--- Data freshness tracking per domain
+-- Data freshness / catalog tracking per dataset (a.k.a. domain).
+-- Single source of truth for "what data is current?".
+-- Written atomically by every safe_writer sync path via db/catalog.py.
+-- Read by every UI freshness query.
+-- Indexes on `source` / `status` are created by _migrate_data_freshness_table
+-- in db/connection.py — they reference columns added by that same migration
+-- so they cannot live here (this SQL runs before migrations on existing DBs).
 CREATE TABLE IF NOT EXISTS data_freshness (
-    domain         TEXT PRIMARY KEY,
-    display_name   TEXT NOT NULL,
-    source_table   TEXT NOT NULL,
-    date_column    TEXT NOT NULL DEFAULT 'date',
-    last_sync_at   TEXT,
-    last_row_date  TEXT,
-    row_count      INTEGER DEFAULT 0,
-    status         TEXT DEFAULT 'unknown'
+    domain           TEXT PRIMARY KEY,            -- dataset_id (snake_case)
+    display_name     TEXT NOT NULL,
+    source_table     TEXT NOT NULL,
+    date_column      TEXT NOT NULL DEFAULT 'date',
+    last_sync_at     TEXT,                        -- ISO8601, set on every update
+    last_row_date    TEXT,                        -- MAX(date_column) in source_table
+    row_count        INTEGER DEFAULT 0,
+    status           TEXT DEFAULT 'unknown',      -- 'ok' | 'partial' | 'failed' | 'unknown'
+    last_sync_error  TEXT,                        -- NULL on success
+    source           TEXT,                        -- 'psx_dps' | 'sbp_easydata' | 'mufap' | 'computed' | ...
+    schema_version   INTEGER NOT NULL DEFAULT 1,
+    notes            TEXT,                        -- free text
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- Intraday bars (v3 schema): market-aware, multi-resolution OHLCV
