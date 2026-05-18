@@ -582,6 +582,7 @@ def render_dashboard():
                     if st.button("Sync Rates", key="dash_sync_rates2"):
                         with st.spinner("Syncing rates..."):
                             from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                            from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
                             from pakfindata.sources.sbp_easydata import sync_kibor_to_db, sync_policy_rate_to_db
                             from pakfindata.sources.sbp_treasury import SBPTreasuryScraper
                             try:
@@ -590,28 +591,37 @@ def render_dashboard():
                                     sync_kibor_to_db(wcon)
                                     scraper.sync_treasury(wcon)
                                     sync_policy_rate_to_db(wcon)
+                                    update_catalog_from_table(wcon, "kibor", source="sbp_easydata")
+                                    update_catalog_from_table(wcon, "treasury", source="sbp")
+                                    update_catalog_from_table(wcon, "pib", source="sbp")
+                                    update_catalog_from_table(wcon, "sbp_policy_rates", source="sbp_easydata")
                                 st.cache_data.clear()
                                 st.toast("Rates synced: KIBOR + treasury + policy")
                             except SafeWriterBusyError:
                                 st.error("Another sync is running. Wait a moment and retry.")
                             except Exception as e:
                                 st.error(f"Rates sync failed: {e}")
+                                for ds in ("kibor", "treasury", "pib", "sbp_policy_rates"):
+                                    record_catalog_failure(ds, source="sbp_easydata", error=e)
                         st.rerun()
                 with rc2:
                     if st.button("Sync Indices", key="dash_sync_idx2"):
                         with st.spinner("Syncing indices..."):
                             from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                            from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
                             from pakfindata.sources.indices import fetch_indices_data, save_index_data
                             try:
                                 data = fetch_indices_data()  # HTTP fetch outside lock
                                 with safe_writer() as wcon:
                                     count = sum(1 for d in data if save_index_data(wcon, d))
+                                    update_catalog_from_table(wcon, "indices", source="psx_dps")
                                 st.cache_data.clear()
                                 st.toast(f"Synced {count} indices")
                             except SafeWriterBusyError:
                                 st.error("Another sync is running. Wait a moment and retry.")
                             except Exception as e:
                                 st.error(f"Sync failed: {e}")
+                                record_catalog_failure("indices", source="psx_dps", error=e)
                         st.rerun()
 
             # ── EOD summary tables (precomputed breadth / movers / sectors) ──
@@ -641,6 +651,7 @@ def render_dashboard():
                              help="Refresh summaries for the latest trading day only."):
                     with st.spinner("Rebuilding today's summary…"):
                         from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                        from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
                         from pakfindata.db.repositories.market_summary import (
                             init_eod_summary_schema,
                         )
@@ -650,6 +661,9 @@ def render_dashboard():
                                 with safe_writer() as wcon:
                                     init_eod_summary_schema(wcon)
                                     n = refresh_eod_summary(wcon, d)
+                                    update_catalog_from_table(wcon, "eod_market_summary", source="computed")
+                                    update_catalog_from_table(wcon, "eod_sector_summary", source="computed")
+                                    update_catalog_from_table(wcon, "eod_symbol_summary", source="computed")
                                 st.cache_data.clear()
                                 st.toast(f"Rebuilt {d}: {n} symbol rows")
                             else:
@@ -658,6 +672,8 @@ def render_dashboard():
                             st.error("Another sync is running. Wait a moment and retry.")
                         except Exception as e:
                             st.error(f"Rebuild failed: {e}")
+                            for ds in ("eod_market_summary", "eod_sector_summary", "eod_symbol_summary"):
+                                record_catalog_failure(ds, source="computed", error=e)
                         st.rerun()
             with s2:
                 if st.button("Rebuild Missing", key="dash_sum_missing",

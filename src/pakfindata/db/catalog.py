@@ -44,7 +44,13 @@ from typing import Any
 
 from pakfindata.config import get_db_path
 
-__all__ = ["update_catalog", "get_catalog", "get_freshness"]
+__all__ = [
+    "update_catalog",
+    "update_catalog_from_table",
+    "record_catalog_failure",
+    "get_catalog",
+    "get_freshness",
+]
 
 
 _VALID_STATUSES = {"ok", "partial", "failed", "unknown"}
@@ -120,6 +126,109 @@ def update_catalog(
             notes,
         ),
     )
+
+
+def update_catalog_from_table(
+    con: sqlite3.Connection,
+    dataset_id: str,
+    *,
+    source: str,
+    status: str = "ok",
+    error: str | None = None,
+    notes: str | None = None,
+) -> None:
+    """Update the catalog by re-reading MAX(date_column) + COUNT(*) from
+    the source_table registered for this dataset_id.
+
+    Convenience wrapper for the common case in safe_writer-migrated sync
+    buttons: the SQL stays inside the caller's transaction (so it sees
+    the rows just written), and per-button code stays one line per
+    affected dataset.
+
+    Requires the dataset to be pre-registered (run
+    `scripts/backfill_data_catalog.py` once on a new DB). For special
+    date columns (TEXT timestamps, unix epoch integers) call
+    `update_catalog()` directly with an explicit `latest_date` instead.
+    """
+    row = con.execute(
+        "SELECT source_table, date_column FROM data_freshness WHERE domain = ?",
+        (dataset_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(
+            f"Dataset {dataset_id!r} not registered. Run "
+            f"scripts/backfill_data_catalog.py first, or call "
+            f"update_catalog() directly with explicit source_table / "
+            f"date_column."
+        )
+    source_table, date_column = row[0], row[1]
+
+    try:
+        result = con.execute(
+            f"SELECT MAX({date_column}), COUNT(*) FROM {source_table}"
+        ).fetchone()
+        latest, count = result[0], int(result[1] or 0)
+    except sqlite3.OperationalError as exc:
+        # Schema drift or similar — record as failed (preserves last-good
+        # values via COALESCE in update_catalog).
+        update_catalog(
+            con,
+            dataset_id,
+            status="failed",
+            source=source,
+            error=f"freshness query failed: {exc}",
+        )
+        return
+
+    update_catalog(
+        con,
+        dataset_id,
+        latest_date=latest,
+        row_count=count,
+        status=status,
+        source=source,
+        error=error,
+        notes=notes,
+    )
+
+
+def record_catalog_failure(
+    dataset_id: str,
+    *,
+    source: str,
+    error: str | Exception,
+) -> None:
+    """Best-effort: record `status='failed'` for a sync that aborted.
+
+    Opens a NEW tiny safe_writer block because the original sync's
+    transaction has already been rolled back. Swallows secondary errors
+    so a catalog write failure never masks the original sync error
+    surfaced to the user.
+
+    Usage:
+        try:
+            with safe_writer() as wcon:
+                ...
+                update_catalog_from_table(wcon, 'psx_indices', source='psx_dps')
+        except SafeWriterBusyError:
+            ...  # do NOT record (the writer is unavailable)
+        except Exception as e:
+            st.error(f"Sync failed: {e}")
+            record_catalog_failure('psx_indices', source='psx_dps', error=e)
+    """
+    from .safe_writer import safe_writer  # local import to avoid cycle
+
+    try:
+        with safe_writer() as con:
+            update_catalog(
+                con,
+                dataset_id,
+                status="failed",
+                source=source,
+                error=str(error)[:500],
+            )
+    except Exception:
+        pass  # never mask the original error
 
 
 def _row_to_api(row: sqlite3.Row | None) -> dict[str, Any] | None:
