@@ -7599,6 +7599,7 @@ def handle_fx_rates(args: argparse.Namespace) -> int:
         print("Scraping SBP interbank USD/PKR rates...")
         scraper = SBPFXScraper()
         result = scraper.sync_interbank(con)
+        con.commit()
         print(f"Done: {result['ok']} OK, {result['failed']} failed (total {result['total']})")
         return 0
 
@@ -7606,6 +7607,7 @@ def handle_fx_rates(args: argparse.Namespace) -> int:
         print("Scraping kerb rates from forex.pk...")
         scraper = ForexPKScraper()
         result = scraper.sync_kerb(con)
+        con.commit()
         print(f"Done: {result['ok']} OK, {result['failed']} failed (total {result['total']})")
         return 0
 
@@ -7618,6 +7620,7 @@ def handle_fx_rates(args: argparse.Namespace) -> int:
         kerb = ForexPKScraper()
         r2 = kerb.sync_kerb(con)
         print(f"  Kerb (forex.pk): {r2['ok']} OK")
+        con.commit()
         print(f"Done: {r1['ok'] + r2['ok']} total rates synced")
         return 0
 

@@ -1,4 +1,10 @@
-"""Extended FX rate repository — SBP interbank, open market, kerb rates."""
+"""Extended FX rate repository — SBP interbank, open market, kerb rates.
+
+Caller commits via pakfindata.db.safe_writer (or an explicit
+con.commit() in CLI / service entry points). The upsert_* leaves and
+init_fx_extended_schema in this module no longer commit internally
+so they compose cleanly inside a safe_writer BEGIN IMMEDIATE block.
+"""
 
 import sqlite3
 from datetime import datetime
@@ -55,12 +61,15 @@ CREATE INDEX IF NOT EXISTS idx_forex_kerb_date ON forex_kerb(date);
 
 
 def init_fx_extended_schema(con: sqlite3.Connection) -> None:
-    """Create extended FX tables."""
+    """Create extended FX tables.
+
+    Uses split con.execute() per statement rather than executescript so
+    it composes inside a safe_writer BEGIN IMMEDIATE block. Caller commits.
+    """
     for stmt in FX_EXTENDED_SCHEMA_SQL.split(";"):
         stmt = stmt.strip()
         if stmt:
             con.execute(stmt)
-    con.commit()
 
 
 def upsert_fx_interbank(con: sqlite3.Connection, data: dict) -> bool:
@@ -78,7 +87,6 @@ def upsert_fx_interbank(con: sqlite3.Connection, data: dict) -> bool:
             """,
             (data["date"], data["currency"], buying, selling, mid),
         )
-        con.commit()
         return True
     except Exception:
         return False
@@ -96,7 +104,6 @@ def upsert_fx_open_market(con: sqlite3.Connection, data: dict) -> bool:
             """,
             (data["date"], data["currency"], data.get("buying"), data.get("selling")),
         )
-        con.commit()
         return True
     except Exception:
         return False
@@ -118,7 +125,6 @@ def upsert_fx_kerb(con: sqlite3.Connection, data: dict) -> bool:
                 data.get("source", "forex.pk"),
             ),
         )
-        con.commit()
         return True
     except Exception:
         return False

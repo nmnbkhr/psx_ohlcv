@@ -86,21 +86,31 @@ def render_fx_interbank():
         with col1:
             if st.button("Sync SBP EasyData (FX + KIBOR)", type="primary", key="fxib_sync"):
                 with st.spinner("Syncing from SBP EasyData..."):
+                    from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
                     try:
                         from pakfindata.sources.sbp_easydata import sync_fx_to_db, sync_kibor_to_db
-                        r1 = sync_fx_to_db(con)
-                        r2 = sync_kibor_to_db(con)
-                        con.commit()
+                        with safe_writer() as wcon:
+                            r1 = sync_fx_to_db(wcon)
+                            r2 = sync_kibor_to_db(wcon)
+                        st.cache_data.clear()
                         st.success(f"EasyData: {r1.get('fx_rows',0)} FX + {r2.get('kibor_rows',0)} KIBOR rows")
+                    except SafeWriterBusyError:
+                        st.error("Another sync is running. Wait a moment and retry.")
                     except Exception as e:
                         st.error(f"Sync failed: {e}")
         with col2:
             if st.button("Sync Open Market + Kerb (forex.pk)", key="fxib_kerb"):
                 with st.spinner("Syncing..."):
+                    from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
                     try:
                         from pakfindata.sources.forex_scraper import ForexPKScraper
-                        result = ForexPKScraper().sync_kerb(con)
+                        scraper = ForexPKScraper()  # HTTP init outside lock
+                        with safe_writer() as wcon:
+                            result = scraper.sync_kerb(wcon)
+                        st.cache_data.clear()
                         st.success(f"Open Market + Kerb: {result.get('ok', 0)} rates synced")
+                    except SafeWriterBusyError:
+                        st.error("Another sync is running. Wait a moment and retry.")
                     except Exception as e:
                         st.error(f"Sync failed: {e}")
 
