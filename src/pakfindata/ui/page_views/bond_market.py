@@ -60,34 +60,41 @@ def render_bond_market():
         with c1:
             if st.button("Scrape Benchmark Snapshot", key="bm_bench_sync"):
                 with st.spinner("Fetching from SBP MSM page..."):
-                    from pakfindata.sources.sbp_bond_market import SBPBondMarketScraper
-                    from pakfindata.db.repositories.bond_market import init_bond_market_schema
-                    init_bond_market_schema(con)
-                    scraper = SBPBondMarketScraper()
-                    result = scraper.sync_benchmark(con)
-                    con.commit()
-                    if result["status"] == "ok":
-                        st.success(
-                            f"Stored {result['metrics_stored']} metrics for {result['date']}"
-                        )
-                    else:
-                        st.error(result.get("error", "Unknown error"))
+                    from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                    try:
+                        from pakfindata.sources.sbp_bond_market import SBPBondMarketScraper
+                        scraper = SBPBondMarketScraper()  # HTTP init outside lock
+                        with safe_writer() as wcon:
+                            result = scraper.sync_benchmark(wcon)
+                        st.cache_data.clear()
+                        if result["status"] == "ok":
+                            st.success(
+                                f"Stored {result['metrics_stored']} metrics for {result['date']}"
+                            )
+                        else:
+                            st.error(result.get("error", "Unknown error"))
+                    except SafeWriterBusyError:
+                        st.error("Another sync is running. Wait a moment and retry.")
         with c2:
             if st.button("Sync SMTV Trading Data", key="bm_smtv_sync"):
                 with st.spinner("Downloading & parsing SBP SMTV PDF..."):
-                    from pakfindata.sources.sbp_bond_market import SBPBondMarketScraper
-                    from pakfindata.db.repositories.bond_market import init_bond_market_schema
-                    init_bond_market_schema(con)
-                    scraper = SBPBondMarketScraper()
-                    result = scraper.sync_smtv(con)
-                    if result["status"] == "ok":
-                        st.success(
-                            f"Date: {result['date']} — "
-                            f"{result['trades_stored']} trades, "
-                            f"{result['summaries_stored']} summaries stored"
-                        )
-                    else:
-                        st.warning(f"Skipped: {result.get('reason', 'unknown')}")
+                    from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                    try:
+                        from pakfindata.sources.sbp_bond_market import SBPBondMarketScraper
+                        scraper = SBPBondMarketScraper()  # HTTP init outside lock
+                        with safe_writer() as wcon:
+                            result = scraper.sync_smtv(wcon)
+                        st.cache_data.clear()
+                        if result["status"] == "ok":
+                            st.success(
+                                f"Date: {result['date']} — "
+                                f"{result['trades_stored']} trades, "
+                                f"{result['summaries_stored']} summaries stored"
+                            )
+                        else:
+                            st.warning(f"Skipped: {result.get('reason', 'unknown')}")
+                    except SafeWriterBusyError:
+                        st.error("Another sync is running. Wait a moment and retry.")
 
     # Ensure schema exists
     from pakfindata.db.repositories.bond_market import (

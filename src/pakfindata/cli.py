@@ -6510,6 +6510,7 @@ def handle_bonds_smtv_sync(args: argparse.Namespace) -> int:
     print("Attempting SBP SMTV PDF download...")
     scraper = SBPBondMarketScraper()
     result = scraper.sync_smtv(con)
+    con.commit()
 
     if result["status"] == "ok":
         print(f"  Date:              {result.get('date')}")

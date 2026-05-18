@@ -491,7 +491,10 @@ class SBPBondMarketScraper:
             logger.debug("Could not archive SMTV PDF: %s", e)
 
     def sync_smtv(self, con: sqlite3.Connection) -> dict:
-        """Scrape and sync daily SMTV to DB."""
+        """Scrape and sync daily SMTV to DB.
+
+        Caller commits via pakfindata.db.safe_writer.
+        """
         init_bond_market_schema(con)
         data = self.scrape_daily_smtv()
 
@@ -513,7 +516,6 @@ class SBPBondMarketScraper:
             }):
                 summaries_stored += 1
 
-        con.commit()
         return {
             "status": "ok",
             "date": data["date"],
