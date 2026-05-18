@@ -1166,10 +1166,13 @@ def _render_sync(con):
         if st.button("Sync T-Bill / PIB", type="primary", key="tsy_sync_treasury"):
             with st.spinner("Syncing treasury auctions from SBP..."):
                 from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
                 try:
                     scraper = SBPTreasuryScraper()  # init outside lock
                     with safe_writer() as wcon:
                         result = scraper.sync_treasury(wcon)
+                        update_catalog_from_table(wcon, "treasury", source="sbp")
+                        update_catalog_from_table(wcon, "pib", source="sbp")
                     st.cache_data.clear()
                     st.success(f"T-Bills: {result['tbills_ok']}, PIBs: {result['pibs_ok']}")
                     st.rerun()
@@ -1177,14 +1180,20 @@ def _render_sync(con):
                     st.error("Another sync is running. Wait a moment and retry.")
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
+                    for ds in ("treasury", "pib"):
+                        record_catalog_failure(ds, source="sbp", error=e)
     with c2:
         if st.button("Sync Rates (KIBOR/PKRV/KONIA)", key="tsy_sync_rates"):
             with st.spinner("Syncing rates from SBP..."):
                 from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
                 try:
                     scraper = SBPRatesScraper()  # HTTP init outside lock
                     with safe_writer() as wcon:
                         result = scraper.sync_rates(wcon)
+                        update_catalog_from_table(wcon, "kibor", source="sbp")
+                        update_catalog_from_table(wcon, "yield_curve", source="sbp")
+                        update_catalog_from_table(wcon, "konia", source="sbp")
                     st.cache_data.clear()
                     st.success(
                         f"KIBOR: {result['kibor_ok']}, PKRV: {result['pkrv_points']}, "
@@ -1195,6 +1204,8 @@ def _render_sync(con):
                     st.error("Another sync is running. Wait a moment and retry.")
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
+                    for ds in ("kibor", "yield_curve", "konia"):
+                        record_catalog_failure(ds, source="sbp", error=e)
     with c3:
         if st.button("Sync GIS Sukuk", key="tsy_sync_gis"):
             with st.spinner("Syncing GIS auctions from SBP..."):
@@ -1221,10 +1232,14 @@ def _render_sync(con):
     if st.button("Sync Yield Curves (MUFAP)", key="tsy_sync_mufap"):
         with st.spinner("Downloading & parsing MUFAP rate files..."):
             from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+            from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
             try:
                 from pakfindata.sources.mufap_rates import download_and_sync
                 with safe_writer() as wcon:
                     result = download_and_sync(wcon)
+                    update_catalog_from_table(wcon, "yield_curve", source="mufap")
+                    update_catalog_from_table(wcon, "pkisrv", source="mufap")
+                    update_catalog_from_table(wcon, "pkfrv", source="mufap")
                 st.cache_data.clear()
                 st.success(
                     f"New: {result['downloaded']}, Skipped: {result['skipped']} | "
@@ -1236,6 +1251,8 @@ def _render_sync(con):
                 st.error("Another sync is running. Wait a moment and retry.")
             except Exception as e:
                 st.error(f"MUFAP sync failed: {e}")
+                for ds in ("yield_curve", "pkisrv", "pkfrv"):
+                    record_catalog_failure(ds, source="mufap", error=e)
 
     st.markdown("##### SBP EasyData (KIBOR, Policy Rate, FX, BoP, CPI, Reserves)")
     from pakfindata.sources.sbp_easydata import (
@@ -1282,9 +1299,14 @@ def _render_sync(con):
         if st.button("Sync CSVs to DB", key="tsy_easydata_sync"):
             with st.spinner("Syncing EasyData CSVs to local DB tables..."):
                 from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
                 try:
                     with safe_writer() as wcon:
                         result = sync_all_to_db(wcon)
+                        update_catalog_from_table(wcon, "kibor", source="sbp_easydata")
+                        update_catalog_from_table(wcon, "sbp_fx_monthly_avg", source="sbp_easydata")
+                        update_catalog_from_table(wcon, "sbp_fx_daily_avg", source="sbp_easydata")
+                        update_catalog_from_table(wcon, "sbp_policy_rates", source="sbp_easydata")
                     st.cache_data.clear()
                     parts = [f"{k}: {v}" for k, v in result.items()]
                     st.success(" | ".join(parts))
@@ -1293,6 +1315,8 @@ def _render_sync(con):
                     st.error("Another sync is running. Wait a moment and retry.")
                 except Exception as e:
                     st.error(f"EasyData sync failed: {e}")
+                    for ds in ("kibor", "sbp_fx_monthly_avg", "sbp_fx_daily_avg", "sbp_policy_rates"):
+                        record_catalog_failure(ds, source="sbp_easydata", error=e)
 
     st.markdown("##### Historical Backfill (SBP PDFs)")
     c1, c2, c3 = st.columns(3)

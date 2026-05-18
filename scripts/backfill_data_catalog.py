@@ -79,6 +79,9 @@ DATASETS: list[Dataset] = [
     Dataset("eod_symbol_summary",       "eod_symbol_summary",       "date",            "computed",           "EOD Symbol Summary"),
     Dataset("eod_market_summary",       "eod_market_summary",       "date",            "computed",           "EOD Market Summary"),
     Dataset("eod_sector_summary",       "eod_sector_summary",       "date",            "computed",           "EOD Sector Summary"),
+    # EasyData side-effect tables (written by sbp_easydata.sync_all_to_db)
+    Dataset("sbp_fx_monthly_avg",       "sbp_fx_monthly_avg",       "date",            "sbp_easydata",       "SBP FX Monthly Avg"),
+    Dataset("sbp_fx_daily_avg",         "sbp_fx_daily_avg",         "date",            "sbp_easydata",       "SBP FX Daily Avg"),
 ]
 
 
