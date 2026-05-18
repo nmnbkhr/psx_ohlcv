@@ -124,6 +124,7 @@ def render_regular_market():
                     else:
                         # All writes go through safe_writer (fresh connection,
                         # BEGIN IMMEDIATE, commit + wal_checkpoint on exit).
+                        from pakfindata.db.catalog import update_catalog_from_table
                         with safe_writer() as wcon:
                             init_regular_market_schema(wcon)
 
@@ -144,6 +145,9 @@ def render_regular_market():
                             ts = df["ts"].iloc[0] if not df.empty else None
                             if ts:
                                 compute_all_analytics(wcon, ts)
+
+                            update_catalog_from_table(wcon, "regular_market_current", source="psx_api")
+                            update_catalog_from_table(wcon, "regular_market_snapshots", source="psx_api")
 
                         st.cache_data.clear()
                         st.session_state.rm_fetch_result = {
@@ -170,6 +174,9 @@ def render_regular_market():
                         "error": str(e),
                     }
                     status.update(label="❌ Fetch failed!", state="error")
+                    from pakfindata.db.catalog import record_catalog_failure
+                    for ds in ("regular_market_current", "regular_market_snapshots"):
+                        record_catalog_failure(ds, source="psx_api", error=e)
 
                 finally:
                     st.session_state.rm_fetch_running = False
