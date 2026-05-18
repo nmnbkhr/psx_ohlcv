@@ -215,25 +215,30 @@ def render_rates_overview():
             if st.button("Sync KIBOR (EasyData)", key="ro_rates"):
                 with st.spinner("Syncing KIBOR from SBP EasyData..."):
                     from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                    from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
                     from pakfindata.sources.sbp_easydata import sync_kibor_to_db
                     try:
                         with safe_writer() as wcon:
                             result = sync_kibor_to_db(wcon)
+                            update_catalog_from_table(wcon, "kibor", source="sbp_easydata")
                         st.cache_data.clear()
                         st.success(f"KIBOR synced: {result.get('kibor_rows', 0)} rows")
                     except SafeWriterBusyError:
                         st.error("Another sync is running. Wait a moment and retry.")
                     except Exception as e:
                         st.error(f"Failed: {e}")
+                        record_catalog_failure("kibor", source="sbp_easydata", error=e)
         with col2:
             if st.button("Sync Benchmark Snapshot", key="ro_bench"):
                 with st.spinner("Fetching SBP benchmark..."):
                     from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                    from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
                     from pakfindata.sources.sbp_bond_market import SBPBondMarketScraper
                     try:
                         scraper = SBPBondMarketScraper()  # init outside lock
                         with safe_writer() as wcon:
                             result = scraper.sync_benchmark(wcon)
+                            update_catalog_from_table(wcon, "benchmark_snapshot", source="sbp_bond_market")
                         st.cache_data.clear()
                         if result["status"] == "ok":
                             st.success(f"Stored {result['metrics_stored']} metrics")
@@ -243,21 +248,27 @@ def render_rates_overview():
                         st.error("Another sync is running. Wait a moment and retry.")
                     except Exception as e:
                         st.error(f"Failed: {e}")
+                        record_catalog_failure("benchmark_snapshot", source="sbp_bond_market", error=e)
         with col3:
             if st.button("Sync Auctions", key="ro_auctions"):
                 with st.spinner("Syncing T-Bill/PIB auctions..."):
                     from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                    from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
                     from pakfindata.sources.sbp_treasury import SBPTreasuryScraper
                     try:
                         scraper = SBPTreasuryScraper()  # init outside lock
                         with safe_writer() as wcon:
                             result = scraper.sync_treasury(wcon)
+                            update_catalog_from_table(wcon, "treasury", source="sbp")
+                            update_catalog_from_table(wcon, "pib", source="sbp")
                         st.cache_data.clear()
                         st.success(f"Auctions synced: {result}")
                     except SafeWriterBusyError:
                         st.error("Another sync is running. Wait a moment and retry.")
                     except Exception as e:
                         st.error(f"Failed: {e}")
+                        for ds in ("treasury", "pib"):
+                            record_catalog_failure(ds, source="sbp", error=e)
 
     if snap_date:
         st.caption(f"Benchmark data as of: {snap_date}")
