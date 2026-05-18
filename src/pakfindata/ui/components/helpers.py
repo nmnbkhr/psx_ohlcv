@@ -252,27 +252,46 @@ def get_user_friendly_error(error: Exception) -> str:
 
 def check_data_staleness(con, table: str = "eod_ohlcv", date_col: str = "date") -> tuple[bool, str]:
     """
-    Check if data is stale. Reads from sync_state.json (fast) first.
+    Check if data is stale. Reads from data_freshness catalog first
+    (single SELECT by PK), with a DB MAX(date) scan as fallback when
+    the catalog row is missing or the catalog's latest_date doesn't
+    parse (e.g. pre-existing data-pollution rows flagged as 'partial').
+
+    Args:
+        con: SQLite connection (used only for the fallback scan).
+        table: Source table name (e.g. 'eod_ohlcv', 'psx_indices').
+        date_col: Date column on that table for the fallback scan.
 
     Returns:
-        Tuple of (is_stale, message)
+        Tuple of (is_stale, message). is_stale is True for >3 days,
+        unparseable dates, or query failures.
     """
-    # Fast path: sync state file. If it claims stale, verify against DB before
-    # showing the banner — the file can drift behind the actual DB if a sync
-    # path landed rows without calling set_last_eod_date.
-    file_date = None
+    # Primary: catalog by source_table — catalog rows are upserted by
+    # safe_writer sync paths so this read is authoritative if the
+    # backfill + sub-wave 2.4 wiring is in place.
     try:
-        from pakfindata.services.sync_state import get_last_eod_date, set_last_eod_date
-        file_date = get_last_eod_date()
-        if file_date:
-            days_old = (datetime.now() - datetime.strptime(file_date, "%Y-%m-%d")).days
-            if days_old <= 3:
-                return False, ""
-            # Stale per file — fall through to DB cross-check below.
+        from pakfindata.db.catalog import get_catalog
+        rows = get_catalog()  # all rows
+        if rows:
+            for r in rows:
+                if r.get("source_table") == table and r.get("date_column") == date_col:
+                    latest = r.get("latest_date")
+                    if latest:
+                        try:
+                            most_recent = str(latest)[:10]
+                            days_old = (datetime.now() - datetime.strptime(most_recent, "%Y-%m-%d")).days
+                            if days_old > 3:
+                                return True, f"Data is {days_old} days old (last: {most_recent})"
+                            return False, ""
+                        except (ValueError, TypeError):
+                            pass  # unparseable — fall through to DB scan
+                    break  # catalog row found but unhelpful; try DB scan
     except Exception:
         pass
 
-    # DB cross-check: authoritative.
+    # Fallback: direct DB scan — authoritative when catalog is missing
+    # or pre-populated with non-date strings (pre-existing data pollution
+    # like 'TBILL'/'ZUMA'/'WTL' that the backfill flagged as 'partial').
     try:
         result = con.execute(
             f"SELECT MAX({date_col}) as max_date FROM {table}"
@@ -281,12 +300,6 @@ def check_data_staleness(con, table: str = "eod_ohlcv", date_col: str = "date") 
             most_recent = str(result["max_date"])[:10]
             latest_date = datetime.strptime(most_recent, "%Y-%m-%d")
             days_old = (datetime.now() - latest_date).days
-            # Heal the state file when the DB has fresher data than what it claims.
-            if file_date is not None and most_recent > file_date:
-                try:
-                    set_last_eod_date(most_recent)
-                except Exception:
-                    pass
             if days_old > 3:
                 return True, f"Data is {days_old} days old (last: {most_recent})"
             return False, ""
@@ -406,44 +419,62 @@ def get_data_freshness(_con) -> tuple[int | None, str | None]:
 def get_domain_freshness(_con) -> pd.DataFrame:
     """Get freshness info for all data domains.
 
-    Queries each domain's source table for latest date and row count,
-    then returns a DataFrame with domain, display_name, last_date,
-    days_old, row_count, and status.
+    Reads the data_freshness catalog as a SINGLE SELECT. Pre-Phase-0.2
+    this function did 1 query for the domain registry + N queries (one
+    MAX per domain) against the source tables. Phase 0.2's catalog
+    stores last_row_date + row_count atomically with every sync, so
+    the N+1 scan is no longer needed.
+
+    Returns a DataFrame with domain, display_name, last_date, days_old,
+    row_count, and status (fresh/stale/old/empty/error/partial/failed).
     """
     try:
-        domains = _con.execute(
-            "SELECT domain, display_name, source_table, date_column FROM data_freshness"
+        rows_raw = _con.execute(
+            "SELECT domain, display_name, last_row_date, row_count, "
+            "       status AS sync_status "
+            "FROM data_freshness "
+            "ORDER BY domain"
         ).fetchall()
     except Exception:
         return pd.DataFrame()
 
-    rows = []
-    for d in domains:
-        domain = d["domain"]
-        table = d["source_table"]
-        date_col = d["date_column"]
-        try:
-            result = _con.execute(
-                f"SELECT MAX({date_col}) as last_date FROM [{table}]"
-            ).fetchone()
-            last_date = str(result["last_date"])[:10] if result["last_date"] else None
-            if last_date:
-                days_old = (datetime.now() - datetime.strptime(last_date, "%Y-%m-%d")).days
-                status = "fresh" if days_old <= 1 else "stale" if days_old <= 3 else "old"
-            else:
-                days_old = None
-                status = "empty"
-        except Exception:
-            last_date = None
+    rows: list[dict] = []
+    for d in rows_raw:
+        last_date_raw = d["last_row_date"]
+        last_date = str(last_date_raw)[:10] if last_date_raw else None
+        sync_status = d["sync_status"] or "unknown"
+
+        # Compute display status from age (or surface sync issues directly).
+        if sync_status == "failed":
+            display_status = "error"
             days_old = None
-            status = "error"
+        elif sync_status == "partial":
+            # Catalog flagged data-quality issue (e.g. non-date in date column)
+            display_status = "error"
+            days_old = None
+        elif not last_date:
+            display_status = "empty"
+            days_old = None
+        else:
+            try:
+                days_old = (datetime.now() - datetime.strptime(last_date, "%Y-%m-%d")).days
+                display_status = (
+                    "fresh" if days_old <= 1
+                    else "stale" if days_old <= 3
+                    else "old"
+                )
+            except (ValueError, TypeError):
+                # Unparseable date string — already-known pre-existing pollution
+                display_status = "error"
+                days_old = None
 
         rows.append({
-            "domain": domain,
+            "domain": d["domain"],
             "display_name": d["display_name"],
             "last_date": last_date,
             "days_old": days_old,
-            "status": status,
+            "row_count": d["row_count"] or 0,
+            "status": display_status,
         })
 
     return pd.DataFrame(rows) if rows else pd.DataFrame()
