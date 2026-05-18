@@ -87,14 +87,19 @@ def render_benchmark_monitor():
     with st.expander("Sync Benchmark Data"):
         if st.button("Scrape Latest Benchmark", key="bm_sync"):
             with st.spinner("Fetching from SBP..."):
+                from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
                 try:
                     from pakfindata.sources.sbp_bond_market import SBPBondMarketScraper
-                    result = SBPBondMarketScraper().sync_benchmark(con)
-                    con.commit()
+                    scraper = SBPBondMarketScraper()  # HTTP init outside lock
+                    with safe_writer() as wcon:
+                        result = scraper.sync_benchmark(wcon)
+                    st.cache_data.clear()
                     if result["status"] == "ok":
                         st.success(f"Stored {result['metrics_stored']} metrics for {result['date']}")
                     else:
                         st.error(result.get("error", "Unknown error"))
+                except SafeWriterBusyError:
+                    st.error("Another sync is running. Wait a moment and retry.")
                 except Exception as e:
                     st.error(f"Failed: {e}")
 
