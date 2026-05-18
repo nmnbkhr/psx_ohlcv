@@ -3154,12 +3154,22 @@ def handle_market_summary_day(args: argparse.Namespace) -> int:
 
     # Import to eod_ohlcv if requested
     if args.import_eod and result["csv_path"] and result["status"] in ("ok", "skipped"):
+        from .db.catalog import record_catalog_failure, update_catalog_from_table
         print(f"\nImporting to eod_ohlcv table...")
         # Set source based on whether PDF fallback was used
         source = "closing_rates_pdf" if pdf_used else "market_summary"
-        ingest_result = ingest_market_summary_csv(
-            con, result["csv_path"], skip_existing=not args.force, source=source
-        )
+        try:
+            ingest_result = ingest_market_summary_csv(
+                con, result["csv_path"], skip_existing=not args.force, source=source
+            )
+            update_catalog_from_table(con, "equity_eod", source=source)
+            con.commit()
+        except Exception as e:  # noqa: BLE001
+            con.rollback()
+            record_catalog_failure("equity_eod", source=source, error=e)
+            print(f"Import error: {e}", file=sys.stderr)
+            con.close()
+            return EXIT_ERROR
         print(f"  Import Status:  {ingest_result['status']}")
         print(f"  Rows Inserted:  {ingest_result['rows_inserted']}")
         print(f"  Source:         {source}")
@@ -3764,6 +3774,18 @@ def handle_regular_market_snapshot(args: argparse.Namespace) -> int:
         df_with_sectors.to_csv(csv_path, index=False)
     else:
         df.to_csv(csv_path, index=False)
+
+    # Atomic catalog update inside the same transaction as the snapshot write.
+    from .db.catalog import update_catalog_from_table
+    try:
+        update_catalog_from_table(con, "regular_market_current", source="psx_api")
+        update_catalog_from_table(con, "regular_market_snapshots", source="psx_api")
+    except Exception:  # noqa: BLE001
+        # Catalog write must not corrupt the snapshot data; swallow + rely on
+        # safe_writer-managed fallback elsewhere. Failure recorded best-effort.
+        from .db.catalog import record_catalog_failure
+        for ds in ("regular_market_current", "regular_market_snapshots"):
+            record_catalog_failure(ds, source="psx_api", error=Exception("catalog write failed"))
 
     con.commit()
     con.close()
@@ -4896,6 +4918,16 @@ def handle_announcements_sync(args: argparse.Namespace) -> int:
                 except Exception:
                     pass  # Skip failed symbols silently
             print(f"  Dividend payouts: {stats['dividends']} saved from {stats['symbols_processed']} symbols")
+
+        # Catalog updates inside the same transaction as the announcement
+        # writes. Per-domain calls so a single failed domain doesn't poison
+        # the others.
+        from .db.catalog import record_catalog_failure, update_catalog_from_table
+        for ds in ("announcements", "corporate_events", "dividend_payouts"):
+            try:
+                update_catalog_from_table(con, ds, source="psx_dps")
+            except Exception as e:  # noqa: BLE001
+                record_catalog_failure(ds, source="psx_dps", error=e)
 
         # Commit all writes (save_* leaves had their commits stripped for
         # safe_writer migration; this CLI owns its own con).
@@ -7535,10 +7567,20 @@ def handle_treasury(args: argparse.Namespace) -> int:
     init_treasury_schema(con)
 
     if args.treasury_command == "sync":
+        from .db.catalog import record_catalog_failure, update_catalog_from_table
         print("Scraping latest T-Bill + PIB rates from SBP PMA page...")
         scraper = SBPTreasuryScraper()
-        result = scraper.sync_treasury(con)
-        con.commit()
+        try:
+            result = scraper.sync_treasury(con)
+            update_catalog_from_table(con, "treasury", source="sbp")
+            update_catalog_from_table(con, "pib", source="sbp")
+            con.commit()
+        except Exception as e:  # noqa: BLE001
+            con.rollback()
+            for ds in ("treasury", "pib"):
+                record_catalog_failure(ds, source="sbp", error=e)
+            print(f"Error: {e}", file=sys.stderr)
+            return EXIT_ERROR
         print(
             f"Done: {result['tbills_ok']} T-Bills, {result['pibs_ok']} PIBs saved, "
             f"{result['failed']} failed"
@@ -7588,10 +7630,19 @@ def handle_treasury(args: argparse.Namespace) -> int:
         return 0
 
     elif args.treasury_command == "gis-sync":
+        from .db.catalog import record_catalog_failure, update_catalog_from_table
         from .sources.sbp_gsp import GSPScraper
         print("Scraping GIS (Ijara Sukuk) auction data...")
         gsp = GSPScraper()
-        result = gsp.sync_gis(con)
+        try:
+            result = gsp.sync_gis(con)
+            # gsp.sync_gis already committed; do a tiny follow-up txn for catalog.
+            update_catalog_from_table(con, "gis_auctions", source="sbp")
+            con.commit()
+        except Exception as e:  # noqa: BLE001
+            record_catalog_failure("gis_auctions", source="sbp", error=e)
+            print(f"Error: {e}", file=sys.stderr)
+            return EXIT_ERROR
         print(
             f"Done: {result['ok']}/{result['total']} GIS records saved, "
             f"{result['failed']} failed (source: {result['source']})"
@@ -7641,10 +7692,24 @@ def handle_rates(args: argparse.Namespace) -> int:
     init_yield_curve_schema(con)
 
     if args.rates_command == "sync":
+        from .db.catalog import record_catalog_failure, update_catalog_from_table
         print("Scraping KONIA + KIBOR + yield curve from SBP PMA page...")
         scraper = SBPRatesScraper()
-        result = scraper.sync_rates(con)
-        con.commit()
+        try:
+            result = scraper.sync_rates(con)
+            for ds, src in (
+                ("kibor", "sbp"),
+                ("konia", "sbp"),
+                ("yield_curve", "sbp"),
+            ):
+                update_catalog_from_table(con, ds, source=src)
+            con.commit()
+        except Exception as e:  # noqa: BLE001
+            con.rollback()
+            for ds in ("kibor", "konia", "yield_curve"):
+                record_catalog_failure(ds, source="sbp", error=e)
+            print(f"Error: {e}", file=sys.stderr)
+            return EXIT_ERROR
         print(
             f"Done: KONIA={'OK' if result['konia_ok'] else 'N/A'}, "
             f"{result['kibor_ok']} KIBOR rates, "
@@ -7729,31 +7794,56 @@ def handle_fx_rates(args: argparse.Namespace) -> int:
     init_fx_extended_schema(con)
 
     if args.fxe_command == "sbp-sync":
+        from .db.catalog import record_catalog_failure, update_catalog_from_table
         print("Scraping SBP interbank USD/PKR rates...")
         scraper = SBPFXScraper()
-        result = scraper.sync_interbank(con)
-        con.commit()
+        try:
+            result = scraper.sync_interbank(con)
+            update_catalog_from_table(con, "fx_interbank", source="sbp")
+            con.commit()
+        except Exception as e:  # noqa: BLE001
+            con.rollback()
+            record_catalog_failure("fx_interbank", source="sbp", error=e)
+            print(f"Error: {e}", file=sys.stderr)
+            return EXIT_ERROR
         print(f"Done: {result['ok']} OK, {result['failed']} failed (total {result['total']})")
         return 0
 
     elif args.fxe_command == "kerb-sync":
+        from .db.catalog import record_catalog_failure, update_catalog_from_table
         print("Scraping kerb rates from forex.pk...")
         scraper = ForexPKScraper()
-        result = scraper.sync_kerb(con)
-        con.commit()
+        try:
+            result = scraper.sync_kerb(con)
+            update_catalog_from_table(con, "fx_kerb", source="forex_pk")
+            con.commit()
+        except Exception as e:  # noqa: BLE001
+            con.rollback()
+            record_catalog_failure("fx_kerb", source="forex_pk", error=e)
+            print(f"Error: {e}", file=sys.stderr)
+            return EXIT_ERROR
         print(f"Done: {result['ok']} OK, {result['failed']} failed (total {result['total']})")
         return 0
 
     elif args.fxe_command == "sync-all":
+        from .db.catalog import record_catalog_failure, update_catalog_from_table
         print("Syncing SBP interbank + kerb rates...")
-        sbp = SBPFXScraper()
-        r1 = sbp.sync_interbank(con)
-        print(f"  SBP interbank: {r1['ok']} OK")
-
-        kerb = ForexPKScraper()
-        r2 = kerb.sync_kerb(con)
-        print(f"  Kerb (forex.pk): {r2['ok']} OK")
-        con.commit()
+        try:
+            sbp = SBPFXScraper()
+            r1 = sbp.sync_interbank(con)
+            print(f"  SBP interbank: {r1['ok']} OK")
+            kerb = ForexPKScraper()
+            r2 = kerb.sync_kerb(con)
+            print(f"  Kerb (forex.pk): {r2['ok']} OK")
+            update_catalog_from_table(con, "fx_interbank", source="sbp")
+            update_catalog_from_table(con, "fx_kerb", source="forex_pk")
+            con.commit()
+        except Exception as e:  # noqa: BLE001
+            con.rollback()
+            for ds, src in (("fx_interbank", "sbp"), ("fx_kerb", "forex_pk")):
+                record_catalog_failure(ds, source=src, error=e)
+            print(f"Error: {e}", file=sys.stderr)
+            return EXIT_ERROR
         print(f"Done: {r1['ok'] + r2['ok']} total rates synced")
         return 0
 
