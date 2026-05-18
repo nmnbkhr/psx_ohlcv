@@ -363,14 +363,30 @@ def get_connection():
 @st.cache_data(ttl=60)
 def get_data_freshness(_con) -> tuple[int | None, str | None]:
     """
-    Get data freshness info. Queries the DB first — SELECT MAX(date) is
-    cheap and always authoritative. Falls back to sync_state.json only
-    when the DB scan returns nothing (e.g. empty table, schema missing).
+    Get data freshness info for the dashboard's "latest EOD date" badge.
+
+    Reads from data_freshness catalog first (single SELECT, no scan) and
+    falls back to a direct eod_ohlcv MAX(date) scan only when the catalog
+    row is missing or its latest_date is unparseable. The catalog is
+    updated atomically by every safe_writer-migrated sync path (Phase 0
+    Milestone 0.2).
 
     Returns:
         Tuple of (days_old, latest_date_str) or (None, None) if no data.
     """
-    # Primary: DB scan — authoritative, no staleness risk.
+    # Primary: catalog — fast (one row by PK), updated atomically with writes.
+    try:
+        from pakfindata.db.catalog import get_freshness
+        days, latest, status = get_freshness("equity_eod")
+        if days is not None and latest:
+            return days, latest
+        # status='partial' or unparseable latest_date: fall through to DB scan
+        # rather than displaying garbage. The catalog still records the issue
+        # (notes column) for the Sync Monitor page to surface.
+    except Exception:
+        pass
+
+    # Fallback: direct DB scan — authoritative when catalog row is missing.
     try:
         result = _con.execute(
             "SELECT MAX(date) as max_date FROM eod_ohlcv"
@@ -379,23 +395,7 @@ def get_data_freshness(_con) -> tuple[int | None, str | None]:
             most_recent = str(result["max_date"])[:10]
             latest_date = datetime.strptime(most_recent, "%Y-%m-%d")
             days_old = (datetime.now() - latest_date).days
-            # Keep the state file aligned so other consumers stay in sync.
-            try:
-                from pakfindata.services.sync_state import set_last_eod_date
-                set_last_eod_date(most_recent)
-            except Exception:
-                pass
             return days_old, most_recent
-    except Exception:
-        pass
-
-    # Fallback: sync_state.json — only used when DB scan failed or empty.
-    try:
-        from pakfindata.services.sync_state import get_last_eod_date
-        last_date = get_last_eod_date()
-        if last_date:
-            days_old = (datetime.now() - datetime.strptime(last_date, "%Y-%m-%d")).days
-            return days_old, last_date
     except Exception:
         pass
 
