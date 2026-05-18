@@ -557,6 +557,7 @@ def render_sync_monitor():
                         progress_bar.progress((i + 1) / len(symbols))
 
                 # Single safe_writer block for ALL writes ──────────────────────
+                from pakfindata.db.catalog import update_catalog_from_table
                 with safe_writer() as wcon:
                     for record in ann_records:
                         if save_announcement(wcon, record):
@@ -568,6 +569,9 @@ def render_sync_monitor():
                         for payout in payouts:
                             if save_dividend_payout(wcon, payout):
                                 stats["dividends"] += 1
+                    update_catalog_from_table(wcon, "announcements", source="psx_dps")
+                    update_catalog_from_table(wcon, "corporate_events", source="psx_dps")
+                    update_catalog_from_table(wcon, "dividend_payouts", source="psx_dps")
 
                 if sync_announcements_flag:
                     st.write(f"   ✅ {stats['announcements']} announcements saved")
@@ -586,6 +590,9 @@ def render_sync_monitor():
             except Exception as e:
                 st.session_state.announcements_sync_result = {"success": False, "error": str(e)}
                 status.update(label="❌ Sync failed!", state="error")
+                from pakfindata.db.catalog import record_catalog_failure
+                for ds in ("announcements", "corporate_events", "dividend_payouts"):
+                    record_catalog_failure(ds, source="psx_dps", error=e)
 
             finally:
                 st.session_state.announcements_sync_running = False

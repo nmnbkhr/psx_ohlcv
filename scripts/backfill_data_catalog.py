@@ -82,6 +82,9 @@ DATASETS: list[Dataset] = [
     # EasyData side-effect tables (written by sbp_easydata.sync_all_to_db)
     Dataset("sbp_fx_monthly_avg",       "sbp_fx_monthly_avg",       "date",            "sbp_easydata",       "SBP FX Monthly Avg"),
     Dataset("sbp_fx_daily_avg",         "sbp_fx_daily_avg",         "date",            "sbp_easydata",       "SBP FX Daily Avg"),
+    # Sync Monitor "Sync Announcements" co-writes corporate_events + dividend_payouts
+    Dataset("corporate_events",         "corporate_events",         "event_date",      "psx_dps",            "Corporate Events"),
+    Dataset("dividend_payouts",         "dividend_payouts",         "announcement_date","psx_dps",           "Dividend Payouts"),
 ]
 
 
