@@ -1180,13 +1180,19 @@ def _render_sync(con):
     with c2:
         if st.button("Sync Rates (KIBOR/PKRV/KONIA)", key="tsy_sync_rates"):
             with st.spinner("Syncing rates from SBP..."):
+                from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
                 try:
-                    result = SBPRatesScraper().sync_rates(con)
+                    scraper = SBPRatesScraper()  # HTTP init outside lock
+                    with safe_writer() as wcon:
+                        result = scraper.sync_rates(wcon)
+                    st.cache_data.clear()
                     st.success(
                         f"KIBOR: {result['kibor_ok']}, PKRV: {result['pkrv_points']}, "
                         f"KONIA: {'OK' if result['konia_ok'] else 'N/A'}"
                     )
                     st.rerun()
+                except SafeWriterBusyError:
+                    st.error("Another sync is running. Wait a moment and retry.")
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
     with c3:
@@ -1214,15 +1220,20 @@ def _render_sync(con):
     st.markdown("##### MUFAP Yield Curves (PKRV/PKISRV/PKFRV)")
     if st.button("Sync Yield Curves (MUFAP)", key="tsy_sync_mufap"):
         with st.spinner("Downloading & parsing MUFAP rate files..."):
+            from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
             try:
                 from pakfindata.sources.mufap_rates import download_and_sync
-                result = download_and_sync(con)
+                with safe_writer() as wcon:
+                    result = download_and_sync(wcon)
+                st.cache_data.clear()
                 st.success(
                     f"New: {result['downloaded']}, Skipped: {result['skipped']} | "
                     f"PKRV: {result['pkrv_records']}, PKISRV: {result['pkisrv_records']}, "
                     f"PKFRV: {result['pkfrv_records']}"
                 )
                 st.rerun()
+            except SafeWriterBusyError:
+                st.error("Another sync is running. Wait a moment and retry.")
             except Exception as e:
                 st.error(f"MUFAP sync failed: {e}")
 

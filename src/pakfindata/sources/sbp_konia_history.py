@@ -270,18 +270,21 @@ class SBPKoniaHistoryScraper:
 
                 if i % 50 == 0:
                     _write_progress(progress)
+                    con.commit()
 
         except Exception as e:
             progress["status"] = "error"
             progress["error"] = str(e)
             _write_progress(progress)
             log.exception("KONIA history sync failed")
+            con.commit()
             con.close()
             return
 
         progress["status"] = "completed"
         progress["finished_at"] = datetime.now().isoformat()
         _write_progress(progress)
+        con.commit()
         con.close()
 
         log.info(

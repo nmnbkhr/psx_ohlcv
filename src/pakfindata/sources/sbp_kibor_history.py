@@ -274,12 +274,14 @@ class SBPKiborHistoryScraper:
 
             if i % 10 == 0:
                 _write_progress(progress)
+                con.commit()
 
             time.sleep(REQUEST_DELAY)
 
         progress["status"] = "completed"
         progress["finished_at"] = datetime.now().isoformat()
         _write_progress(progress)
+        con.commit()
         con.close()
 
         log.info(

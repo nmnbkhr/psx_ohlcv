@@ -7511,6 +7511,7 @@ def handle_rates(args: argparse.Namespace) -> int:
         print("Scraping KONIA + KIBOR + yield curve from SBP PMA page...")
         scraper = SBPRatesScraper()
         result = scraper.sync_rates(con)
+        con.commit()
         print(
             f"Done: KONIA={'OK' if result['konia_ok'] else 'N/A'}, "
             f"{result['kibor_ok']} KIBOR rates, "
@@ -8164,6 +8165,7 @@ def handle_backfill_rates(args: argparse.Namespace) -> int:
             counts = scraper.sync_kibor_history(
                 con, start_year=start_year, incremental=True,
             )
+            con.commit()
             print(f"  [KIBOR] OK: {counts['dates_processed']} dates, "
                   f"{counts['records_inserted']} records, "
                   f"skipped={counts['skipped']}, failed={counts['failed']}")
