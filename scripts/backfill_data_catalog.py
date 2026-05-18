@@ -88,6 +88,9 @@ DATASETS: list[Dataset] = [
     # Intraday summary co-writes (built by intraday_summary.compute_all)
     Dataset("intraday_minute_breadth",  "intraday_minute_breadth",  "date",            "computed",           "Intraday Minute Breadth"),
     Dataset("intraday_hourly_summary",  "intraday_hourly_summary",  "date",            "computed",           "Intraday Hourly Summary"),
+    # Bond Market SMTV co-writes (sbp_bond_market.sync_smtv writes both)
+    Dataset("bond_trading_daily",       "sbp_bond_trading_daily",   "date",            "sbp_bond_market",    "SBP Bond Trading Daily"),
+    Dataset("bond_trading_summary",     "sbp_bond_trading_summary", "date",            "sbp_bond_market",    "SBP Bond Trading Summary"),
 ]
 
 

@@ -61,11 +61,13 @@ def render_bond_market():
             if st.button("Scrape Benchmark Snapshot", key="bm_bench_sync"):
                 with st.spinner("Fetching from SBP MSM page..."):
                     from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                    from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
                     try:
                         from pakfindata.sources.sbp_bond_market import SBPBondMarketScraper
                         scraper = SBPBondMarketScraper()  # HTTP init outside lock
                         with safe_writer() as wcon:
                             result = scraper.sync_benchmark(wcon)
+                            update_catalog_from_table(wcon, "benchmark_snapshot", source="sbp_bond_market")
                         st.cache_data.clear()
                         if result["status"] == "ok":
                             st.success(
@@ -75,15 +77,21 @@ def render_bond_market():
                             st.error(result.get("error", "Unknown error"))
                     except SafeWriterBusyError:
                         st.error("Another sync is running. Wait a moment and retry.")
+                    except Exception as e:
+                        st.error(f"Failed: {e}")
+                        record_catalog_failure("benchmark_snapshot", source="sbp_bond_market", error=e)
         with c2:
             if st.button("Sync SMTV Trading Data", key="bm_smtv_sync"):
                 with st.spinner("Downloading & parsing SBP SMTV PDF..."):
                     from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                    from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
                     try:
                         from pakfindata.sources.sbp_bond_market import SBPBondMarketScraper
                         scraper = SBPBondMarketScraper()  # HTTP init outside lock
                         with safe_writer() as wcon:
                             result = scraper.sync_smtv(wcon)
+                            update_catalog_from_table(wcon, "bond_trading_daily", source="sbp_bond_market")
+                            update_catalog_from_table(wcon, "bond_trading_summary", source="sbp_bond_market")
                         st.cache_data.clear()
                         if result["status"] == "ok":
                             st.success(
@@ -95,6 +103,10 @@ def render_bond_market():
                             st.warning(f"Skipped: {result.get('reason', 'unknown')}")
                     except SafeWriterBusyError:
                         st.error("Another sync is running. Wait a moment and retry.")
+                    except Exception as e:
+                        st.error(f"Failed: {e}")
+                        for ds in ("bond_trading_daily", "bond_trading_summary"):
+                            record_catalog_failure(ds, source="sbp_bond_market", error=e)
 
     # Ensure schema exists
     from pakfindata.db.repositories.bond_market import (

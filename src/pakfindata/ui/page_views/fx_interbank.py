@@ -87,32 +87,40 @@ def render_fx_interbank():
             if st.button("Sync SBP EasyData (FX + KIBOR)", type="primary", key="fxib_sync"):
                 with st.spinner("Syncing from SBP EasyData..."):
                     from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                    from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
                     try:
                         from pakfindata.sources.sbp_easydata import sync_fx_to_db, sync_kibor_to_db
                         with safe_writer() as wcon:
                             r1 = sync_fx_to_db(wcon)
                             r2 = sync_kibor_to_db(wcon)
+                            update_catalog_from_table(wcon, "sbp_fx_monthly_avg", source="sbp_easydata")
+                            update_catalog_from_table(wcon, "kibor", source="sbp_easydata")
                         st.cache_data.clear()
                         st.success(f"EasyData: {r1.get('fx_rows',0)} FX + {r2.get('kibor_rows',0)} KIBOR rows")
                     except SafeWriterBusyError:
                         st.error("Another sync is running. Wait a moment and retry.")
                     except Exception as e:
                         st.error(f"Sync failed: {e}")
+                        for ds in ("sbp_fx_monthly_avg", "kibor"):
+                            record_catalog_failure(ds, source="sbp_easydata", error=e)
         with col2:
             if st.button("Sync Open Market + Kerb (forex.pk)", key="fxib_kerb"):
                 with st.spinner("Syncing..."):
                     from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                    from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
                     try:
                         from pakfindata.sources.forex_scraper import ForexPKScraper
                         scraper = ForexPKScraper()  # HTTP init outside lock
                         with safe_writer() as wcon:
                             result = scraper.sync_kerb(wcon)
+                            update_catalog_from_table(wcon, "fx_kerb", source="forex_pk")
                         st.cache_data.clear()
                         st.success(f"Open Market + Kerb: {result.get('ok', 0)} rates synced")
                     except SafeWriterBusyError:
                         st.error("Another sync is running. Wait a moment and retry.")
                     except Exception as e:
                         st.error(f"Sync failed: {e}")
+                        record_catalog_failure("fx_kerb", source="forex_pk", error=e)
 
     render_footer()
 

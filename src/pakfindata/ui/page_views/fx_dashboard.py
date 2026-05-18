@@ -916,10 +916,15 @@ def _render_sync(con):
         if st.button("Sync SBP EasyData (FX + KIBOR + Policy)", type="primary", key="fx_sync_interbank"):
             with st.spinner("Syncing from SBP EasyData CSVs..."):
                 from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
                 try:
                     from pakfindata.sources.sbp_easydata import sync_all_to_db
                     with safe_writer() as wcon:
                         result = sync_all_to_db(wcon)
+                        update_catalog_from_table(wcon, "kibor", source="sbp_easydata")
+                        update_catalog_from_table(wcon, "sbp_fx_monthly_avg", source="sbp_easydata")
+                        update_catalog_from_table(wcon, "sbp_fx_daily_avg", source="sbp_easydata")
+                        update_catalog_from_table(wcon, "sbp_policy_rates", source="sbp_easydata")
                     st.cache_data.clear()
                     st.success(
                         f"EasyData: {result.get('fx_rows', 0)} FX, "
@@ -931,14 +936,18 @@ def _render_sync(con):
                     st.error("Another sync is running. Wait a moment and retry.")
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
+                    for ds in ("kibor", "sbp_fx_monthly_avg", "sbp_fx_daily_avg", "sbp_policy_rates"):
+                        record_catalog_failure(ds, source="sbp_easydata", error=e)
     with col2:
         if st.button("Sync Kerb (forex.pk)", key="fx_sync_kerb"):
             with st.spinner("Syncing kerb rates from forex.pk..."):
                 from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
                 try:
                     scraper = ForexPKScraper()  # HTTP init outside lock
                     with safe_writer() as wcon:
                         result = scraper.sync_kerb(wcon)
+                        update_catalog_from_table(wcon, "fx_kerb", source="forex_pk")
                     st.cache_data.clear()
                     st.success(f"Kerb: {result.get('ok', 0)} rates synced")
                     st.rerun()
@@ -946,6 +955,7 @@ def _render_sync(con):
                     st.error("Another sync is running. Wait a moment and retry.")
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
+                    record_catalog_failure("fx_kerb", source="forex_pk", error=e)
 
     if _fx.is_healthy():
         col3, col4 = st.columns(2)
@@ -953,10 +963,13 @@ def _render_sync(con):
             if st.button("Sync from FX Microservice", key="fx_sync_micro"):
                 with st.spinner("Syncing rates from FX microservice..."):
                     from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                    from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
                     try:
                         from pakfindata.sources.fx_sync import sync_fx_rates
                         with safe_writer() as wcon:
                             result = sync_fx_rates(wcon)
+                            update_catalog_from_table(wcon, "fx_interbank", source="fx_microservice")
+                            update_catalog_from_table(wcon, "kibor", source="fx_microservice")
                         st.cache_data.clear()
                         st.success(
                             f"FX micro: {result.get('rates_stored', 0)} rates, "
@@ -967,14 +980,18 @@ def _render_sync(con):
                         st.error("Another sync is running. Wait a moment and retry.")
                     except Exception as e:
                         st.error(f"FX micro sync failed: {e}")
+                        for ds in ("fx_interbank", "kibor"):
+                            record_catalog_failure(ds, source="fx_microservice", error=e)
         with col4:
             if st.button("Backfill FX History", key="fx_backfill"):
                 with st.spinner("Backfilling FX history from microservice..."):
                     from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                    from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
                     try:
                         from pakfindata.sources.fx_sync import backfill_fx_history
                         with safe_writer() as wcon:
                             result = backfill_fx_history(wcon)
+                            update_catalog_from_table(wcon, "fx_interbank", source="fx_microservice")
                         st.cache_data.clear()
                         st.success(
                             f"Backfill: {result.get('inserted', 0)} inserted, "
@@ -985,6 +1002,7 @@ def _render_sync(con):
                         st.error("Another sync is running. Wait a moment and retry.")
                     except Exception as e:
                         st.error(f"Backfill failed: {e}")
+                        record_catalog_failure("fx_interbank", source="fx_microservice", error=e)
 
     # Sync runs table
     runs = _load_fx_sync_runs()
