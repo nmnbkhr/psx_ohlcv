@@ -1915,14 +1915,20 @@ def _render_sync(con, sel_date):
                     from pakfindata.db.repositories import intraday_summary as _isum
                     if _isum.source_available(load_disk_date) == "jsonl":
                         from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                        from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
                         with st.spinner(f"Building summaries for {load_disk_date}..."):
                             try:
                                 with safe_writer() as wcon:
                                     sres = _isum.compute_all(wcon, load_disk_date)
+                                    update_catalog_from_table(wcon, "intraday_daily_summary", source="computed")
+                                    update_catalog_from_table(wcon, "intraday_minute_breadth", source="computed")
+                                    update_catalog_from_table(wcon, "intraday_hourly_summary", source="computed")
                             except SafeWriterBusyError:
                                 sres = {"error": "Another writer holds the lock; retry shortly."}
                         if "error" in sres:
                             st.warning(f"Summary build skipped: {sres['error']}")
+                            for ds in ("intraday_daily_summary", "intraday_minute_breadth", "intraday_hourly_summary"):
+                                record_catalog_failure(ds, source="computed", error=sres["error"])
                         else:
                             t = sres["timings"]
                             st.success(
@@ -2047,10 +2053,14 @@ def _render_sync(con, sel_date):
             ):
                 from pakfindata.db.repositories import intraday_summary as _isum
                 from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
                 with st.spinner(f"Aggregating {_sum_date}..."):
                     try:
                         with safe_writer() as wcon:
                             result = _isum.compute_all(wcon, _sum_date)
+                            update_catalog_from_table(wcon, "intraday_daily_summary", source="computed")
+                            update_catalog_from_table(wcon, "intraday_minute_breadth", source="computed")
+                            update_catalog_from_table(wcon, "intraday_hourly_summary", source="computed")
                         if "error" in result:
                             st.error(result["error"])
                         else:
@@ -2068,6 +2078,8 @@ def _render_sync(con, sel_date):
                         import traceback
                         st.error(f"Build failed: {e}")
                         st.code(traceback.format_exc(), language="python")
+                        for ds in ("intraday_daily_summary", "intraday_minute_breadth", "intraday_hourly_summary"):
+                            record_catalog_failure(ds, source="computed", error=e)
 
         with _sumb2:
             if st.button(
@@ -2077,6 +2089,7 @@ def _render_sync(con, sel_date):
             ):
                 from pakfindata.db.repositories import intraday_summary as _isum
                 from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
                 _existing = set(_isum.get_summary_dates(con))
                 _missing = [d for d in _jl_dates if d not in _existing]
                 if not _missing:
@@ -2088,11 +2101,19 @@ def _render_sync(con, sel_date):
                         try:
                             with safe_writer() as wcon:
                                 _isum.compute_all(wcon, _d)
+                                # Catalog update inside the per-date transaction.
+                                # Last-date-wins on the row, but row_count is the
+                                # current MAX/COUNT across ALL dates after this insert.
+                                update_catalog_from_table(wcon, "intraday_daily_summary", source="computed")
+                                update_catalog_from_table(wcon, "intraday_minute_breadth", source="computed")
+                                update_catalog_from_table(wcon, "intraday_hourly_summary", source="computed")
                             _ok += 1
                         except SafeWriterBusyError:
                             st.warning(f"{_d}: another writer holds the lock; skipped.")
                         except Exception as _e:
                             st.warning(f"{_d}: {_e}")
+                            for ds in ("intraday_daily_summary", "intraday_minute_breadth", "intraday_hourly_summary"):
+                                record_catalog_failure(ds, source="computed", error=_e)
                         _prog.progress((_i + 1) / len(_missing), text=f"{_i+1}/{len(_missing)} ({_d})")
                     st.cache_data.clear()
                     st.success(f"Built summaries for {_ok}/{len(_missing)} dates.")

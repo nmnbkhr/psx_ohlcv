@@ -85,6 +85,9 @@ DATASETS: list[Dataset] = [
     # Sync Monitor "Sync Announcements" co-writes corporate_events + dividend_payouts
     Dataset("corporate_events",         "corporate_events",         "event_date",      "psx_dps",            "Corporate Events"),
     Dataset("dividend_payouts",         "dividend_payouts",         "announcement_date","psx_dps",           "Dividend Payouts"),
+    # Intraday summary co-writes (built by intraday_summary.compute_all)
+    Dataset("intraday_minute_breadth",  "intraday_minute_breadth",  "date",            "computed",           "Intraday Minute Breadth"),
+    Dataset("intraday_hourly_summary",  "intraday_hourly_summary",  "date",            "computed",           "Intraday Hourly Summary"),
 ]
 
 
