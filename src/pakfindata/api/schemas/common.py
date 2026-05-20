@@ -40,11 +40,13 @@ class ErrorResponse(BaseModel):
 def df_to_records(df: pd.DataFrame) -> list[dict[str, Any]]:
     """Convert a DataFrame to a JSON-safe list of dicts.
 
-    Replaces NaN with None so the JSON encoder emits ``null`` instead of
-    crashing on ``float('nan')``. Pandas' ``to_dict(orient='records')``
-    on its own leaves NaN as a Python float NaN, which ``json.dumps``
-    rejects.
+    Replaces NaN / NaT / pd.NA with None so the JSON encoder emits
+    ``null`` instead of crashing on ``float('nan')``. ``df.where`` alone
+    is not enough: pandas keeps the column dtype, so float columns
+    still emit NaN through ``to_dict``. Casting to object first forces
+    Python-object cells everywhere.
     """
     if df is None or df.empty:
         return []
-    return df.where(pd.notna(df), None).to_dict(orient="records")
+    records = df.astype(object).where(pd.notna(df), None).to_dict(orient="records")
+    return records

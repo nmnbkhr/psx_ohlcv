@@ -28,6 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pakfindata.api.auth import BearerAuthMiddleware
 from pakfindata.api.config import get_settings
 from pakfindata.api.logging import configure_logging
+from pakfindata.api.routes import eod as eod_route
 from pakfindata.api.routes import freshness as freshness_route
 from pakfindata.api.routes import health as health_route
 
@@ -100,6 +101,7 @@ app.add_middleware(BearerAuthMiddleware)
 # New-style routes (Phase 1+)
 app.include_router(health_route.router)
 app.include_router(freshness_route.router)
+app.include_router(eod_route.router)
 
 
 # Legacy routers (Phase 0 era). Bearer auth still applies via
