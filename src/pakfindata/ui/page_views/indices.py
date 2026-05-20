@@ -153,7 +153,7 @@ def render_indices():
     if all_metrics:
         # Calculate summary stats
         valid_1m = [m.get("return_1m") for m in all_metrics if m.get("return_1m") is not None]
-        valid_1d = [m.get("change_1d") for m in all_metrics if m.get("change_1d") is not None] if "change_1d" in metrics_df.columns else []
+        valid_1d = metrics_df["change_1d"].dropna().tolist() if "change_1d" in metrics_df.columns else []
 
         col1, col2, col3, col4 = st.columns(4)
 
