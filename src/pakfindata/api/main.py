@@ -31,6 +31,7 @@ from pakfindata.api.logging import configure_logging
 from pakfindata.api.routes import eod as eod_route
 from pakfindata.api.routes import freshness as freshness_route
 from pakfindata.api.routes import health as health_route
+from pakfindata.api.routes import indices as indices_route
 
 # Legacy routers (Phase 0-era; full business surface). These continue
 # to exist under `/api/*` while Phase 1 migrates them to `/v1/*`
@@ -102,6 +103,7 @@ app.add_middleware(BearerAuthMiddleware)
 app.include_router(health_route.router)
 app.include_router(freshness_route.router)
 app.include_router(eod_route.router)
+app.include_router(indices_route.router)
 
 
 # Legacy routers (Phase 0 era). Bearer auth still applies via

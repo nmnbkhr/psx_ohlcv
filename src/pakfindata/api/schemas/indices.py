@@ -43,9 +43,14 @@ class IndexHistoryRow(BaseModel):
 
 
 class IndexConstituent(BaseModel):
-    """Membership row for an index."""
+    """Membership row for an index.
+
+    Mirrors the columns returned by
+    ``db/repositories/instruments.get_index_constituents`` — weights
+    and share counts aren't stored on ``instrument_membership``, so
+    only identity fields surface here.
+    """
 
     symbol: str
-    weight: Optional[float] = None
-    shares: Optional[int] = None
-    effective_date: Optional[str] = None
+    name: Optional[str] = None
+    instrument_id: Optional[str] = None
