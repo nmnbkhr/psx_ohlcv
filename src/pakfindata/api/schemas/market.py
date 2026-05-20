@@ -1,7 +1,8 @@
 """Market-overview composite response models.
 
-These map 1:1 to Dashboard widgets — each model bundles everything one
-UI tile needs so the client gets a widget's data in a single round-trip.
+Each model maps 1:1 to a Dashboard widget — fields mirror the columns
+returned by ``db/repositories/market_summary`` and ``rates_strip`` so
+``model_validate(row_dict)`` round-trips without renames.
 """
 
 from __future__ import annotations
@@ -12,7 +13,11 @@ from pydantic import BaseModel
 
 
 class KSE100Hero(BaseModel):
-    """Dashboard's hero widget — KSE-100 quote + breadth + 52w range."""
+    """Dashboard's hero widget — KSE-100 quote + breadth + 52w range.
+
+    Fields drawn from ``psx_indices`` (via ``get_latest_kse100``) plus
+    breadth from ``eod_market_summary`` (via ``get_eod_breadth``).
+    """
 
     as_of: str
     value: float
@@ -28,65 +33,70 @@ class KSE100Hero(BaseModel):
 
 
 class Mover(BaseModel):
-    """One row in the gainers / losers / volume-leaders lists."""
+    """Row shape returned by get_top_movers / get_volume_leaders."""
 
     symbol: str
-    company_name: Optional[str] = None
-    sector: Optional[str] = None
     close: Optional[float] = None
-    change: Optional[float] = None
+    prev_close: Optional[float] = None
     change_pct: Optional[float] = None
     volume: Optional[int] = None
-    turnover: Optional[float] = None
 
 
 class FiftyTwoWeekRow(BaseModel):
-    """One symbol near its 52-week high or low."""
+    """Row shape from get_52w_extremes: ``symbol`` + position percent.
+
+    ``pos_pct`` is 100 at the 52-week high, 0 at the 52-week low.
+    """
 
     symbol: str
-    company_name: Optional[str] = None
-    close: Optional[float] = None
-    week_52_high: Optional[float] = None
-    week_52_low: Optional[float] = None
-    distance_pct: Optional[float] = None
+    pos_pct: Optional[float] = None
 
 
 class FiftyTwoWeekExtremes(BaseModel):
-    """Bundle near-high + near-low (one widget, one round-trip)."""
+    """Bundle near-high + near-low — one widget, one round-trip."""
 
-    as_of: Optional[str] = None
     near_high: list[FiftyTwoWeekRow]
     near_low: list[FiftyTwoWeekRow]
 
 
 class SectorRow(BaseModel):
-    """One row in the sector leaderboard."""
+    """Row shape from get_sector_performance."""
 
-    sector_code: Optional[str] = None
-    sector_name: Optional[str] = None
-    symbols: Optional[int] = None
-    avg_change_pct: Optional[float] = None
-    total_volume: Optional[int] = None
-    total_turnover: Optional[float] = None
-    advancers: Optional[int] = None
-    decliners: Optional[int] = None
+    sector: Optional[str] = None
+    stocks: Optional[int] = None
+    avg_chg: Optional[float] = None
+    total_vol: Optional[int] = None
+    up: Optional[int] = None
+    down: Optional[int] = None
 
 
 class FXRow(BaseModel):
+    """One currency's latest selling rate."""
+
     currency: str
-    rate: Optional[float] = None
+    selling: Optional[float] = None
     as_of: Optional[str] = None
 
 
 class RatesStrip(BaseModel):
-    """Dashboard top-bar strip — key rates + FX, single round-trip."""
+    """Dashboard top-bar strip — key rates + FX, single round-trip.
 
-    sbp_policy: Optional[float] = None
+    Field shapes:
+        sbp_policy_rate / _date              ← sbp_policy_rates
+        kibor_3m_bid / _offer / _date        ← kibor_daily (tenor=3M)
+        tbill_3m_cutoff / _date              ← tbill_auctions (tenor=3M)
+        pkrv_10y_yield / _date               ← pkrv_daily (tenor_months=120)
+
+    A missing point leaves both value and date None — no fabrication.
+    """
+
+    sbp_policy_rate: Optional[float] = None
     sbp_policy_date: Optional[str] = None
-    kibor_3m: Optional[float] = None
+    kibor_3m_bid: Optional[float] = None
+    kibor_3m_offer: Optional[float] = None
     kibor_3m_date: Optional[str] = None
-    tbill_3m: Optional[float] = None
+    tbill_3m_cutoff: Optional[float] = None
     tbill_3m_date: Optional[str] = None
-    pkrv_10y: Optional[float] = None
+    pkrv_10y_yield: Optional[float] = None
     pkrv_10y_date: Optional[str] = None
     fx: list[FXRow]
