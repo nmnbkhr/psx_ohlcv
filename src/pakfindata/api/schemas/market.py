@@ -78,6 +78,53 @@ class FXRow(BaseModel):
     as_of: Optional[str] = None
 
 
+class ValueLeader(BaseModel):
+    """Row shape from get_value_leaders — adds turnover to the Mover shape."""
+
+    symbol: str
+    close: Optional[float] = None
+    volume: Optional[int] = None
+    value: Optional[float] = None
+    change_pct: Optional[float] = None
+
+
+class ChangeDistributionRow(BaseModel):
+    """Histogram-bucket row from get_change_distribution.
+
+    One symbol → one rounded change percent. Clients bin these for the
+    breadth histogram.
+    """
+
+    chg_pct: Optional[float] = None
+
+
+class Announcement(BaseModel):
+    """Recent corporate announcement (company_announcements with a
+    corporate_announcements fallback)."""
+
+    symbol: Optional[str] = None
+    date: Optional[str] = None
+    subject: Optional[str] = None
+
+
+class MarketAnalytics(BaseModel):
+    """Latest snapshot from ``analytics_market_snapshot``.
+
+    Point-in-time aggregate: breadth + volume + top mover symbols.
+    Used by Dashboard for the analytics widget.
+    """
+
+    ts: str
+    gainers_count: Optional[int] = None
+    losers_count: Optional[int] = None
+    unchanged_count: Optional[int] = None
+    total_symbols: Optional[int] = None
+    total_volume: Optional[float] = None
+    top_gainer_symbol: Optional[str] = None
+    top_loser_symbol: Optional[str] = None
+    computed_at: Optional[str] = None
+
+
 class RatesStrip(BaseModel):
     """Dashboard top-bar strip — key rates + FX, single round-trip.
 

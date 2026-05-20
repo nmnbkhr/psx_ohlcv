@@ -33,6 +33,7 @@ from pakfindata.api.routes import freshness as freshness_route
 from pakfindata.api.routes import health as health_route
 from pakfindata.api.routes import indices as indices_route
 from pakfindata.api.routes import market as market_route
+from pakfindata.api.routes import sync as sync_route
 
 # Legacy routers (Phase 0-era; full business surface). These continue
 # to exist under `/api/*` while Phase 1 migrates them to `/v1/*`
@@ -107,6 +108,7 @@ app.include_router(eod_route.router)
 app.include_router(indices_route.router)
 app.include_router(market_route.market_router)
 app.include_router(market_route.rates_router)
+app.include_router(sync_route.router)
 
 
 # Legacy routers (Phase 0 era). Bearer auth still applies via

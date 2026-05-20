@@ -24,12 +24,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pakfindata.api.deps import get_read_db
 from pakfindata.api.schemas.common import df_to_records
 from pakfindata.api.schemas.market import (
+    Announcement,
+    ChangeDistributionRow,
     FXRow,
     FiftyTwoWeekExtremes,
     KSE100Hero,
+    MarketAnalytics,
     Mover,
     RatesStrip,
     SectorRow,
+    ValueLeader,
 )
 from pakfindata.db.repositories import market as market_repo
 from pakfindata.db.repositories import market_summary as ms_repo
@@ -126,6 +130,62 @@ def sector_leaderboard(
 ) -> list[dict]:
     df = ms_repo.get_sector_performance(con)
     return df_to_records(df)
+
+
+@market_router.get("/value-leaders", response_model=list[ValueLeader])
+def value_leaders(
+    con: Annotated[sqlite3.Connection, Depends(get_read_db)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 10,
+) -> list[dict]:
+    """Top symbols by turnover (close × volume) for the latest trading day."""
+    df = ms_repo.get_value_leaders(con, limit=limit)
+    return df_to_records(df)
+
+
+@market_router.get(
+    "/change-distribution", response_model=list[ChangeDistributionRow]
+)
+def change_distribution(
+    con: Annotated[sqlite3.Connection, Depends(get_read_db)],
+    date: Annotated[
+        Optional[str],
+        Query(description="Trading date (YYYY-MM-DD); latest if omitted", pattern=DATE_RE),
+    ] = None,
+) -> list[dict]:
+    """One row per symbol with rounded daily change % — feeds the
+    Market Pulse change-distribution histogram."""
+    df = ms_repo.get_change_distribution(con, date=date)
+    return df_to_records(df)
+
+
+@market_router.get("/announcements", response_model=list[Announcement])
+def announcements(
+    con: Annotated[sqlite3.Connection, Depends(get_read_db)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 8,
+) -> list[dict]:
+    """Recent corporate announcements (company_announcements with a
+    corporate_announcements fallback)."""
+    df = ms_repo.get_recent_announcements(con, limit=limit)
+    return df_to_records(df)
+
+
+@market_router.get("/analytics", response_model=MarketAnalytics)
+def market_analytics(
+    con: Annotated[sqlite3.Connection, Depends(get_read_db)],
+) -> MarketAnalytics:
+    """Latest snapshot from ``analytics_market_snapshot``.
+
+    This is the point-in-time aggregate the Dashboard analytics widget
+    consumes. 404 if no snapshot has been computed yet (empty table).
+    """
+    from pakfindata.analytics import get_latest_market_analytics
+
+    payload = get_latest_market_analytics(con)
+    if payload is None:
+        raise HTTPException(
+            status_code=404, detail="no market analytics snapshot computed yet"
+        )
+    return MarketAnalytics.model_validate(payload)
 
 
 # ---------------------------------------------------------------- /v1/rates

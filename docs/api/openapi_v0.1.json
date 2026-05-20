@@ -780,6 +780,185 @@
                 }
             }
         },
+        "/v1/market/value-leaders": {
+            "get": {
+                "tags": [
+                    "market"
+                ],
+                "summary": "Value Leaders",
+                "description": "Top symbols by turnover (close \u00d7 volume) for the latest trading day.",
+                "operationId": "value_leaders_v1_market_value_leaders_get",
+                "parameters": [
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "maximum": 100,
+                            "minimum": 1,
+                            "default": 10,
+                            "title": "Limit"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/ValueLeader"
+                                    },
+                                    "title": "Response Value Leaders V1 Market Value Leaders Get"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/market/change-distribution": {
+            "get": {
+                "tags": [
+                    "market"
+                ],
+                "summary": "Change Distribution",
+                "description": "One row per symbol with rounded daily change % \u2014 feeds the\nMarket Pulse change-distribution histogram.",
+                "operationId": "change_distribution_v1_market_change_distribution_get",
+                "parameters": [
+                    {
+                        "name": "date",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string",
+                                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "description": "Trading date (YYYY-MM-DD); latest if omitted",
+                            "title": "Date"
+                        },
+                        "description": "Trading date (YYYY-MM-DD); latest if omitted"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/ChangeDistributionRow"
+                                    },
+                                    "title": "Response Change Distribution V1 Market Change Distribution Get"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/market/announcements": {
+            "get": {
+                "tags": [
+                    "market"
+                ],
+                "summary": "Announcements",
+                "description": "Recent corporate announcements (company_announcements with a\ncorporate_announcements fallback).",
+                "operationId": "announcements_v1_market_announcements_get",
+                "parameters": [
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "maximum": 200,
+                            "minimum": 1,
+                            "default": 8,
+                            "title": "Limit"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/Announcement"
+                                    },
+                                    "title": "Response Announcements V1 Market Announcements Get"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/market/analytics": {
+            "get": {
+                "tags": [
+                    "market"
+                ],
+                "summary": "Market Analytics",
+                "description": "Latest snapshot from ``analytics_market_snapshot``.\n\nThis is the point-in-time aggregate the Dashboard analytics widget\nconsumes. 404 if no snapshot has been computed yet (empty table).",
+                "operationId": "market_analytics_v1_market_analytics_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/MarketAnalytics"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/v1/rates/strip": {
             "get": {
                 "tags": [
@@ -795,6 +974,56 @@
                             "application/json": {
                                 "schema": {
                                     "$ref": "#/components/schemas/RatesStrip"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/sync/runs": {
+            "get": {
+                "tags": [
+                    "sync"
+                ],
+                "summary": "Sync Runs",
+                "description": "Most recent ``sync_runs`` rows, newest first.",
+                "operationId": "sync_runs_v1_sync_runs_get",
+                "parameters": [
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "maximum": 500,
+                            "minimum": 1,
+                            "default": 10,
+                            "title": "Limit"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/SyncRun"
+                                    },
+                                    "title": "Response Sync Runs V1 Sync Runs Get"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
                                 }
                             }
                         }
@@ -4998,6 +5227,64 @@
     },
     "components": {
         "schemas": {
+            "Announcement": {
+                "properties": {
+                    "symbol": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Symbol"
+                    },
+                    "date": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Date"
+                    },
+                    "subject": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Subject"
+                    }
+                },
+                "type": "object",
+                "title": "Announcement",
+                "description": "Recent corporate announcement (company_announcements with a\ncorporate_announcements fallback)."
+            },
+            "ChangeDistributionRow": {
+                "properties": {
+                    "chg_pct": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Chg Pct"
+                    }
+                },
+                "type": "object",
+                "title": "ChangeDistributionRow",
+                "description": "Histogram-bucket row from get_change_distribution.\n\nOne symbol \u2192 one rounded change percent. Clients bin these for the\nbreadth histogram."
+            },
             "EODStats": {
                 "properties": {
                     "total_rows": {
@@ -5982,6 +6269,108 @@
                 "title": "LoadResult",
                 "description": "Result of loading a single date."
             },
+            "MarketAnalytics": {
+                "properties": {
+                    "ts": {
+                        "type": "string",
+                        "title": "Ts"
+                    },
+                    "gainers_count": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Gainers Count"
+                    },
+                    "losers_count": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Losers Count"
+                    },
+                    "unchanged_count": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Unchanged Count"
+                    },
+                    "total_symbols": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Total Symbols"
+                    },
+                    "total_volume": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Total Volume"
+                    },
+                    "top_gainer_symbol": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Top Gainer Symbol"
+                    },
+                    "top_loser_symbol": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Top Loser Symbol"
+                    },
+                    "computed_at": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Computed At"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "ts"
+                ],
+                "title": "MarketAnalytics",
+                "description": "Latest snapshot from ``analytics_market_snapshot``.\n\nPoint-in-time aggregate: breadth + volume + top mover symbols.\nUsed by Dashboard for the analytics widget."
+            },
             "Mover": {
                 "properties": {
                     "symbol": {
@@ -6287,6 +6676,85 @@
                 "title": "StartLoadTaskResponse",
                 "description": "Response from starting load task."
             },
+            "SyncRun": {
+                "properties": {
+                    "run_id": {
+                        "type": "string",
+                        "title": "Run Id"
+                    },
+                    "started_at": {
+                        "type": "string",
+                        "title": "Started At"
+                    },
+                    "ended_at": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Ended At"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "title": "Mode"
+                    },
+                    "symbols_total": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Symbols Total"
+                    },
+                    "symbols_ok": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Symbols Ok"
+                    },
+                    "symbols_failed": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Symbols Failed"
+                    },
+                    "rows_upserted": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Rows Upserted"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "run_id",
+                    "started_at",
+                    "mode"
+                ],
+                "title": "SyncRun",
+                "description": "One row from ``sync_runs``."
+            },
             "TaskStatus": {
                 "properties": {
                     "task_id": {
@@ -6422,6 +6890,64 @@
                     "type"
                 ],
                 "title": "ValidationError"
+            },
+            "ValueLeader": {
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "title": "Symbol"
+                    },
+                    "close": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Close"
+                    },
+                    "volume": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Volume"
+                    },
+                    "value": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Value"
+                    },
+                    "change_pct": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Change Pct"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "symbol"
+                ],
+                "title": "ValueLeader",
+                "description": "Row shape from get_value_leaders \u2014 adds turnover to the Mover shape."
             }
         }
     }
