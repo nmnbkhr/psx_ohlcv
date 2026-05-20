@@ -1,0 +1,302 @@
+"""Streamlit-side API client wrapper.
+
+Every Phase-1.3-migrated UI page calls into this module. Never imports
+the underlying ``pakfindata.api.client.APIClient`` directly.
+
+Responsibilities:
+- Lazy-cache a single APIClient per Streamlit session via st.cache_resource
+- Wrap each /v1 endpoint with @st.cache_data using a TTL tuned to how
+  often the data changes
+- Translate APIError into a Streamlit-friendly result (None on transport
+  failure; empty list on 404 "no data" cases) so pages can render a
+  graceful empty state instead of a stack trace
+- Expose a top-of-page banner helper for API-down state
+
+NOT this module's job:
+- Business logic — that stays in pages
+- Manual cache invalidation — Streamlit handles ttl
+- Auth — the underlying APIClient handles token loading from api.env
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import date as _date
+from typing import Any, Optional
+
+import streamlit as st
+
+from pakfindata.api.client import (
+    APIClient,
+    APIError,
+    APIHTTPError,
+    DEFAULT_API_URL,
+)
+
+logger = logging.getLogger(__name__)
+
+
+@st.cache_resource
+def _client() -> APIClient:
+    """One client per Streamlit session.
+
+    `cache_resource` (not `cache_data`) because the client is a
+    stateful object (open requests.Session + token-loaded headers).
+    """
+    return APIClient(timeout=5)
+
+
+def _safe_get(path: str, params: Optional[dict] = None, *, on_404=None):
+    """Call APIClient.get with consistent error translation.
+
+    Returns the JSON body on success. On any transport/auth/5xx error,
+    returns None and logs a warning. On 404, returns ``on_404`` (defaults
+    to None — caller can pass ``[]`` or ``{}`` to mean "valid empty").
+    """
+    try:
+        return _client().get(path, params=params)
+    except APIHTTPError as exc:
+        if exc.status_code == 404:
+            return on_404
+        logger.warning("API %s failed: %s", path, exc)
+        return None
+    except APIError as exc:
+        logger.warning("API %s failed: %s", path, exc)
+        return None
+
+
+# ── Health & banner ────────────────────────────────────────────────────────
+
+
+def health() -> Optional[dict]:
+    """Probe the API. No cache — we want to know NOW if it's down."""
+    return _safe_get("/health")
+
+
+def render_api_status_banner_if_down() -> bool:
+    """Call at the top of each migrated page.
+
+    Shows a red error banner if the API is unreachable. Returns True
+    if API is up, False if down — pages can branch on this to render
+    a minimal "service degraded" view instead of empty widgets.
+    """
+    if health() is None:
+        st.error(
+            "pakfindata API is unreachable. Data on this page may be "
+            "missing or stale. Check service: "
+            "`systemctl --user status pakfindata-api`"
+        )
+        return False
+    return True
+
+
+# ── Freshness ──────────────────────────────────────────────────────────────
+
+
+@st.cache_data(ttl=30)
+def get_freshness() -> Optional[list[dict]]:
+    """All datasets' freshness, newest first."""
+    return _safe_get("/v1/freshness")
+
+
+@st.cache_data(ttl=30)
+def get_dataset_freshness(domain: str) -> Optional[dict]:
+    """One dataset's freshness row; None if domain unknown."""
+    return _safe_get(f"/v1/freshness/{domain}")
+
+
+def get_data_freshness_tuple(
+    domain: str = "equity_eod",
+) -> tuple[Optional[int], Optional[str]]:
+    """Return (days_old, last_row_date) for backwards compatibility with
+    pages that previously called the smart client's ``get_data_freshness``.
+
+    Computes days_old by parsing ``last_row_date`` against today's date.
+    Returns (None, None) on failure so caller can render a 'no data'
+    badge.
+    """
+    row = get_dataset_freshness(domain)
+    if not row or not row.get("last_row_date"):
+        return (None, None)
+    try:
+        last = _date.fromisoformat(row["last_row_date"])
+        days_old = (_date.today() - last).days
+        return (days_old, row["last_row_date"])
+    except (ValueError, TypeError):
+        return (None, row.get("last_row_date"))
+
+
+# ── EOD ────────────────────────────────────────────────────────────────────
+
+
+@st.cache_data(ttl=60)
+def get_latest_eod(as_of: Optional[str] = None) -> Optional[list[dict]]:
+    """All symbols, latest trading day (or override via ``as_of``)."""
+    params = {"as_of": as_of} if as_of else None
+    return _safe_get("/v1/eod/latest", params=params)
+
+
+@st.cache_data(ttl=60)
+def get_eod_for_date(date: str) -> Optional[list[dict]]:
+    return _safe_get("/v1/eod", params={"date": date})
+
+
+@st.cache_data(ttl=300)
+def get_symbol_history(
+    symbol: str,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+) -> Optional[list[dict]]:
+    """Symbol OHLCV history; default last 90 days. 404 returns []."""
+    params: dict[str, Any] = {}
+    if from_date:
+        params["from"] = from_date
+    if to_date:
+        params["to"] = to_date
+    return _safe_get(f"/v1/eod/{symbol}", params=params, on_404=[])
+
+
+@st.cache_data(ttl=60)
+def get_breadth(date: Optional[str] = None) -> Optional[dict]:
+    """Advancers / decliners / unchanged for a date (latest by default)."""
+    params = {"date": date} if date else None
+    return _safe_get("/v1/eod/breadth", params=params)
+
+
+# ── Indices ────────────────────────────────────────────────────────────────
+
+
+@st.cache_data(ttl=60)
+def get_all_indices() -> Optional[list[dict]]:
+    """Latest snapshot for every index code (KSE100, KSE30, KMI30, …)."""
+    return _safe_get("/v1/indices")
+
+
+@st.cache_data(ttl=300)
+def get_index_history(
+    code: str,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+) -> Optional[list[dict]]:
+    params: dict[str, Any] = {}
+    if from_date:
+        params["from"] = from_date
+    if to_date:
+        params["to"] = to_date
+    return _safe_get(f"/v1/indices/{code}", params=params, on_404=[])
+
+
+@st.cache_data(ttl=600)
+def get_index_constituents(code: str) -> Optional[list[dict]]:
+    return _safe_get(f"/v1/indices/{code}/constituents", on_404=[])
+
+
+# ── Market overview ────────────────────────────────────────────────────────
+
+
+@st.cache_data(ttl=60)
+def get_kse100_hero(as_of: Optional[str] = None) -> Optional[dict]:
+    """Denormalized KSE-100 hero: quote + 52w + breadth."""
+    params = {"as_of": as_of} if as_of else None
+    return _safe_get("/v1/market/kse100", params=params)
+
+
+@st.cache_data(ttl=60)
+def get_top_gainers(limit: int = 10) -> Optional[list[dict]]:
+    return _safe_get("/v1/market/top-gainers", params={"limit": limit})
+
+
+@st.cache_data(ttl=60)
+def get_top_losers(limit: int = 10) -> Optional[list[dict]]:
+    return _safe_get("/v1/market/top-losers", params={"limit": limit})
+
+
+@st.cache_data(ttl=60)
+def get_volume_leaders(limit: int = 10) -> Optional[list[dict]]:
+    return _safe_get("/v1/market/volume-leaders", params={"limit": limit})
+
+
+@st.cache_data(ttl=60)
+def get_value_leaders(limit: int = 10) -> Optional[list[dict]]:
+    return _safe_get("/v1/market/value-leaders", params={"limit": limit})
+
+
+@st.cache_data(ttl=300)
+def get_52w_extremes(limit: int = 5) -> Optional[dict]:
+    return _safe_get("/v1/market/52w-extremes", params={"limit": limit})
+
+
+@st.cache_data(ttl=60)
+def get_sector_leaderboard() -> Optional[list[dict]]:
+    return _safe_get("/v1/market/sector-leaderboard")
+
+
+@st.cache_data(ttl=60)
+def get_change_distribution(date: Optional[str] = None) -> Optional[list[dict]]:
+    params = {"date": date} if date else None
+    return _safe_get("/v1/market/change-distribution", params=params)
+
+
+@st.cache_data(ttl=120)
+def get_announcements(limit: int = 8) -> Optional[list[dict]]:
+    return _safe_get("/v1/market/announcements", params={"limit": limit})
+
+
+@st.cache_data(ttl=60)
+def get_market_analytics() -> Optional[dict]:
+    """Latest snapshot from analytics_market_snapshot. None if no
+    snapshot has been computed yet."""
+    return _safe_get("/v1/market/analytics")
+
+
+# ── Rates ──────────────────────────────────────────────────────────────────
+
+
+@st.cache_data(ttl=60)
+def get_rates_strip() -> Optional[dict]:
+    """Macro rates strip — policy + KIBOR-3M + T-Bill-3M + PKRV-10Y + FX."""
+    return _safe_get("/v1/rates/strip")
+
+
+# ── Sync observability ─────────────────────────────────────────────────────
+
+
+@st.cache_data(ttl=30)
+def get_sync_runs(limit: int = 10) -> Optional[list[dict]]:
+    """Recent sync_runs rows for the Dashboard footer widget."""
+    return _safe_get("/v1/sync/runs", params={"limit": limit})
+
+
+__all__ = [
+    "DEFAULT_API_URL",
+    "health",
+    "render_api_status_banner_if_down",
+    # freshness
+    "get_freshness",
+    "get_dataset_freshness",
+    "get_data_freshness_tuple",
+    # eod
+    "get_latest_eod",
+    "get_eod_for_date",
+    "get_symbol_history",
+    "get_breadth",
+    # indices
+    "get_all_indices",
+    "get_index_history",
+    "get_index_constituents",
+    # market
+    "get_kse100_hero",
+    "get_top_gainers",
+    "get_top_losers",
+    "get_volume_leaders",
+    "get_value_leaders",
+    "get_52w_extremes",
+    "get_sector_leaderboard",
+    "get_change_distribution",
+    "get_announcements",
+    "get_market_analytics",
+    # rates
+    "get_rates_strip",
+    # sync
+    "get_sync_runs",
+]

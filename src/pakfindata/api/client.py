@@ -136,7 +136,21 @@ class APIClient:
         except requests.exceptions.Timeout:
             raise APITimeoutError(f"Request timed out after {self.timeout}s")
         except requests.exceptions.HTTPError as e:
-            raise APIHTTPError(f"HTTP error: {e.response.status_code} - {e.response.text}")
+            raise APIHTTPError(
+                f"HTTP error: {e.response.status_code} - {e.response.text}",
+                status_code=e.response.status_code,
+                body=e.response.text,
+            )
+
+    def get(self, path: str, params: dict | None = None):
+        """Generic GET helper — returns the decoded JSON body.
+
+        Used by the Streamlit-side wrapper (pakfindata.ui.api.client) to
+        call /v1/* endpoints without per-endpoint shim methods. The
+        return value is whatever the endpoint serializes — dict, list,
+        list-of-dicts, etc.
+        """
+        return self._request("GET", path, params=params)
 
     def health_check(self) -> bool:
         """Check if API is healthy. Returns True iff /health returns ok-ish.
@@ -332,8 +346,17 @@ class APITimeoutError(APIError):
 
 
 class APIHTTPError(APIError):
-    """HTTP error from API."""
-    pass
+    """HTTP error from API.
+
+    Carries ``status_code`` (int) and ``body`` (raw response text) so
+    callers can distinguish 404 / 401 / 5xx without parsing the
+    message string.
+    """
+
+    def __init__(self, message: str, status_code: int = 0, body: str = ""):
+        super().__init__(message)
+        self.status_code = status_code
+        self.body = body
 
 
 # =============================================================================
