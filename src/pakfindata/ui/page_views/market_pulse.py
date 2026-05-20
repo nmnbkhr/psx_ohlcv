@@ -1,21 +1,16 @@
-"""Market Pulse -- what moved today. Quant-worthy single-screen briefing."""
+"""Market Pulse -- what moved today. Quant-worthy single-screen briefing.
+
+Phase 1.3 migration: every market-data read goes through the v1 API
+client wrapper. No more direct SQLite con.
+"""
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from pakfindata.db.repositories.market_summary import (
-    get_change_distribution,
-    get_eod_breadth,
-    get_latest_full_trading_day,
-    get_recent_announcements,
-    get_sector_performance,
-    get_top_movers,
-    get_value_leaders,
-    get_volume_leaders,
-)
-from pakfindata.ui.components.helpers import get_connection, render_footer
-from pakfindata.ui.themes import get_plotly_layout, get_chart_colors
+from pakfindata.ui.api import client as api_client
+from pakfindata.ui.components.helpers import render_footer
+from pakfindata.ui.themes import get_plotly_layout
 
 # Bloomberg-style colors
 _C = {
@@ -25,17 +20,21 @@ _C = {
 }
 
 
-# ── Cached queries (thin wrappers around market_summary repo) ─────────────
+# ── Data loader (calls into the v1 API; caches at the api_client layer) ────
 
-@st.cache_data(ttl=60)
-def _load_pulse(_con):
-    """Load all market pulse data in one pass via the market_summary repo."""
-    date = get_latest_full_trading_day(_con, min_symbols=1)
-    if not date:
+
+def _load_pulse() -> dict | None:
+    """Load all market pulse data via /v1/market/* + /v1/eod/breadth.
+
+    Caching is per-endpoint in the api_client wrapper (60s TTL for
+    these "latest day" reads), so this function itself is uncached —
+    rerunning it is cheap.
+    """
+    breadth = api_client.get_breadth()
+    if not breadth or not breadth.get("total"):
         return None
 
-    breadth = get_eod_breadth(_con, date=date) or {}
-    # Remap canonical names to the renderer's expectations
+    # Renderer expects total_vol / avg_chg / total_value names (legacy).
     breadth_view = {
         "gainers": breadth.get("gainers"),
         "losers": breadth.get("losers"),
@@ -46,29 +45,31 @@ def _load_pulse(_con):
         "avg_chg": breadth.get("avg_change"),
     }
 
-    # Movers return 'change_pct'; renderer expects 'chg_pct' for the styler
-    gainers_df = get_top_movers(_con, direction="gainers", date=date, limit=10)
-    losers_df = get_top_movers(_con, direction="losers", date=date, limit=10)
-    vol_df = get_volume_leaders(_con, date=date, limit=10)
-    val_df = get_value_leaders(_con, date=date, limit=10)
-    for df in (gainers_df, losers_df, vol_df, val_df):
-        if not df.empty and "change_pct" in df.columns and "chg_pct" not in df.columns:
-            df.rename(columns={"change_pct": "chg_pct"}, inplace=True)
+    # API returns list[dict]; renderer code is written against DataFrames
+    # and renames change_pct → chg_pct for the styler.
+    def _to_df(rows: list[dict] | None, rename_chg: bool = True) -> pd.DataFrame:
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows)
+        if rename_chg and "change_pct" in df.columns and "chg_pct" not in df.columns:
+            df = df.rename(columns={"change_pct": "chg_pct"})
+        return df
 
     return {
-        "date": date,
+        "date": breadth.get("date"),
         "breadth": breadth_view,
-        "gainers": gainers_df,
-        "losers": losers_df,
-        "vol_leaders": vol_df,
-        "val_leaders": val_df,
-        "change_dist": get_change_distribution(_con, date=date),
-        "sectors": get_sector_performance(_con, date=date, min_stocks=3),
-        "announcements": get_recent_announcements(_con, limit=8),
+        "gainers": _to_df(api_client.get_top_gainers(10)),
+        "losers": _to_df(api_client.get_top_losers(10)),
+        "vol_leaders": _to_df(api_client.get_volume_leaders(10)),
+        "val_leaders": _to_df(api_client.get_value_leaders(10)),
+        "change_dist": _to_df(api_client.get_change_distribution(), rename_chg=False),
+        "sectors": _to_df(api_client.get_sector_leaderboard(), rename_chg=False),
+        "announcements": _to_df(api_client.get_announcements(8), rename_chg=False),
     }
 
 
 # ── Charts ────────────────────────────────────────────────────────────────
+
 
 def _breadth_donut(g, l, u):
     """Compact breadth donut."""
@@ -153,9 +154,10 @@ def _sector_bar(df):
 
 # ── Styled table helpers ──────────────────────────────────────────────────
 
+
 def _styled_movers_table(df, columns_map):
     """Render a compact, color-coded movers table."""
-    if df.empty:
+    if df is None or df.empty:
         return
     display = df.rename(columns=columns_map)
 
@@ -188,15 +190,15 @@ def _styled_movers_table(df, columns_map):
 
 # ── Main render ───────────────────────────────────────────────────────────
 
+
 def render_market_pulse():
     """Quant-worthy market pulse -- single-screen daily briefing."""
 
-    con = get_connection()
-    if con is None:
-        st.error("Database connection not available")
+    if not api_client.render_api_status_banner_if_down():
+        render_footer()
         return
 
-    pulse = _load_pulse(con)
+    pulse = _load_pulse()
     if pulse is None:
         st.info("No market data available. Sync EOD data first.")
         render_footer()
