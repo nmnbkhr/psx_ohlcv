@@ -730,20 +730,38 @@ def render_dashboard():
         with s3:
             if st.button("Rebuild All", key="dash_sum_all",
                          help="Full rebuild of every date in eod_ohlcv. Slow."):
-                with st.spinner("Rebuilding all summaries…"):
-                    from pakfindata.db.repositories.market_summary import (
-                        refresh_eod_summary_bulk,
+                # Phase 1.6.10: 30-60 min job. Worker mode is fire-and-forget
+                # — submit and return; user watches progress in Jobs Monitor.
+                if api_client.use_worker_sync():
+                    sub = api_client.submit_job(
+                        "rebuild_eod_summary_all",
+                        params={"batch_size": 50},
+                        notes="Dashboard 'Rebuild All' (full eod_*_summary rebuild)",
                     )
-                    try:
-                        r = refresh_eod_summary_bulk(only_missing=False, batch_size=50)
-                        st.cache_data.clear()
-                        st.toast(
-                            f"Rebuilt {r['dates_processed']} dates in {r['batches']} batches, "
-                            f"{r['rows_written']:,} rows"
+                    if sub is None:
+                        st.error(
+                            "Could not enqueue job — API unreachable or auth misconfigured."
                         )
-                    except Exception as e:
-                        st.error(f"Rebuild failed: {e}")
+                    else:
+                        st.toast(
+                            f"Job #{sub['job_id']} (rebuild_eod_summary_all) enqueued — "
+                            "see Jobs Monitor for progress (this takes 30-60 min)."
+                        )
                     st.rerun()
+                else:
+                    with st.spinner("Rebuilding all summaries…"):
+                        from pakfindata.etl.eod_summary import rebuild_all
+                        try:
+                            r = rebuild_all(batch_size=50)
+                            st.cache_data.clear()
+                            st.toast(
+                                f"Rebuilt {r['dates_processed']} dates in "
+                                f"{r['batches']} batches, {r['rows_written']:,} rows"
+                            )
+                        except Exception as e:
+                            # rebuild_all() already recorded the catalog failures.
+                            st.error(f"Rebuild failed: {e}")
+                        st.rerun()
 
         # Recent sync runs — now via /v1/sync/runs
         runs = api_client.get_sync_runs(5) or []
