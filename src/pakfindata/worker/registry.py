@@ -17,6 +17,9 @@ from __future__ import annotations
 
 from typing import Callable
 
+from pakfindata.worker.handlers.build_intraday_summary import (
+    handle_build_intraday_summary,
+)
 from pakfindata.worker.handlers.ping import handle_ping
 from pakfindata.worker.handlers.rebuild_eod_summary_all import (
     handle_rebuild_eod_summary_all,
@@ -49,6 +52,7 @@ from pakfindata.worker.handlers.sync_treasury_auctions import (
 
 
 REGISTRY: dict[str, Callable[..., dict | None]] = {
+    "build_intraday_summary": handle_build_intraday_summary,
     "ping": handle_ping,
     "rebuild_eod_summary_all": handle_rebuild_eod_summary_all,
     "rebuild_eod_summary_missing": handle_rebuild_eod_summary_missing,

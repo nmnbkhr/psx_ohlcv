@@ -2051,35 +2051,39 @@ def _render_sync(con, sel_date):
                 key="int_sum_build_btn", type="primary",
                 help="Runs daily / minute breadth / hourly aggregations for this date.",
             ):
-                from pakfindata.db.repositories import intraday_summary as _isum
-                from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
-                from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
-                with st.spinner(f"Aggregating {_sum_date}..."):
-                    try:
-                        with safe_writer() as wcon:
-                            result = _isum.compute_all(wcon, _sum_date)
-                            update_catalog_from_table(wcon, "intraday_daily_summary", source="computed")
-                            update_catalog_from_table(wcon, "intraday_minute_breadth", source="computed")
-                            update_catalog_from_table(wcon, "intraday_hourly_summary", source="computed")
-                        if "error" in result:
-                            st.error(result["error"])
-                        else:
-                            t = result["timings"]
-                            st.success(
-                                f"Done in {t['total_s']}s — "
-                                f"daily: {result['daily']} rows ({t['daily_s']}s), "
-                                f"minute: {result['minute_breadth']} rows ({t['minute_breadth_s']}s), "
-                                f"hourly: {result['hourly']} rows ({t['hourly_s']}s)"
-                            )
-                            st.cache_data.clear()
-                    except SafeWriterBusyError:
-                        st.error("Another writer holds the lock; retry shortly.")
-                    except Exception as e:
-                        import traceback
-                        st.error(f"Build failed: {e}")
-                        st.code(traceback.format_exc(), language="python")
-                        for ds in ("intraday_daily_summary", "intraday_minute_breadth", "intraday_hourly_summary"):
-                            record_catalog_failure(ds, source="computed", error=e)
+                # Phase 1.6.12: sidebar feature flag picks the path.
+                from pakfindata.ui.api import client as api_client
+                if api_client.use_worker_sync():
+                    api_client.run_job_with_progress(
+                        "build_intraday_summary",
+                        params={"date": _sum_date},
+                        spinner_text=f"aggregating tick JSONL for {_sum_date}",
+                        timeout_s=300.0,  # large dates can take ~30s
+                    )
+                else:
+                    from pakfindata.db.safe_writer import SafeWriterBusyError
+                    from pakfindata.etl.intraday_summary import build_for_date
+                    with st.spinner(f"Aggregating {_sum_date}..."):
+                        try:
+                            result = build_for_date(_sum_date)
+                            if result.get("skipped_reason"):
+                                st.error(result["skipped_reason"])
+                            else:
+                                t = result["timings"]
+                                st.success(
+                                    f"Done in {t['total_s']}s — "
+                                    f"daily: {result['daily']} rows ({t['daily_s']}s), "
+                                    f"minute: {result['minute_breadth']} rows ({t['minute_breadth_s']}s), "
+                                    f"hourly: {result['hourly']} rows ({t['hourly_s']}s)"
+                                )
+                                st.cache_data.clear()
+                        except SafeWriterBusyError:
+                            st.error("Another writer holds the lock; retry shortly.")
+                        except Exception as e:
+                            import traceback
+                            # build_for_date() already recorded the catalog failures.
+                            st.error(f"Build failed: {e}")
+                            st.code(traceback.format_exc(), language="python")
 
         with _sumb2:
             if st.button(
