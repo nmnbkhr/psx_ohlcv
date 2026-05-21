@@ -32,6 +32,7 @@ from pakfindata.api.routes import eod as eod_route
 from pakfindata.api.routes import freshness as freshness_route
 from pakfindata.api.routes import health as health_route
 from pakfindata.api.routes import indices as indices_route
+from pakfindata.api.routes import jobs as jobs_route
 from pakfindata.api.routes import market as market_route
 from pakfindata.api.routes import sync as sync_route
 
@@ -109,6 +110,7 @@ app.include_router(indices_route.router)
 app.include_router(market_route.market_router)
 app.include_router(market_route.rates_router)
 app.include_router(sync_route.router)
+app.include_router(jobs_route.router)
 
 
 # Legacy routers (Phase 0 era). Bearer auth still applies via
