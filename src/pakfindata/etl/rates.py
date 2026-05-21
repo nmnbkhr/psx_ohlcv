@@ -52,6 +52,9 @@ DATASETS: tuple[tuple[str, str], ...] = (
     ("sbp_policy_rates", "sbp_easydata"),
 )
 
+KIBOR_EASYDATA_DATASET = "kibor"
+KIBOR_EASYDATA_SOURCE = "sbp_easydata"
+
 
 def sync_bundle() -> dict:
     """Run the rates bundle end-to-end (KIBOR + Treasury + Policy).
@@ -98,6 +101,42 @@ def sync_bundle() -> dict:
         "tbills_ok": int(treasury_result.get("tbills_ok", 0)),
         "pibs_ok": int(treasury_result.get("pibs_ok", 0)),
         "auction_date": treasury_result.get("auction_date"),
+        "duration_ms": int((time.monotonic() - t0) * 1000),
+        "as_of": as_of,
+    }
+
+
+def sync_kibor_easydata() -> dict:
+    """Sync KIBOR daily rates from SBP EasyData only.
+
+    Standalone subset of :func:`sync_bundle` for the Rates Overview
+    "Sync KIBOR (EasyData)" button. Faster than the bundle when the
+    caller only needs KIBOR updates.
+
+    Returns:
+        ``{kibor_rows, duration_ms, as_of}``
+
+    Raises:
+        Whatever ``sync_kibor_to_db`` / ``safe_writer`` raise. Before
+        re-raising, ``record_catalog_failure`` is written for ``kibor``.
+    """
+    t0 = time.monotonic()
+    as_of = datetime.now(timezone.utc).isoformat()
+
+    try:
+        with safe_writer() as con:
+            kibor_result = sync_kibor_to_db(con)
+            update_catalog_from_table(
+                con, KIBOR_EASYDATA_DATASET, source=KIBOR_EASYDATA_SOURCE
+            )
+    except Exception as exc:
+        record_catalog_failure(
+            KIBOR_EASYDATA_DATASET, source=KIBOR_EASYDATA_SOURCE, error=exc
+        )
+        raise
+
+    return {
+        "kibor_rows": int(kibor_result.get("kibor_rows", 0)),
         "duration_ms": int((time.monotonic() - t0) * 1000),
         "as_of": as_of,
     }

@@ -213,21 +213,26 @@ def render_rates_overview():
         col1, col2, col3 = st.columns(3)
         with col1:
             if st.button("Sync KIBOR (EasyData)", key="ro_rates"):
-                with st.spinner("Syncing KIBOR from SBP EasyData..."):
-                    from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
-                    from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
-                    from pakfindata.sources.sbp_easydata import sync_kibor_to_db
-                    try:
-                        with safe_writer() as wcon:
-                            result = sync_kibor_to_db(wcon)
-                            update_catalog_from_table(wcon, "kibor", source="sbp_easydata")
-                        st.cache_data.clear()
-                        st.success(f"KIBOR synced: {result.get('kibor_rows', 0)} rows")
-                    except SafeWriterBusyError:
-                        st.error("Another sync is running. Wait a moment and retry.")
-                    except Exception as e:
-                        st.error(f"Failed: {e}")
-                        record_catalog_failure("kibor", source="sbp_easydata", error=e)
+                # Phase 1.6.3: sidebar feature flag picks the path.
+                from pakfindata.ui.api import client as api_client
+                if api_client.use_worker_sync():
+                    api_client.run_job_with_progress(
+                        "sync_kibor_easydata",
+                        spinner_text="syncing KIBOR daily from SBP EasyData",
+                    )
+                else:
+                    with st.spinner("Syncing KIBOR from SBP EasyData..."):
+                        from pakfindata.db.safe_writer import SafeWriterBusyError
+                        from pakfindata.etl.rates import sync_kibor_easydata
+                        try:
+                            result = sync_kibor_easydata()
+                            st.cache_data.clear()
+                            st.success(f"KIBOR synced: {result['kibor_rows']} rows")
+                        except SafeWriterBusyError:
+                            st.error("Another sync is running. Wait a moment and retry.")
+                        except Exception as e:
+                            # sync_kibor_easydata() already recorded the catalog failure.
+                            st.error(f"Failed: {e}")
         with col2:
             if st.button("Sync Benchmark Snapshot", key="ro_bench"):
                 with st.spinner("Fetching SBP benchmark..."):
