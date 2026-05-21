@@ -64,28 +64,17 @@ def _sync_market_data():
 
 
 def _sync_indices():
-    from pakfindata.db.safe_writer import safe_writer
-    from pakfindata.sources.indices import fetch_indices_data, save_index_data
+    # Phase 1.6.14: delegate to shared ETL (same code path as worker handler).
+    from pakfindata.etl.indices import sync as _sync
 
-    indices_data = fetch_indices_data()
-    with safe_writer() as con:
-        return sum(1 for d in indices_data if save_index_data(con, d))
+    return _sync()["indices_count"]
 
 
 def _sync_rates():
-    from pakfindata.db.safe_writer import safe_writer
-    from pakfindata.sources.sbp_easydata import (
-        sync_kibor_to_db,
-        sync_policy_rate_to_db,
-    )
-    from pakfindata.sources.sbp_treasury import SBPTreasuryScraper
+    # Phase 1.6.14: delegate to shared ETL (same code path as worker handler).
+    from pakfindata.etl.rates import sync_bundle
 
-    scraper = SBPTreasuryScraper()
-    with safe_writer() as con:
-        rates = sync_kibor_to_db(con)
-        treas = scraper.sync_treasury(con)
-        sync_policy_rate_to_db(con)
-    return rates, treas
+    return sync_bundle()
 
 
 # ── HTML building blocks ──────────────────────────────────────────────────
@@ -399,45 +388,82 @@ def render_dashboard():
         )
 
     # ══════════════════════════════════════════════════════════════
-    # REFRESH ALL HANDLER — sync path; still uses safe_writer
+    # REFRESH ALL HANDLER — Phase 1.6.14 (composite, Approach A)
+    # Worker mode: submit 4 sequential jobs, toast, return immediately.
+    # Inline mode: keep the existing chained safe_writer flow.
     # ══════════════════════════════════════════════════════════════
     if refresh_all:
-        with st.status("Refreshing...", expanded=True) as status:
-            errors = []
-            for label, fn in [
-                ("Market data", _sync_market_data),
-                ("Indices", _sync_indices),
-                ("Rates & Treasury", _sync_rates),
-            ]:
-                status.update(label=f"Fetching {label}...")
+        if api_client.use_worker_sync():
+            # Approach A: submit 4 jobs in order. Worker processes them
+            # one at a time (single-threaded). sync_regular_market /
+            # sync_indices / sync_rates_bundle don't write to
+            # eod_ohlcv, so rebuild_eod_summary_today can safely run
+            # after them — they touch independent base tables.
+            _composite = [
+                ("sync_regular_market", "PSX market-watch snapshot"),
+                ("sync_indices", "PSX indices"),
+                ("sync_rates_bundle", "KIBOR + Treasury + Policy"),
+                ("rebuild_eod_summary_today", "EOD summary rebuild"),
+            ]
+            _submitted: list[tuple[int, str]] = []
+            _failed_labels: list[str] = []
+            for _jt, _label in _composite:
+                _sub = api_client.submit_job(
+                    _jt, notes=f"Refresh All — {_label}"
+                )
+                if _sub is None:
+                    _failed_labels.append(_label)
+                else:
+                    _submitted.append((_sub["job_id"], _label))
+            if _failed_labels:
+                st.error(
+                    "Could not enqueue: "
+                    + ", ".join(_failed_labels)
+                    + " — API unreachable or auth misconfigured."
+                )
+            if _submitted:
+                _ids = ", ".join(f"#{jid}" for jid, _ in _submitted)
+                st.toast(
+                    f"Refresh All — {len(_submitted)} jobs enqueued ({_ids}). "
+                    "See Jobs Monitor for progress."
+                )
+            # No cache_data.clear() / rerun() here — the jobs are still
+            # pending. User can hit Refresh again once Jobs Monitor
+            # shows them all ok.
+        else:
+            with st.status("Refreshing...", expanded=True) as status:
+                errors = []
+                for label, fn in [
+                    ("Market data", _sync_market_data),
+                    ("Indices", _sync_indices),
+                    ("Rates & Treasury", _sync_rates),
+                ]:
+                    status.update(label=f"Fetching {label}...")
+                    try:
+                        fn()
+                        st.write(f"{label}: OK")
+                    except Exception as e:
+                        errors.append(str(e))
+                        st.write(f"{label}: FAILED - {e}")
+                # Rebuild EOD summary for the latest trading day so the
+                # next page render sees fresh breadth/movers immediately.
                 try:
-                    fn()
-                    st.write(f"{label}: OK")
+                    from pakfindata.etl.eod_summary import rebuild_today
+                    status.update(label="Building EOD summary…")
+                    r = rebuild_today()
+                    if r.get("date"):
+                        st.write(f"EOD summary ({r['date']}): OK")
+                    else:
+                        st.write("EOD summary: skipped (no eod_ohlcv)")
                 except Exception as e:
                     errors.append(str(e))
-                    st.write(f"{label}: FAILED - {e}")
-            # Rebuild EOD summary for the latest trading day so the next page
-            # render sees fresh breadth/movers immediately.
-            try:
-                from pakfindata.db.safe_writer import safe_writer
-
-                with safe_writer() as wcon:
-                    latest = get_latest_full_trading_day(wcon, min_symbols=1)
-                    if latest:
-                        status.update(label=f"Building summary for {latest}...")
-                        refresh_eod_summary(wcon, latest)
-                        st.write(f"EOD summary ({latest}): OK")
-            except Exception as e:
-                errors.append(str(e))
-                st.write(f"EOD summary: FAILED - {e}")
-            if errors:
-                status.update(label=f"Done with {len(errors)} error(s)", state="error")
-            else:
-                status.update(label="All data refreshed", state="complete")
-        # Invalidate every @st.cache_data wrapper so the page re-reads the
-        # just-updated data instead of the stale 60s cache.
-        st.cache_data.clear()
-        st.rerun()
+                    st.write(f"EOD summary: FAILED - {e}")
+                if errors:
+                    status.update(label=f"Done with {len(errors)} error(s)", state="error")
+                else:
+                    status.update(label="All data refreshed", state="complete")
+            st.cache_data.clear()
+            st.rerun()
 
     # ══════════════════════════════════════════════════════════════
     # ROW 4: MARKET VIZ — Breadth | Gainers | Losers
