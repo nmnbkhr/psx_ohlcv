@@ -18,6 +18,9 @@ from __future__ import annotations
 from typing import Callable
 
 from pakfindata.worker.handlers.ping import handle_ping
+from pakfindata.worker.handlers.rebuild_eod_summary_today import (
+    handle_rebuild_eod_summary_today,
+)
 from pakfindata.worker.handlers.sync_benchmark import handle_sync_benchmark
 from pakfindata.worker.handlers.sync_easydata_csv import (
     handle_sync_easydata_csv,
@@ -38,6 +41,7 @@ from pakfindata.worker.handlers.sync_treasury_auctions import (
 
 REGISTRY: dict[str, Callable[..., dict | None]] = {
     "ping": handle_ping,
+    "rebuild_eod_summary_today": handle_rebuild_eod_summary_today,
     "sync_benchmark": handle_sync_benchmark,
     "sync_easydata_csv": handle_sync_easydata_csv,
     "sync_indices": handle_sync_indices,

@@ -9258,54 +9258,20 @@ def _get_latest_full_trading_day(con) -> str | None:
 
 
 def handle_summary_rebuild_today(args: argparse.Namespace) -> int:
-    """Rebuild eod_{symbol,market,sector}_summary for latest trading day."""
+    """Rebuild eod_{symbol,market,sector}_summary for latest trading day.
+
+    Phase 1.6.8: delegates to :func:`pakfindata.etl.eod_summary.rebuild_today`.
+    Cron-parseable ``_emit_step`` output preserved.
+    """
     import time as _time
 
-    from .db.catalog import record_catalog_failure, update_catalog_from_table
-    from .db.connections import sqlite_con
-    from .db.repositories.market_summary import (
-        init_eod_summary_schema,
-        refresh_eod_summary,
-    )
-    from .db.safe_writer import safe_writer
+    from .etl.eod_summary import rebuild_today
 
     setup_logging()
     t0 = _time.time()
-    target = args.date
     try:
-        if target is None:
-            con = sqlite_con()
-            try:
-                target = _get_latest_full_trading_day(con)
-            finally:
-                con.close()
-        if not target:
-            _emit_step(
-                "summary_rebuild_today",
-                "skipped",
-                duration_ms=int((_time.time() - t0) * 1000),
-                error="no eod_ohlcv rows",
-            )
-            return EXIT_SUCCESS
-
-        with safe_writer() as wcon:
-            init_eod_summary_schema(wcon)
-            n = refresh_eod_summary(wcon, target)
-            update_catalog_from_table(wcon, "eod_market_summary", source="computed")
-            update_catalog_from_table(wcon, "eod_sector_summary", source="computed")
-            update_catalog_from_table(wcon, "eod_symbol_summary", source="computed")
-
-        _emit_step(
-            "summary_rebuild_today",
-            "ok",
-            rows=n,
-            latest=target,
-            duration_ms=int((_time.time() - t0) * 1000),
-        )
-        return EXIT_SUCCESS
+        result = rebuild_today(date=args.date)
     except Exception as e:  # noqa: BLE001
-        for ds in ("eod_market_summary", "eod_sector_summary", "eod_symbol_summary"):
-            record_catalog_failure(ds, source="computed", error=e)
         _emit_step(
             "summary_rebuild_today",
             "failed",
@@ -9313,6 +9279,24 @@ def handle_summary_rebuild_today(args: argparse.Namespace) -> int:
             error=str(e),
         )
         return EXIT_ERROR
+
+    if result.get("skipped_reason"):
+        _emit_step(
+            "summary_rebuild_today",
+            "skipped",
+            duration_ms=result["duration_ms"],
+            error=result["skipped_reason"],
+        )
+        return EXIT_SUCCESS
+
+    _emit_step(
+        "summary_rebuild_today",
+        "ok",
+        rows=result["rows_written"],
+        latest=result["date"],
+        duration_ms=result["duration_ms"],
+    )
+    return EXIT_SUCCESS
 
 
 def handle_summary_rebuild_missing(args: argparse.Namespace) -> int:

@@ -675,39 +675,33 @@ def render_dashboard():
         with s1:
             if st.button("Rebuild Today", key="dash_sum_today",
                          help="Refresh summaries for the latest trading day only."):
-                with st.spinner("Rebuilding today's summary…"):
-                    from pakfindata.db.catalog import (
-                        record_catalog_failure,
-                        update_catalog_from_table,
+                # Phase 1.6.8: sidebar feature flag picks the path.
+                if api_client.use_worker_sync():
+                    api_client.run_job_with_progress(
+                        "rebuild_eod_summary_today",
+                        spinner_text="rebuilding latest-day EOD summary",
                     )
-                    from pakfindata.db.repositories.market_summary import (
-                        init_eod_summary_schema,
-                    )
-                    from pakfindata.db.safe_writer import (
-                        SafeWriterBusyError,
-                        safe_writer,
-                    )
-                    try:
-                        with safe_writer() as wcon:
-                            d = get_latest_full_trading_day(wcon, min_symbols=1)
-                            if d:
-                                init_eod_summary_schema(wcon)
-                                n = refresh_eod_summary(wcon, d)
-                                update_catalog_from_table(wcon, "eod_market_summary", source="computed")
-                                update_catalog_from_table(wcon, "eod_sector_summary", source="computed")
-                                update_catalog_from_table(wcon, "eod_symbol_summary", source="computed")
-                        if d:
-                            st.cache_data.clear()
-                            st.toast(f"Rebuilt {d}: {n} symbol rows")
-                        else:
-                            st.warning("No EOD data found.")
-                    except SafeWriterBusyError:
-                        st.error("Another sync is running. Wait a moment and retry.")
-                    except Exception as e:
-                        st.error(f"Rebuild failed: {e}")
-                        for ds in ("eod_market_summary", "eod_sector_summary", "eod_symbol_summary"):
-                            record_catalog_failure(ds, source="computed", error=e)
                     st.rerun()
+                else:
+                    with st.spinner("Rebuilding today's summary…"):
+                        from pakfindata.db.safe_writer import SafeWriterBusyError
+                        from pakfindata.etl.eod_summary import rebuild_today
+                        try:
+                            result = rebuild_today()
+                            if result.get("date"):
+                                st.cache_data.clear()
+                                st.toast(
+                                    f"Rebuilt {result['date']}: "
+                                    f"{result['rows_written']} symbol rows"
+                                )
+                            else:
+                                st.warning("No EOD data found.")
+                        except SafeWriterBusyError:
+                            st.error("Another sync is running. Wait a moment and retry.")
+                        except Exception as e:
+                            # rebuild_today() already recorded the catalog failures.
+                            st.error(f"Rebuild failed: {e}")
+                        st.rerun()
         with s2:
             if st.button("Rebuild Missing", key="dash_sum_missing",
                          help="Populate summaries only for dates not yet built."):
