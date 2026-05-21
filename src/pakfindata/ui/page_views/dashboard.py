@@ -705,20 +705,28 @@ def render_dashboard():
         with s2:
             if st.button("Rebuild Missing", key="dash_sum_missing",
                          help="Populate summaries only for dates not yet built."):
-                with st.spinner("Populating missing dates…"):
-                    from pakfindata.db.repositories.market_summary import (
-                        refresh_eod_summary_bulk,
+                # Phase 1.6.9: sidebar feature flag picks the path.
+                if api_client.use_worker_sync():
+                    api_client.run_job_with_progress(
+                        "rebuild_eod_summary_missing",
+                        spinner_text="rebuilding missing EOD summary dates",
+                        timeout_s=600.0,  # bulk job — can take minutes
                     )
-                    try:
-                        r = refresh_eod_summary_bulk(only_missing=True, batch_size=50)
-                        st.cache_data.clear()
-                        st.toast(
-                            f"Processed {r['dates_processed']}/{r['dates_considered']} "
-                            f"dates in {r['batches']} batches, {r['rows_written']:,} rows"
-                        )
-                    except Exception as e:
-                        st.error(f"Rebuild failed: {e}")
                     st.rerun()
+                else:
+                    with st.spinner("Populating missing dates…"):
+                        from pakfindata.etl.eod_summary import rebuild_missing
+                        try:
+                            r = rebuild_missing(batch_size=50)
+                            st.cache_data.clear()
+                            st.toast(
+                                f"Processed {r['dates_processed']}/{r['dates_considered']} "
+                                f"dates in {r['batches']} batches, {r['rows_written']:,} rows"
+                            )
+                        except Exception as e:
+                            # rebuild_missing() already recorded the catalog failures.
+                            st.error(f"Rebuild failed: {e}")
+                        st.rerun()
         with s3:
             if st.button("Rebuild All", key="dash_sum_all",
                          help="Full rebuild of every date in eod_ohlcv. Slow."):

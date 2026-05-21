@@ -9300,47 +9300,19 @@ def handle_summary_rebuild_today(args: argparse.Namespace) -> int:
 
 
 def handle_summary_rebuild_missing(args: argparse.Namespace) -> int:
-    """Populate eod_*_summary for any dates that have eod_ohlcv but no summary."""
+    """Populate eod_*_summary for any dates that have eod_ohlcv but no summary.
+
+    Phase 1.6.9: delegates to :func:`pakfindata.etl.eod_summary.rebuild_missing`.
+    """
     import time as _time
 
-    from .db.catalog import record_catalog_failure, update_catalog_from_table
-    from .db.repositories.market_summary import refresh_eod_summary_bulk
-    from .db.safe_writer import safe_writer
+    from .etl.eod_summary import rebuild_missing
 
     setup_logging()
     t0 = _time.time()
     try:
-        # refresh_eod_summary_bulk opens its own safe_writer per batch.
-        r = refresh_eod_summary_bulk(
-            only_missing=True, batch_size=args.batch_size
-        )
-        # Catalog write in a small, separate safe_writer block — the bulk
-        # function's batches have already committed by the time we get here.
-        with safe_writer() as wcon:
-            for ds in (
-                "eod_market_summary",
-                "eod_sector_summary",
-                "eod_symbol_summary",
-            ):
-                update_catalog_from_table(wcon, ds, source="computed")
-        _emit_step(
-            "summary_rebuild_missing",
-            "ok",
-            rows=r.get("rows_written", 0),
-            duration_ms=int((_time.time() - t0) * 1000),
-        )
-        print(
-            f"  processed {r.get('dates_processed', 0)}/{r.get('dates_considered', 0)} "
-            f"dates in {r.get('batches', 0)} batches"
-        )
-        return EXIT_SUCCESS
+        result = rebuild_missing(batch_size=args.batch_size)
     except Exception as e:  # noqa: BLE001
-        for ds in (
-            "eod_market_summary",
-            "eod_sector_summary",
-            "eod_symbol_summary",
-        ):
-            record_catalog_failure(ds, source="computed", error=e)
         _emit_step(
             "summary_rebuild_missing",
             "failed",
@@ -9348,6 +9320,18 @@ def handle_summary_rebuild_missing(args: argparse.Namespace) -> int:
             error=str(e),
         )
         return EXIT_ERROR
+
+    _emit_step(
+        "summary_rebuild_missing",
+        "ok",
+        rows=result["rows_written"],
+        duration_ms=result["duration_ms"],
+    )
+    print(
+        f"  processed {result['dates_processed']}/{result['dates_considered']} "
+        f"dates in {result['batches']} batches"
+    )
+    return EXIT_SUCCESS
 
 
 # ── intraday tick-disk pipeline ─────────────────────────────────────────
