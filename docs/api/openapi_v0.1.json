@@ -1031,6 +1031,243 @@
                 }
             }
         },
+        "/v1/jobs/{job_type}": {
+            "post": {
+                "tags": [
+                    "jobs"
+                ],
+                "summary": "Submit Job",
+                "description": "Enqueue a job; returns 202 with the new job_id.",
+                "operationId": "submit_job_v1_jobs__job_type__post",
+                "parameters": [
+                    {
+                        "name": "job_type",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "description": "Registered worker handler key",
+                            "title": "Job Type"
+                        },
+                        "description": "Registered worker handler key"
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/JobSubmission"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "202": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/JobResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/jobs/{job_id}": {
+            "get": {
+                "tags": [
+                    "jobs"
+                ],
+                "summary": "Get Job Status",
+                "operationId": "get_job_status_v1_jobs__job_id__get",
+                "parameters": [
+                    {
+                        "name": "job_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "jobs.id",
+                            "title": "Job Id"
+                        },
+                        "description": "jobs.id"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/JobDetail"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/jobs": {
+            "get": {
+                "tags": [
+                    "jobs"
+                ],
+                "summary": "List Recent Jobs",
+                "description": "Recent jobs, newest first; optional status / type filters.",
+                "operationId": "list_recent_jobs_v1_jobs_get",
+                "parameters": [
+                    {
+                        "name": "status",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "enum": [
+                                        "pending",
+                                        "running",
+                                        "ok",
+                                        "failed",
+                                        "cancelled"
+                                    ],
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "description": "Filter by lifecycle status",
+                            "title": "Status"
+                        },
+                        "description": "Filter by lifecycle status"
+                    },
+                    {
+                        "name": "job_type",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "description": "Filter by registered handler key",
+                            "title": "Job Type"
+                        },
+                        "description": "Filter by registered handler key"
+                    },
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "maximum": 500,
+                            "minimum": 1,
+                            "default": 50,
+                            "title": "Limit"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/JobDetail"
+                                    },
+                                    "title": "Response List Recent Jobs V1 Jobs Get"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/jobs/{job_id}/cancel": {
+            "post": {
+                "tags": [
+                    "jobs"
+                ],
+                "summary": "Cancel Job",
+                "description": "Cancel a pending job. 404 if unknown; 409 if already running/finished.",
+                "operationId": "cancel_job_v1_jobs__job_id__cancel_post",
+                "parameters": [
+                    {
+                        "name": "job_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "title": "Job Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/CancelResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/eod/stats": {
             "get": {
                 "tags": [
@@ -5267,6 +5504,26 @@
                 "title": "Announcement",
                 "description": "Recent corporate announcement (company_announcements with a\ncorporate_announcements fallback)."
             },
+            "CancelResponse": {
+                "properties": {
+                    "job_id": {
+                        "type": "integer",
+                        "title": "Job Id"
+                    },
+                    "status": {
+                        "type": "string",
+                        "const": "cancelled",
+                        "title": "Status",
+                        "default": "cancelled"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "job_id"
+                ],
+                "title": "CancelResponse",
+                "description": "Body of ``POST /v1/jobs/{job_id}/cancel`` on success."
+            },
             "ChangeDistributionRow": {
                 "properties": {
                     "chg_pct": {
@@ -6061,6 +6318,215 @@
                 ],
                 "title": "IndexLatest",
                 "description": "Latest row from ``psx_indices`` for a single index code."
+            },
+            "JobDetail": {
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "title": "Id"
+                    },
+                    "job_type": {
+                        "type": "string",
+                        "title": "Job Type"
+                    },
+                    "params": {
+                        "additionalProperties": true,
+                        "type": "object",
+                        "title": "Params"
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "pending",
+                            "running",
+                            "ok",
+                            "failed",
+                            "cancelled"
+                        ],
+                        "title": "Status"
+                    },
+                    "enqueued_at": {
+                        "type": "string",
+                        "title": "Enqueued At"
+                    },
+                    "started_at": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Started At"
+                    },
+                    "finished_at": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Finished At"
+                    },
+                    "duration_ms": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Duration Ms"
+                    },
+                    "result": {
+                        "anyOf": [
+                            {
+                                "additionalProperties": true,
+                                "type": "object"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Result"
+                    },
+                    "error": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Error"
+                    },
+                    "error_detail": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Error Detail"
+                    },
+                    "worker_pid": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Worker Pid"
+                    },
+                    "priority": {
+                        "type": "integer",
+                        "title": "Priority",
+                        "default": 100
+                    },
+                    "source": {
+                        "type": "string",
+                        "title": "Source",
+                        "default": "api"
+                    },
+                    "notes": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Notes"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "job_type",
+                    "status",
+                    "enqueued_at"
+                ],
+                "title": "JobDetail",
+                "description": "Full row from the ``jobs`` table \u2014 used by GET endpoints."
+            },
+            "JobResponse": {
+                "properties": {
+                    "job_id": {
+                        "type": "integer",
+                        "title": "Job Id"
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "pending",
+                            "running",
+                            "ok",
+                            "failed",
+                            "cancelled"
+                        ],
+                        "title": "Status"
+                    },
+                    "job_type": {
+                        "type": "string",
+                        "title": "Job Type"
+                    },
+                    "enqueued_at": {
+                        "type": "string",
+                        "title": "Enqueued At"
+                    },
+                    "message": {
+                        "type": "string",
+                        "title": "Message",
+                        "default": "queued"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "job_id",
+                    "status",
+                    "job_type",
+                    "enqueued_at"
+                ],
+                "title": "JobResponse",
+                "description": "Returned by ``POST /v1/jobs/{job_type}`` \u2014 the enqueue receipt."
+            },
+            "JobSubmission": {
+                "properties": {
+                    "params": {
+                        "additionalProperties": true,
+                        "type": "object",
+                        "title": "Params"
+                    },
+                    "priority": {
+                        "type": "integer",
+                        "title": "Priority",
+                        "default": 100
+                    },
+                    "notes": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Notes"
+                    }
+                },
+                "type": "object",
+                "title": "JobSubmission",
+                "description": "Body of ``POST /v1/jobs/{job_type}``."
             },
             "KSE100Hero": {
                 "properties": {
