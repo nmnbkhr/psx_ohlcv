@@ -598,40 +598,31 @@ def render_dashboard():
             rc1, rc2 = st.columns(2)
             with rc1:
                 if st.button("Sync Rates", key="dash_sync_rates2"):
-                    with st.spinner("Syncing rates..."):
-                        from pakfindata.db.catalog import (
-                            record_catalog_failure,
-                            update_catalog_from_table,
+                    # Phase 1.6.1: sidebar feature flag picks the path.
+                    # Both routes converge on etl.rates.sync_bundle().
+                    if api_client.use_worker_sync():
+                        api_client.run_job_with_progress(
+                            "sync_rates_bundle",
+                            spinner_text="syncing rates bundle (KIBOR + treasury + policy)",
                         )
-                        from pakfindata.db.safe_writer import (
-                            SafeWriterBusyError,
-                            safe_writer,
-                        )
-                        from pakfindata.sources.sbp_easydata import (
-                            sync_kibor_to_db,
-                            sync_policy_rate_to_db,
-                        )
-                        from pakfindata.sources.sbp_treasury import (
-                            SBPTreasuryScraper,
-                        )
-                        try:
-                            scraper = SBPTreasuryScraper()  # init outside lock
-                            with safe_writer() as wcon:
-                                sync_kibor_to_db(wcon)
-                                scraper.sync_treasury(wcon)
-                                sync_policy_rate_to_db(wcon)
-                                update_catalog_from_table(wcon, "kibor", source="sbp_easydata")
-                                update_catalog_from_table(wcon, "treasury", source="sbp")
-                                update_catalog_from_table(wcon, "pib", source="sbp")
-                                update_catalog_from_table(wcon, "sbp_policy_rates", source="sbp_easydata")
-                            st.cache_data.clear()
-                            st.toast("Rates synced: KIBOR + treasury + policy")
-                        except SafeWriterBusyError:
-                            st.error("Another sync is running. Wait a moment and retry.")
-                        except Exception as e:
-                            st.error(f"Rates sync failed: {e}")
-                            for ds in ("kibor", "treasury", "pib", "sbp_policy_rates"):
-                                record_catalog_failure(ds, source="sbp_easydata", error=e)
+                    else:
+                        with st.spinner("Syncing rates..."):
+                            from pakfindata.db.safe_writer import SafeWriterBusyError
+                            from pakfindata.etl.rates import sync_bundle
+
+                            try:
+                                result = sync_bundle()
+                                st.cache_data.clear()
+                                st.toast(
+                                    f"Rates synced: KIBOR {result['kibor_rows']} rows, "
+                                    f"T-Bills {result['tbills_ok']}, "
+                                    f"PIBs {result['pibs_ok']}"
+                                )
+                            except SafeWriterBusyError:
+                                st.error("Another sync is running. Wait a moment and retry.")
+                            except Exception as e:
+                                # sync_bundle() already recorded the catalog failures.
+                                st.error(f"Rates sync failed: {e}")
                     st.rerun()
             with rc2:
                 if st.button("Sync Indices", key="dash_sync_idx2"):
