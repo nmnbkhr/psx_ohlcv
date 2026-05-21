@@ -2091,36 +2091,30 @@ def _render_sync(con, sel_date):
                 key="int_sum_build_missing_btn",
                 help="Runs aggregations for every JSONL date not yet in the summary table.",
             ):
-                from pakfindata.db.repositories import intraday_summary as _isum
-                from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
-                from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
-                _existing = set(_isum.get_summary_dates(con))
-                _missing = [d for d in _jl_dates if d not in _existing]
-                if not _missing:
-                    st.info("No missing dates — all JSONL dates already summarized.")
+                # Phase 1.6.13: sidebar feature flag picks the path.
+                from pakfindata.ui.api import client as api_client
+                if api_client.use_worker_sync():
+                    api_client.run_job_with_progress(
+                        "build_intraday_summary_missing",
+                        spinner_text="building summaries for missing JSONL dates",
+                        timeout_s=900.0,  # ~5s/date × ~40 dates worst case
+                    )
                 else:
-                    _prog = st.progress(0, text=f"0/{len(_missing)}")
-                    _ok = 0
-                    for _i, _d in enumerate(_missing):
-                        try:
-                            with safe_writer() as wcon:
-                                _isum.compute_all(wcon, _d)
-                                # Catalog update inside the per-date transaction.
-                                # Last-date-wins on the row, but row_count is the
-                                # current MAX/COUNT across ALL dates after this insert.
-                                update_catalog_from_table(wcon, "intraday_daily_summary", source="computed")
-                                update_catalog_from_table(wcon, "intraday_minute_breadth", source="computed")
-                                update_catalog_from_table(wcon, "intraday_hourly_summary", source="computed")
-                            _ok += 1
-                        except SafeWriterBusyError:
-                            st.warning(f"{_d}: another writer holds the lock; skipped.")
-                        except Exception as _e:
-                            st.warning(f"{_d}: {_e}")
-                            for ds in ("intraday_daily_summary", "intraday_minute_breadth", "intraday_hourly_summary"):
-                                record_catalog_failure(ds, source="computed", error=_e)
-                        _prog.progress((_i + 1) / len(_missing), text=f"{_i+1}/{len(_missing)} ({_d})")
-                    st.cache_data.clear()
-                    st.success(f"Built summaries for {_ok}/{len(_missing)} dates.")
+                    from pakfindata.etl.intraday_summary import build_missing
+                    with st.spinner("Building missing dates..."):
+                        result = build_missing()
+                        if result["dates_considered"] == 0:
+                            st.info(
+                                "No missing dates — all JSONL dates already summarized."
+                            )
+                        else:
+                            st.cache_data.clear()
+                            st.success(
+                                f"Built {result['dates_built']}/{result['dates_considered']} "
+                                f"dates ({result['dates_failed']} failed, "
+                                f"{result['dates_skipped']} skipped, "
+                                f"{result['duration_ms']/1000:.1f}s)."
+                            )
 
     st.markdown("---")
 
