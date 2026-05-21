@@ -635,31 +635,26 @@ def render_dashboard():
                     st.rerun()
             with rc2:
                 if st.button("Sync Indices", key="dash_sync_idx2"):
+                    # Inline (legacy) path — delegates to the shared
+                    # etl.indices.sync() function which Phase 1.5
+                    # consolidated. The worker-dispatch path lands in
+                    # sub-wave 1.5.3.
                     with st.spinner("Syncing indices..."):
-                        from pakfindata.db.catalog import (
-                            record_catalog_failure,
-                            update_catalog_from_table,
-                        )
-                        from pakfindata.db.safe_writer import (
-                            SafeWriterBusyError,
-                            safe_writer,
-                        )
-                        from pakfindata.sources.indices import (
-                            fetch_indices_data,
-                            save_index_data,
-                        )
+                        from pakfindata.db.safe_writer import SafeWriterBusyError
+                        from pakfindata.etl.indices import sync as sync_indices
+
                         try:
-                            data = fetch_indices_data()  # HTTP fetch outside lock
-                            with safe_writer() as wcon:
-                                count = sum(1 for d in data if save_index_data(wcon, d))
-                                update_catalog_from_table(wcon, "indices", source="psx_dps")
+                            result = sync_indices()
                             st.cache_data.clear()
-                            st.toast(f"Synced {count} indices")
+                            st.toast(
+                                f"Synced {result['indices_count']} indices "
+                                f"(latest: {result.get('latest_date') or '—'})"
+                            )
                         except SafeWriterBusyError:
                             st.error("Another sync is running. Wait a moment and retry.")
                         except Exception as e:
+                            # sync() already recorded the catalog failure.
                             st.error(f"Sync failed: {e}")
-                            record_catalog_failure("indices", source="psx_dps", error=e)
                     st.rerun()
 
         # ── EOD summary tables (admin read of catalog coverage) ──

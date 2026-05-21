@@ -9248,30 +9248,33 @@ def handle_indices(args: argparse.Namespace) -> int:
 
 
 def handle_indices_sync(args: argparse.Namespace) -> int:
-    """Fetch + persist all 18 PSX indices from DPS; update data_freshness."""
+    """Fetch + persist all 18 PSX indices from DPS; update data_freshness.
+
+    Body delegates to :func:`pakfindata.etl.indices.sync` — the shared
+    entrypoint used by both this CLI handler and the worker handler
+    registered in Phase 1.5. CLI's responsibility shrinks to exit-code
+    translation + ``_emit_step`` log emission for ``daily_sync.sh``
+    parsing. Catalog failure is recorded inside ``sync()`` itself.
+    """
     import time as _time
 
-    from .db.catalog import record_catalog_failure, update_catalog_from_table
-    from .db.safe_writer import safe_writer
-    from .sources.indices import fetch_indices_data, save_index_data
+    from .etl.indices import sync as sync_indices
 
     setup_logging()
     t0 = _time.time()
     try:
-        # HTTP fetch outside the write lock — same pattern as the UI button.
-        data = fetch_indices_data()
-        with safe_writer() as wcon:
-            count = sum(1 for d in data if save_index_data(wcon, d))
-            update_catalog_from_table(wcon, "indices", source="psx_dps")
+        result = sync_indices()
         _emit_step(
             "indices_sync",
             "ok",
-            rows=count,
+            rows=result["indices_count"],
+            latest=result.get("latest_date"),
             duration_ms=int((_time.time() - t0) * 1000),
         )
         return EXIT_SUCCESS
     except Exception as e:  # noqa: BLE001 — cron must record failure path
-        record_catalog_failure("indices", source="psx_dps", error=e)
+        # sync() already wrote record_catalog_failure; just emit the
+        # log line + non-zero exit for cron.
         _emit_step(
             "indices_sync",
             "failed",
