@@ -59,27 +59,31 @@ def render_bond_market():
         c1, c2 = st.columns(2)
         with c1:
             if st.button("Scrape Benchmark Snapshot", key="bm_bench_sync"):
-                with st.spinner("Fetching from SBP MSM page..."):
-                    from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
-                    from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
-                    try:
-                        from pakfindata.sources.sbp_bond_market import SBPBondMarketScraper
-                        scraper = SBPBondMarketScraper()  # HTTP init outside lock
-                        with safe_writer() as wcon:
-                            result = scraper.sync_benchmark(wcon)
-                            update_catalog_from_table(wcon, "benchmark_snapshot", source="sbp_bond_market")
-                        st.cache_data.clear()
-                        if result["status"] == "ok":
-                            st.success(
-                                f"Stored {result['metrics_stored']} metrics for {result['date']}"
-                            )
-                        else:
-                            st.error(result.get("error", "Unknown error"))
-                    except SafeWriterBusyError:
-                        st.error("Another sync is running. Wait a moment and retry.")
-                    except Exception as e:
-                        st.error(f"Failed: {e}")
-                        record_catalog_failure("benchmark_snapshot", source="sbp_bond_market", error=e)
+                # Phase 1.6.4: sidebar feature flag picks the path.
+                from pakfindata.ui.api import client as api_client
+                if api_client.use_worker_sync():
+                    api_client.run_job_with_progress(
+                        "sync_benchmark",
+                        spinner_text="scraping SBP benchmark snapshot",
+                    )
+                else:
+                    with st.spinner("Fetching from SBP MSM page..."):
+                        from pakfindata.db.safe_writer import SafeWriterBusyError
+                        from pakfindata.etl.benchmark import sync as sync_benchmark
+                        try:
+                            result = sync_benchmark()
+                            st.cache_data.clear()
+                            if result["status"] == "ok":
+                                st.success(
+                                    f"Stored {result['metrics_stored']} metrics for {result['date']}"
+                                )
+                            else:
+                                st.error("Scrape returned a non-ok status")
+                        except SafeWriterBusyError:
+                            st.error("Another sync is running. Wait a moment and retry.")
+                        except Exception as e:
+                            # sync_benchmark() already recorded the catalog failure.
+                            st.error(f"Failed: {e}")
         with c2:
             if st.button("Sync SMTV Trading Data", key="bm_smtv_sync"):
                 with st.spinner("Downloading & parsing SBP SMTV PDF..."):
