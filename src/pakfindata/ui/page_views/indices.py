@@ -413,22 +413,33 @@ def render_indices():
 
         with col2:
             if st.button("Sync Index Membership → instrument_membership", key="idx_membership"):
-                with st.spinner("Parsing listed_in → instrument_membership..."):
-                    from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
-                    try:
-                        with safe_writer() as wcon:
-                            result = sync_index_membership(wcon)
-                        st.cache_data.clear()
-                        st.success(
-                            "{} indices, {} memberships synced, {} skipped → instrument_membership".format(
-                                result["indices"], result["memberships"], result["skipped"]
-                            )
-                        )
-                    except SafeWriterBusyError:
-                        st.error("Another sync is running. Wait a moment and retry.")
-                    except Exception as e:
-                        st.error(f"Sync failed: {e}")
+                # Phase 1.6.11: sidebar feature flag picks the path.
+                from pakfindata.ui.api import client as api_client
+                if api_client.use_worker_sync():
+                    api_client.run_job_with_progress(
+                        "sync_index_membership",
+                        spinner_text="parsing listed_in → instrument_membership",
+                    )
                     st.rerun()
+                else:
+                    with st.spinner("Parsing listed_in → instrument_membership..."):
+                        from pakfindata.db.safe_writer import SafeWriterBusyError
+                        from pakfindata.etl.instruments import sync_membership
+                        try:
+                            result = sync_membership()
+                            st.cache_data.clear()
+                            st.success(
+                                "{} indices, {} memberships synced, {} skipped "
+                                "→ instrument_membership".format(
+                                    result["indices"], result["memberships"], result["skipped"]
+                                )
+                            )
+                        except SafeWriterBusyError:
+                            st.error("Another sync is running. Wait a moment and retry.")
+                        except Exception as e:
+                            # sync_membership() already recorded the catalog failure.
+                            st.error(f"Sync failed: {e}")
+                        st.rerun()
 
         with col3:
             st.caption("To seed instruments, use the **Instruments** page.")

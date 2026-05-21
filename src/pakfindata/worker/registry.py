@@ -31,6 +31,9 @@ from pakfindata.worker.handlers.sync_benchmark import handle_sync_benchmark
 from pakfindata.worker.handlers.sync_easydata_csv import (
     handle_sync_easydata_csv,
 )
+from pakfindata.worker.handlers.sync_index_membership import (
+    handle_sync_index_membership,
+)
 from pakfindata.worker.handlers.sync_indices import handle_sync_indices
 from pakfindata.worker.handlers.sync_kibor_easydata import (
     handle_sync_kibor_easydata,
@@ -52,6 +55,7 @@ REGISTRY: dict[str, Callable[..., dict | None]] = {
     "rebuild_eod_summary_today": handle_rebuild_eod_summary_today,
     "sync_benchmark": handle_sync_benchmark,
     "sync_easydata_csv": handle_sync_easydata_csv,
+    "sync_index_membership": handle_sync_index_membership,
     "sync_indices": handle_sync_indices,
     "sync_kibor_easydata": handle_sync_kibor_easydata,
     "sync_rates_bundle": handle_sync_rates_bundle,
