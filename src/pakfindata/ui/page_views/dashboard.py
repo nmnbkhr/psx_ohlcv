@@ -55,27 +55,12 @@ from pakfindata.ui.components.helpers import (
 
 
 def _sync_market_data():
-    from datetime import datetime
+    # Phase 1.6.6: delegate to the shared ETL function. Caller uses the
+    # rows_upserted count for status reporting.
+    from pakfindata.etl.regular_market import sync_snapshot
 
-    from pakfindata.analytics import compute_all_analytics
-    from pakfindata.db.safe_writer import safe_writer
-    from pakfindata.sources.regular_market import (
-        fetch_regular_market,
-        get_all_current_hashes,
-        init_regular_market_schema,
-        insert_snapshots,
-        upsert_current,
-    )
-
-    df = fetch_regular_market()
-    ts = df["ts"].iloc[0] if not df.empty else datetime.now().isoformat()
-    with safe_writer() as con:
-        init_regular_market_schema(con)
-        prev_hashes = get_all_current_hashes(con)
-        insert_snapshots(con, df, prev_hashes=prev_hashes)
-        n = upsert_current(con, df)
-        compute_all_analytics(con, ts)
-    return n
+    result = sync_snapshot()
+    return result["rows_upserted"]
 
 
 def _sync_indices():

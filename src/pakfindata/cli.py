@@ -3723,96 +3723,59 @@ def handle_regular_market(args: argparse.Namespace) -> int:
 
 
 def handle_regular_market_snapshot(args: argparse.Namespace) -> int:
-    """Handle regular-market snapshot command."""
+    """Handle regular-market snapshot command.
+
+    Phase 1.6.6: delegates the DB write to
+    :func:`pakfindata.etl.regular_market.sync_snapshot` (which runs
+    under ``safe_writer``). The CSV side-effect is preserved here as
+    CLI-only behavior.
+    """
     import requests
+
+    from .etl.regular_market import sync_snapshot
 
     print("Fetching regular market data...")
 
     try:
-        df = fetch_regular_market()
+        result = sync_snapshot(save_unchanged=args.save_unchanged)
     except requests.RequestException as e:
         print(f"Failed to fetch data: {e}", file=sys.stderr)
         return EXIT_ERROR
+    except Exception as e:  # noqa: BLE001
+        print(f"Error: {e}", file=sys.stderr)
+        return EXIT_ERROR
 
-    if df.empty:
+    if result["symbols"] == 0:
         print("No data found in REGULAR MARKET table.", file=sys.stderr)
         return EXIT_ERROR
 
-    # Save to database
-    con = connect(args.db)
-    init_schema(con)
-    init_regular_market_schema(con)
-    init_analytics_schema(con)
-
-    # CRITICAL: Load previous hashes BEFORE upsert to detect changes correctly
-    prev_hashes = get_all_current_hashes(con)
-
-    # Insert snapshots first (using pre-loaded hashes for comparison)
-    inserted = insert_snapshots(
-        con, df, save_unchanged=args.save_unchanged, prev_hashes=prev_hashes
-    )
-
-    # Then upsert current data
-    upserted = upsert_current(con, df)
-
-    # Compute analytics for this timestamp
-    ts = df["ts"].iloc[0] if not df.empty else None
-    analytics_result = None
-    if ts:
-        analytics_result = compute_all_analytics(con, ts)
-
-    # Save CSV with joined sector/company names
+    # CSV side-effect — CLI-only convenience for downstream tooling.
     csv_path = args.csv
     if csv_path is None:
         csv_path = DATA_ROOT / "regular_market" / "current.csv"
-
     csv_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Get data with sector names joined from symbols table
-    df_with_sectors = get_current_market_with_sectors(con)
+    rcon = connect(args.db)
+    try:
+        df_with_sectors = get_current_market_with_sectors(rcon)
+    finally:
+        rcon.close()
     if not df_with_sectors.empty:
         df_with_sectors.to_csv(csv_path, index=False)
-    else:
-        df.to_csv(csv_path, index=False)
 
-    # Atomic catalog update inside the same transaction as the snapshot write.
-    from .db.catalog import update_catalog_from_table
-    try:
-        update_catalog_from_table(con, "regular_market_current", source="psx_api")
-        update_catalog_from_table(con, "regular_market_snapshots", source="psx_api")
-    except Exception:  # noqa: BLE001
-        # Catalog write must not corrupt the snapshot data; swallow + rely on
-        # safe_writer-managed fallback elsewhere. Failure recorded best-effort.
-        from .db.catalog import record_catalog_failure
-        for ds in ("regular_market_current", "regular_market_snapshots"):
-            record_catalog_failure(ds, source="psx_api", error=Exception("catalog write failed"))
-
-    con.commit()
-    con.close()
-
-    # Print summary
     print("\nRegular Market Snapshot")
     print("=" * 50)
-    print(f"  Timestamp:         {ts}")
-    print(f"  Symbols found:     {len(df)}")
-    print(f"  Rows upserted:     {upserted}")
-    print(f"  Snapshots saved:   {inserted}")
+    print(f"  Timestamp:         {result['snapshot_ts']}")
+    print(f"  Symbols found:     {result['symbols']}")
+    print(f"  Rows upserted:     {result['rows_upserted']}")
+    print(f"  Snapshots saved:   {result['snapshots_saved']}")
     print(f"  CSV saved to:      {csv_path}")
 
-    # Print analytics summary
-    if analytics_result:
-        ma = analytics_result["market_analytics"]
-        print("\nMarket Analytics")
-        print("-" * 50)
-        print(f"  Gainers:           {ma['gainers_count']}")
-        print(f"  Losers:            {ma['losers_count']}")
-        print(f"  Unchanged:         {ma['unchanged_count']}")
-        print(f"  Total Volume:      {ma['total_volume']:,.0f}")
-        if ma["top_gainer_symbol"]:
-            print(f"  Top Gainer:        {ma['top_gainer_symbol']}")
-        if ma["top_loser_symbol"]:
-            print(f"  Top Loser:         {ma['top_loser_symbol']}")
-        print(f"  Sector rollups:    {analytics_result['sectors_count']}")
+    print("\nMarket Analytics")
+    print("-" * 50)
+    print(f"  Gainers:           {result['gainers']}")
+    print(f"  Losers:            {result['losers']}")
+    print(f"  Unchanged:         {result['unchanged']}")
+    print(f"  Duration:          {result['duration_ms']} ms")
 
     return EXIT_SUCCESS
 
