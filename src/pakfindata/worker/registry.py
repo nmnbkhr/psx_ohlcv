@@ -19,6 +19,9 @@ from typing import Callable
 
 from pakfindata.worker.handlers.ping import handle_ping
 from pakfindata.worker.handlers.sync_benchmark import handle_sync_benchmark
+from pakfindata.worker.handlers.sync_easydata_csv import (
+    handle_sync_easydata_csv,
+)
 from pakfindata.worker.handlers.sync_indices import handle_sync_indices
 from pakfindata.worker.handlers.sync_kibor_easydata import (
     handle_sync_kibor_easydata,
@@ -36,6 +39,7 @@ from pakfindata.worker.handlers.sync_treasury_auctions import (
 REGISTRY: dict[str, Callable[..., dict | None]] = {
     "ping": handle_ping,
     "sync_benchmark": handle_sync_benchmark,
+    "sync_easydata_csv": handle_sync_easydata_csv,
     "sync_indices": handle_sync_indices,
     "sync_kibor_easydata": handle_sync_kibor_easydata,
     "sync_rates_bundle": handle_sync_rates_bundle,

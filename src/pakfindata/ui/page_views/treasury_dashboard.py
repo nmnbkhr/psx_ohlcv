@@ -1306,26 +1306,32 @@ def _render_sync(con):
             st.rerun()
     with ec3:
         if st.button("Sync CSVs to DB", key="tsy_easydata_sync"):
-            with st.spinner("Syncing EasyData CSVs to local DB tables..."):
-                from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
-                from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
-                try:
-                    with safe_writer() as wcon:
-                        result = sync_all_to_db(wcon)
-                        update_catalog_from_table(wcon, "kibor", source="sbp_easydata")
-                        update_catalog_from_table(wcon, "sbp_fx_monthly_avg", source="sbp_easydata")
-                        update_catalog_from_table(wcon, "sbp_fx_daily_avg", source="sbp_easydata")
-                        update_catalog_from_table(wcon, "sbp_policy_rates", source="sbp_easydata")
-                    st.cache_data.clear()
-                    parts = [f"{k}: {v}" for k, v in result.items()]
-                    st.success(" | ".join(parts))
-                    st.rerun()
-                except SafeWriterBusyError:
-                    st.error("Another sync is running. Wait a moment and retry.")
-                except Exception as e:
-                    st.error(f"EasyData sync failed: {e}")
-                    for ds in ("kibor", "sbp_fx_monthly_avg", "sbp_fx_daily_avg", "sbp_policy_rates"):
-                        record_catalog_failure(ds, source="sbp_easydata", error=e)
+            # Phase 1.6.7: sidebar feature flag picks the path.
+            from pakfindata.ui.api import client as api_client
+            if api_client.use_worker_sync():
+                api_client.run_job_with_progress(
+                    "sync_easydata_csv",
+                    spinner_text="syncing EasyData CSVs (KIBOR + FX + policy)",
+                )
+                st.rerun()
+            else:
+                with st.spinner("Syncing EasyData CSVs to local DB tables..."):
+                    from pakfindata.db.safe_writer import SafeWriterBusyError
+                    from pakfindata.etl.easydata import sync_csvs_to_db
+                    try:
+                        result = sync_csvs_to_db()
+                        st.cache_data.clear()
+                        parts = [
+                            f"{k}: {v}" for k, v in result.items()
+                            if k not in ("duration_ms", "as_of")
+                        ]
+                        st.success(" | ".join(parts))
+                        st.rerun()
+                    except SafeWriterBusyError:
+                        st.error("Another sync is running. Wait a moment and retry.")
+                    except Exception as e:
+                        # sync_csvs_to_db() already recorded the catalog failures.
+                        st.error(f"EasyData sync failed: {e}")
 
     st.markdown("##### Historical Backfill (SBP PDFs)")
     c1, c2, c3 = st.columns(3)
