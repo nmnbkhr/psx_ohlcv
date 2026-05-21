@@ -7689,22 +7689,15 @@ def handle_rates(args: argparse.Namespace) -> int:
     init_yield_curve_schema(con)
 
     if args.rates_command == "sync":
-        from .db.catalog import record_catalog_failure, update_catalog_from_table
+        # Phase 1.6.5: delegate to the shared ETL function. Body now
+        # runs under safe_writer (was bare con.commit). Catalog
+        # failure-recording is inside sync_sbp_curve(); CLI just prints
+        # and translates exit code.
+        from .etl.rates import sync_sbp_curve
         print("Scraping KONIA + KIBOR + yield curve from SBP PMA page...")
-        scraper = SBPRatesScraper()
         try:
-            result = scraper.sync_rates(con)
-            for ds, src in (
-                ("kibor", "sbp"),
-                ("konia", "sbp"),
-                ("yield_curve", "sbp"),
-            ):
-                update_catalog_from_table(con, ds, source=src)
-            con.commit()
+            result = sync_sbp_curve()
         except Exception as e:  # noqa: BLE001
-            con.rollback()
-            for ds in ("kibor", "konia", "yield_curve"):
-                record_catalog_failure(ds, source="sbp", error=e)
             print(f"Error: {e}", file=sys.stderr)
             return EXIT_ERROR
         print(

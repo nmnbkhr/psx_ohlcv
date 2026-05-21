@@ -24,6 +24,7 @@ from pakfindata.worker.handlers.sync_kibor_easydata import (
     handle_sync_kibor_easydata,
 )
 from pakfindata.worker.handlers.sync_rates_bundle import handle_sync_rates_bundle
+from pakfindata.worker.handlers.sync_sbp_curve import handle_sync_sbp_curve
 from pakfindata.worker.handlers.sync_treasury_auctions import (
     handle_sync_treasury_auctions,
 )
@@ -35,6 +36,7 @@ REGISTRY: dict[str, Callable[..., dict | None]] = {
     "sync_indices": handle_sync_indices,
     "sync_kibor_easydata": handle_sync_kibor_easydata,
     "sync_rates_bundle": handle_sync_rates_bundle,
+    "sync_sbp_curve": handle_sync_sbp_curve,
     "sync_treasury_auctions": handle_sync_treasury_auctions,
 }
 

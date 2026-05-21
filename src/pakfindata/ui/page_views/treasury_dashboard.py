@@ -1190,28 +1190,31 @@ def _render_sync(con):
                         st.error(f"Sync failed: {e}")
     with c2:
         if st.button("Sync Rates (KIBOR/PKRV/KONIA)", key="tsy_sync_rates"):
-            with st.spinner("Syncing rates from SBP..."):
-                from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
-                from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
-                try:
-                    scraper = SBPRatesScraper()  # HTTP init outside lock
-                    with safe_writer() as wcon:
-                        result = scraper.sync_rates(wcon)
-                        update_catalog_from_table(wcon, "kibor", source="sbp")
-                        update_catalog_from_table(wcon, "yield_curve", source="sbp")
-                        update_catalog_from_table(wcon, "konia", source="sbp")
-                    st.cache_data.clear()
-                    st.success(
-                        f"KIBOR: {result['kibor_ok']}, PKRV: {result['pkrv_points']}, "
-                        f"KONIA: {'OK' if result['konia_ok'] else 'N/A'}"
-                    )
-                    st.rerun()
-                except SafeWriterBusyError:
-                    st.error("Another sync is running. Wait a moment and retry.")
-                except Exception as e:
-                    st.error(f"Sync failed: {e}")
-                    for ds in ("kibor", "yield_curve", "konia"):
-                        record_catalog_failure(ds, source="sbp", error=e)
+            # Phase 1.6.5: sidebar feature flag picks the path.
+            from pakfindata.ui.api import client as api_client
+            if api_client.use_worker_sync():
+                api_client.run_job_with_progress(
+                    "sync_sbp_curve",
+                    spinner_text="scraping KIBOR/PKRV/KONIA from SBP PMA",
+                )
+                st.rerun()
+            else:
+                with st.spinner("Syncing rates from SBP..."):
+                    from pakfindata.db.safe_writer import SafeWriterBusyError
+                    from pakfindata.etl.rates import sync_sbp_curve
+                    try:
+                        result = sync_sbp_curve()
+                        st.cache_data.clear()
+                        st.success(
+                            f"KIBOR: {result['kibor_ok']}, PKRV: {result['pkrv_points']}, "
+                            f"KONIA: {'OK' if result['konia_ok'] else 'N/A'}"
+                        )
+                        st.rerun()
+                    except SafeWriterBusyError:
+                        st.error("Another sync is running. Wait a moment and retry.")
+                    except Exception as e:
+                        # sync_sbp_curve() already recorded the catalog failures.
+                        st.error(f"Sync failed: {e}")
     with c3:
         if st.button("Sync GIS Sukuk", key="tsy_sync_gis"):
             with st.spinner("Syncing GIS auctions from SBP..."):

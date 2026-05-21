@@ -43,6 +43,7 @@ from pakfindata.sources.sbp_easydata import (
     sync_kibor_to_db,
     sync_policy_rate_to_db,
 )
+from pakfindata.sources.sbp_rates import SBPRatesScraper
 from pakfindata.sources.sbp_treasury import SBPTreasuryScraper
 
 DATASETS: tuple[tuple[str, str], ...] = (
@@ -54,6 +55,12 @@ DATASETS: tuple[tuple[str, str], ...] = (
 
 KIBOR_EASYDATA_DATASET = "kibor"
 KIBOR_EASYDATA_SOURCE = "sbp_easydata"
+
+SBP_CURVE_DATASETS: tuple[tuple[str, str], ...] = (
+    ("kibor", "sbp"),
+    ("konia", "sbp"),
+    ("yield_curve", "sbp"),
+)
 
 
 def sync_bundle() -> dict:
@@ -137,6 +144,55 @@ def sync_kibor_easydata() -> dict:
 
     return {
         "kibor_rows": int(kibor_result.get("kibor_rows", 0)),
+        "duration_ms": int((time.monotonic() - t0) * 1000),
+        "as_of": as_of,
+    }
+
+
+def sync_sbp_curve() -> dict:
+    """Scrape SBP PMA page for KIBOR + KONIA + PKRV yield curve.
+
+    Different source family than :func:`sync_bundle` — this uses the
+    PMA-page HTML scrape (``SBPRatesScraper``), not the EasyData API.
+    Same domain of underlying data (rates), but with different
+    historical coverage / latency characteristics — the PMA page has
+    today's rates earlier than EasyData.
+
+    Catalog datasets touched on success::
+
+        kibor          source='sbp'
+        konia          source='sbp'
+        yield_curve    source='sbp'
+
+    Returns:
+        ``{konia_ok, kibor_ok, pkrv_points, failed, duration_ms, as_of}``
+
+    Raises:
+        Whatever the scraper / safe_writer raise. Before re-raising,
+        ``record_catalog_failure`` is written for all three datasets
+        in :data:`SBP_CURVE_DATASETS`.
+    """
+    t0 = time.monotonic()
+    as_of = datetime.now(timezone.utc).isoformat()
+
+    try:
+        # HTTP init outside the writer lock.
+        scraper = SBPRatesScraper()
+
+        with safe_writer() as con:
+            result = scraper.sync_rates(con)
+            for dataset, source in SBP_CURVE_DATASETS:
+                update_catalog_from_table(con, dataset, source=source)
+    except Exception as exc:
+        for dataset, source in SBP_CURVE_DATASETS:
+            record_catalog_failure(dataset, source=source, error=exc)
+        raise
+
+    return {
+        "konia_ok": bool(result.get("konia_ok", False)),
+        "kibor_ok": int(result.get("kibor_ok", 0)),
+        "pkrv_points": int(result.get("pkrv_points", 0)),
+        "failed": int(result.get("failed", 0)),
         "duration_ms": int((time.monotonic() - t0) * 1000),
         "as_of": as_of,
     }
