@@ -152,6 +152,15 @@ class APIClient:
         """
         return self._request("GET", path, params=params)
 
+    def post(self, path: str, json: dict | None = None, params: dict | None = None):
+        """Generic POST helper — returns the decoded JSON body.
+
+        Used by the Streamlit wrapper to submit jobs and similar
+        write-side calls. ``json=`` is encoded into the request body;
+        ``params=`` becomes the URL query string.
+        """
+        return self._request("POST", path, json=json, params=params)
+
     def health_check(self) -> bool:
         """Check if API is healthy. Returns True iff /health returns ok-ish.
 

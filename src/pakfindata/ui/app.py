@@ -792,6 +792,11 @@ def sync_center_page():
     render_sync_monitor()
 
 
+def jobs_monitor_page():
+    from pakfindata.ui.page_views.jobs_monitor import render_jobs_monitor
+    render_jobs_monitor()
+
+
 def app_lineage_page():
     from pakfindata.ui.page_views.app_lineage import render_app_lineage
     render_app_lineage()
@@ -930,6 +935,7 @@ def main():
         # ADMIN
         "Data Status":        st.Page(data_status_page,       title="Data Status",        url_path="data-status"),
         "Sync Center":        st.Page(sync_center_page,       title="Sync Center",        url_path="sync-center"),
+        "Jobs Monitor":       st.Page(jobs_monitor_page,      title="Jobs Monitor",       url_path="jobs-monitor"),
         "Schema Explorer":    st.Page(schema_page,            title="Schema Explorer",    url_path="schema"),
         "App Lineage":        st.Page(app_lineage_page,       title="App Lineage",        url_path="app-lineage"),
         "SBP EasyData":       st.Page(sbp_easydata_page,      title="SBP EasyData",       url_path="sbp-easydata"),
@@ -955,7 +961,7 @@ def main():
         "RESEARCH":        ["Research", "Signal Analysis", "Microstructure", "Tick Analytics", "Tick Replay", "Quant Lab", "Macro Cycles", "Sector Breadth", "Market Research", "ML Predictions"],
         "STRATEGIES":      ["VPIN Strategy", "OFI Alpha", "CVD Divergence", "Basis Arb", "VWAP Execution", "Macro Regime", "Flow Intelligence", "Sector Rotation", "OI Buildup/Unwind", "Pairs Trading", "LLM Sentiment"],
         "ADVANCED":        ["Signal Intelligence", "Order Book Sim", "Stock Graph (GNN)", "Hawkes Process", "RL Execution"],
-        "ADMIN":           ["Data Status", "Sync Center", "Schema Explorer", "App Lineage", "SBP EasyData", "PSX Scraper"],
+        "ADMIN":           ["Data Status", "Sync Center", "Jobs Monitor", "Schema Explorer", "App Lineage", "SBP EasyData", "PSX Scraper"],
     }
 
     # HIDDEN PAGES — registered for URL access but no sidebar button

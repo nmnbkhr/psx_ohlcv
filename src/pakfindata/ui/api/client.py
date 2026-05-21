@@ -267,6 +267,68 @@ def get_sync_runs(limit: int = 10) -> Optional[list[dict]]:
     return _safe_get("/v1/sync/runs", params={"limit": limit})
 
 
+# ── Jobs queue ─────────────────────────────────────────────────────────────
+
+
+@st.cache_data(ttl=3)
+def get_jobs(
+    status: Optional[str] = None,
+    job_type: Optional[str] = None,
+    limit: int = 50,
+) -> Optional[list[dict]]:
+    """Recent jobs rows for the Jobs Monitor page.
+
+    Very short TTL (3s) — job state changes quickly; the page also
+    auto-refreshes every 5s so a 3s TTL keeps the table visibly live
+    without hammering the API.
+    """
+    params: dict[str, Any] = {"limit": limit}
+    if status:
+        params["status"] = status
+    if job_type:
+        params["job_type"] = job_type
+    return _safe_get("/v1/jobs", params=params)
+
+
+@st.cache_data(ttl=3)
+def get_job_detail(job_id: int) -> Optional[dict]:
+    """Single job row by id; None on transport error / 404 / unknown."""
+    return _safe_get(f"/v1/jobs/{job_id}")
+
+
+def submit_job(
+    job_type: str,
+    params: Optional[dict] = None,
+    priority: int = 100,
+    notes: Optional[str] = None,
+) -> Optional[dict]:
+    """Enqueue a job. Returns ``{job_id, status, …}`` or None on failure.
+
+    Not cached — every call enqueues a new row by definition.
+    """
+    body = {
+        "params": params or {},
+        "priority": priority,
+    }
+    if notes:
+        body["notes"] = notes
+    try:
+        return _client().post(f"/v1/jobs/{job_type}", json=body)
+    except APIError as exc:
+        logger.warning("submit_job(%s) failed: %s", job_type, exc)
+        return None
+
+
+def cancel_job(job_id: int) -> Optional[dict]:
+    """Cancel a pending job. Returns ``{job_id, status: "cancelled"}`` or
+    None if already running/finished/unknown."""
+    try:
+        return _client().post(f"/v1/jobs/{job_id}/cancel")
+    except APIError as exc:
+        logger.warning("cancel_job(%d) failed: %s", job_id, exc)
+        return None
+
+
 __all__ = [
     "DEFAULT_API_URL",
     "health",
@@ -299,4 +361,9 @@ __all__ = [
     "get_rates_strip",
     # sync
     "get_sync_runs",
+    # jobs
+    "get_jobs",
+    "get_job_detail",
+    "submit_job",
+    "cancel_job",
 ]
