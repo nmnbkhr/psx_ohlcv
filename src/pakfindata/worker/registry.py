@@ -18,10 +18,12 @@ from __future__ import annotations
 from typing import Callable
 
 from pakfindata.worker.handlers.ping import handle_ping
+from pakfindata.worker.handlers.sync_indices import handle_sync_indices
 
 
 REGISTRY: dict[str, Callable[..., dict | None]] = {
     "ping": handle_ping,
+    "sync_indices": handle_sync_indices,
 }
 
 
