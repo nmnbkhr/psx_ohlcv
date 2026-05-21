@@ -251,24 +251,30 @@ def render_rates_overview():
                         record_catalog_failure("benchmark_snapshot", source="sbp_bond_market", error=e)
         with col3:
             if st.button("Sync Auctions", key="ro_auctions"):
-                with st.spinner("Syncing T-Bill/PIB auctions..."):
-                    from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
-                    from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
-                    from pakfindata.sources.sbp_treasury import SBPTreasuryScraper
-                    try:
-                        scraper = SBPTreasuryScraper()  # init outside lock
-                        with safe_writer() as wcon:
-                            result = scraper.sync_treasury(wcon)
-                            update_catalog_from_table(wcon, "treasury", source="sbp")
-                            update_catalog_from_table(wcon, "pib", source="sbp")
-                        st.cache_data.clear()
-                        st.success(f"Auctions synced: {result}")
-                    except SafeWriterBusyError:
-                        st.error("Another sync is running. Wait a moment and retry.")
-                    except Exception as e:
-                        st.error(f"Failed: {e}")
-                        for ds in ("treasury", "pib"):
-                            record_catalog_failure(ds, source="sbp", error=e)
+                # Phase 1.6.2: sidebar feature flag picks the path.
+                from pakfindata.ui.api import client as api_client
+                if api_client.use_worker_sync():
+                    api_client.run_job_with_progress(
+                        "sync_treasury_auctions",
+                        spinner_text="syncing T-Bill / PIB auctions",
+                    )
+                else:
+                    with st.spinner("Syncing T-Bill/PIB auctions..."):
+                        from pakfindata.db.safe_writer import SafeWriterBusyError
+                        from pakfindata.etl.treasury import sync_auctions
+                        try:
+                            result = sync_auctions()
+                            st.cache_data.clear()
+                            st.success(
+                                f"Auctions synced: T-Bills {result['tbills_ok']}, "
+                                f"PIBs {result['pibs_ok']} "
+                                f"(auction date: {result.get('auction_date') or '—'})"
+                            )
+                        except SafeWriterBusyError:
+                            st.error("Another sync is running. Wait a moment and retry.")
+                        except Exception as e:
+                            # sync_auctions() already recorded the catalog failures.
+                            st.error(f"Failed: {e}")
 
     if snap_date:
         st.caption(f"Benchmark data as of: {snap_date}")

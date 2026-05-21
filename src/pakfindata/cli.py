@@ -7567,18 +7567,15 @@ def handle_treasury(args: argparse.Namespace) -> int:
     init_treasury_schema(con)
 
     if args.treasury_command == "sync":
-        from .db.catalog import record_catalog_failure, update_catalog_from_table
+        # Phase 1.6.2: delegate to the shared ETL function. Body now
+        # runs under safe_writer (was bare con.commit). Catalog
+        # failure-recording is inside sync_auctions(); CLI just prints
+        # and translates exit code.
+        from .etl.treasury import sync_auctions
         print("Scraping latest T-Bill + PIB rates from SBP PMA page...")
-        scraper = SBPTreasuryScraper()
         try:
-            result = scraper.sync_treasury(con)
-            update_catalog_from_table(con, "treasury", source="sbp")
-            update_catalog_from_table(con, "pib", source="sbp")
-            con.commit()
+            result = sync_auctions()
         except Exception as e:  # noqa: BLE001
-            con.rollback()
-            for ds in ("treasury", "pib"):
-                record_catalog_failure(ds, source="sbp", error=e)
             print(f"Error: {e}", file=sys.stderr)
             return EXIT_ERROR
         print(

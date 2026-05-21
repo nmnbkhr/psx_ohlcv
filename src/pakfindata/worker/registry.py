@@ -20,12 +20,16 @@ from typing import Callable
 from pakfindata.worker.handlers.ping import handle_ping
 from pakfindata.worker.handlers.sync_indices import handle_sync_indices
 from pakfindata.worker.handlers.sync_rates_bundle import handle_sync_rates_bundle
+from pakfindata.worker.handlers.sync_treasury_auctions import (
+    handle_sync_treasury_auctions,
+)
 
 
 REGISTRY: dict[str, Callable[..., dict | None]] = {
     "ping": handle_ping,
     "sync_indices": handle_sync_indices,
     "sync_rates_bundle": handle_sync_rates_bundle,
+    "sync_treasury_auctions": handle_sync_treasury_auctions,
 }
 
 

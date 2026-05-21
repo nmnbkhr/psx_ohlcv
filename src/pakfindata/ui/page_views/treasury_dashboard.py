@@ -1164,24 +1164,30 @@ def _render_sync(con):
     c1, c2, c3 = st.columns(3)
     with c1:
         if st.button("Sync T-Bill / PIB", type="primary", key="tsy_sync_treasury"):
-            with st.spinner("Syncing treasury auctions from SBP..."):
-                from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
-                from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
-                try:
-                    scraper = SBPTreasuryScraper()  # init outside lock
-                    with safe_writer() as wcon:
-                        result = scraper.sync_treasury(wcon)
-                        update_catalog_from_table(wcon, "treasury", source="sbp")
-                        update_catalog_from_table(wcon, "pib", source="sbp")
-                    st.cache_data.clear()
-                    st.success(f"T-Bills: {result['tbills_ok']}, PIBs: {result['pibs_ok']}")
-                    st.rerun()
-                except SafeWriterBusyError:
-                    st.error("Another sync is running. Wait a moment and retry.")
-                except Exception as e:
-                    st.error(f"Sync failed: {e}")
-                    for ds in ("treasury", "pib"):
-                        record_catalog_failure(ds, source="sbp", error=e)
+            # Phase 1.6.2: sidebar feature flag picks the path.
+            from pakfindata.ui.api import client as api_client
+            if api_client.use_worker_sync():
+                api_client.run_job_with_progress(
+                    "sync_treasury_auctions",
+                    spinner_text="syncing T-Bill / PIB auctions",
+                )
+                st.rerun()
+            else:
+                with st.spinner("Syncing treasury auctions from SBP..."):
+                    from pakfindata.db.safe_writer import SafeWriterBusyError
+                    from pakfindata.etl.treasury import sync_auctions
+                    try:
+                        result = sync_auctions()
+                        st.cache_data.clear()
+                        st.success(
+                            f"T-Bills: {result['tbills_ok']}, PIBs: {result['pibs_ok']}"
+                        )
+                        st.rerun()
+                    except SafeWriterBusyError:
+                        st.error("Another sync is running. Wait a moment and retry.")
+                    except Exception as e:
+                        # sync_auctions() already recorded the catalog failures.
+                        st.error(f"Sync failed: {e}")
     with c2:
         if st.button("Sync Rates (KIBOR/PKRV/KONIA)", key="tsy_sync_rates"):
             with st.spinner("Syncing rates from SBP..."):
