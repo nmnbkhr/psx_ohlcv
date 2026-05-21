@@ -329,6 +329,99 @@ def cancel_job(job_id: int) -> Optional[dict]:
         return None
 
 
+def run_job_with_progress(
+    job_type: str,
+    params: Optional[dict] = None,
+    *,
+    spinner_text: str = "Running...",
+    success_label: Optional[str] = None,
+    poll_interval_s: float = 1.5,
+    timeout_s: float = 180.0,
+) -> Optional[dict]:
+    """Submit a job, poll until terminal, show progress in Streamlit.
+
+    Used by sync buttons that need worker dispatch + inline progress
+    rendering. Returns the terminal job-detail dict on success/failure,
+    or None if the submission itself failed (e.g. API down).
+
+    The function clears ``st.cache_data`` on success so the next page
+    render picks up freshly-synced data without waiting for TTL expiry.
+
+    Args:
+        job_type:      Registered handler key (e.g. "sync_indices").
+        params:        Body params dict for ``POST /v1/jobs/{job_type}``.
+        spinner_text:  Initial message shown while the job is pending.
+        success_label: Optional override for the toast on success;
+                       defaults to a short summary of result keys.
+        poll_interval_s: Seconds between status polls.
+        timeout_s:     Total wall-time budget before we give up.
+
+    Returns:
+        Terminal job-detail dict, or None if submission failed.
+    """
+    import time
+    submission = submit_job(job_type, params=params or {})
+    if submission is None:
+        st.error(
+            "Could not enqueue job — API unreachable or auth misconfigured."
+        )
+        return None
+    job_id = submission["job_id"]
+
+    progress = st.empty()
+    progress.info(f"Job #{job_id} ({job_type}) queued — {spinner_text}")
+
+    deadline = time.time() + timeout_s
+    last_status: Optional[str] = None
+    last_job: Optional[dict] = None
+    while time.time() < deadline:
+        time.sleep(poll_interval_s)
+        job = get_job_detail(job_id)
+        if job is None:
+            continue
+        last_job = job
+        status = job["status"]
+        if status != last_status:
+            progress.info(f"Job #{job_id} ({job_type}) status: {status}")
+            last_status = status
+        if status in ("ok", "failed", "cancelled"):
+            progress.empty()
+            st.cache_data.clear()
+            if status == "ok":
+                if success_label:
+                    st.toast(f"OK: {success_label}")
+                else:
+                    result = job.get("result") or {}
+                    summary = ", ".join(
+                        f"{k}={v}"
+                        for k, v in result.items()
+                        if k not in ("as_of",)
+                    )
+                    st.toast(f"Job #{job_id} done — {summary}")
+            elif status == "failed":
+                err = job.get("error") or "(no error message)"
+                st.error(f"Job #{job_id} failed: {err}")
+            else:  # cancelled
+                st.warning(f"Job #{job_id} was cancelled.")
+            return job
+
+    progress.empty()
+    st.warning(
+        f"Job #{job_id} still running after {timeout_s}s — "
+        "check the Jobs Monitor page for status."
+    )
+    return last_job
+
+
+def use_worker_sync() -> bool:
+    """Feature flag: should sync buttons enqueue worker jobs?
+
+    Reads ``st.session_state['use_worker_sync']`` which the sidebar
+    checkbox in ``ui/app.py`` writes. Defaults to True (worker mode).
+    """
+    return bool(st.session_state.get("use_worker_sync", True))
+
+
 __all__ = [
     "DEFAULT_API_URL",
     "health",
@@ -366,4 +459,6 @@ __all__ = [
     "get_job_detail",
     "submit_job",
     "cancel_job",
+    "run_job_with_progress",
+    "use_worker_sync",
 ]

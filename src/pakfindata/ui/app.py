@@ -1232,6 +1232,18 @@ def main():
         pass
 
     st.sidebar.markdown("---")
+    # Phase 1.5 feature flag: route sync buttons through the worker
+    # queue (default) or fall back to the legacy inline safe_writer
+    # path. Operator-visible toggle for fast debug switching.
+    st.session_state.setdefault("use_worker_sync", True)
+    st.sidebar.checkbox(
+        "Use worker for sync",
+        key="use_worker_sync",
+        help=(
+            "When ON, sync buttons enqueue a worker job and poll until "
+            "done. When OFF, they run inline (legacy safe_writer path)."
+        ),
+    )
     if st.sidebar.button("Clear Cache", key="_clear_cache", type="secondary"):
         st.cache_data.clear()
         st.cache_resource.clear()

@@ -635,26 +635,36 @@ def render_dashboard():
                     st.rerun()
             with rc2:
                 if st.button("Sync Indices", key="dash_sync_idx2"):
-                    # Inline (legacy) path — delegates to the shared
-                    # etl.indices.sync() function which Phase 1.5
-                    # consolidated. The worker-dispatch path lands in
-                    # sub-wave 1.5.3.
-                    with st.spinner("Syncing indices..."):
-                        from pakfindata.db.safe_writer import SafeWriterBusyError
-                        from pakfindata.etl.indices import sync as sync_indices
+                    # Phase 1.5: sidebar feature flag picks the path.
+                    # ON (default): enqueue a worker job and poll until
+                    #               terminal — progress shows inline.
+                    # OFF (fallback): run inline via the shared
+                    #               etl.indices.sync() function.
+                    # Both paths converge on the same ETL code; only the
+                    # execution context (Streamlit thread vs worker
+                    # process) differs.
+                    if api_client.use_worker_sync():
+                        api_client.run_job_with_progress(
+                            "sync_indices",
+                            spinner_text="syncing 18 PSX indices",
+                        )
+                    else:
+                        with st.spinner("Syncing indices..."):
+                            from pakfindata.db.safe_writer import SafeWriterBusyError
+                            from pakfindata.etl.indices import sync as sync_indices
 
-                        try:
-                            result = sync_indices()
-                            st.cache_data.clear()
-                            st.toast(
-                                f"Synced {result['indices_count']} indices "
-                                f"(latest: {result.get('latest_date') or '—'})"
-                            )
-                        except SafeWriterBusyError:
-                            st.error("Another sync is running. Wait a moment and retry.")
-                        except Exception as e:
-                            # sync() already recorded the catalog failure.
-                            st.error(f"Sync failed: {e}")
+                            try:
+                                result = sync_indices()
+                                st.cache_data.clear()
+                                st.toast(
+                                    f"Synced {result['indices_count']} indices "
+                                    f"(latest: {result.get('latest_date') or '—'})"
+                                )
+                            except SafeWriterBusyError:
+                                st.error("Another sync is running. Wait a moment and retry.")
+                            except Exception as e:
+                                # sync() already recorded the catalog failure.
+                                st.error(f"Sync failed: {e}")
                     st.rerun()
 
         # ── EOD summary tables (admin read of catalog coverage) ──
