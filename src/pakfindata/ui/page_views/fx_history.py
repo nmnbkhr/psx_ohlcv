@@ -4,55 +4,38 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from pakfindata.ui.components.helpers import get_connection, render_footer
+from pakfindata.ui.api import client as api_client
+from pakfindata.ui.components.helpers import render_footer
 
 
 # ── Cached data loaders ──────────────────────────────────────────────────────
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_available_pairs() -> list[str]:
-    """Get list of available FX pairs (cached)."""
-    try:
-        con = get_connection()
-        from pakfindata.db import get_fx_pairs
-        pairs_data = get_fx_pairs(con, active_only=True)
-        return [p["pair"] for p in pairs_data] if pairs_data else []
-    except Exception:
-        return []
+    pairs_data = api_client.get_fx_pairs(active_only=True) or []
+    return [p["pair"] for p in pairs_data if p.get("pair")]
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_fx_ohlcv(pair: str, limit: int) -> pd.DataFrame:
-    """Load FX OHLCV data for a pair (cached)."""
-    try:
-        con = get_connection()
-        from pakfindata.db import get_fx_ohlcv
-        df = get_fx_ohlcv(con, pair, limit=limit)
-        return df if not df.empty else pd.DataFrame()
-    except Exception:
-        return pd.DataFrame()
+    rows = api_client.get_fx_ohlcv(pair, limit=limit) or []
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_fx_analytics(pair: str) -> dict:
-    """Load FX analytics for a pair (cached)."""
-    try:
-        con = get_connection()
-        from pakfindata.analytics_fx import get_fx_analytics
-        return get_fx_analytics(con, pair)
-    except Exception:
-        return {}
+    return api_client.get_fx_analytics(pair) or {}
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_normalized_fx_performance(pairs: tuple[str, ...]) -> pd.DataFrame:
-    """Load normalized FX performance for comparison (cached)."""
-    try:
-        con = get_connection()
-        from pakfindata.analytics_fx import get_normalized_fx_performance
-        return get_normalized_fx_performance(con, list(pairs))
-    except Exception:
+    rows = api_client.get_fx_normalized_performance(list(pairs)) or []
+    if not rows:
         return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    if "date" in df.columns:
+        df = df.set_index("date")
+    return df
 
 
 def render_fx_history():
@@ -60,10 +43,7 @@ def render_fx_history():
     st.markdown("## FX Rate History")
     st.caption("Interactive charts for any currency pair over time")
 
-    con = get_connection()
-    if con is None:
-        st.error("Database connection not available")
-        return
+    api_client.render_api_status_banner_if_down()
 
     # Get available pairs
     pairs = _load_available_pairs()
@@ -189,7 +169,7 @@ def _render_rate_metrics(pair: str):
 
     analytics = _load_fx_analytics(pair)
 
-    if analytics.get("error"):
+    if not analytics or analytics.get("error"):
         st.info(f"No analytics for {pair}.")
         return
 
