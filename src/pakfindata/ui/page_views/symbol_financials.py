@@ -3,6 +3,10 @@
 Browse imported financial statement data (from PDF parsing) for any PSX symbol.
 Shows P&L trends, Balance Sheet composition, key ratios, and period comparison.
 Banks get ALM-specific views (NII decomposition, asset mix, deposits).
+
+Reads data through the /v1 API client. Direct SQLite reads moved to
+``/v1/companies/financial-symbols`` and
+``/v1/companies/{symbol}/financials`` (Phase 1.7.D.3).
 """
 
 from datetime import datetime
@@ -12,42 +16,32 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
-from pakfindata.ui.components.helpers import get_connection, render_footer
+from pakfindata.ui.api import client as api_client
+from pakfindata.ui.components.helpers import render_footer
 
 
 # ── Cached data loaders ──────────────────────────────────────────────────────
 
 @st.cache_data(ttl=600, show_spinner=False)
 def _load_financial_symbols() -> list[str]:
-    con = get_connection()
-    return [r[0] for r in con.execute(
-        "SELECT DISTINCT symbol FROM company_financials ORDER BY symbol"
-    ).fetchall()]
+    syms = api_client.get_financial_symbols()
+    return syms or []
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def _load_financials(symbol: str, period_filter: str) -> pd.DataFrame:
-    con = get_connection()
-    where = "WHERE symbol = ?"
-    params = [symbol]
+def _load_financials(symbol: str, period_filter: str) -> tuple[pd.DataFrame, bool]:
+    period_type = None
     if period_filter == "Annual":
-        where += " AND period_type = 'annual'"
+        period_type = "annual"
     elif period_filter == "Quarterly":
-        where += " AND period_type = 'quarterly'"
-    return pd.read_sql_query(
-        f"SELECT * FROM company_financials {where} ORDER BY period_end DESC",
-        con, params=params,
-    )
+        period_type = "quarterly"
 
-
-@st.cache_data(ttl=600, show_spinner=False)
-def _check_is_bank(symbol: str) -> bool:
-    con = get_connection()
-    bank_row = con.execute(
-        "SELECT markup_earned FROM company_financials WHERE symbol = ? AND markup_earned IS NOT NULL LIMIT 1",
-        (symbol,),
-    ).fetchone()
-    return bank_row is not None
+    resp = api_client.get_company_financials(symbol, period_type=period_type)
+    if not resp:
+        return pd.DataFrame(), False
+    rows = resp.get("rows") or []
+    is_bank = bool(resp.get("is_bank"))
+    return pd.DataFrame(rows), is_bank
 
 # ═════════════════════════════════════════════════════════════════════════════
 # DESIGN SYSTEM (Bloomberg-style)
@@ -114,13 +108,13 @@ def _pct_change(curr, prev):
 # ═════════════════════════════════════════════════════════════════════════════
 
 def render():
+    api_client.render_api_status_banner_if_down()
+
     st.markdown(
         '<h2 style="color:#00D4AA;margin-bottom:0;">SYMBOL FINANCIALS</h2>'
         '<p style="color:#888;margin-top:0;">Balance Sheet &amp; P&amp;L from PDF Reports</p>',
         unsafe_allow_html=True,
     )
-
-    con = get_connection()
 
     # Symbol selector
     symbols = _load_financial_symbols()
@@ -135,8 +129,8 @@ def render():
     with col2:
         period_filter = st.selectbox("Period", ["All", "Annual", "Quarterly"])
 
-    # Check if bank
-    is_bank = _check_is_bank(symbol)
+    # Load data + derived is_bank
+    df, is_bank = _load_financials(symbol, period_filter)
 
     with col3:
         if is_bank:
@@ -145,9 +139,6 @@ def render():
                         f'<span style="color:#E74C3C;">■</span> '
                         f'<span style="color:{_C["text_dim"]};">BANK</span></div>',
                         unsafe_allow_html=True)
-
-    # Load data
-    df = _load_financials(symbol, period_filter)
 
     if df.empty:
         st.info(f"No financial data for {symbol}")
