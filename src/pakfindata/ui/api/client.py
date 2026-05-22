@@ -891,6 +891,98 @@ def get_factor_risk_stats(
     )
 
 
+# ── Intraday + Turnover (1.7.E.0) ──────────────────────────────────────────
+
+
+@st.cache_data(ttl=30)
+def get_intraday_summary(
+    date: str, market: str = "REG"
+) -> Optional[list[dict]]:
+    return _safe_get(
+        "/v1/intraday/summary",
+        params={"date": date, "market": market},
+    )
+
+
+@st.cache_data(ttl=30)
+def get_intraday_bars(
+    symbol: str,
+    date: str,
+    interval: str = "1s",
+    limit: int = 20000,
+) -> Optional[list[dict]]:
+    return _safe_get(
+        "/v1/intraday/bars",
+        params={"symbol": symbol, "date": date, "interval": interval, "limit": limit},
+    )
+
+
+@st.cache_data(ttl=30)
+def get_intraday_minute_breadth(
+    date: str, market: str = "REG"
+) -> Optional[list[dict]]:
+    return _safe_get(
+        "/v1/intraday/breadth/minute",
+        params={"date": date, "market": market},
+    )
+
+
+@st.cache_data(ttl=30)
+def get_intraday_hourly_breadth(
+    date: str, market: str = "REG"
+) -> Optional[list[dict]]:
+    return _safe_get(
+        "/v1/intraday/breadth/hourly",
+        params={"date": date, "market": market},
+    )
+
+
+@st.cache_data(ttl=30)
+def get_intraday_index_minute(
+    date: str, symbols: list[str]
+) -> Optional[list[dict]]:
+    if not symbols:
+        return []
+    return _safe_get(
+        "/v1/intraday/index-minute",
+        params={"date": date, "symbols": ",".join(symbols)},
+    )
+
+
+@st.cache_data(ttl=60)
+def get_turnover_stats() -> Optional[dict]:
+    return _safe_get("/v1/turnover/stats")
+
+
+@st.cache_data(ttl=60)
+def get_turnover_dates() -> Optional[list[str]]:
+    return _safe_get("/v1/turnover/dates")
+
+
+@st.cache_data(ttl=60)
+def get_turnover_missing(
+    since: str = "2024-01-01", until: Optional[str] = None
+) -> Optional[list[str]]:
+    params: dict = {"since": since}
+    if until:
+        params["until"] = until
+    return _safe_get("/v1/turnover/missing", params=params)
+
+
+@st.cache_data(ttl=60)
+def get_turnover(
+    date: Optional[str] = None,
+    symbol: Optional[str] = None,
+    limit: int = 2000,
+) -> Optional[list[dict]]:
+    params: dict = {"limit": limit}
+    if date:
+        params["date"] = date
+    if symbol:
+        params["symbol"] = symbol
+    return _safe_get("/v1/turnover", params=params)
+
+
 def use_worker_sync() -> bool:
     """Feature flag: should sync buttons enqueue worker jobs?
 
@@ -1003,5 +1095,15 @@ __all__ = [
     "get_company_dividend_payouts",
     "get_factor_raw_data",
     "get_factor_risk_stats",
+    # intraday + turnover (1.7.E.0)
+    "get_intraday_summary",
+    "get_intraday_bars",
+    "get_intraday_minute_breadth",
+    "get_intraday_hourly_breadth",
+    "get_intraday_index_minute",
+    "get_turnover_stats",
+    "get_turnover_dates",
+    "get_turnover_missing",
+    "get_turnover",
     "use_worker_sync",
 ]

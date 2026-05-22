@@ -35,6 +35,7 @@ from pakfindata.api.routes import freshness as freshness_route
 from pakfindata.api.routes import fx as fx_route
 from pakfindata.api.routes import health as health_route
 from pakfindata.api.routes import indices as indices_route
+from pakfindata.api.routes import intraday as intraday_route
 from pakfindata.api.routes import jobs as jobs_route
 from pakfindata.api.routes import market as market_route
 from pakfindata.api.routes import sync as sync_route
@@ -128,6 +129,8 @@ app.include_router(fi_route.alm_router)
 app.include_router(fi_route.rates_policy_router)
 app.include_router(fi_route.rates_npc_extras_router)
 app.include_router(fi_route.rates_global_extras_router)
+app.include_router(intraday_route.intraday_router)
+app.include_router(intraday_route.turnover_router)
 app.include_router(sync_route.router)
 app.include_router(jobs_route.router)
 
