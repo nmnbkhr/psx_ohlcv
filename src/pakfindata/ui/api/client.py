@@ -1019,6 +1019,14 @@ def get_tick_logs_dates(symbol: str) -> Optional[list[str]]:
     return _safe_get(f"/v1/tick-logs/dates/{symbol}")
 
 
+@st.cache_data(ttl=300)
+def get_latest_futures(base_symbol: str) -> Optional[dict]:
+    """Latest active futures contract for an underlying. 404 -> None."""
+    if not base_symbol:
+        return None
+    return _safe_get(f"/v1/futures/{base_symbol}/latest", on_404=None)
+
+
 def use_worker_sync() -> bool:
     """Feature flag: should sync buttons enqueue worker jobs?
 
@@ -1147,5 +1155,6 @@ __all__ = [
     "get_top_symbols_by_volume",
     "get_futures_symbols",
     "get_tick_logs_dates",
+    "get_latest_futures",
     "use_worker_sync",
 ]
