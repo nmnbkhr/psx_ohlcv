@@ -33,6 +33,7 @@ from pakfindata.api.schemas.fx import (
     FXSpreadRow,
     FXSyncRunRow,
     GlobalReferenceRateRow,
+    KiborRow,
     KoniaRow,
     NPCRatesRow,
 )
@@ -232,6 +233,43 @@ def get_konia(
         (limit,),
     )
     return [dict(r) for r in cur.fetchall()]
+
+
+@rates_extra_router.get("/kibor", response_model=list[KiborRow])
+def get_kibor_history(
+    tenors: Annotated[
+        Optional[str],
+        Query(description="Comma-separated tenor codes, e.g. 1M,3M,6M,1Y"),
+    ] = None,
+    days: Annotated[int, Query(ge=1, le=10000)] = 3000,
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> list[dict]:
+    """KIBOR history from ``kibor_daily``.
+
+    Returns rows date-ascending so chart code can plot directly. With
+    no ``tenors`` arg, returns every tenor; with one, restricts to
+    that comma-separated set. Drops rows where ``offer`` is NULL since
+    chart consumers always plot offer.
+    """
+    if tenors:
+        keys = [t.strip() for t in tenors.split(",") if t.strip()]
+        placeholders = ",".join("?" * len(keys))
+        cur = con.execute(
+            f"""SELECT date, tenor, bid, offer FROM kibor_daily
+                WHERE tenor IN ({placeholders}) AND offer IS NOT NULL
+                ORDER BY date DESC LIMIT ?""",
+            tuple(keys) + (days * len(keys),),
+        )
+    else:
+        cur = con.execute(
+            """SELECT date, tenor, bid, offer FROM kibor_daily
+               WHERE offer IS NOT NULL
+               ORDER BY date DESC LIMIT ?""",
+            (days,),
+        )
+    # Reverse so callers get ascending order suitable for charting.
+    rows = [dict(r) for r in cur.fetchall()]
+    return list(reversed(rows))
 
 
 @rates_extra_router.get("/global", response_model=list[GlobalReferenceRateRow])

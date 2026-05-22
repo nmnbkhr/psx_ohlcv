@@ -76,6 +76,18 @@ class KoniaRow(BaseModel):
     rate_pct: Optional[float] = None
 
 
+class KiborRow(BaseModel):
+    """One row from ``kibor_daily`` — Karachi InterBank Offered Rate.
+
+    Optional Bid kept Optional since EasyData sometimes only exposes offer.
+    """
+
+    date: str
+    tenor: str
+    bid: Optional[float] = None
+    offer: Optional[float] = None
+
+
 class GlobalReferenceRateRow(BaseModel):
     """One row from ``global_reference_rates``.
 

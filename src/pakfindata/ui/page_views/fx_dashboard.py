@@ -8,19 +8,21 @@ Tabs:
   Carry — Carry trade calculator, KIBOR vs global rates, NPC certificates
   FX Signals — Microservice-sourced regime, intervention, carry signals
   Sync — All sync/backfill controls
+
+Phase 1.7.C.4: all DB reads now flow through pakfindata.ui.api.client.
+The Sync tab still uses safe_writer directly for the write paths;
+those are 1.6 territory (sync buttons enqueue worker jobs by default).
 """
 
-import sqlite3
 import streamlit as st
 import pandas as pd
-import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from pakfindata.ui.components.helpers import get_connection, render_ai_commentary, render_footer
-from pakfindata.sources.sbp_fx import SBPFXScraper
 from pakfindata.sources.forex_scraper import ForexPKScraper
 from pakfindata.sources.fx_client import FXClient
+from pakfindata.ui.api import client as api_client
+from pakfindata.ui.components.helpers import render_ai_commentary, render_footer
 
 _fx = FXClient()
 
@@ -44,10 +46,11 @@ _CHART_LAYOUT = dict(
 
 _KEY_CURRENCIES = ["USD", "EUR", "GBP", "SAR", "AED", "CNY"]
 
-_FX_TABLES = {
-    "Interbank": "sbp_fx_interbank",
-    "Open Market": "sbp_fx_open_market",
-    "Kerb": "forex_kerb",
+# Source labels (UI) → /v1/fx/* source keys.
+_FX_SOURCES: dict[str, str] = {
+    "Interbank": "interbank",
+    "Open Market": "open_market",
+    "Kerb": "kerb",
 }
 
 _SRC_COLORS = {
@@ -63,115 +66,87 @@ _AXIS_STYLE = dict(gridcolor=_COLORS["grid"], zeroline=False)
 # ── Cached data loaders ──────────────────────────────────────────────────────
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _load_all_currency_rates(table: str) -> pd.DataFrame:
-    con = get_connection()
-    return pd.read_sql_query(
-        f"""SELECT t.currency, t.date, t.buying, t.selling,
-                   ROUND(t.selling - t.buying, 4) as spread
-            FROM {table} t
-            INNER JOIN (SELECT currency, MAX(date) as max_date FROM {table} GROUP BY currency)
-                 mx ON t.currency=mx.currency AND t.date=mx.max_date
-            ORDER BY t.currency""",
-        con,
-    )
+def _load_all_currency_rates(source: str) -> pd.DataFrame:
+    rows = api_client.get_fx_latest(source=source) or []
+    return pd.DataFrame(rows)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _load_fx_history(table: str, currency: str, limit: int) -> pd.DataFrame:
-    con = get_connection()
-    return pd.read_sql_query(
-        f"SELECT date, buying, selling FROM {table}"
-        " WHERE UPPER(currency)=? ORDER BY date DESC LIMIT ?",
-        con, params=(currency.upper(), limit),
-    )
+def _load_fx_history(source: str, currency: str, limit: int) -> pd.DataFrame:
+    rows = api_client.get_fx_history(currency, source=source, limit=limit) or []
+    return pd.DataFrame(rows)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _load_fx_ohlcv(pair: str, limit: int) -> pd.DataFrame:
-    con = get_connection()
-    return pd.read_sql_query(
-        "SELECT date, open, high, low, close FROM fx_ohlcv"
-        " WHERE pair=? ORDER BY date DESC LIMIT ?",
-        con, params=(pair, limit),
-    )
+    rows = api_client.get_fx_ohlcv(pair, limit=limit) or []
+    return pd.DataFrame(rows)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _load_global_pairs() -> list[str]:
-    con = get_connection()
-    rows = con.execute(
-        "SELECT DISTINCT pair FROM commodity_fx_rates ORDER BY pair"
-    ).fetchall()
-    return [r["pair"] for r in rows]
+    return api_client.get_fx_global_pairs() or []
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _load_global_fx_history(pair: str, limit: int) -> pd.DataFrame:
-    con = get_connection()
-    return pd.read_sql_query(
-        "SELECT date, close FROM commodity_fx_rates"
-        " WHERE pair=? ORDER BY date DESC LIMIT ?",
-        con, params=(pair, limit),
-    )
+    rows = api_client.get_fx_global_history(pair, limit=limit) or []
+    return pd.DataFrame(rows)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _load_spread_heatmap() -> pd.DataFrame:
-    con = get_connection()
-    return pd.read_sql_query(
-        """SELECT i.currency, i.date, ROUND(k.selling - i.selling, 2) as spread
-           FROM sbp_fx_interbank i
-           INNER JOIN forex_kerb k ON i.currency=k.currency AND i.date=k.date
-           WHERE i.currency IN ('USD','EUR','GBP','SAR','AED')
-           ORDER BY i.date DESC LIMIT 150""",
-        con,
-    )
+    rows = api_client.get_fx_spread_heatmap(limit=150) or []
+    return pd.DataFrame(rows)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _load_volatility_data() -> tuple[pd.DataFrame, str]:
-    con = get_connection()
-    df = pd.read_sql_query(
-        "SELECT date, close FROM fx_ohlcv WHERE pair='USD/PKR' ORDER BY date", con,
-    )
+    """USD/PKR price history for vol/drawdown analysis.
+
+    Tries fx_ohlcv first (close column); falls back to sbp_fx_interbank
+    selling price when OHLCV is sparse.
+    """
+    rows = api_client.get_fx_ohlcv("USD/PKR", limit=5000) or []
+    df = pd.DataFrame(rows)
     source_label = "FX OHLCV"
     if len(df) < 10:
-        df = pd.read_sql_query(
-            "SELECT date, selling as close FROM sbp_fx_interbank"
-            " WHERE UPPER(currency)='USD' ORDER BY date", con,
-        )
+        hist = api_client.get_fx_history("USD", source="interbank", limit=2000) or []
+        df = pd.DataFrame(hist)
+        if not df.empty:
+            df = df.rename(columns={"selling": "close"})[["date", "close"]]
         source_label = "SBP Interbank"
+    if not df.empty:
+        df = df.sort_values("date").reset_index(drop=True)
     return df, source_label
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _load_npc_rates() -> pd.DataFrame:
-    con = get_connection()
-    return pd.read_sql_query(
-        "SELECT * FROM npc_rates ORDER BY date DESC, tenor", con,
-    )
+    rows = api_client.get_npc_rates(limit=2000) or []
+    return pd.DataFrame(rows)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _load_kibor_history() -> pd.DataFrame:
-    con = get_connection()
-    return pd.read_sql_query(
-        "SELECT date, tenor, offer FROM kibor_daily"
-        " WHERE tenor IN ('1M','3M','6M','1Y') AND offer IS NOT NULL ORDER BY date",
-        con,
-    )
+    rows = api_client.get_kibor_history(tenors="1M,3M,6M,1Y", days=3000) or []
+    return pd.DataFrame(rows)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _load_fx_sync_runs() -> pd.DataFrame:
-    con = get_connection()
-    try:
-        return pd.read_sql_query(
-            "SELECT * FROM fx_sync_runs ORDER BY started_at DESC LIMIT 10", con,
-        )
-    except Exception:
-        return pd.DataFrame()
+    rows = api_client.get_fx_sync_runs(limit=10) or []
+    return pd.DataFrame(rows)
 
+
+# ── Single-row lookups (no st.cache so they refresh with each render) ────────
+
+def _latest_rate(source: str, currency: str) -> dict | None:
+    """One-row FX lookup. Returns None on 404 or API down."""
+    return api_client.get_fx_latest_one(currency, source=source)
+
+
+# ── UI helpers ───────────────────────────────────────────────────────────────
 
 def _styled_fig(height=400, **kw):
     fig = go.Figure(layout={**_CHART_LAYOUT, "height": height, **kw})
@@ -199,29 +174,15 @@ def _card(label, value, delta=None, color=None):
     )
 
 
-def _get_latest_rate(con, table, currency):
-    try:
-        row = con.execute(
-            f"SELECT date, buying, selling FROM {table}"
-            " WHERE UPPER(currency) = ? ORDER BY date DESC LIMIT 1",
-            (currency.upper(),),
-        ).fetchone()
-        return dict(row) if row else None
-    except Exception:
-        return None
-
-
 # ═════════════════════════════════════════════════════════════════════════════
 # ENTRY POINT
 # ═════════════════════════════════════════════════════════════════════════════
 
 def render_fx_dashboard():
-    st.markdown("## FX Rates Terminal")
-
-    con = get_connection()
-    if con is None:
-        st.error("Database connection not available")
+    if not api_client.render_api_status_banner_if_down():
         return
+
+    st.markdown("## FX Rates Terminal")
 
     tabs = st.tabs(["Overview", "Charts", "Spreads", "Volatility", "Carry", "FX Signals", "Sync"])
 
@@ -233,7 +194,7 @@ def render_fx_dashboard():
     for tab, renderer in zip(tabs, renderers):
         with tab:
             try:
-                renderer(con)
+                renderer()
             except Exception as e:
                 st.error(f"Error: {e}")
 
@@ -244,41 +205,44 @@ def render_fx_dashboard():
 # TAB 1: OVERVIEW
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _render_overview(con):
+def _render_overview():
     # ── USD/PKR headline ──
-    usd_ib = _get_latest_rate(con, "sbp_fx_interbank", "USD")
-    usd_om = _get_latest_rate(con, "sbp_fx_open_market", "USD")
-    usd_kerb = _get_latest_rate(con, "forex_kerb", "USD")
+    usd_ib = _latest_rate("interbank", "USD")
+    usd_om = _latest_rate("open_market", "USD")
+    usd_kerb = _latest_rate("kerb", "USD")
 
-    # Previous day for delta
-    prev_usd = con.execute(
-        "SELECT selling FROM sbp_fx_interbank WHERE UPPER(currency)='USD'"
-        " ORDER BY date DESC LIMIT 1 OFFSET 1"
-    ).fetchone()
+    # Previous-day USD (one offset). Re-use the history endpoint with limit=2.
+    usd_hist = api_client.get_fx_history("USD", source="interbank", limit=2) or []
+    prev_usd = usd_hist[1] if len(usd_hist) >= 2 else None
 
     mc = st.columns(5)
     with mc[0]:
-        val = f"{usd_ib['selling']:.2f}" if usd_ib else "N/A"
-        delta = usd_ib["selling"] - prev_usd["selling"] if usd_ib and prev_usd else None
+        val = f"{usd_ib['selling']:.2f}" if usd_ib and usd_ib.get("selling") is not None else "N/A"
+        delta = (
+            usd_ib["selling"] - prev_usd["selling"]
+            if usd_ib and prev_usd
+            and usd_ib.get("selling") is not None
+            and prev_usd.get("selling") is not None
+            else None
+        )
         _card("USD/PKR Interbank", val, delta, _COLORS["interbank"])
     with mc[1]:
-        val = f"{usd_om['selling']:.2f}" if usd_om else "N/A"
+        val = f"{usd_om['selling']:.2f}" if usd_om and usd_om.get("selling") is not None else "N/A"
         _card("USD/PKR Open Mkt", val, color=_COLORS["open_mkt"])
     with mc[2]:
-        val = f"{usd_kerb['selling']:.2f}" if usd_kerb else "N/A"
+        val = f"{usd_kerb['selling']:.2f}" if usd_kerb and usd_kerb.get("selling") is not None else "N/A"
         _card("USD/PKR Kerb", val, color=_COLORS["kerb"])
     with mc[3]:
-        if usd_ib and usd_kerb and usd_ib["selling"] and usd_kerb["selling"]:
+        if usd_ib and usd_kerb and usd_ib.get("selling") and usd_kerb.get("selling"):
             spread = usd_kerb["selling"] - usd_ib["selling"]
             _card("Kerb Premium", f"{spread:+.2f}", color="#FFD700")
         else:
             _card("Kerb Premium", "N/A")
     with mc[4]:
-        # DXY from commodity_fx_rates
-        dxy = con.execute(
-            "SELECT close FROM commodity_fx_rates WHERE pair='DXY' ORDER BY date DESC LIMIT 1"
-        ).fetchone()
-        _card("DXY Index", f"{dxy['close']:.2f}" if dxy else "N/A", color="#AB47BC")
+        # DXY from commodity_fx_rates (global-history endpoint)
+        dxy_rows = api_client.get_fx_global_history("DXY", limit=1) or []
+        dxy_close = dxy_rows[0].get("close") if dxy_rows else None
+        _card("DXY Index", f"{dxy_close:.2f}" if dxy_close else "N/A", color="#AB47BC")
 
     st.markdown("")
 
@@ -287,10 +251,10 @@ def _render_overview(con):
     for currency in _KEY_CURRENCIES:
         cols = st.columns([1, 2, 2, 2, 1])
         cols[0].markdown(f"**{currency}/PKR**")
-        for i, (src_name, table) in enumerate(_FX_TABLES.items()):
-            rate = _get_latest_rate(con, table, currency)
+        for i, (src_name, src_key) in enumerate(_FX_SOURCES.items()):
+            rate = _latest_rate(src_key, currency)
             with cols[i + 1]:
-                if rate:
+                if rate and rate.get("buying") is not None and rate.get("selling") is not None:
                     st.metric(
                         src_name,
                         f"{rate['buying']:.2f} / {rate['selling']:.2f}",
@@ -298,10 +262,10 @@ def _render_overview(con):
                     )
                 else:
                     st.metric(src_name, "N/A")
-        ib = _get_latest_rate(con, "sbp_fx_interbank", currency)
-        kerb = _get_latest_rate(con, "forex_kerb", currency)
+        ib = _latest_rate("interbank", currency)
+        kerb = _latest_rate("kerb", currency)
         with cols[4]:
-            if ib and kerb and ib["selling"] and kerb["selling"]:
+            if ib and kerb and ib.get("selling") and kerb.get("selling"):
                 spread = kerb["selling"] - ib["selling"]
                 st.metric("Spread", f"{spread:+.2f}")
             else:
@@ -309,9 +273,9 @@ def _render_overview(con):
 
     # ── All currencies table ──
     st.markdown("### All Currency Rates")
-    for src_name, table in _FX_TABLES.items():
+    for src_name, src_key in _FX_SOURCES.items():
         try:
-            df = _load_all_currency_rates(table)
+            df = _load_all_currency_rates(src_key)
             if not df.empty:
                 st.markdown(f"**{src_name}** ({df['date'].iloc[0]})")
                 st.dataframe(df.rename(columns={
@@ -326,7 +290,7 @@ def _render_overview(con):
 # TAB 2: CHARTS
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _render_charts(con):
+def _render_charts():
     st.markdown("### Rate History")
 
     c1, c2, c3 = st.columns([2, 1, 1])
@@ -341,8 +305,8 @@ def _render_charts(con):
 
     if chart_mode == "Overlay":
         fig = _styled_fig(height=450)
-        for src_name, table in _FX_TABLES.items():
-            df = _load_fx_history(table, currency, limit)
+        for src_name, src_key in _FX_SOURCES.items():
+            df = _load_fx_history(src_key, currency, limit)
             if not df.empty:
                 df = df.sort_values("date")
                 fig.add_trace(go.Scatter(
@@ -411,14 +375,14 @@ def _render_charts(con):
 # TAB 3: SPREADS
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _render_spreads(con):
+def _render_spreads():
     # ── Bar chart: spread per currency ──
     st.markdown("### Interbank vs Kerb Spread")
     spreads = []
     for ccy in _KEY_CURRENCIES:
-        ib = _get_latest_rate(con, "sbp_fx_interbank", ccy)
-        kerb = _get_latest_rate(con, "forex_kerb", ccy)
-        if ib and kerb and ib["selling"] and kerb["selling"]:
+        ib = _latest_rate("interbank", ccy)
+        kerb = _latest_rate("kerb", ccy)
+        if ib and kerb and ib.get("selling") and kerb.get("selling"):
             spreads.append({
                 "Currency": ccy,
                 "Interbank": ib["selling"],
@@ -477,10 +441,10 @@ def _render_spreads(con):
     # ── Buy-sell spread by source ──
     st.markdown("### Buy/Sell Spread by Source")
     spread_data = []
-    for src_name, table in _FX_TABLES.items():
+    for src_name, src_key in _FX_SOURCES.items():
         for ccy in _KEY_CURRENCIES:
-            rate = _get_latest_rate(con, table, ccy)
-            if rate and rate["buying"] and rate["selling"]:
+            rate = _latest_rate(src_key, ccy)
+            if rate and rate.get("buying") and rate.get("selling"):
                 spread_data.append({
                     "Source": src_name, "Currency": ccy,
                     "Spread": round(rate["selling"] - rate["buying"], 4),
@@ -505,7 +469,7 @@ def _render_spreads(con):
 # TAB 4: VOLATILITY
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _render_volatility(con):
+def _render_volatility():
     st.markdown("### USD/PKR Volatility Analysis")
 
     df, source_label = _load_volatility_data()
@@ -594,53 +558,49 @@ def _render_volatility(con):
 # TAB 5: CARRY
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _render_carry(con):
+def _render_carry():
     st.markdown("### Carry Trade Analysis")
 
-    # KIBOR as PKR rate — get latest with non-null offer
-    kibor = con.execute(
-        "SELECT date, offer FROM kibor_daily WHERE tenor='3M' AND offer IS NOT NULL ORDER BY date DESC LIMIT 1"
-    ).fetchone()
+    # Rates strip already exposes KIBOR 3M + policy + tbill in one call.
+    strip = api_client.get_rates_strip() or {}
+    kibor_3m_offer = strip.get("kibor_3m_offer")
+    kibor_3m_date = strip.get("kibor_3m_date")
+    policy_rate = strip.get("sbp_policy_rate")
 
-    policy = con.execute(
-        "SELECT policy_rate, rate_date FROM sbp_policy_rates ORDER BY rate_date DESC LIMIT 1"
-    ).fetchone()
+    # KONIA via the new /v1/rates/konia endpoint.
+    konia_rows = api_client.get_konia(limit=1) or []
+    konia_rate = konia_rows[0].get("rate_pct") if konia_rows else None
 
     kc1, kc2, kc3 = st.columns(3)
     with kc1:
-        val = f"{policy['policy_rate']:.1f}%" if policy and policy['policy_rate'] else "N/A"
+        val = f"{policy_rate:.1f}%" if policy_rate else "N/A"
         _card("SBP Policy Rate", val, color=_COLORS["policy"])
     with kc2:
-        if kibor and kibor['offer']:
-            val = f"{kibor['offer']:.2f}%"
-            lbl = f"KIBOR 3M ({kibor['date']})"
+        if kibor_3m_offer:
+            val = f"{kibor_3m_offer:.2f}%"
+            lbl = f"KIBOR 3M ({kibor_3m_date})"
         else:
             val = "N/A"
             lbl = "KIBOR 3M (Offer)"
         _card(lbl, val, color=_COLORS["kibor"])
     with kc3:
-        konia = con.execute("SELECT rate_pct FROM konia_daily ORDER BY date DESC LIMIT 1").fetchone()
-        _card("KONIA (O/N)", f"{konia['rate_pct']:.2f}%" if konia and konia['rate_pct'] else "N/A")
+        # NB: konia_daily table is pre-existing data-corrupted; the
+        # endpoint correctly returns whatever's there. Renders "N/A"
+        # if the latest row isn't a valid percentage.
+        if isinstance(konia_rate, (int, float)) and 0 < konia_rate < 50:
+            _card("KONIA (O/N)", f"{konia_rate:.2f}%")
+        else:
+            _card("KONIA (O/N)", "N/A")
 
-    if not kibor or not kibor["offer"]:
+    if not kibor_3m_offer:
         st.info("No KIBOR offer data for carry calculation")
         return
 
-    pkr_rate = kibor["offer"]
+    pkr_rate = kibor_3m_offer
 
-    # Global reference rates
-    global_rates = {}
-    try:
-        rows = con.execute(
-            "SELECT rate_name, rate FROM global_reference_rates"
-            " WHERE rate_name IN ('SOFR','SONIA','EUSTR','TONA')"
-            " ORDER BY date DESC"
-        ).fetchall()
-        for r in rows:
-            if r["rate_name"] not in global_rates:
-                global_rates[r["rate_name"]] = r["rate"]
-    except Exception:
-        pass
+    # Global reference rates (SOFR / SONIA / EUSTR / TONA).
+    global_rows = api_client.get_global_reference_rates("SOFR,SONIA,EUSTR,TONA") or []
+    global_rates = {r["rate_name"]: r.get("rate") for r in global_rows if r.get("rate") is not None}
 
     rate_map = {
         "USD (SOFR)": global_rates.get("SOFR", 4.30),
@@ -717,10 +677,9 @@ FX_SERVICE_PORT = 8100
 
 def _render_service_controls():
     """Start / Stop / Kill controls for the FX microservice."""
-    import subprocess, signal, os
+    import subprocess
 
     is_running = _fx.is_healthy()
-    status_color = "green" if is_running else "red"
     status_text = "RUNNING" if is_running else "STOPPED"
 
     st.markdown(f"""
@@ -781,7 +740,8 @@ def _render_service_controls():
 
 def _stop_fx_service(graceful: bool = True):
     """Stop FX service. Graceful sends SIGTERM (like Ctrl+C), force sends SIGKILL."""
-    import os, signal as sig
+    import os
+    import signal as sig
     kill_sig = sig.SIGTERM if graceful else sig.SIGKILL
     killed = []
     for pid_dir in os.listdir("/proc"):
@@ -809,7 +769,7 @@ def _stop_fx_service(graceful: bool = True):
             pass
 
 
-def _render_fx_signals(con):
+def _render_fx_signals():
     # ── Service control panel ──
     _render_service_controls()
 
@@ -901,14 +861,19 @@ def _render_fx_signals(con):
 
     # AI Commentary
     st.divider()
-    render_ai_commentary(con, "FX")
+    # AI Commentary still takes a connection (legacy helper) — pass None to keep it offline.
+    # When the helper migrates, this will pass through; for now skip on null.
+    try:
+        render_ai_commentary(None, "FX")
+    except Exception:
+        pass
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 7: SYNC
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _render_sync(con):
+def _render_sync():
     st.markdown("### Sync FX Data")
 
     col1, col2 = st.columns(2)

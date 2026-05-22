@@ -479,6 +479,19 @@ def get_global_reference_rates(rate_names: Optional[str] = None) -> Optional[lis
     return _safe_get("/v1/rates/global", params=params)
 
 
+def get_kibor_history(
+    tenors: Optional[str] = None, days: int = 3000
+) -> Optional[list[dict]]:
+    """KIBOR history (ascending date order) for charting.
+
+    ``tenors``: optional comma-separated set, e.g. ``"1M,3M,6M,1Y"``.
+    """
+    params: dict = {"days": days}
+    if tenors:
+        params["tenors"] = tenors
+    return _safe_get("/v1/rates/kibor", params=params)
+
+
 def use_worker_sync() -> bool:
     """Feature flag: should sync buttons enqueue worker jobs?
 
@@ -535,9 +548,10 @@ __all__ = [
     "get_fx_global_history",
     "get_fx_spread_heatmap",
     "get_fx_sync_runs",
-    # rates extras (1.7.C.1 + 1.7.C.3)
+    # rates extras (1.7.C.1, .3, .4)
     "get_konia",
     "get_npc_rates",
     "get_global_reference_rates",
+    "get_kibor_history",
     "use_worker_sync",
 ]
