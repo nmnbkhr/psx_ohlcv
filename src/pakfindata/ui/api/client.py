@@ -894,6 +894,11 @@ def get_factor_risk_stats(
 # ── Intraday + Turnover (1.7.E.0) ──────────────────────────────────────────
 
 
+@st.cache_data(ttl=300)
+def get_intraday_dates() -> Optional[list[str]]:
+    return _safe_get("/v1/intraday/dates")
+
+
 @st.cache_data(ttl=30)
 def get_intraday_summary(
     date: str, market: str = "REG"
@@ -1096,6 +1101,7 @@ __all__ = [
     "get_factor_raw_data",
     "get_factor_risk_stats",
     # intraday + turnover (1.7.E.0)
+    "get_intraday_dates",
     "get_intraday_summary",
     "get_intraday_bars",
     "get_intraday_minute_breadth",

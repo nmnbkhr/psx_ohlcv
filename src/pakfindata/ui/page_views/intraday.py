@@ -46,6 +46,7 @@ from pakfindata.sync_timeseries import (
     read_intraday_sync_progress,
     start_intraday_sync,
 )
+from pakfindata.ui.api import client as api_client
 from pakfindata.ui.components.helpers import (
     EXPORTS_DIR,
     format_volume,
@@ -172,33 +173,36 @@ def _last_trading_day() -> date:
     return d
 
 
-@st.cache_data(ttl=120, show_spinner="Loading intraday data...")
 def _load_today_summary(_con, date_str: str) -> pd.DataFrame:
     """Load aggregated intraday summary for a given date from intraday_daily_summary.
 
-    Reads pre-aggregated rows written by intraday_summary.compute_all(). Returns
-    empty DataFrame if the summary hasn't been built for this date yet.
+    Reads pre-aggregated rows via /v1/intraday/summary. Renames columns to
+    match what the downstream rendering code expects.
     """
-    df = pd.read_sql_query(
-        """
-        SELECT symbol,
-               tick_count  AS ticks,
-               day_open    AS open,
-               day_high    AS high,
-               day_low     AS low,
-               day_close   AS last_price,
-               day_volume  AS total_vol
-        FROM intraday_daily_summary
-        WHERE date = ? AND market = 'REG'
-        ORDER BY day_volume DESC
-        """,
-        _con, params=[date_str],
-    )
-    return df
+    rows = api_client.get_intraday_summary(date=date_str, market="REG") or []
+    if not rows:
+        return pd.DataFrame(columns=[
+            "symbol", "ticks", "open", "high", "low", "last_price", "total_vol",
+        ])
+    df = pd.DataFrame(rows).rename(columns={
+        "tick_count": "ticks",
+        "day_open": "open",
+        "day_high": "high",
+        "day_low": "low",
+        "day_close": "last_price",
+        "day_volume": "total_vol",
+    })
+    keep = ["symbol", "ticks", "open", "high", "low", "last_price", "total_vol"]
+    return df[[c for c in keep if c in df.columns]]
 
 
 def _add_sector_info(con: sqlite3.Connection, df: pd.DataFrame, date_str: str = "") -> pd.DataFrame:
-    """Add sector_code, company_name, turnover, and pc_volume from post_close_turnover + eod_ohlcv."""
+    """Add sector_code, company_name, turnover, and pc_volume via API client.
+
+    Composes /v1/turnover (authoritative turnover + volume + company_name)
+    with /v1/eod (sector_code + company_name fallback). When date-specific
+    EOD is missing, falls back to /v1/eod/latest.
+    """
     if df.empty:
         df["sector_code"] = ""
         df["company_name"] = ""
@@ -206,51 +210,29 @@ def _add_sector_info(con: sqlite3.Connection, df: pd.DataFrame, date_str: str = 
         df["pc_volume"] = 0
         return df
 
-    syms = df["symbol"].tolist()
-    placeholders = ",".join("?" * len(syms))
+    syms = set(df["symbol"].tolist())
 
-    # 1. Get turnover + volume from post_close_turnover (authoritative source)
-    pc_date = date_str if date_str else "(SELECT MAX(date) FROM post_close_turnover)"
-    pc_date_filter = "date = ?" if date_str else f"date = {pc_date}"
-    pc_params = syms + ([date_str] if date_str else [])
-    try:
-        pc_df = pd.read_sql_query(
-            f"""SELECT symbol, turnover, volume AS pc_volume, company_name AS pc_company
-                FROM post_close_turnover
-                WHERE symbol IN ({placeholders})
-                  AND {pc_date_filter}""",
-            con,
-            params=pc_params,
-        )
-    except Exception:
-        pc_df = pd.DataFrame()
+    # 1. Turnover + volume + company_name from post_close (authoritative)
+    pc_rows = api_client.get_turnover(date=date_str or None, limit=10000) or []
+    pc_df = pd.DataFrame(pc_rows)
+    if not pc_df.empty:
+        pc_df = pc_df[pc_df["symbol"].isin(syms)].rename(
+            columns={"volume": "pc_volume", "company_name": "pc_company"}
+        )[["symbol", "turnover", "pc_volume", "pc_company"]]
 
-    # 2. Get sector_code and company_name from eod_ohlcv
-    eod_date_filter = f"date = '{date_str}'" if date_str else "date = (SELECT MAX(date) FROM eod_ohlcv)"
-    sector_df = pd.read_sql_query(
-        f"""SELECT symbol, sector_code, company_name FROM eod_ohlcv
-            WHERE symbol IN ({placeholders})
-              AND {eod_date_filter}""",
-        con,
-        params=syms,
-    )
-
-    # Fallback to latest date if no match for specific date
-    if sector_df.empty or "sector_code" not in sector_df.columns:
-        sector_df = pd.read_sql_query(
-            f"""SELECT symbol, sector_code, company_name FROM eod_ohlcv
-                WHERE symbol IN ({placeholders})
-                  AND date = (SELECT MAX(date) FROM eod_ohlcv)""",
-            con,
-            params=syms,
-        )
-
-    if sector_df.empty:
-        sector_df = pd.read_sql_query(
-            f"SELECT symbol, sector AS sector_code, name AS company_name FROM symbols WHERE symbol IN ({placeholders})",
-            con,
-            params=syms,
-        )
+    # 2. Sector + company_name from EOD for the specific date
+    eod_rows = (
+        api_client.get_eod_for_date(date_str) if date_str
+        else api_client.get_latest_eod()
+    ) or []
+    # Fallback: latest available trading day (intraday can be ahead of EOD)
+    if not eod_rows:
+        eod_rows = api_client.get_latest_eod() or []
+    sector_df = pd.DataFrame(eod_rows)
+    if not sector_df.empty:
+        sector_df = sector_df[sector_df["symbol"].isin(syms)][
+            ["symbol", "sector_code", "company_name"]
+        ]
 
     # Merge sector info
     if not sector_df.empty:
@@ -316,12 +298,7 @@ for code, name in _SECTOR_LABELS_RAW.items():
 
 def _get_intraday_dates_cached(_con) -> list[str]:
     """Dates that have a pre-aggregated summary row. Fast indexed read."""
-    try:
-        from pakfindata.db.repositories import intraday_summary as _isum
-        _isum.ensure_tables(_con)
-        return _isum.get_summary_dates(_con)
-    except Exception:
-        return []
+    return api_client.get_intraday_dates() or []
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -330,6 +307,9 @@ def _get_intraday_dates_cached(_con) -> list[str]:
 
 def render_intraday():
     """Intraday Trading Terminal."""
+    if api_client.render_api_status_banner_if_down():
+        return
+
     # Auto-refresh
     service_running, service_pid = is_service_running()
     service_status = read_service_status()
@@ -654,13 +634,17 @@ def _render_charts(con, summary_df, sel_date):
         chart_type = st.radio("Chart", ["Candlestick", "Line"], horizontal=True, key="int_chart_type")
 
     # Load tick data for this symbol on this date
-    tick_df = pd.read_sql_query(
-        """SELECT ts, ts_epoch, open, high, low, close, volume
-           FROM intraday_bars WHERE symbol=? AND date=?
-           ORDER BY ts_epoch""",
-        con,
-        params=[sel_sym, sel_date],
-    )
+    _bar_rows = api_client.get_intraday_bars(
+        symbol=sel_sym, date=sel_date, interval="1s", limit=50000
+    ) or []
+    if _bar_rows:
+        tick_df = pd.DataFrame(_bar_rows)[
+            ["ts", "ts_epoch", "open", "high", "low", "close", "volume"]
+        ]
+    else:
+        tick_df = pd.DataFrame(
+            columns=["ts", "ts_epoch", "open", "high", "low", "close", "volume"]
+        )
 
     if tick_df.empty:
         st.info(f"No ticks for {sel_sym} on {sel_date}.")
@@ -825,27 +809,30 @@ def _render_market_pulse(con, df, sel_date):
     # Per minute per symbol: net direction = sum of tick signs.
     # Advancing = symbols with net positive ticks, Declining = net negative.
     st.markdown("**Intraday Advance/Decline — Tick Timeline**")
-    tick_timeline = pd.read_sql_query(
-        """SELECT REPLACE(minute, 'T', ' ') AS minute,
-                  advancing  AS adv,
-                  declining  AS dec,
-                  total_symbols AS total,
-                  net_ticks
-           FROM intraday_minute_breadth
-           WHERE date = ? AND market = 'REG'
-           ORDER BY minute""",
-        con,
-        params=[sel_date],
-    )
+    _minute_rows = api_client.get_intraday_minute_breadth(
+        date=sel_date, market="REG"
+    ) or []
+    if _minute_rows:
+        tick_timeline = pd.DataFrame(_minute_rows).rename(columns={
+            "advancing": "adv",
+            "declining": "dec",
+            "total_symbols": "total",
+        })
+        tick_timeline["minute"] = tick_timeline["minute"].str.replace("T", " ")
+        tick_timeline = tick_timeline[["minute", "adv", "dec", "total", "net_ticks"]]
+    else:
+        tick_timeline = pd.DataFrame(
+            columns=["minute", "adv", "dec", "total", "net_ticks"]
+        )
 
-    # ── Load KSE-100 intraday per-minute values from intraday_index_minute ──
+    # ── Load KSE-100 intraday per-minute values via /v1/intraday/index-minute ──
     kse_df = pd.DataFrame()
     try:
-        from pakfindata.db.repositories import intraday_summary as _isum
-        kse_all = _isum.get_index_minute(
-            con, sel_date, ["KSE100", "KSE-100", "KMIALL"]
-        )
-        if not kse_all.empty:
+        _kse_rows = api_client.get_intraday_index_minute(
+            date=sel_date, symbols=["KSE100", "KSE-100", "KMIALL"]
+        ) or []
+        if _kse_rows:
+            kse_all = pd.DataFrame(_kse_rows)
             # Collapse across symbol aliases: take one value per minute
             kse_df = (
                 kse_all.groupby("minute", as_index=False)
@@ -1007,16 +994,16 @@ def _render_market_pulse(con, df, sel_date):
 
     # Tick distribution by hour
     st.markdown("**Tick Activity by Hour**")
-    hourly = pd.read_sql_query(
-        """SELECT hour,
-                  tick_count   AS ticks,
-                  symbol_count AS symbols
-           FROM intraday_hourly_summary
-           WHERE date = ? AND market = 'REG'
-           ORDER BY hour""",
-        con,
-        params=[sel_date],
-    )
+    _hourly_rows = api_client.get_intraday_hourly_breadth(
+        date=sel_date, market="REG"
+    ) or []
+    if _hourly_rows:
+        hourly = pd.DataFrame(_hourly_rows).rename(columns={
+            "tick_count": "ticks",
+            "symbol_count": "symbols",
+        })[["hour", "ticks", "symbols"]]
+    else:
+        hourly = pd.DataFrame(columns=["hour", "ticks", "symbols"])
 
     if not hourly.empty:
         fig_hourly = make_subplots(specs=[[{"secondary_y": True}]])

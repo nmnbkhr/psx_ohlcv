@@ -41,6 +41,15 @@ turnover_router = APIRouter(prefix="/v1/turnover", tags=["turnover"])
 # ── /v1/intraday ────────────────────────────────────────────────────
 
 
+@intraday_router.get("/dates", response_model=list[str])
+def get_intraday_dates(con: sqlite3.Connection = Depends(get_read_db)):
+    """Distinct dates with intraday summary, newest first."""
+    rows = con.execute(
+        "SELECT DISTINCT date FROM intraday_daily_summary ORDER BY date DESC"
+    ).fetchall()
+    return [r["date"] for r in rows]
+
+
 @intraday_router.get("/summary", response_model=list[IntradaySummaryRow])
 def get_intraday_summary(
     date: Annotated[str, Query(description="Date (YYYY-MM-DD)", pattern=DATE_RE)],
