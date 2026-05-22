@@ -592,7 +592,7 @@ def _classify_freshness(max_date_str: str | None) -> str:
 
 @st.cache_data(ttl=300, show_spinner="Checking data freshness...")
 def _get_table_freshness_batch() -> dict[str, dict]:
-    """Batch freshness from SQLite tables, DuckDB tables, and sync run logs.
+    """Batch freshness from SQLite + DuckDB via /v1/admin.
 
     Returns {table_name: {
         "freshness": "fresh"|"stale"|"old"|"unknown",
@@ -601,111 +601,52 @@ def _get_table_freshness_batch() -> dict[str, dict]:
         "source": "sqlite"|"duckdb"|"sync_log",
         "last_sync": "2026-03-25 17:27:37" or None,
     }}
-    """
-    import sqlite3
 
-    from pakfindata.config import get_db_path
+    Note: the per-sync-table ledger enrichment (last_sync via
+    instruments_sync_runs, fx_sync_runs, ...) was removed in 1.7.G.1.5
+    — exposing 8 distinct sync_runs-shaped tables via /v1 would balloon
+    the admin surface for marginal page value. Row count + per-table
+    MAX(date_col) covers the load-bearing freshness signal.
+    """
+    from pakfindata.ui.api import client as _api_client
 
     result: dict[str, dict] = {}
     for tbl in _KNOWN_TABLES:
         result[tbl] = {"freshness": "unknown", "max_date": None, "rows": None,
                         "source": None, "last_sync": None}
 
-    # --- 1. SQLite: MAX(date) per table ---
-    try:
-        con = sqlite3.connect(str(get_db_path()), timeout=3)
-        con.execute("PRAGMA journal_mode=WAL")
-        existing = {
-            r[0] for r in con.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
-        }
+    # --- 1. SQLite: enumeration + row counts ---
+    sqlite_tables = _api_client.get_admin_tables(include_counts=True) or []
+    sqlite_counts = {t["name"]: t["row_count"] for t in sqlite_tables}
+    existing = set(sqlite_counts.keys())
 
-        for tbl in _KNOWN_TABLES:
-            if tbl not in existing:
+    for tbl in _KNOWN_TABLES:
+        if tbl not in existing:
+            continue
+        result[tbl]["rows"] = sqlite_counts.get(tbl)
+        result[tbl]["source"] = "sqlite"
+        # Try common date columns for freshness
+        for dcol in ("date", "ts", "ingested_at"):
+            payload = _api_client.get_admin_table_latest_date(tbl, col=dcol)
+            if not payload:
                 continue
-            # Get row count first
-            try:
-                cnt = con.execute(f'SELECT COUNT(*) FROM "{tbl}"').fetchone()
-                if cnt:
-                    result[tbl]["rows"] = cnt[0]
-                    result[tbl]["source"] = "sqlite"
-            except Exception:
-                pass
-            # Try date columns for freshness
-            for dcol in ("date", "ts", "ingested_at"):
-                try:
-                    row = con.execute(
-                        f'SELECT MAX("{dcol}") FROM "{tbl}" WHERE "{dcol}" IS NOT NULL'
-                    ).fetchone()
-                    if row and row[0] and len(str(row[0])) >= 10 and str(row[0])[:4].isdigit():
-                        result[tbl]["max_date"] = str(row[0])[:10]
-                        result[tbl]["freshness"] = _classify_freshness(str(row[0]))
-                        result[tbl]["source"] = "sqlite"
-                        break
-                except Exception:
-                    continue
+            latest = payload.get("latest_date")
+            if latest and len(str(latest)) >= 10 and str(latest)[:4].isdigit():
+                result[tbl]["max_date"] = str(latest)[:10]
+                result[tbl]["freshness"] = _classify_freshness(str(latest))
+                break
 
-        # --- 2. Sync run logs → enrich with last_sync timestamps ---
-        for sync_tbl, data_tables in _SYNC_TABLE_MAP.items():
-            if sync_tbl not in existing:
-                continue
-            try:
-                row = con.execute(
-                    f'SELECT ended_at, rows_upserted FROM "{sync_tbl}" '
-                    f'ORDER BY ended_at DESC LIMIT 1'
-                ).fetchone()
-                if row and row[0]:
-                    for dt in data_tables:
-                        if dt in result:
-                            result[dt]["last_sync"] = str(row[0])[:19]
-                            # If table had no date column, use sync time for freshness
-                            if result[dt]["freshness"] == "unknown":
-                                result[dt]["freshness"] = _classify_freshness(str(row[0]))
-                                result[dt]["source"] = "sync_log"
-            except Exception:
-                continue
-
-        con.close()
-    except Exception:
-        pass
-
-    # --- 3. DuckDB: for tick-level tables that only live in DuckDB ---
-    try:
-        from pakfindata.db.connections import _duck_con
-        dcon = _duck_con()
-        duck_tables = {r[0] for r in dcon.execute("SHOW TABLES").fetchall()}
-
-        for tbl in _KNOWN_TABLES:
-            if tbl not in duck_tables:
-                continue
-            # Skip if SQLite already has good data
-            if result[tbl]["freshness"] in ("fresh", "stale"):
-                continue
-            try:
-                # Try date column first
-                row = dcon.execute(
-                    f'SELECT COUNT(*), MAX(date) FROM "{tbl}"'
-                ).fetchone()
-                if row and row[1]:
-                    result[tbl]["rows"] = row[0]
-                    result[tbl]["max_date"] = str(row[1])[:10]
-                    result[tbl]["freshness"] = _classify_freshness(str(row[1]))
-                    result[tbl]["source"] = "duckdb"
-                    continue
-            except Exception:
-                pass
-            # Fallback: just count
-            try:
-                row = dcon.execute(f'SELECT COUNT(*) FROM "{tbl}"').fetchone()
-                if row:
-                    result[tbl]["rows"] = row[0]
-                    result[tbl]["source"] = "duckdb"
-            except Exception:
-                pass
-
-    except Exception:
-        pass
+    # --- 2. DuckDB: row counts for DuckDB-only tables ---
+    duck_tables = _api_client.get_admin_duckdb_tables(include_counts=True) or []
+    duck_counts = {t["name"]: t["row_count"] for t in duck_tables}
+    for tbl in _KNOWN_TABLES:
+        if tbl not in duck_counts:
+            continue
+        # Skip if SQLite already has good data
+        if result[tbl]["freshness"] in ("fresh", "stale"):
+            continue
+        result[tbl]["rows"] = duck_counts.get(tbl) or result[tbl]["rows"]
+        result[tbl]["source"] = "duckdb"
 
     return result
 
