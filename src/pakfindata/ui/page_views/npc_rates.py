@@ -1,58 +1,58 @@
-"""Naya Pakistan Certificates (NPC) — Rates, Yield Curves, Cross-Currency Analytics."""
+"""Naya Pakistan Certificates (NPC) — Rates, Yield Curves, Cross-Currency Analytics.
+
+Reads through the /v1 API client (Phase 1.7.B.5). Several backing
+views (v_npc_yield_curve, v_npc_carry_trade, v_multicurrency_dashboard,
+v_npc_vs_rfr_spread) are not built in the current DB; the API
+endpoints return empty lists in that case, and the page falls
+through to "No data" infos.
+"""
 
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime
 
-from pakfindata.ui.components.helpers import get_connection
+from pakfindata.ui.api import client as api_client
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _cached_latest_npc_rates():
-    from pakfindata.db.repositories.npc_rates import get_latest_npc_rates
-    return get_latest_npc_rates(get_connection())
+def _cached_latest_npc_rates() -> pd.DataFrame:
+    rows = api_client.get_npc_rates(limit=500) or []
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _cached_npc_yield_curve(currency):
-    from pakfindata.db.repositories.npc_rates import get_npc_yield_curve
-    return get_npc_yield_curve(get_connection(), currency=currency)
+def _cached_npc_yield_curve(currency) -> dict:
+    return api_client.get_npc_yield_curve(currency=currency) or {}
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _cached_npc_vs_rfr_spread():
-    from pakfindata.db.repositories.npc_rates import get_npc_vs_rfr_spread
-    return get_npc_vs_rfr_spread(get_connection())
+def _cached_npc_vs_rfr_spread() -> pd.DataFrame:
+    rows = api_client.get_npc_vs_rfr_spread() or []
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _cached_carry_trade_analysis(currency):
-    from pakfindata.db.repositories.npc_rates import get_carry_trade_analysis
-    return get_carry_trade_analysis(get_connection(), currency=currency)
+def _cached_carry_trade_analysis(currency) -> pd.DataFrame:
+    rows = api_client.get_npc_carry(currency=currency) or []
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _cached_multicurrency_dashboard():
-    from pakfindata.db.repositories.npc_rates import get_multicurrency_dashboard
-    return get_multicurrency_dashboard(get_connection())
+def _cached_multicurrency_dashboard() -> pd.DataFrame:
+    rows = api_client.get_npc_multicurrency() or []
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
 def render_npc_rates():
     """Main entry point for NPC rates page."""
+    api_client.render_api_status_banner_if_down()
+
     st.title("Naya Pakistan Certificates (NPC)")
     st.caption("Sovereign FCY instruments | SBP-administered | Roshan Digital Accounts")
 
-    from pakfindata.db.connection import connect
-    from pakfindata.db import init_schema
-    from pakfindata.db.repositories.npc_rates import ensure_tables
-
-    con = connect()
-    init_schema(con)
-    ensure_tables(con)
-
-    # Sync controls
-    _render_sync_controls(con)
+    # Sync controls (write path — uses local connection)
+    _render_sync_controls()
 
     st.markdown("---")
 
@@ -82,17 +82,20 @@ def render_npc_rates():
     )
 
 
-def _render_sync_controls(con):
-    """Sync button for NPC rates."""
+def _render_sync_controls():
+    """Sync button for NPC rates (write path — opens its own connection)."""
     with st.expander("Sync NPC Rates"):
         col1, col2 = st.columns([3, 1])
         with col2:
             if st.button("Sync from SBP", type="primary", key="npc_sync_btn"):
                 with st.spinner("Fetching from SBP..."):
                     try:
+                        from pakfindata.db.connection import connect
                         from pakfindata.sources.npc_rates_scraper import NPCRatesScraper
+                        con = connect()
                         scraper = NPCRatesScraper()
                         count = scraper.sync(con, force=True)
+                        st.cache_data.clear()
                         if count > 0:
                             st.success(f"Stored {count} NPC rate records")
                         else:
