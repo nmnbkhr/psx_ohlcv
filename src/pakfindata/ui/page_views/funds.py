@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import streamlit as st
 
+from pakfindata.ui.api import client as api_client
 from pakfindata.ui.components.helpers import (
     get_connection,
     render_footer,
@@ -12,32 +13,33 @@ from pakfindata.ui.components.helpers import (
 _CACHE_TTL = 3600
 
 
-@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
 def _load_fund_categories():
-    con = get_connection()
-    rows = con.execute(
-        "SELECT DISTINCT category FROM mutual_funds WHERE category IS NOT NULL ORDER BY category"
-    ).fetchall()
-    return [r["category"] for r in rows]
+    return api_client.get_fund_categories() or []
 
 
-@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
 def _load_mutual_funds(category: str = None, fund_type: str = None,
                        is_shariah: bool = None, active_only: bool = True,
                        search: str = None):
-    from pakfindata.db import get_mutual_funds
-    con = get_connection()
-    return get_mutual_funds(
-        con, category=category, fund_type=fund_type,
-        is_shariah=is_shariah, active_only=active_only, search=search,
-    )
+    rows = api_client.get_funds(
+        category=category,
+        fund_type=fund_type,
+        is_shariah=int(is_shariah) if is_shariah is not None else None,
+        active_only=active_only,
+        limit=5000,
+    ) or []
+    if search:
+        needle = search.strip().lower()
+        rows = [
+            r for r in rows
+            if needle in (r.get("fund_name") or "").lower()
+            or needle in (r.get("symbol") or "").lower()
+        ]
+    return rows
 
 
-@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
-def _load_mf_nav(fund_id: int, limit: int = 5000):
-    from pakfindata.db import get_mf_nav
-    con = get_connection()
-    return get_mf_nav(con, fund_id, limit=limit)
+def _load_mf_nav(fund_id: str, limit: int = 5000) -> pd.DataFrame:
+    rows = api_client.get_fund_nav(fund_id=fund_id, limit=limit) or []
+    return pd.DataFrame(rows)
 
 
 @st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
