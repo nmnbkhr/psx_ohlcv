@@ -51,22 +51,9 @@ SIGNAL_COLORS = {
 
 
 def _get_futures_symbols() -> list[str]:
-    """Get symbols that have futures data."""
-    from pakfindata.engine.oi_strategy import _psx_con
-    scon = _psx_con()
-    try:
-        syms = [r[0] for r in scon.execute("""
-            SELECT DISTINCT base_symbol FROM futures_eod
-            WHERE market_type = 'FUT' AND volume > 0
-            GROUP BY base_symbol
-            HAVING COUNT(DISTINCT date) > 30
-            ORDER BY SUM(volume) DESC
-        """).fetchall()]
-    except Exception:
-        syms = []
-    finally:
-        scon.close()
-    return syms
+    """Get symbols that have futures data (>30 distinct trading days)."""
+    from pakfindata.ui.api import client as api_client
+    return api_client.get_futures_symbols(min_data_days=31) or []
 
 
 # ---------------------------------------------------------------------------
