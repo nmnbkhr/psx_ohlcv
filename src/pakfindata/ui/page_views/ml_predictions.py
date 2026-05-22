@@ -292,15 +292,9 @@ def _render_predictions_tab():
         if sym_input.strip():
             symbols = [s.strip().upper() for s in sym_input.split(",") if s.strip()]
         else:
-            from pakfindata.db.connections import _duck_con
-            con = _duck_con()
-            symbols = [r[0] for r in con.execute("""
-                SELECT symbol FROM eod_ohlcv
-                WHERE date >= (SELECT MAX(date) FROM eod_ohlcv)
-                GROUP BY symbol
-                ORDER BY SUM(volume) DESC
-                LIMIT 30
-            """).fetchall()]
+            from pakfindata.ui.api import client as _api_client
+            rows = _api_client.get_top_symbols_by_volume(n=30, days=1) or []
+            symbols = [r["symbol"] for r in rows]
 
         pkt = timezone(timedelta(hours=5))
         today = datetime.now(pkt).strftime("%Y-%m-%d")
