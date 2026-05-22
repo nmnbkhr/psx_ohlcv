@@ -200,20 +200,30 @@ def _render_corr_tab():
 def _render_corr_heatmap():
     """Recent correlation heatmap of top symbols."""
     from datetime import datetime, timedelta
-    from pakfindata.db.connections import analytics_con
+
+    import pandas as pd
+
+    from pakfindata.ui.api import client as api_client
+
     cutoff = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-    con = analytics_con()
-    sym_df = con.execute("""
-        SELECT symbol, SUM(volume) as vol FROM eod_ohlcv
-        WHERE date >= ? GROUP BY symbol ORDER BY vol DESC LIMIT 25
-    """, [cutoff]).df()
-    placeholders = ",".join(f"'{s}'" for s in sym_df["symbol"])
-    prices = con.execute(f"""
-        SELECT symbol, date, close FROM eod_ohlcv
-        WHERE symbol IN ({placeholders}) AND date >= ?
-        ORDER BY date
-    """, [cutoff]).df()
-    con.close()
+
+    top_rows = api_client.get_top_symbols_by_volume(n=25, days=30) or []
+    symbols = [r["symbol"] for r in top_rows]
+    if not symbols:
+        st.info("No EOD data available for correlation heatmap.")
+        return
+
+    frames = []
+    for sym in symbols:
+        rows = api_client.get_symbol_history(symbol=sym, from_date=cutoff) or []
+        if not rows:
+            continue
+        sub = pd.DataFrame(rows)[["date", "close"]].assign(symbol=sym)
+        frames.append(sub)
+    if not frames:
+        st.info("No price history for top symbols.")
+        return
+    prices = pd.concat(frames, ignore_index=True).sort_values("date")
 
     pivot = prices.pivot(index="date", columns="symbol", values="close")
     corr = pivot.pct_change().dropna().corr()
