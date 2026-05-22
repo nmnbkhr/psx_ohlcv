@@ -35,6 +35,8 @@ from pakfindata.api.schemas.admin import (
     AdminDuplicatesResponse,
     AdminLatestDate,
     AdminTableRow,
+    SyncFailureRow,
+    SyncRunRow,
 )
 
 admin_router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -177,6 +179,54 @@ def get_table_duplicates(
     return AdminDuplicatesResponse(
         table=real_table, by=cols, total_groups=len(out_rows), rows=out_rows
     )
+
+
+# ── /v1/admin/sync-runs (legacy sync ledger) ───────────────────────
+
+
+@admin_router.get("/sync-runs", response_model=list[SyncRunRow])
+def list_sync_runs(
+    limit: Annotated[int, Query(ge=1, le=500)] = 20,
+    completed_only: Annotated[
+        bool, Query(description="Only return runs with ended_at NOT NULL")
+    ] = False,
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> list[dict]:
+    """Recent rows from ``sync_runs``.
+
+    Distinct from ``/v1/jobs`` — ``sync_runs`` is the legacy ledger
+    written by the pre-Phase-1.4 ``pakfindata.sync.*`` entrypoints
+    (intraday, eod, financials). Both surfaces remain populated by
+    different code paths during the migration.
+    """
+    where = "WHERE ended_at IS NOT NULL " if completed_only else ""
+    cur = con.execute(
+        f"""SELECT run_id, started_at, ended_at, mode,
+                   symbols_total, symbols_ok, symbols_failed,
+                   rows_upserted
+              FROM sync_runs
+              {where}
+             ORDER BY started_at DESC
+             LIMIT ?""",
+        (limit,),
+    )
+    return [dict(r) for r in cur.fetchall()]
+
+
+@admin_router.get("/sync-runs/failures", response_model=list[SyncFailureRow])
+def list_sync_failures(
+    limit: Annotated[int, Query(ge=1, le=500)] = 50,
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> list[dict]:
+    """Recent rows from ``sync_failures``."""
+    cur = con.execute(
+        """SELECT run_id, symbol, error_type, error_message, created_at
+             FROM sync_failures
+            ORDER BY created_at DESC
+            LIMIT ?""",
+        (limit,),
+    )
+    return [dict(r) for r in cur.fetchall()]
 
 
 # ── /v1/admin/duckdb ───────────────────────────────────────────────

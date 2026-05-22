@@ -59,3 +59,26 @@ class AdminDuplicatesResponse(BaseModel):
     by: list[str]
     total_groups: int
     rows: list[AdminDuplicateRow]
+
+
+class SyncRunRow(BaseModel):
+    """One row from ``sync_runs`` (legacy sync ledger, pre-Phase-1.4)."""
+
+    run_id: str
+    started_at: str
+    ended_at: Optional[str] = None
+    mode: str
+    symbols_total: Optional[int] = None
+    symbols_ok: Optional[int] = None
+    symbols_failed: Optional[int] = None
+    rows_upserted: Optional[int] = None
+
+
+class SyncFailureRow(BaseModel):
+    """One row from ``sync_failures``."""
+
+    run_id: str
+    symbol: str
+    error_type: str
+    error_message: Optional[str] = None
+    created_at: str

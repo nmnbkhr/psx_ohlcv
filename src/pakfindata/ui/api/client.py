@@ -1070,6 +1070,21 @@ def get_admin_duckdb_tables(
     )
 
 
+@st.cache_data(ttl=30)
+def get_admin_sync_runs(
+    limit: int = 20, completed_only: bool = False
+) -> Optional[list[dict]]:
+    return _safe_get(
+        "/v1/admin/sync-runs",
+        params={"limit": limit, "completed_only": completed_only},
+    )
+
+
+@st.cache_data(ttl=30)
+def get_admin_sync_failures(limit: int = 50) -> Optional[list[dict]]:
+    return _safe_get("/v1/admin/sync-runs/failures", params={"limit": limit})
+
+
 def use_worker_sync() -> bool:
     """Feature flag: should sync buttons enqueue worker jobs?
 
@@ -1204,5 +1219,7 @@ __all__ = [
     "get_admin_table_latest_date",
     "get_admin_table_duplicates",
     "get_admin_duckdb_tables",
+    "get_admin_sync_runs",
+    "get_admin_sync_failures",
     "use_worker_sync",
 ]

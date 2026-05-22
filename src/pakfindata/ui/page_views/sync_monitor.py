@@ -540,14 +540,9 @@ def render_sync_monitor():
                 symbol_payouts = []
                 if sync_dividends_flag:
                     st.write("💰 Fetching dividend payouts...")
-                    from pakfindata.config import get_db_path
-                    import sqlite3
-                    rcon = sqlite3.connect(f"file:{get_db_path()}?mode=ro", uri=True)
-                    try:
-                        cur = rcon.execute("SELECT symbol FROM symbols WHERE is_active = 1")
-                        symbols = [row[0] for row in cur.fetchall()]
-                    finally:
-                        rcon.close()
+                    from pakfindata.ui.api import client as _api_client
+                    _rows = _api_client.get_symbols(active_only=True) or []
+                    symbols = [r["symbol"] for r in _rows]
                     progress_bar = st.progress(0)
                     for i, symbol in enumerate(symbols):
                         try:
@@ -663,8 +658,8 @@ def render_sync_monitor():
 
     # Last Sync Summary
     try:
+        from pakfindata.ui.api import client as _api_client
         _client = get_client()
-        con = _client.connection
 
         days_old, latest_date = _client.get_data_freshness()
         badge_color, badge_text = get_freshness_badge(days_old)
@@ -680,43 +675,33 @@ def render_sync_monitor():
             elif badge_color == "red":
                 st.error(f"📅 {badge_text}")
 
-        last_run = pd.read_sql_query(
-            """
-            SELECT * FROM sync_runs
-            WHERE ended_at IS NOT NULL
-            ORDER BY ended_at DESC LIMIT 1
-            """,
-            con,
-        )
+        last_run_rows = _api_client.get_admin_sync_runs(
+            limit=1, completed_only=True
+        ) or []
 
-        if last_run.empty:
+        if not last_run_rows:
             st.info("No sync runs recorded yet.")
         else:
-            run = last_run.iloc[0]
+            run = last_run_rows[0]
             col1, col2, col3, col4 = st.columns(4)
-            started = str(run["started_at"])[:16] if run["started_at"] else "N/A"
+            started_raw = run.get("started_at") or ""
+            started = str(started_raw)[:16] if started_raw else "N/A"
             col1.metric("Started", started)
-            col2.metric("Symbols OK", run["symbols_ok"])
-            col3.metric("Symbols Failed", run["symbols_failed"])
-            col4.metric("Rows Upserted", f"{run['rows_upserted']:,}")
+            col2.metric("Symbols OK", run.get("symbols_ok") or 0)
+            col3.metric("Symbols Failed", run.get("symbols_failed") or 0)
+            col4.metric("Rows Upserted", f"{(run.get('rows_upserted') or 0):,}")
 
         st.markdown("---")
 
         # Recent Failures
         st.subheader("Recent Failures")
-        failures_df = pd.read_sql_query(
-            """
-            SELECT symbol, error_type, error_message, created_at
-            FROM sync_failures
-            ORDER BY created_at DESC
-            LIMIT 50
-            """,
-            con,
-        )
-
-        if failures_df.empty:
+        failure_rows = _api_client.get_admin_sync_failures(limit=50) or []
+        if not failure_rows:
             st.success("✅ No failures recorded!")
         else:
+            failures_df = pd.DataFrame(failure_rows)[
+                ["symbol", "error_type", "error_message", "created_at"]
+            ]
             failures_df.columns = ["Symbol", "Error Type", "Message", "Time"]
             st.dataframe(failures_df, width='stretch', hide_index=True)
 
@@ -724,17 +709,12 @@ def render_sync_monitor():
 
         # Sync History
         st.subheader("Sync History")
-        history_df = pd.read_sql_query(
-            """
-            SELECT run_id, started_at, mode, symbols_ok, symbols_failed, rows_upserted
-            FROM sync_runs
-            ORDER BY started_at DESC
-            LIMIT 20
-            """,
-            con,
-        )
-
-        if not history_df.empty:
+        history_rows = _api_client.get_admin_sync_runs(limit=20) or []
+        if history_rows:
+            history_df = pd.DataFrame(history_rows)[
+                ["run_id", "started_at", "mode", "symbols_ok",
+                 "symbols_failed", "rows_upserted"]
+            ]
             history_df.columns = ["Run ID", "Started", "Mode", "OK", "Failed", "Rows"]
             st.dataframe(history_df, width='stretch', hide_index=True)
 
