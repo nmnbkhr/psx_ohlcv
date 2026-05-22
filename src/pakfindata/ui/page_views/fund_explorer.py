@@ -7,6 +7,7 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 
+from pakfindata.ui.api import client as api_client
 from pakfindata.ui.components.helpers import get_connection, render_ai_commentary, render_footer
 from pakfindata.ui.themes import get_plotly_layout, get_theme
 
@@ -131,9 +132,10 @@ def _render_sync_tools(con):
 
     # Show latest NAV date so user knows how fresh the data is
     try:
-        latest_nav = con.execute(
-            "SELECT MAX(date) FROM fund_nav_latest"
-        ).fetchone()[0]
+        _nav_lp = api_client.get_admin_table_latest_date(
+            "fund_nav_latest", col="date"
+        )
+        latest_nav = _nav_lp.get("latest_date") if _nav_lp else None
         if latest_nav:
             st.caption(f"Latest NAV date in DB: **{latest_nav}**")
     except Exception:
@@ -259,10 +261,15 @@ def _render_sync_tools(con):
                     st.error(f"Risk batch failed: {e}")
     with rm_c2:
         try:
-            rm_row = con.execute(
-                "SELECT COUNT(*), MAX(computed_at) FROM fund_risk_metrics"
-            ).fetchone()
-            rm_n, rm_ts = rm_row[0], rm_row[1]
+            _tables = api_client.get_admin_tables(include_counts=True) or []
+            rm_n = next(
+                (t["row_count"] for t in _tables if t["name"] == "fund_risk_metrics"),
+                0,
+            ) or 0
+            _ts_p = api_client.get_admin_table_latest_date(
+                "fund_risk_metrics", col="computed_at"
+            )
+            rm_ts = _ts_p.get("latest_date") if _ts_p else None
             if rm_n and rm_ts:
                 st.caption(f"**{rm_n}** funds computed — last run: **{rm_ts[:16]}**")
             else:
@@ -375,10 +382,17 @@ def _render_sync_tools(con):
 def _render_category_summary(con):
     """Bloomberg-style category group cards from fund_performance."""
     try:
-        perf = pd.read_sql_query(
-            "SELECT sector, category, return_ytd, return_30d FROM fund_performance_latest",
-            con,
-        )
+        # /v1/funds/performance/leaders returns full perf rows; loading a
+        # large limit gives us the full table (1,120 rows).
+        _rows = api_client.get_fund_performance_leaders(
+            metric="return_ytd", limit=2000
+        ) or []
+        perf = pd.DataFrame(_rows)
+        if perf.empty:
+            return
+        # Keep only the columns the cards use
+        keep = [c for c in ["sector", "category", "return_ytd", "return_30d"] if c in perf.columns]
+        perf = perf[keep]
     except Exception:
         return
 
@@ -438,42 +452,56 @@ def _render_category_summary(con):
 
 @st.cache_data(ttl=300, show_spinner="Loading fund data...")
 def _load_fund_directory(_con) -> pd.DataFrame:
-    """Load all funds with latest NAV and performance from summary tables."""
-    import sqlite3 as _sqlite3
+    """Compose fund directory via /v1/funds + /v1/funds/nav-latest + leaders.
 
-    db_path = _con.execute("PRAGMA database_list").fetchone()[2]
-    con = _sqlite3.connect(db_path)
-    con.row_factory = _sqlite3.Row
+    Replaces a 3-way LEFT JOIN of mutual_funds + fund_nav_latest +
+    fund_performance_latest. The leaders endpoint returns the full
+    performance row; we slice the columns we need client-side.
+    """
+    funds = api_client.get_funds(active_only=False, limit=5000) or []
+    nav_latest = api_client.get_funds_nav_latest(limit=5000) or []
+    perf = api_client.get_fund_performance_leaders(
+        metric="return_ytd", limit=2000
+    ) or []
 
-    df = pd.read_sql_query(
-        """SELECT f.fund_id, f.symbol, f.fund_name, f.category, f.amc_name,
-                  f.is_shariah, f.fund_type, f.expense_ratio,
-                  nl.nav AS latest_nav, nl.date AS nav_date,
-                  pl.return_30d, pl.return_90d, pl.return_ytd,
-                  pl.return_365d, pl.rating
-           FROM mutual_funds f
-           LEFT JOIN fund_nav_latest nl ON nl.fund_id = f.fund_id
-           LEFT JOIN fund_performance_latest pl ON pl.fund_name = f.fund_name
-           ORDER BY f.fund_name""",
-        con,
-    )
-    con.close()
-    return df
+    if not funds:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(funds)[
+        ["fund_id", "symbol", "fund_name", "category", "amc_name",
+         "is_shariah", "fund_type", "expense_ratio"]
+    ]
+
+    if nav_latest:
+        nl = pd.DataFrame(nav_latest).rename(
+            columns={"nav": "latest_nav", "date": "nav_date"}
+        )[["fund_id", "latest_nav", "nav_date"]]
+        df = df.merge(nl, on="fund_id", how="left")
+    else:
+        df["latest_nav"] = None
+        df["nav_date"] = None
+
+    if perf:
+        pdf = pd.DataFrame(perf)
+        keep = [c for c in [
+            "fund_name", "return_30d", "return_90d",
+            "return_ytd", "return_365d", "rating"
+        ] if c in pdf.columns]
+        df = df.merge(pdf[keep], on="fund_name", how="left")
+
+    return df.sort_values("fund_name").reset_index(drop=True)
 
 
 def _render_fund_directory(con):
     """Bloomberg-style fund listing with color-coded returns."""
     col1, col2, col3, col4, col5 = st.columns(5)
 
-    categories = con.execute(
-        "SELECT DISTINCT category FROM mutual_funds ORDER BY category"
-    ).fetchall()
-    cat_list = ["All"] + [r["category"] for r in categories]
+    cat_list = ["All"] + (api_client.get_fund_categories() or [])
 
-    amcs = con.execute(
-        "SELECT DISTINCT amc_name FROM mutual_funds WHERE amc_name IS NOT NULL ORDER BY amc_name"
-    ).fetchall()
-    amc_list = ["All"] + [r["amc_name"] for r in amcs]
+    _amcs = api_client.get_fund_amcs() or []
+    amc_list = ["All"] + sorted(
+        {a["amc_name"] for a in _amcs if a.get("amc_name")}
+    )
 
     with col1:
         sel_category = st.selectbox("Category", cat_list, key="fund_cat")
@@ -553,14 +581,9 @@ def _render_fund_directory(con):
 
 def _render_fund_detail(con, fund_id):
     """Bloomberg-style fund detail: header cards, returns bar, NAV chart."""
-    fund = con.execute(
-        "SELECT * FROM mutual_funds WHERE fund_id = ?", (fund_id,)
-    ).fetchone()
-    if not fund:
+    fund_d = api_client.get_fund(fund_id) or {}
+    if not fund_d:
         return
-
-    # Convert sqlite3.Row to dict for safe .get() access
-    fund_d = dict(fund)
 
     # ── Fund header ──
     shariah_badge = (
@@ -615,13 +638,16 @@ def _render_fund_detail(con, fund_id):
 
     # ── Performance returns bar chart ──
     try:
-        perf = con.execute(
-            """SELECT return_ytd, return_mtd, return_1d, return_15d, return_30d,
-                      return_90d, return_180d, return_270d, return_365d, return_2y, return_3y
-               FROM fund_performance_latest
-               WHERE fund_name = ?""",
-            (fund_d["fund_name"],),
-        ).fetchone()
+        # fund_performance_latest is keyed by fund_name (not fund_id), so we
+        # need to filter the leaders payload client-side. Cached on the API
+        # client.
+        _all_perf = api_client.get_fund_performance_leaders(
+            metric="return_ytd", limit=2000
+        ) or []
+        perf = next(
+            (p for p in _all_perf if p.get("fund_name") == fund_d.get("fund_name")),
+            None,
+        )
         if perf:
             st.markdown(_section_label("RETURNS BY PERIOD"), unsafe_allow_html=True)
             labels = ["1D", "15D", "1M", "3M", "6M", "9M", "YTD", "1Y", "2Y", "3Y"]
@@ -654,10 +680,10 @@ def _render_fund_detail(con, fund_id):
         pass
 
     # ── NAV history chart ──
-    df = pd.read_sql_query(
-        "SELECT date, nav FROM mutual_fund_nav WHERE fund_id = ? ORDER BY date",
-        con, params=(fund_id,),
-    )
+    _nav_rows = api_client.get_fund_nav(fund_id=fund_id, limit=5000) or []
+    df = pd.DataFrame(_nav_rows)
+    if not df.empty:
+        df = df[["date", "nav"]].sort_values("date").reset_index(drop=True)
     if df.empty:
         st.info("No NAV history available. Click 'SYNC FULL HISTORY' to fetch.")
         return
@@ -713,11 +739,11 @@ def _render_fund_comparison(con):
     """Bloomberg-style fund comparison: NAV overlay, metrics table, correlation heatmap."""
     st.markdown(_section_label("FUND COMPARISON"), unsafe_allow_html=True)
 
-    funds = con.execute(
-        """SELECT fund_id, symbol, fund_name, category FROM mutual_funds
-           WHERE fund_id IN (SELECT DISTINCT fund_id FROM mutual_fund_nav)
-           ORDER BY fund_name"""
-    ).fetchall()
+    # Funds with NAV: intersect /v1/funds with /v1/funds/nav-latest.
+    _all_funds = api_client.get_funds(active_only=False, limit=5000) or []
+    _nav_latest = api_client.get_funds_nav_latest(limit=5000) or []
+    _fund_ids_with_nav = {n["fund_id"] for n in _nav_latest}
+    funds = [f for f in _all_funds if f["fund_id"] in _fund_ids_with_nav]
 
     if not funds:
         st.info("No funds with NAV history. Sync NAV data first.")
@@ -746,15 +772,16 @@ def _render_fund_comparison(con):
     nav_frames = {}
 
     for i, fund_id in enumerate(selected):
-        df = pd.read_sql_query(
-            "SELECT date, nav FROM mutual_fund_nav WHERE fund_id = ? AND nav > 0 ORDER BY date",
-            con, params=(fund_id,),
-        )
+        _rows = api_client.get_fund_nav(fund_id=fund_id, limit=5000) or []
+        df = pd.DataFrame(_rows)
         if df.empty:
             continue
-
+        df = df[["date", "nav"]].sort_values("date").reset_index(drop=True)
         df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
         df = df.dropna(subset=["nav"])
+        df = df[df["nav"] > 0]
+        if df.empty:
+            continue
         base = df.iloc[0]["nav"]
         if not base or base <= 0:
             continue
@@ -775,10 +802,11 @@ def _render_fund_comparison(con):
 
     if show_benchmark:
         try:
-            idx_df = pd.read_sql_query(
-                "SELECT index_date as date, value FROM psx_indices WHERE symbol = 'KSE100' AND value > 0 ORDER BY index_date",
-                con,
-            )
+            _idx_rows = api_client.get_index_history(code="KSE100") or []
+            idx_df = pd.DataFrame(_idx_rows)
+            if not idx_df.empty and "close" in idx_df.columns:
+                idx_df = idx_df.rename(columns={"close": "value"})
+                idx_df = idx_df[idx_df["value"] > 0].sort_values("date").reset_index(drop=True)
             if not idx_df.empty:
                 base = idx_df.iloc[0]["value"]
                 if base and base > 0:
@@ -920,11 +948,10 @@ def _render_risk_metrics(con):
 
         rf = 12.0
         try:
-            kb = con.execute(
-                "SELECT offer FROM kibor_daily WHERE tenor='3M' ORDER BY date DESC LIMIT 1"
-            ).fetchone()
-            if kb:
-                rf = kb["offer"]
+            _kb_latest = api_client.get_kibor_latest_per_tenor() or []
+            _kb_3m = next((r for r in _kb_latest if r.get("tenor") == "3M"), None)
+            if _kb_3m and _kb_3m.get("offer") is not None:
+                rf = _kb_3m["offer"]
         except Exception:
             pass
         sharpe = (ann_return - rf) / vol if vol > 0 else 0
@@ -1019,20 +1046,28 @@ def _render_etf_section(con):
     """ETF listing with NAV vs market price, premium/discount, and history charts."""
     st.markdown(_section_label("LISTED ETFS"), unsafe_allow_html=True)
 
-    df = pd.read_sql_query(
-        """SELECT m.symbol, m.name, m.amc, m.benchmark_index,
-                  m.shariah_compliant,
-                  n.date, n.nav, n.market_price, n.premium_discount, n.aum_millions
-           FROM etf_master m
-           LEFT JOIN etf_nav n ON m.symbol = n.symbol
-             AND n.date = (SELECT MAX(date) FROM etf_nav WHERE symbol = m.symbol)
-           ORDER BY m.symbol""",
-        con,
-    )
-
-    if df.empty:
+    # Compose from /v1/etfs (master) + per-symbol /v1/etfs/{symbol}/nav (latest row).
+    etfs_master = api_client.get_etfs() or []
+    if not etfs_master:
         st.info("No ETF data. Run `pfsync etf sync` to fetch.")
         return
+    rows = []
+    for m in etfs_master:
+        nav_hist = api_client.get_etf_nav(symbol=m["symbol"], limit=1) or []
+        latest = nav_hist[0] if nav_hist else {}
+        rows.append({
+            "symbol": m["symbol"],
+            "name": m.get("name"),
+            "amc": m.get("amc"),
+            "benchmark_index": m.get("benchmark_index"),
+            "shariah_compliant": m.get("shariah_compliant"),
+            "date": latest.get("date"),
+            "nav": latest.get("nav"),
+            "market_price": latest.get("market_price"),
+            "premium_discount": latest.get("premium_discount"),
+            "aum_millions": latest.get("aum_millions"),
+        })
+    df = pd.DataFrame(rows)
 
     # ── Summary cards ──
     cols = st.columns(len(df))
@@ -1100,23 +1135,34 @@ def _render_etf_section(con):
                            format_func=lambda x: etf_options.get(x, x), key="etf_detail_select")
 
     if sel_etf:
-        # Load full NAV history from etf_nav
-        hist = pd.read_sql_query(
-            "SELECT date, nav, market_price, premium_discount FROM etf_nav WHERE symbol = ? ORDER BY date",
-            con, params=(sel_etf,),
-        )
+        # Load full NAV history from etf_nav via /v1/etfs/{symbol}/nav
+        _etf_rows = api_client.get_etf_nav(symbol=sel_etf, limit=5000) or []
+        hist = pd.DataFrame(_etf_rows)
+        if not hist.empty:
+            hist = hist[
+                ["date", "nav", "market_price", "premium_discount"]
+            ].sort_values("date").reset_index(drop=True)
 
-        # Also load MUFAP NAV history (richer — 700-2100 days)
+        # Also load MUFAP NAV history (richer — 700-2100 days) via /v1/funds
         from pakfindata.sources.etf_scraper import ETF_PSX_TO_MUFAP
         mufap_sym = ETF_PSX_TO_MUFAP.get(sel_etf)
         mufap_nav = pd.DataFrame()
         if mufap_sym:
-            mufap_nav = pd.read_sql_query(
-                """SELECT n.date, n.nav FROM mutual_fund_nav n
-                   JOIN mutual_funds mf ON mf.fund_id = n.fund_id
-                   WHERE mf.symbol = ? AND n.nav > 0 ORDER BY n.date""",
-                con, params=(mufap_sym,),
+            # Resolve mufap symbol -> fund_id by scanning the funds list.
+            _all_funds = api_client.get_funds(active_only=False, limit=5000) or []
+            _mufap_fund = next(
+                (f for f in _all_funds if f.get("symbol") == mufap_sym), None
             )
+            if _mufap_fund:
+                _mufap_rows = api_client.get_fund_nav(
+                    fund_id=_mufap_fund["fund_id"], limit=5000
+                ) or []
+                mufap_nav = pd.DataFrame(_mufap_rows)
+                if not mufap_nav.empty:
+                    mufap_nav = mufap_nav[["date", "nav"]]
+                    mufap_nav = mufap_nav[mufap_nav["nav"] > 0].sort_values(
+                        "date"
+                    ).reset_index(drop=True)
 
         c1, c2 = st.columns(2)
 
@@ -1202,27 +1248,37 @@ def _render_vps_section(con):
     st.markdown(_section_label("VPS PENSION FUNDS"), unsafe_allow_html=True)
     st.caption("Compare pension fund performance across AMCs and sub-fund categories")
 
-    try:
-        df = pd.read_sql_query(
-            """SELECT fund_name, category, nav, rating,
-                      return_ytd, return_30d, return_90d,
-                      return_365d, return_2y, return_3y
-               FROM fund_performance_latest
-               WHERE (sector LIKE '%VPS%' OR category LIKE 'VPS%')
-               ORDER BY category, return_ytd DESC""",
-            con,
-        )
-    except Exception:
-        df = pd.DataFrame()
+    # VPS subset is filtered client-side from the leaders payload — the
+    # /v1/funds/performance/leaders endpoint doesn't expose a `sector LIKE`
+    # filter, but the page-side filter is cheap on 1,120 rows.
+    _all_perf = api_client.get_fund_performance_leaders(
+        metric="return_ytd", limit=2000
+    ) or []
+    df = pd.DataFrame(_all_perf)
+    if not df.empty:
+        keep = [c for c in [
+            "fund_name", "category", "sector", "nav", "rating",
+            "return_ytd", "return_30d", "return_90d", "return_365d",
+            "return_2y", "return_3y", "validity_date",
+        ] if c in df.columns]
+        df = df[keep]
+        mask = pd.Series(False, index=df.index)
+        if "sector" in df.columns:
+            mask = mask | df["sector"].fillna("").str.contains("VPS", case=False, na=False)
+        if "category" in df.columns:
+            mask = mask | df["category"].fillna("").str.startswith("VPS")
+        df = df[mask].sort_values(
+            ["category", "return_ytd"], ascending=[True, False]
+        ).reset_index(drop=True)
 
     if df.empty:
         st.info("No VPS performance data. Click **Sync Performance** to fetch from MUFAP.")
         return
 
-    validity = con.execute(
-        "SELECT MAX(validity_date) FROM fund_performance_latest WHERE sector LIKE '%VPS%' OR category LIKE 'VPS%'"
-    ).fetchone()[0]
-    st.caption(f"Data as of: **{validity}** | {len(df)} VPS funds")
+    validity = (
+        df["validity_date"].dropna().max() if "validity_date" in df.columns else None
+    )
+    st.caption(f"Data as of: **{validity or '—'}** | {len(df)} VPS funds")
 
     # AMC filter
     # Extract AMC name from fund name (first word typically)
@@ -1292,7 +1348,12 @@ def _render_top_performers(con):
     st.markdown(_section_label("TOP PERFORMERS"), unsafe_allow_html=True)
 
     try:
-        perf_count = con.execute("SELECT COUNT(*) FROM fund_performance_latest").fetchone()[0]
+        _tables = api_client.get_admin_tables(include_counts=True) or []
+        perf_count = next(
+            (t["row_count"] for t in _tables
+             if t["name"] == "fund_performance_latest"),
+            0,
+        ) or 0
     except Exception:
         perf_count = 0
 
@@ -1315,40 +1376,39 @@ def _render_top_performers(con):
     with c1:
         sel_period = st.radio("Period", list(period_map.keys()), horizontal=True, key="top_perf_period")
     with c2:
-        try:
-            cats = pd.read_sql_query(
-                "SELECT DISTINCT category FROM fund_performance_latest ORDER BY category", con
-            )["category"].tolist()
-        except Exception:
-            cats = []
-        sel_cat = st.selectbox("Category", ["All"] + cats, key="top_perf_cat")
+        # Distinct categories from the leaders payload (cached).
+        _all_perf_for_cats = api_client.get_fund_performance_leaders(
+            metric="return_ytd", limit=2000
+        ) or []
+        cats = sorted({
+            p.get("category") for p in _all_perf_for_cats if p.get("category")
+        })
+        sel_cat = st.selectbox("Category", ["All"] + list(cats), key="top_perf_cat")
     with c3:
         top_n = st.number_input("Top N", min_value=5, max_value=50, value=20, key="top_n")
 
     period_col = period_map[sel_period]
 
-    query = f"""
-        SELECT fund_name, category, sector, nav, rating,
-               {period_col} as return_pct
-        FROM fund_performance_latest
-        WHERE {period_col} IS NOT NULL
-    """
-    params: list = []
-    if sel_cat != "All":
-        query += " AND category = ?"
-        params.append(sel_cat)
-    query += f" ORDER BY {period_col} DESC LIMIT ?"
-    params.append(top_n)
-
-    df = pd.read_sql_query(query, con, params=params)
+    _leader_rows = api_client.get_fund_performance_leaders(
+        metric=period_col,
+        category=sel_cat if sel_cat != "All" else None,
+        limit=int(top_n),
+    ) or []
+    df = pd.DataFrame(_leader_rows)
+    if not df.empty:
+        keep = [c for c in
+            ["fund_name", "category", "sector", "nav", "rating", period_col]
+            if c in df.columns]
+        df = df[keep].rename(columns={period_col: "return_pct"})
 
     if df.empty:
         st.info("No performance data for selected filters")
         return
 
-    validity = con.execute(
-        "SELECT MAX(validity_date) FROM fund_performance_latest"
-    ).fetchone()[0]
+    _v_payload = api_client.get_admin_table_latest_date(
+        "fund_performance_latest", col="validity_date"
+    )
+    validity = _v_payload.get("latest_date") if _v_payload else None
     st.markdown(
         f'<span style="font-size:11px;color:{C_MUTED};font-family:{MONO};">'
         f'MUFAP OFFICIAL RETURNS AS OF {validity}</span>',
@@ -1395,30 +1455,54 @@ def _render_top_performers(con):
     ).format({ret_col: "{:+.2f}", "NAV": "{:.4f}"}, na_rep="---")
     st.dataframe(styled, width='stretch', hide_index=True)
 
-    # Rate benchmarks
+    # Rate benchmarks — all via /v1/rates + /v1/treasury
     try:
         bm_cols = st.columns(4)
-        pr = con.execute("SELECT policy_rate FROM sbp_policy_rates ORDER BY rate_date DESC LIMIT 1").fetchone()
-        kb = con.execute("SELECT bid, offer FROM kibor_daily WHERE tenor='3M' ORDER BY date DESC LIMIT 1").fetchone()
-        tb = con.execute("SELECT cutoff_yield FROM tbill_auctions WHERE tenor='3M' ORDER BY auction_date DESC LIMIT 1").fetchone()
-        tb6 = con.execute("SELECT cutoff_yield FROM tbill_auctions WHERE tenor='6M' ORDER BY auction_date DESC LIMIT 1").fetchone()
+        _pol_hist = api_client.get_policy_rate_history(limit=1) or []
+        pr_val = _pol_hist[0].get("policy_rate") if _pol_hist else None
+
+        _kb_latest = api_client.get_kibor_latest_per_tenor() or []
+        _kb_3m = next((r for r in _kb_latest if r.get("tenor") == "3M"), None)
+
+        _tb_latest = api_client.get_tbill_latest_per_tenor() or []
+        _tb_3m = next((r for r in _tb_latest if r.get("tenor") == "3M"), None)
+        _tb_6m = next((r for r in _tb_latest if r.get("tenor") == "6M"), None)
+
         with bm_cols[0]:
-            st.metric("Policy Rate", f"{pr[0]:.1f}%" if pr else "—", help="SBP benchmark")
+            st.metric(
+                "Policy Rate",
+                f"{pr_val:.1f}%" if pr_val is not None else "—",
+                help="SBP benchmark",
+            )
         with bm_cols[1]:
-            if kb and kb[0] and kb[1]:
-                st.metric("KIBOR 3M", f"{(kb[0]+kb[1])/2:.2f}%", help="Money market benchmark")
+            if _kb_3m and _kb_3m.get("bid") is not None and _kb_3m.get("offer") is not None:
+                mid = (_kb_3m["bid"] + _kb_3m["offer"]) / 2
+                st.metric("KIBOR 3M", f"{mid:.2f}%", help="Money market benchmark")
             else:
                 st.metric("KIBOR 3M", "—")
         with bm_cols[2]:
-            st.metric("T-Bill 3M", f"{tb[0]:.2f}%" if tb else "—", help="Risk-free 3M")
+            yld = _tb_3m.get("cutoff_yield") if _tb_3m else None
+            st.metric("T-Bill 3M", f"{yld:.2f}%" if yld is not None else "—",
+                      help="Risk-free 3M")
         with bm_cols[3]:
-            st.metric("T-Bill 6M", f"{tb6[0]:.2f}%" if tb6 else "—", help="Risk-free 6M")
+            yld6 = _tb_6m.get("cutoff_yield") if _tb_6m else None
+            st.metric("T-Bill 6M", f"{yld6:.2f}%" if yld6 is not None else "—",
+                      help="Risk-free 6M")
     except Exception:
         pass
 
 
 def _render_top_performers_fallback(con):
-    """Fallback: NAV-computed returns when fund_performance table is empty."""
+    """Fallback: NAV-computed returns when fund_performance table is empty.
+
+    This path retains a direct DB read — the original query is a complex
+    correlated subquery that finds, for each fund, the latest NAV and the
+    earliest NAV within the lookback window. Composing this from /v1
+    would require N per-fund history fetches (one round-trip per fund;
+    1,270+ funds = unacceptable latency). The whole fallback runs only
+    when fund_performance_latest is empty, which should never happen in
+    normal operation.
+    """
     st.caption("Performance data not synced — showing NAV-computed returns. Click Sync Performance for MUFAP official returns.")
 
     period = st.radio("Period", ["30 days", "90 days", "365 days"], horizontal=True, key="fund_perf_period_fb")
@@ -1468,16 +1552,16 @@ def _render_top_performers_fallback(con):
 
 
 def _get_fund_nav_series(con, fund_id: str) -> pd.Series:
-    """Load fund NAV as a pd.Series with DatetimeIndex."""
-    df = pd.read_sql_query(
-        "SELECT date, nav FROM mutual_fund_nav WHERE fund_id = ? AND nav > 0 ORDER BY date",
-        con, params=(fund_id,),
-    )
+    """Load fund NAV as a pd.Series with DatetimeIndex via /v1/funds/{id}/nav."""
+    rows = api_client.get_fund_nav(fund_id=fund_id, limit=10000) or []
+    df = pd.DataFrame(rows)
     if df.empty:
         return pd.Series(dtype=float)
+    df = df[["date", "nav"]].sort_values("date").reset_index(drop=True)
     df["date"] = pd.to_datetime(df["date"])
     df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
     df = df.dropna(subset=["nav"])
+    df = df[df["nav"] > 0]
     return df.set_index("date")["nav"]
 
 
@@ -1506,12 +1590,9 @@ def _get_fund_list_with_nav_count(_con, min_navs: int = 90):
 def _try_precomputed(con, fund_id: str) -> dict | None:
     """Try to load pre-computed risk metrics; return None if stale (>7d) or missing."""
     try:
-        row = con.execute(
-            "SELECT * FROM fund_risk_metrics WHERE fund_id = ?", (fund_id,)
-        ).fetchone()
-        if not row:
+        d = api_client.get_fund_risk(fund_id)
+        if not d:
             return None
-        d = dict(row)
         # Check staleness
         computed = d.get("computed_at", "")
         if computed:
@@ -1901,14 +1982,14 @@ def _render_llm_analysis(con):
                     fund_options.get(sel_fund, sel_fund), nav, bm,
                 )
 
-                # Get fund metadata
-                meta_row = con.execute(
-                    """SELECT fund_name, amc_name, category, fund_type, benchmark,
-                              launch_date, expense_ratio, is_shariah
-                       FROM mutual_funds WHERE fund_id = ?""",
-                    (sel_fund,),
-                ).fetchone()
-                metadata = dict(meta_row) if meta_row else {}
+                # Get fund metadata via /v1/funds/{fund_id}
+                fund_d = api_client.get_fund(sel_fund) or {}
+                metadata = {
+                    k: fund_d.get(k) for k in (
+                        "fund_name", "amc_name", "category", "fund_type",
+                        "benchmark", "launch_date", "expense_ratio", "is_shariah",
+                    )
+                } if fund_d else {}
 
                 summary = fund_summary_for_llm(
                     fund_name=metadata.get("fund_name", sel_fund),
