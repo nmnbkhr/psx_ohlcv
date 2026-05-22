@@ -1238,6 +1238,133 @@ def get_etf_nav(
     return _safe_get(f"/v1/etfs/{symbol}/nav", params=params, on_404=[])
 
 
+# ── Commodities + khistocks + PMEX-portal (1.7.G.3.0) ──────────────────
+
+
+@st.cache_data(ttl=300)
+def get_commodity_has_data() -> Optional[dict]:
+    """Composite gate: does any of the 3 commodity tables have rows."""
+    return _safe_get("/v1/commodities/has-data")
+
+
+@st.cache_data(ttl=600)
+def get_commodity_symbols(source: Optional[str] = None) -> Optional[list[str]]:
+    params = {"source": source} if source else None
+    return _safe_get("/v1/commodities/symbols", params=params)
+
+
+@st.cache_data(ttl=600)
+def get_commodity_fx_pairs() -> Optional[list[str]]:
+    return _safe_get("/v1/commodities/fx-pairs")
+
+
+@st.cache_data(ttl=60)
+def get_commodity_latest(symbols: list[str]) -> Optional[list[dict]]:
+    """Latest + previous close for a list of commodity symbols."""
+    if not symbols:
+        return []
+    return _safe_get(
+        "/v1/commodities/latest",
+        params={"symbols": ",".join(symbols)},
+    )
+
+
+@st.cache_data(ttl=300)
+def get_commodity_sector_performance() -> Optional[list[dict]]:
+    return _safe_get("/v1/commodities/sector-performance")
+
+
+@st.cache_data(ttl=300)
+def get_commodity_pkr_latest() -> Optional[list[dict]]:
+    return _safe_get("/v1/commodities/pkr-latest")
+
+
+@st.cache_data(ttl=300)
+def get_commodity_categories_latest() -> Optional[list[dict]]:
+    return _safe_get("/v1/commodities/categories-latest")
+
+
+@st.cache_data(ttl=60)
+def get_commodity_sync_runs(limit: int = 10) -> Optional[list[dict]]:
+    return _safe_get("/v1/commodities/sync-runs", params={"limit": limit})
+
+
+@st.cache_data(ttl=60)
+def get_commodity_export(dataset: str, limit: int = 5000) -> Optional[list[dict]]:
+    """Bulk export wrapper. dataset ∈ {eod, monthly, pkr, fx, khistocks, pmex_market_watch}."""
+    return _safe_get(
+        f"/v1/commodities/export/{dataset}",
+        params={"limit": limit},
+        on_404=None,
+    )
+
+
+@st.cache_data(ttl=300)
+def get_commodity_eod(symbol: str, limit: int = 365) -> Optional[list[dict]]:
+    if not symbol:
+        return []
+    return _safe_get(
+        f"/v1/commodities/{symbol}/eod",
+        params={"limit": limit},
+        on_404=[],
+    )
+
+
+@st.cache_data(ttl=300)
+def get_commodity_pkr_history(symbol: str, limit: int = 90) -> Optional[list[dict]]:
+    if not symbol:
+        return []
+    return _safe_get(
+        f"/v1/commodities/{symbol}/pkr",
+        params={"limit": limit},
+        on_404=[],
+    )
+
+
+@st.cache_data(ttl=600)
+def get_khistocks_feeds() -> Optional[list[str]]:
+    return _safe_get("/v1/khistocks/feeds")
+
+
+@st.cache_data(ttl=120)
+def get_khistocks_latest(feed: Optional[str] = None) -> Optional[list[dict]]:
+    params = {"feed": feed} if feed else None
+    return _safe_get("/v1/khistocks/latest", params=params)
+
+
+@st.cache_data(ttl=300)
+def get_khistocks_history(symbol: str, limit: int = 90) -> Optional[list[dict]]:
+    if not symbol:
+        return []
+    return _safe_get(
+        f"/v1/khistocks/{symbol}/history",
+        params={"limit": limit},
+        on_404=[],
+    )
+
+
+@st.cache_data(ttl=600)
+def get_pmex_portal_categories() -> Optional[list[str]]:
+    return _safe_get("/v1/pmex-portal/categories")
+
+
+@st.cache_data(ttl=120)
+def get_pmex_portal_latest(category: Optional[str] = None) -> Optional[list[dict]]:
+    params = {"category": category} if category else None
+    return _safe_get("/v1/pmex-portal/latest", params=params)
+
+
+@st.cache_data(ttl=300)
+def get_pmex_portal_history(contract: str, limit: int = 90) -> Optional[list[dict]]:
+    if not contract:
+        return []
+    return _safe_get(
+        f"/v1/pmex-portal/{contract}/history",
+        params={"limit": limit},
+        on_404=[],
+    )
+
+
 def use_worker_sync() -> bool:
     """Feature flag: should sync buttons enqueue worker jobs?
 
@@ -1391,5 +1518,23 @@ __all__ = [
     "get_etfs",
     "get_etf",
     "get_etf_nav",
+    # commodities + khistocks + pmex-portal (1.7.G.3.0)
+    "get_commodity_has_data",
+    "get_commodity_symbols",
+    "get_commodity_fx_pairs",
+    "get_commodity_latest",
+    "get_commodity_sector_performance",
+    "get_commodity_pkr_latest",
+    "get_commodity_categories_latest",
+    "get_commodity_sync_runs",
+    "get_commodity_export",
+    "get_commodity_eod",
+    "get_commodity_pkr_history",
+    "get_khistocks_feeds",
+    "get_khistocks_latest",
+    "get_khistocks_history",
+    "get_pmex_portal_categories",
+    "get_pmex_portal_latest",
+    "get_pmex_portal_history",
     "use_worker_sync",
 ]

@@ -29,6 +29,7 @@ from pakfindata.api.auth import BearerAuthMiddleware
 from pakfindata.api.config import get_settings
 from pakfindata.api.logging import configure_logging
 from pakfindata.api.routes import admin as admin_route
+from pakfindata.api.routes import commodities as commodities_route
 from pakfindata.api.routes import eod as eod_route
 from pakfindata.api.routes import equities as equities_route
 from pakfindata.api.routes import fixed_income as fi_route
@@ -139,6 +140,9 @@ app.include_router(tick_logs_route.tick_logs_router)
 app.include_router(futures_route.futures_router)
 app.include_router(funds_route.funds_router)
 app.include_router(funds_route.etfs_router)
+app.include_router(commodities_route.commodities_router)
+app.include_router(commodities_route.khistocks_router)
+app.include_router(commodities_route.pmex_portal_router)
 app.include_router(admin_route.admin_router)
 app.include_router(sync_route.router)
 app.include_router(jobs_route.router)
