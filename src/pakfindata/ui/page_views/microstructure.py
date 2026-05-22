@@ -20,7 +20,8 @@ from pakfindata.engine.microstructure import (
     generate_dummy_tick_data,
 )
 from pakfindata.engine.commentary import get_vpin_rules_commentary, get_vpin_ai_commentary
-from pakfindata.ui.components.helpers import get_connection, render_footer
+from pakfindata.ui.api import client as api_client
+from pakfindata.ui.components.helpers import render_footer
 
 # ═════════════════════════════════════════════════════════════════════════════
 # DESIGN SYSTEM
@@ -267,52 +268,54 @@ def _render_payoff_matrix(vpin: float, half_spread: float, adverse_loss: float):
 # MAIN RENDER
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _get_intraday_dates(con) -> list[str]:
+def _get_intraday_dates() -> list[str]:
     """Dates with a pre-aggregated summary row. Fast indexed read."""
-    try:
-        from pakfindata.db.repositories import intraday_summary as _isum
-        _isum.ensure_tables(con)
-        return _isum.get_summary_dates(con)[:30]
-    except Exception:
-        return []
+    dates = api_client.get_intraday_dates() or []
+    return dates[:30]
 
 
-@st.cache_data(ttl=300)
-def _get_master_symbols(_con) -> list[str]:
-    """Load all active symbols from the symbols master table."""
-    rows = _con.execute(
-        "SELECT symbol FROM symbols WHERE is_active=1 ORDER BY symbol"
-    ).fetchall()
-    return [r[0] for r in rows]
+def _get_master_symbols() -> list[str]:
+    """Load all active symbols from the symbols master."""
+    rows = api_client.get_symbols(active_only=True) or []
+    return [r["symbol"] for r in rows]
 
 
-def _load_intraday_ticks(con, symbol: str, date_str: str) -> pd.DataFrame:
+def _load_intraday_ticks(symbol: str, date_str: str) -> pd.DataFrame:
     """Load tick-level data for a symbol on a date."""
-    df = pd.read_sql_query(
-        "SELECT ts AS datetime, ts_epoch, close, volume "
-        "FROM intraday_bars WHERE symbol=? AND date=? "
-        "ORDER BY ts_epoch",
-        con,
-        params=(symbol, date_str),
+    rows = api_client.get_intraday_bars(
+        symbol=symbol, date=date_str, interval="1s", limit=50000
+    ) or []
+    if not rows:
+        return pd.DataFrame(columns=["datetime", "ts_epoch", "close", "volume"])
+    df = pd.DataFrame(rows)[["ts", "ts_epoch", "close", "volume"]].rename(
+        columns={"ts": "datetime"}
     )
-    if not df.empty:
-        df["datetime"] = pd.to_datetime(df["datetime"])
-        # Drop rows with zero volume (no trade)
-        df = df[df["volume"] > 0].reset_index(drop=True)
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    # Drop rows with zero volume (no trade)
+    df = df[df["volume"] > 0].reset_index(drop=True)
     return df
 
 
-def _load_eod_data(con, symbol: str, limit: int = 200) -> pd.DataFrame:
-    """Load EOD daily bars for a symbol (interday VPIN)."""
-    df = pd.read_sql_query(
-        "SELECT date AS datetime, close, volume FROM eod_ohlcv "
-        "WHERE symbol=? AND volume > 0 ORDER BY date DESC LIMIT ?",
-        con,
-        params=(symbol, limit),
+def _load_eod_data(symbol: str, limit: int = 200) -> pd.DataFrame:
+    """Load EOD daily bars for a symbol (interday VPIN).
+
+    Calls /v1/eod/{symbol} with a wide-enough window to cover ``limit``
+    trading days (~365 calendar days for 200 trading days), filters
+    volume > 0, then takes the most recent ``limit`` rows.
+    """
+    from datetime import date as _date, timedelta as _td
+
+    calendar_days = max(int(limit * 1.8), 60)
+    from_date = (_date.today() - _td(days=calendar_days)).isoformat()
+    rows = api_client.get_symbol_history(symbol=symbol, from_date=from_date) or []
+    if not rows:
+        return pd.DataFrame(columns=["datetime", "close", "volume"])
+    df = pd.DataFrame(rows)[["date", "close", "volume"]].rename(
+        columns={"date": "datetime"}
     )
-    if not df.empty:
-        df = df.iloc[::-1].reset_index(drop=True)
-        df["datetime"] = pd.to_datetime(df["datetime"])
+    df = df[df["volume"] > 0]
+    df = df.sort_values("datetime").tail(limit).reset_index(drop=True)
+    df["datetime"] = pd.to_datetime(df["datetime"])
     return df
 
 
@@ -584,13 +587,14 @@ def _render_tick_table(df: pd.DataFrame):
 
 def render_microstructure():
     """Main entry point for the Market Microstructure & Risk page."""
+    if api_client.render_api_status_banner_if_down():
+        return
+
     st.markdown("## Market Microstructure & Risk")
     st.caption("Order Flow Toxicity (VPIN) · Maker-Taker Game Theory · Volume-Synchronized Analysis")
 
     with st.expander("How to Read This Analysis (Execution Playbook)", expanded=False):
         st.markdown(_PLAYBOOK_MD)
-
-    con = get_connection()
 
     # ── Top bar: Data source, date, symbol selectors (on page, not sidebar) ──
     col_src, col_date, col_sym = st.columns([1, 1, 1])
@@ -607,10 +611,10 @@ def render_microstructure():
     n_bars = 1000
 
     # Load master symbol list once (cached)
-    all_symbols = _get_master_symbols(con)
+    all_symbols = _get_master_symbols()
 
     if data_source == "Intraday Ticks":
-        avail_dates = _get_intraday_dates(con)
+        avail_dates = _get_intraday_dates()
         with col_date:
             if avail_dates:
                 sel_date = st.selectbox("Trading Date", avail_dates)
@@ -658,7 +662,7 @@ def render_microstructure():
     tick_df = None
 
     if data_source == "Intraday Ticks" and sel_symbol and sel_date:
-        tick_df = _load_intraday_ticks(con, sel_symbol, sel_date)
+        tick_df = _load_intraday_ticks(sel_symbol, sel_date)
         if tick_df.empty:
             st.warning(f"No tick data for **{sel_symbol}** on {sel_date}.")
             tick_df = None
@@ -670,7 +674,7 @@ def render_microstructure():
             )
 
     elif data_source == "EOD Daily Bars" and sel_symbol:
-        tick_df = _load_eod_data(con, sel_symbol, limit=eod_days)
+        tick_df = _load_eod_data(sel_symbol, limit=eod_days)
         if tick_df.empty:
             st.warning(f"No EOD data for **{sel_symbol}**.")
             tick_df = None
