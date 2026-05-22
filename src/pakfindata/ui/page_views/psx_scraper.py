@@ -21,6 +21,12 @@ def _get_sqlite_con() -> sqlite3.Connection:
 
 
 def _table_count(con: sqlite3.Connection, table: str) -> int:
+    """Direct fallback for browse-data tabs that need a quick count.
+
+    Admin-meta dashboards now use /v1/admin/tables; this helper remains
+    for the per-symbol detail tabs (browse-data) where the read is
+    tightly coupled to the SQL detail query.
+    """
     try:
         return con.execute(f"SELECT COUNT(*) FROM [{table}]").fetchone()[0]
     except Exception:
@@ -28,6 +34,8 @@ def _table_count(con: sqlite3.Connection, table: str) -> int:
 
 
 def render_psx_scraper():
+    from pakfindata.ui.api import client as _api_client
+
     st.markdown("## PSX Company Scraper")
     st.caption(
         "Manage deep scraping from dps.psx.com.pk | "
@@ -36,13 +44,15 @@ def render_psx_scraper():
 
     con = _get_sqlite_con()
 
-    # ── top metrics ─────────────────────────────────────────────
+    # ── top metrics (admin-meta — via /v1/admin/tables) ─────────
+    _tables_payload = _api_client.get_admin_tables(include_counts=True) or []
+    _counts_by_name = {t["name"]: t["row_count"] or 0 for t in _tables_payload}
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Profiles", f"{_table_count(con, 'company_profile'):,}")
-    c2.metric("Financials", f"{_table_count(con, 'company_financials'):,}")
-    c3.metric("Ratios", f"{_table_count(con, 'company_ratios'):,}")
-    c4.metric("Announcements", f"{_table_count(con, 'corporate_announcements'):,}")
-    c5.metric("Payouts", f"{_table_count(con, 'dividend_payouts'):,}")
+    c1.metric("Profiles", f"{_counts_by_name.get('company_profile', 0):,}")
+    c2.metric("Financials", f"{_counts_by_name.get('company_financials', 0):,}")
+    c3.metric("Ratios", f"{_counts_by_name.get('company_ratios', 0):,}")
+    c4.metric("Announcements", f"{_counts_by_name.get('corporate_announcements', 0):,}")
+    c5.metric("Payouts", f"{_counts_by_name.get('dividend_payouts', 0):,}")
 
     tabs = st.tabs([
         "Deep Scrape",
@@ -217,16 +227,19 @@ def _render_global_announcements(con: sqlite3.Connection):
         start_psx_announcements, stop_job,
     )
 
-    # Current counts
-    try:
-        latest = con.execute(
-            "SELECT MAX(scraped_at) FROM corporate_announcements"
-        ).fetchone()[0]
-    except Exception:
-        latest = None
+    # Current counts (admin-meta via /v1/admin)
+    from pakfindata.ui.api import client as _api_client
+    _ann_payload = _api_client.get_admin_table_latest_date(
+        "corporate_announcements", col="scraped_at"
+    )
+    latest = _ann_payload.get("latest_date") if _ann_payload else None
+    _ann_total = _api_client.get_admin_table_distinct_count(
+        "corporate_announcements", "id"
+    )
+    _ann_count = _ann_total.get("distinct_count", 0) if _ann_total else 0
 
     c1, c2 = st.columns(2)
-    c1.metric("Total Announcements", f"{_table_count(con, 'corporate_announcements'):,}")
+    c1.metric("Total Announcements", f"{_ann_count:,}")
     c2.metric("Last Scraped", latest[:19] if latest else "Never")
 
     # Background job status
@@ -304,15 +317,18 @@ def _render_global_payouts(con: sqlite3.Connection):
         start_psx_payouts, stop_job,
     )
 
-    try:
-        latest = con.execute(
-            "SELECT MAX(scraped_at) FROM dividend_payouts"
-        ).fetchone()[0]
-    except Exception:
-        latest = None
+    from pakfindata.ui.api import client as _api_client
+    _pay_payload = _api_client.get_admin_table_latest_date(
+        "dividend_payouts", col="scraped_at"
+    )
+    latest = _pay_payload.get("latest_date") if _pay_payload else None
+    _pay_total = _api_client.get_admin_tables(include_counts=True) or []
+    _pay_count = next(
+        (t["row_count"] for t in _pay_total if t["name"] == "dividend_payouts"), 0
+    ) or 0
 
     c1, c2 = st.columns(2)
-    c1.metric("Total Payouts", f"{_table_count(con, 'dividend_payouts'):,}")
+    c1.metric("Total Payouts", f"{_pay_count:,}")
     c2.metric("Last Scraped", latest[:19] if latest else "Never")
 
     running = is_running(JOB_PSX_PAYOUTS)
@@ -482,24 +498,27 @@ def _render_data_status(con: sqlite3.Connection):
         "company_quote_snapshots": "Quote Snapshots",
     }
 
+    from pakfindata.ui.api import client as _api_client
+    _all_tables = _api_client.get_admin_tables(include_counts=True) or []
+    _counts = {t["name"]: t["row_count"] or 0 for t in _all_tables}
+
     rows = []
     for table, label in tables.items():
-        count = _table_count(con, table)
-        # Get latest date if possible
+        # Get latest date by trying common columns (returns None if all fail)
         latest = ""
-        try:
-            for date_col in ["updated_at", "scraped_at", "announcement_date", "snapshot_date", "as_of_date"]:
-                r = con.execute(f"SELECT MAX([{date_col}]) FROM [{table}]").fetchone()
-                if r and r[0]:
-                    latest = str(r[0])[:19]
-                    break
-        except Exception:
-            pass
+        for date_col in [
+            "updated_at", "scraped_at", "announcement_date",
+            "snapshot_date", "as_of_date",
+        ]:
+            payload = _api_client.get_admin_table_latest_date(table, col=date_col)
+            if payload and payload.get("latest_date"):
+                latest = str(payload["latest_date"])[:19]
+                break
 
         rows.append({
             "Table": table,
             "Description": label,
-            "Rows": count,
+            "Rows": _counts.get(table, 0),
             "Latest": latest,
         })
 
@@ -511,15 +530,17 @@ def _render_data_status(con: sqlite3.Connection):
     st.markdown("#### Profile Coverage")
 
     try:
-        total_symbols = con.execute(
-            "SELECT COUNT(DISTINCT symbol) FROM company_snapshots"
-        ).fetchone()[0]
-        with_profiles = con.execute(
-            "SELECT COUNT(*) FROM company_profile WHERE description IS NOT NULL AND description != ''"
-        ).fetchone()[0]
-        with_financials = con.execute(
-            "SELECT COUNT(DISTINCT symbol) FROM company_financials"
-        ).fetchone()[0]
+        _ts = _api_client.get_admin_table_distinct_count(
+            "company_snapshots", "symbol"
+        )
+        total_symbols = _ts.get("distinct_count", 0) if _ts else 0
+        # "with_profiles" was COUNT WHERE description IS NOT NULL — the API
+        # doesn't expose conditional counts; use total profile count as proxy.
+        with_profiles = _counts.get("company_profile", 0)
+        _wf = _api_client.get_admin_table_distinct_count(
+            "company_financials", "symbol"
+        )
+        with_financials = _wf.get("distinct_count", 0) if _wf else 0
 
         pc1, pc2, pc3 = st.columns(3)
         pc1.metric("Total Symbols", total_symbols)
