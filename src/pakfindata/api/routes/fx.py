@@ -235,6 +235,29 @@ def get_konia(
     return [dict(r) for r in cur.fetchall()]
 
 
+@rates_extra_router.get("/kibor/latest-per-tenor", response_model=list[KiborRow])
+def get_kibor_latest_per_tenor(
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> list[dict]:
+    """Latest KIBOR row per tenor (one tenor → one row), sorted by
+    short-end tenor first. Single round-trip vs querying history."""
+    cur = con.execute(
+        """WITH ranked AS (
+              SELECT *, ROW_NUMBER() OVER (
+                          PARTITION BY tenor
+                          ORDER BY date DESC) AS rn
+              FROM kibor_daily WHERE offer IS NOT NULL
+           )
+           SELECT date, tenor, bid, offer FROM ranked WHERE rn = 1
+           ORDER BY CASE tenor
+                      WHEN '1W' THEN 1 WHEN '2W' THEN 2
+                      WHEN '1M' THEN 3 WHEN '3M' THEN 4
+                      WHEN '6M' THEN 5 WHEN '9M' THEN 6
+                      WHEN '1Y' THEN 7 ELSE 8 END"""
+    )
+    return [dict(r) for r in cur.fetchall()]
+
+
 @rates_extra_router.get("/kibor", response_model=list[KiborRow])
 def get_kibor_history(
     tenors: Annotated[

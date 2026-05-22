@@ -707,3 +707,25 @@ def get_fi_quotes_latest(
            FROM ranked WHERE rn = 1"""
     )
     return [dict(r) for r in cur.fetchall()]
+
+
+@fi_router.get(
+    "/quotes/{instrument_id}/history",
+    response_model=list[FiQuoteRow],
+)
+def get_fi_quotes_history(
+    instrument_id: Annotated[str, Path()],
+    days: Annotated[int, Query(ge=1, le=3650)] = 60,
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> list[dict]:
+    """Price/volume history for one FI instrument, oldest first."""
+    cur = con.execute(
+        """SELECT instrument_id, quote_date, clean_price, ytm, bid, ask,
+                  volume, source, ingested_at
+           FROM fi_quotes
+           WHERE instrument_id = ?
+             AND quote_date >= date('now', ?)
+           ORDER BY quote_date""",
+        (instrument_id, f"-{days} days"),
+    )
+    return [dict(r) for r in cur.fetchall()]

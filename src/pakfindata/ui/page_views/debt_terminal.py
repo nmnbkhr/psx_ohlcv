@@ -28,7 +28,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from pakfindata.ui.components.helpers import get_connection, render_footer
+from pakfindata.ui.api import client as api_client
+from pakfindata.ui.components.helpers import render_footer
 
 # ── Terminal Theme CSS ──────────────────────────────────────────────────────
 
@@ -453,31 +454,34 @@ def _liquidity_level(volume: float) -> str:
 
 
 @st.cache_data(ttl=300)
-def _load_pkrv_curve(_con) -> tuple[list[dict], str | None]:
-    """Load latest PKRV yield curve from pkrv_daily table."""
+def _load_pkrv_curve() -> tuple[list[dict], str | None]:
+    """Load latest PKRV yield curve via /v1/yield-curves/pkrv."""
     try:
-        from pakfindata.db.repositories.yield_curves import get_pkrv_curve
-        df = get_pkrv_curve(_con)
-        if not df.empty:
-            curve_date = str(df["date"].iloc[0])
+        rows = api_client.get_pkrv() or []
+        if rows:
+            curve_date = rows[0].get("date")
             result = []
-            for _, row in df.iterrows():
-                months = int(row["tenor_months"])
-                years = months / 12
+            for row in rows:
+                months = int(row.get("tenor_months") or 0)
+                years = months / 12 if months else 0
                 label = _TENOR_MONTHS_TO_LABEL.get(months, f"{months}M")
+                yp = row.get("yield_pct")
+                if yp is None:
+                    continue
                 result.append({
                     "tenor": label,
                     "years": round(years, 4),
-                    "yield": float(row["yield_pct"]),
+                    "yield": float(yp),
                 })
-            return result, curve_date
+            if result:
+                return result, curve_date
     except Exception:
         pass
     return list(_FALLBACK_PKRV), None
 
 
 @st.cache_data(ttl=300)
-def _load_ifrv_curve(_con, pkrv_curve_json: str = "[]") -> tuple[list[dict], str | None]:
+def _load_ifrv_curve(pkrv_curve_json: str = "[]") -> tuple[list[dict], str | None]:
     """Load latest PKISRV (Islamic) curve from pkisrv_daily.
 
     Since PKISRV data typically covers only short tenors (1M-1Y),
@@ -491,16 +495,15 @@ def _load_ifrv_curve(_con, pkrv_curve_json: str = "[]") -> tuple[list[dict], str
     pkrv_curve = json.loads(pkrv_curve_json)
 
     try:
-        rows = _con.execute(
-            """SELECT date, tenor, yield_pct FROM pkisrv_daily
-               WHERE date = (SELECT MAX(date) FROM pkisrv_daily)
-               ORDER BY tenor"""
-        ).fetchall()
+        rows = api_client.get_pkisrv() or []
         if rows:
-            curve_date = rows[0]["date"]
+            curve_date = rows[0].get("date")
             result = []
             for row in rows:
-                tenor = row["tenor"]
+                tenor = row.get("tenor")
+                yp = row.get("yield_pct")
+                if not tenor or yp is None:
+                    continue
                 years = _tenor_text_to_years(tenor)
                 # Skip tenors below 6M — Islamic money market rates at the
                 # very short end (1M, 3M) diverge 100-200bps from conventional
@@ -510,7 +513,7 @@ def _load_ifrv_curve(_con, pkrv_curve_json: str = "[]") -> tuple[list[dict], str
                     result.append({
                         "tenor": tenor,
                         "years": round(years, 4),
-                        "yield": float(row["yield_pct"]),
+                        "yield": float(yp),
                     })
 
             # Extend with PKRV-spread estimates for longer tenors
@@ -542,20 +545,18 @@ def _load_ifrv_curve(_con, pkrv_curve_json: str = "[]") -> tuple[list[dict], str
 
 
 @st.cache_data(ttl=300)
-def _load_kibor_rates(_con) -> tuple[dict, str | None]:
-    """Load latest KIBOR offer rates from kibor_daily table."""
+def _load_kibor_rates() -> tuple[dict, str | None]:
+    """Latest KIBOR offer rates via /v1/rates/kibor/latest-per-tenor."""
     try:
-        rows = _con.execute(
-            """SELECT date, tenor, offer FROM kibor_daily
-               WHERE date = (SELECT MAX(date) FROM kibor_daily)
-               ORDER BY tenor"""
-        ).fetchall()
+        rows = api_client.get_kibor_latest_per_tenor() or []
         if rows:
-            kibor_date = rows[0]["date"]
-            rates = {}
+            kibor_date = rows[0].get("date")
+            rates: dict[str, float] = {}
             for row in rows:
-                if row["offer"] is not None:
-                    rates[row["tenor"]] = float(row["offer"])
+                offer = row.get("offer")
+                tenor = row.get("tenor")
+                if offer is not None and tenor:
+                    rates[tenor] = float(offer)
             if rates:
                 return rates, kibor_date
     except Exception:
@@ -564,7 +565,7 @@ def _load_kibor_rates(_con) -> tuple[dict, str | None]:
 
 
 @st.cache_data(ttl=300)
-def _load_securities_from_db(_con) -> tuple[list[dict], dict[str, dict], str]:
+def _load_securities_from_db() -> tuple[list[dict], dict[str, dict], str]:
     """Load FI securities and latest quotes from DB.
 
     Returns:
@@ -576,20 +577,20 @@ def _load_securities_from_db(_con) -> tuple[list[dict], dict[str, dict], str]:
     bonds = []
     quotes: dict[str, dict] = {}
 
-    # Load instruments from fi_instruments
+    # Load instruments via /v1/fi/instruments. The API filters
+    # active_only=1; the maturity/category/coupon filters that the
+    # legacy SQL applied are now applied client-side below.
     try:
-        rows = _con.execute(
-            """SELECT instrument_id, isin, name, category, maturity_date,
-                      coupon_rate, coupon_frequency, face_value,
-                      shariah_compliant, issue_date
-               FROM fi_instruments
-               WHERE is_active = 1
-                 AND maturity_date > date('now')
-                 AND category NOT IN ('MTB')
-                 AND coupon_rate IS NOT NULL
-                 AND coupon_rate > 0
-               ORDER BY maturity_date"""
-        ).fetchall()
+        from datetime import date as _date
+        today_iso = _date.today().isoformat()
+        all_rows = api_client.get_fi_instruments(active_only=True, limit=5000) or []
+        rows = [
+            r for r in all_rows
+            if (r.get("maturity_date") or "0000-00-00") > today_iso
+            and (r.get("category") or "") not in ("MTB",)
+            and r.get("coupon_rate") is not None
+            and (r.get("coupon_rate") or 0) > 0
+        ]
 
         for row in rows:
             mat_str = row["maturity_date"]
@@ -625,21 +626,18 @@ def _load_securities_from_db(_con) -> tuple[list[dict], dict[str, dict], str]:
     except Exception:
         pass
 
-    # Load latest quotes for each instrument
+    # Load latest quotes via /v1/fi/quotes/latest
     try:
-        quote_rows = _con.execute(
-            """SELECT instrument_id, clean_price, ytm, volume, quote_date
-               FROM fi_quotes
-               WHERE quote_date = (SELECT MAX(quote_date) FROM fi_quotes)
-               ORDER BY instrument_id"""
-        ).fetchall()
-
+        quote_rows = api_client.get_fi_quotes_latest() or []
         for row in quote_rows:
-            quotes[row["instrument_id"]] = {
-                "price": float(row["clean_price"]) if row["clean_price"] else 100,
-                "volume": float(row["volume"] or 0),
+            iid = row.get("instrument_id")
+            if not iid:
+                continue
+            quotes[iid] = {
+                "price": float(row["clean_price"]) if row.get("clean_price") else 100,
+                "volume": float(row.get("volume") or 0),
                 "weighted_avg": 0,
-                "quote_date": row["quote_date"],
+                "quote_date": row.get("quote_date"),
             }
     except Exception:
         pass
@@ -650,40 +648,33 @@ def _load_securities_from_db(_con) -> tuple[list[dict], dict[str, dict], str]:
 
 
 @st.cache_data(ttl=300)
-def _load_price_history(_con, instrument_id: str, days: int = 60) -> list[dict]:
-    """Load price history for a specific instrument from fi_quotes."""
+def _load_price_history(instrument_id: str, days: int = 60) -> list[dict]:
+    """Price history for an instrument via /v1/fi/quotes/{id}/history."""
     try:
-        rows = _con.execute(
-            """SELECT quote_date as date, clean_price as price,
-                      COALESCE(volume, 0) as volume
-               FROM fi_quotes
-               WHERE instrument_id = ?
-                 AND quote_date >= date('now', ? || ' days')
-               ORDER BY quote_date""",
-            (instrument_id, str(-days)),
-        ).fetchall()
-        if rows:
-            return [
-                {"date": r["date"], "price": float(r["price"] or 0), "volume": float(r["volume"] or 0)}
-                for r in rows
-                if r["price"]
-            ]
+        rows = api_client.get_fi_quotes_history(instrument_id, days=days) or []
+        return [
+            {
+                "date": r.get("quote_date"),
+                "price": float(r.get("clean_price") or 0),
+                "volume": float(r.get("volume") or 0),
+            }
+            for r in rows
+            if r.get("clean_price")
+        ]
     except Exception:
         pass
     return []
 
 
-def _load_benchmark_from_db(con) -> dict:
-    """Try to load benchmark rates from SBP snapshots in DB."""
+def _load_benchmark_from_db() -> dict:
+    """SBP benchmark snapshot via /v1/benchmark/snapshot.
+
+    Returns the flat ``metrics`` dict (legacy callers expect that
+    shape — the snapshot date is dropped here; callers don't use it).
+    """
     try:
-        from pakfindata.db.repositories.bond_market import (
-            init_bond_market_schema,
-            get_benchmark_snapshot,
-        )
-        init_bond_market_schema(con)
-        snap = get_benchmark_snapshot(con)
-        if snap:
-            return snap
+        payload = api_client.get_benchmark_snapshot() or {}
+        return payload.get("metrics") or {}
     except Exception:
         pass
     return {}
@@ -825,24 +816,22 @@ def render_debt_terminal():
     # ── Rate Shock Slider (in session state) ────────────────
     curve_shift = st.session_state.get("dt_curve_shift", 0)
 
-    # ── Load live data from DB ──────────────────────────────
-    con = get_connection()
-
+    # ── Load live data via /v1 ──────────────────────────────
     # Load PKRV curve
-    pkrv_curve, pkrv_date = _load_pkrv_curve(con)
+    pkrv_curve, pkrv_date = _load_pkrv_curve()
 
     # Load IFRV (Islamic) curve — pass PKRV as JSON for cache-safe arg
     import json
-    ifrv_curve, ifrv_date = _load_ifrv_curve(con, json.dumps(pkrv_curve))
+    ifrv_curve, ifrv_date = _load_ifrv_curve(json.dumps(pkrv_curve))
 
     # Load KIBOR rates
-    kibor_rates, kibor_date = _load_kibor_rates(con)
+    kibor_rates, kibor_date = _load_kibor_rates()
 
     # Load securities + quotes from fi_instruments/fi_quotes
-    bond_list, quotes_dict, data_source = _load_securities_from_db(con)
+    bond_list, quotes_dict, data_source = _load_securities_from_db()
 
     # Load SBP benchmarks
-    db_snap = _load_benchmark_from_db(con)
+    db_snap = _load_benchmark_from_db()
 
     # ── Data source indicator ───────────────────────────────
     source_parts = []
@@ -1159,10 +1148,12 @@ def _render_detail_panel(analytics_list: list[dict], persona: str, con=None):
 
 
 def _render_price_volume_chart(instrument_id: str, con=None):
-    """Render dual-axis price + volume chart from DB or empty state."""
-    history = []
-    if con is not None:
-        history = _load_price_history(con, instrument_id, days=60)
+    """Render dual-axis price + volume chart via /v1 or empty state.
+
+    The ``con`` parameter is kept for legacy callers (now unused) —
+    history is fetched through /v1/fi/quotes/{id}/history regardless.
+    """
+    history = _load_price_history(instrument_id, days=60)
 
     if not history:
         st.caption("No price history available for this security.")

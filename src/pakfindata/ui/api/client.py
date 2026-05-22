@@ -732,6 +732,19 @@ def get_fi_quotes_latest() -> Optional[list[dict]]:
     return _safe_get("/v1/fi/quotes/latest")
 
 
+def get_fi_quotes_history(
+    instrument_id: str, days: int = 60
+) -> Optional[list[dict]]:
+    return _safe_get(
+        f"/v1/fi/quotes/{instrument_id}/history",
+        params={"days": days},
+    )
+
+
+def get_kibor_latest_per_tenor() -> Optional[list[dict]]:
+    return _safe_get("/v1/rates/kibor/latest-per-tenor")
+
+
 # ── Equities (1.7.D.0) ─────────────────────────────────────────────────────
 
 
@@ -925,6 +938,8 @@ __all__ = [
     "get_alm_liquidity_ladder",
     "get_fi_instruments",
     "get_fi_quotes_latest",
+    "get_fi_quotes_history",
+    "get_kibor_latest_per_tenor",
     # equities (1.7.D.0)
     "get_screener",
     "get_symbol_sectors",
