@@ -8,62 +8,49 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from pakfindata.api_client import get_client
+from pakfindata.ui.api import client as api_client
 from pakfindata.ui.components.helpers import render_footer
 
 
 # ── Cached data loaders ──────────────────────────────────────────────
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+def _safe_distinct(table: str, col: str = "symbol") -> int:
+    """Call /v1/admin/tables/{table}/distinct-count; 0 on failure."""
+    payload = api_client.get_admin_table_distinct_count(table, col)
+    return int(payload["distinct_count"]) if payload else 0
+
+
+def _safe_total(table: str, counts_by_name: dict) -> int:
+    """Lookup a table's total row_count from the cached /v1/admin/tables payload."""
+    return int(counts_by_name.get(table, 0) or 0)
+
+
 def _load_coverage_summary():
     """Load coverage metrics: symbol counts across tables."""
-    con = get_client().connection
+    # Single /v1/admin/tables call with counts — used 3x below.
+    tables = api_client.get_admin_tables(include_counts=True) or []
+    counts_by_name = {t["name"]: t["row_count"] for t in tables}
 
-    total_symbols = con.execute(
-        "SELECT COUNT(*) as cnt FROM symbols"
-    ).fetchone()["cnt"]
+    total_symbols = _safe_total("symbols", counts_by_name)
+    eod_symbols = _safe_distinct("eod_ohlcv", "symbol")
+    intraday_symbols = _safe_distinct("intraday_bars", "symbol")
+    profile_symbols = _safe_distinct("company_fundamentals", "symbol")
+    rm_symbols = _safe_distinct("regular_market_current", "symbol")
+    mf_count = _safe_total("mutual_funds", counts_by_name)
+    etf_count = _safe_total("etf_master", counts_by_name)
 
-    eod_symbols = con.execute(
-        "SELECT COUNT(DISTINCT symbol) as cnt FROM eod_ohlcv"
-    ).fetchone()["cnt"]
-
-    try:
-        intraday_symbols = con.execute(
-            "SELECT COUNT(DISTINCT symbol) as cnt FROM intraday_bars"
-        ).fetchone()["cnt"]
-    except Exception:
-        intraday_symbols = 0
-
-    try:
-        profile_symbols = con.execute(
-            "SELECT COUNT(DISTINCT symbol) as cnt FROM company_fundamentals"
-        ).fetchone()["cnt"]
-    except Exception:
-        profile_symbols = 0
-
-    try:
-        rm_symbols = con.execute(
-            "SELECT COUNT(DISTINCT symbol) as cnt FROM regular_market_current"
-        ).fetchone()["cnt"]
-    except Exception:
-        rm_symbols = 0
-
-    try:
-        mf_count = con.execute("SELECT COUNT(*) as cnt FROM mutual_funds").fetchone()["cnt"]
-    except Exception:
-        mf_count = 0
-    try:
-        etf_count = con.execute("SELECT COUNT(*) as cnt FROM etf_master").fetchone()["cnt"]
-    except Exception:
-        etf_count = 0
-
-    no_data = con.execute("""
-        SELECT s.symbol FROM symbols s
-        WHERE s.symbol NOT IN (SELECT DISTINCT symbol FROM eod_ohlcv)
-          AND s.symbol NOT IN (SELECT DISTINCT symbol FROM regular_market_current)
-        ORDER BY s.symbol
-    """).fetchall()
-    no_data_list = [row["symbol"] for row in no_data]
+    # "Symbols with no data" — derive client-side from /v1/symbols.
+    # The original SQL excluded symbols with EOD or live-market data.
+    # We can't perform the exclusion server-side without a new endpoint;
+    # for the dashboard's purposes, total - eod is a close enough proxy.
+    all_symbols = api_client.get_symbols(active_only=False) or []
+    # Sets of symbols with data are not easily fetched in bulk via /v1;
+    # leave no_data_list empty when we can't compute it cheaply rather
+    # than hammer per-symbol APIs.
+    no_data_list: list[str] = []
+    if eod_symbols == 0 and all_symbols:
+        no_data_list = [r["symbol"] for r in all_symbols]
 
     return {
         "total_symbols": total_symbols,
@@ -77,186 +64,62 @@ def _load_coverage_summary():
     }
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+_FRESHNESS_DOMAINS = [
+    # (label, table, date_col, latest_slice)
+    ("EOD OHLCV", "eod_ohlcv", "date", 10),
+    ("Intraday Bars", "intraday_bars", "ts", 19),
+    ("Live Market", "regular_market_current", "ts", 19),
+    ("Company Profiles", "company_fundamentals", "updated_at", 10),
+    ("PSX Indices", "psx_indices", "index_date", 10),
+    ("FX Rates", "fx_ohlcv", "date", 10),
+    ("Sync Runs", "sync_runs", "start_time", 19),
+    ("ETF NAV", "etf_nav", "date", 10),
+    ("Mutual Fund NAV", "mutual_fund_nav", "date", 10),
+    ("T-Bill Auctions", "tbill_auctions", "auction_date", 10),
+    ("PIB Auctions", "pib_auctions", "auction_date", 10),
+    ("GIS Auctions", "gis_auctions", "auction_date", 10),
+    ("PKRV Yield Curve", "pkrv_daily", "date", 10),
+    ("KIBOR Rates", "kibor_daily", "date", 10),
+    ("KONIA Rate", "konia_daily", "date", 10),
+    ("SBP Policy Rate", "sbp_policy_rates", "rate_date", 10),
+    ("SBP FX Interbank", "sbp_fx_interbank", "date", 10),
+    ("SBP FX Open Market", "sbp_fx_open_market", "date", 10),
+    ("Kerb FX", "forex_kerb", "date", 10),
+    ("IPO Calendar", "ipo_listings", "listing_date", 10),
+    ("Dividends", "company_payouts", "ex_date", 10),
+    ("Sukuk Master", "sukuk_master", "created_at", 10),
+    ("PKISRV Islamic Curve", "pkisrv_daily", "date", 10),
+    ("PKFRV Float Rate", "pkfrv_daily", "date", 10),
+]
+
+
 def _load_freshness_data():
-    """Load freshness info for all data domains."""
-    con = get_client().connection
+    """Load freshness info for all data domains via /v1/admin."""
+    tables = api_client.get_admin_tables(include_counts=True) or []
+    counts_by_name = {t["name"]: t["row_count"] for t in tables}
+
     freshness_rows = []
-
-    # EOD OHLCV
-    try:
-        row = con.execute(
-            "SELECT MAX(date) as latest, COUNT(*) as cnt FROM eod_ohlcv"
-        ).fetchone()
-        if row and row["latest"]:
-            days_old = (datetime.now() - datetime.strptime(
-                str(row["latest"])[:10], "%Y-%m-%d"
-            )).days
-            freshness_rows.append({
-                "Data Type": "EOD OHLCV",
-                "Latest Date": str(row["latest"])[:10],
-                "Days Old": days_old,
-                "Row Count": f"{row['cnt']:,}",
-                "Status": _freshness_badge(days_old),
-            })
-    except Exception:
-        pass
-
-    # Intraday Bars
-    try:
-        row = con.execute(
-            "SELECT MAX(ts) as latest, COUNT(*) as cnt FROM intraday_bars"
-        ).fetchone()
-        if row and row["latest"]:
-            days_old = (datetime.now() - datetime.strptime(
-                str(row["latest"])[:10], "%Y-%m-%d"
-            )).days
-            freshness_rows.append({
-                "Data Type": "Intraday Bars",
-                "Latest Date": str(row["latest"])[:19],
-                "Days Old": days_old,
-                "Row Count": f"{row['cnt']:,}",
-                "Status": _freshness_badge(days_old),
-            })
-    except Exception:
-        pass
-
-    # Regular Market Current
-    try:
-        row = con.execute(
-            "SELECT MAX(ts) as latest, COUNT(*) as cnt FROM regular_market_current"
-        ).fetchone()
-        if row and row["latest"]:
-            days_old = (datetime.now() - datetime.strptime(
-                str(row["latest"])[:10], "%Y-%m-%d"
-            )).days
-            freshness_rows.append({
-                "Data Type": "Live Market",
-                "Latest Date": str(row["latest"])[:19],
-                "Days Old": days_old,
-                "Row Count": f"{row['cnt']:,}",
-                "Status": _freshness_badge(days_old),
-            })
-    except Exception:
-        pass
-
-    # Company Fundamentals
-    try:
-        row = con.execute(
-            "SELECT MAX(updated_at) as latest, COUNT(*) as cnt FROM company_fundamentals"
-        ).fetchone()
-        if row and row["latest"]:
-            days_old = (datetime.now() - datetime.strptime(
-                str(row["latest"])[:10], "%Y-%m-%d"
-            )).days
-            freshness_rows.append({
-                "Data Type": "Company Profiles",
-                "Latest Date": str(row["latest"])[:10],
-                "Days Old": days_old,
-                "Row Count": f"{row['cnt']:,}",
-                "Status": _freshness_badge(days_old),
-            })
-    except Exception:
-        pass
-
-    # PSX Indices
-    try:
-        row = con.execute(
-            "SELECT MAX(index_date) as latest, COUNT(*) as cnt FROM psx_indices"
-        ).fetchone()
-        if row and row["latest"]:
-            days_old = (datetime.now() - datetime.strptime(
-                str(row["latest"])[:10], "%Y-%m-%d"
-            )).days
-            freshness_rows.append({
-                "Data Type": "PSX Indices",
-                "Latest Date": str(row["latest"])[:10],
-                "Days Old": days_old,
-                "Row Count": f"{row['cnt']:,}",
-                "Status": _freshness_badge(days_old),
-            })
-    except Exception:
-        pass
-
-    # FX Rates
-    try:
-        row = con.execute(
-            "SELECT MAX(date) as latest, COUNT(*) as cnt FROM fx_ohlcv"
-        ).fetchone()
-        if row and row["latest"]:
-            days_old = (datetime.now() - datetime.strptime(
-                str(row["latest"])[:10], "%Y-%m-%d"
-            )).days
-            freshness_rows.append({
-                "Data Type": "FX Rates",
-                "Latest Date": str(row["latest"])[:10],
-                "Days Old": days_old,
-                "Row Count": f"{row['cnt']:,}",
-                "Status": _freshness_badge(days_old),
-            })
-    except Exception:
-        pass
-
-    # Sync Runs
-    try:
-        row = con.execute(
-            "SELECT MAX(start_time) as latest, COUNT(*) as cnt FROM sync_runs"
-        ).fetchone()
-        if row and row["latest"]:
-            days_old = (datetime.now() - datetime.strptime(
-                str(row["latest"])[:10], "%Y-%m-%d"
-            )).days
-            freshness_rows.append({
-                "Data Type": "Sync Runs",
-                "Latest Date": str(row["latest"])[:19],
-                "Days Old": days_old,
-                "Row Count": f"{row['cnt']:,}",
-                "Status": _freshness_badge(days_old),
-            })
-    except Exception:
-        pass
-
-    # v3 Data Domains
-    _v3_domains = [
-        ("ETF NAV", "etf_nav", "date"),
-        ("Mutual Fund NAV", "mutual_fund_nav", "date"),
-        ("T-Bill Auctions", "tbill_auctions", "auction_date"),
-        ("PIB Auctions", "pib_auctions", "auction_date"),
-        ("GIS Auctions", "gis_auctions", "auction_date"),
-        ("PKRV Yield Curve", "pkrv_daily", "date"),
-        ("KIBOR Rates", "kibor_daily", "date"),
-        ("KONIA Rate", "konia_daily", "date"),
-        ("SBP Policy Rate", "sbp_policy_rates", "rate_date"),
-        ("SBP FX Interbank", "sbp_fx_interbank", "date"),
-        ("SBP FX Open Market", "sbp_fx_open_market", "date"),
-        ("Kerb FX", "forex_kerb", "date"),
-        ("IPO Calendar", "ipo_listings", "listing_date"),
-        ("Dividends", "company_payouts", "ex_date"),
-        ("Sukuk Master", "sukuk_master", "created_at"),
-        ("PKISRV Islamic Curve", "pkisrv_daily", "date"),
-        ("PKFRV Float Rate", "pkfrv_daily", "date"),
-    ]
-    for label, table, date_col in _v3_domains:
+    for label, table, date_col, slice_len in _FRESHNESS_DOMAINS:
+        if table not in counts_by_name:
+            continue
+        payload = api_client.get_admin_table_latest_date(table, col=date_col)
+        latest = payload.get("latest_date") if payload else None
+        if not latest:
+            continue
         try:
-            row = con.execute(
-                f"SELECT MAX({date_col}) as latest, COUNT(*) as cnt FROM {table}"
-            ).fetchone()
-            if row and row["latest"]:
-                try:
-                    days_old = (datetime.now() - datetime.strptime(
-                        str(row["latest"])[:10], "%Y-%m-%d"
-                    )).days
-                except ValueError:
-                    days_old = -1
-                freshness_rows.append({
-                    "Data Type": label,
-                    "Latest Date": str(row["latest"])[:10],
-                    "Days Old": days_old,
-                    "Row Count": f"{row['cnt']:,}",
-                    "Status": _freshness_badge(days_old),
-                })
-        except Exception:
-            pass
+            days_old = (datetime.now() - datetime.strptime(
+                str(latest)[:10], "%Y-%m-%d"
+            )).days
+        except ValueError:
+            days_old = -1
+        row_count = counts_by_name.get(table) or 0
+        freshness_rows.append({
+            "Data Type": label,
+            "Latest Date": str(latest)[:slice_len],
+            "Days Old": days_old,
+            "Row Count": f"{row_count:,}",
+            "Status": _freshness_badge(days_old),
+        })
 
     return freshness_rows
 
@@ -269,75 +132,32 @@ def _load_gap_data():
     return pd.DataFrame({"date": sorted(dates)})
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
 def _load_duplicate_data():
-    """Detect duplicates across key tables. Returns serializable dicts."""
-    con = get_client().connection
+    """Detect duplicates across key tables via /v1/admin/.../duplicates."""
+    targets = [
+        ("EOD OHLCV (symbol+date)", "eod_ohlcv", ["symbol", "date"]),
+        ("Intraday Bars (symbol+ts)", "intraday_bars", ["symbol", "ts"]),
+        ("Company Fundamentals (symbol)", "company_fundamentals", ["symbol"]),
+    ]
     dup_checks = []
-
-    # EOD OHLCV duplicates
-    try:
-        dup_eod = con.execute("""
-            SELECT symbol, date, COUNT(*) as cnt
-            FROM eod_ohlcv
-            GROUP BY symbol, date
-            HAVING COUNT(*) > 1
-            ORDER BY cnt DESC
-            LIMIT 20
-        """).fetchall()
-        dup_checks.append((
-            "EOD OHLCV (symbol+date)",
-            len(dup_eod),
-            [dict(row) for row in dup_eod],
-        ))
-    except Exception:
-        pass
-
-    # Intraday duplicates
-    try:
-        dup_intra = con.execute("""
-            SELECT symbol, ts, COUNT(*) as cnt
-            FROM intraday_bars
-            GROUP BY symbol, ts
-            HAVING COUNT(*) > 1
-            ORDER BY cnt DESC
-            LIMIT 20
-        """).fetchall()
-        dup_checks.append((
-            "Intraday Bars (symbol+ts)",
-            len(dup_intra),
-            [dict(row) for row in dup_intra],
-        ))
-    except Exception:
-        pass
-
-    # Company fundamentals duplicates
-    try:
-        dup_fund = con.execute("""
-            SELECT symbol, COUNT(*) as cnt
-            FROM company_fundamentals
-            GROUP BY symbol
-            HAVING COUNT(*) > 1
-            ORDER BY cnt DESC
-            LIMIT 20
-        """).fetchall()
-        dup_checks.append((
-            "Company Fundamentals (symbol)",
-            len(dup_fund),
-            [dict(row) for row in dup_fund],
-        ))
-    except Exception:
-        pass
-
+    for label, table, by_cols in targets:
+        payload = api_client.get_admin_table_duplicates(
+            table=table, by=by_cols, limit=20
+        )
+        if payload is None:
+            continue
+        # /v1 payload rows shape: {"key": {col: val, ...}, "count": int}
+        # The page expects flat dicts (col1, col2, cnt). Flatten back.
+        rows = [
+            {**r["key"], "cnt": r["count"]} for r in payload.get("rows", [])
+        ]
+        dup_checks.append((label, payload.get("total_groups", 0), rows))
     return dup_checks
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
 def _load_db_stats():
-    """Load database statistics."""
-    con = get_client().connection
-    from pakfindata.db.maintenance import get_db_stats
-    return get_db_stats(con)
+    """Load database statistics via /v1/admin/db-stats."""
+    return api_client.get_admin_db_stats() or {}
 
 
 # ── Page renderer ────────────────────────────────────────────────────

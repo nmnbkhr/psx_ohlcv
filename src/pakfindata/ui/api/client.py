@@ -1085,6 +1085,22 @@ def get_admin_sync_failures(limit: int = 50) -> Optional[list[dict]]:
     return _safe_get("/v1/admin/sync-runs/failures", params={"limit": limit})
 
 
+@st.cache_data(ttl=300)
+def get_admin_table_distinct_count(
+    table: str, col: str
+) -> Optional[dict]:
+    return _safe_get(
+        f"/v1/admin/tables/{table}/distinct-count",
+        params={"col": col},
+        on_404=None,
+    )
+
+
+@st.cache_data(ttl=60)
+def get_admin_db_stats() -> Optional[dict]:
+    return _safe_get("/v1/admin/db-stats")
+
+
 def use_worker_sync() -> bool:
     """Feature flag: should sync buttons enqueue worker jobs?
 
@@ -1221,5 +1237,7 @@ __all__ = [
     "get_admin_duckdb_tables",
     "get_admin_sync_runs",
     "get_admin_sync_failures",
+    "get_admin_table_distinct_count",
+    "get_admin_db_stats",
     "use_worker_sync",
 ]

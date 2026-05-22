@@ -82,3 +82,21 @@ class SyncFailureRow(BaseModel):
     error_type: str
     error_message: Optional[str] = None
     created_at: str
+
+
+class AdminDistinctCount(BaseModel):
+    """COUNT(DISTINCT col) for a single table column."""
+
+    table: str
+    column: str
+    distinct_count: int
+
+
+class AdminDbStats(BaseModel):
+    """SQLite file + WAL stats + index/free-page counts + per-table counts."""
+
+    file_size_mb: float = 0.0
+    wal_file_size_mb: float = 0.0
+    table_counts: dict[str, int] = {}
+    index_count: int = 0
+    free_page_count: int = 0

@@ -30,6 +30,8 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 from pakfindata.api.deps import get_analytics_con, get_read_db
 from pakfindata.api.schemas.admin import (
+    AdminDbStats,
+    AdminDistinctCount,
     AdminDuckdbTableRow,
     AdminDuplicateRow,
     AdminDuplicatesResponse,
@@ -136,6 +138,32 @@ def get_table_latest_date(
 
 
 @admin_router.get(
+    "/tables/{table}/distinct-count", response_model=AdminDistinctCount
+)
+def get_table_distinct_count(
+    table: Annotated[str, Path(description="Table name (allowlisted)")],
+    col: Annotated[
+        str, Query(description="Column to count distinct values (allowlisted)")
+    ],
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> AdminDistinctCount:
+    """``COUNT(DISTINCT col)`` for a single table column.
+
+    Backs data-quality coverage dashboards that show e.g. "symbols
+    with EOD data" = COUNT(DISTINCT symbol) in eod_ohlcv.
+    """
+    real_table = _resolve_table(con, table)
+    _resolve_columns(con, real_table, [col])
+    row = con.execute(
+        f"SELECT COUNT(DISTINCT {_quote_ident(col)}) AS c "
+        f"FROM {_quote_ident(real_table)}"
+    ).fetchone()
+    return AdminDistinctCount(
+        table=real_table, column=col, distinct_count=row["c"] if row else 0
+    )
+
+
+@admin_router.get(
     "/tables/{table}/duplicates", response_model=AdminDuplicatesResponse
 )
 def get_table_duplicates(
@@ -179,6 +207,23 @@ def get_table_duplicates(
     return AdminDuplicatesResponse(
         table=real_table, by=cols, total_groups=len(out_rows), rows=out_rows
     )
+
+
+# ── /v1/admin/db-stats ─────────────────────────────────────────────
+
+
+@admin_router.get("/db-stats", response_model=AdminDbStats)
+def get_db_stats(con: sqlite3.Connection = Depends(get_read_db)) -> AdminDbStats:
+    """SQLite file + WAL size, index count, free-page count, per-table counts.
+
+    Wraps :func:`pakfindata.db.maintenance.get_db_stats`. Read-only —
+    DOES NOT vacuum/analyze/integrity-check (those stay as page-side
+    write actions per Phase 1.7 reads-only rule).
+    """
+    from pakfindata.db.maintenance import get_db_stats as _maintenance_stats
+
+    payload = _maintenance_stats(con)
+    return AdminDbStats(**payload)
 
 
 # ── /v1/admin/sync-runs (legacy sync ledger) ───────────────────────
