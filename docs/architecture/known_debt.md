@@ -101,6 +101,22 @@ view.
 - **`compute_sector_rollups` duplicate emission** (Milestone 0.1
   Wave 2b) — the function emits the same set of rows twice during
   rebuild. Cosmetic.
+- **Composite-aggregator page pattern — needs domain-scoped composite
+  endpoints** (Milestone 1.7 Group G.4) — `market_research.py` (1066
+  LOC, 13 `_load_*`) and `futures.py` (1381 LOC, 22+ reads) combine
+  cross-domain reads into custom analytical queries (`trading_sessions`
+  JOINs, ODL/OI composites) that don't compose from the existing per-
+  domain /v1 endpoints. Adding 5+ one-page-specific endpoints would
+  create dashboard-shaped sprawl; better to design a Phase 2 layer of
+  composite endpoints (`/v1/dashboard/research`,
+  `/v1/dashboard/derivatives`) that pre-aggregate at the API boundary.
+  Until then both pages stay on direct DB reads (skipped in G.4 with
+  documented rationale). Distinct from:
+    * **engine-call-only** (F.6 — page reads ARE engine inputs,
+      e.g. `sector_breadth.py`, `advanced_hawkes.py`)
+    * **scraper-maintenance** (G.3 PMEX / G.1 SBP EasyData /
+      G.4.9 market_summary — single-page domain owner of a tracking
+      table or separate DB).
 
 ## DEBT-PHASE3 — Postgres migration handles naturally
 
