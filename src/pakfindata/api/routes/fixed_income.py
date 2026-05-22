@@ -31,6 +31,7 @@ from pakfindata.api.schemas.fixed_income import (
     AlmRepricingGapRow,
     AlmSensitivityRow,
     BenchmarkSnapshot,
+    BenchmarkSnapshotRow,
     BondTradingDailyRow,
     FiInstrumentRow,
     FiQuoteRow,
@@ -438,6 +439,42 @@ def get_bond_trading_daily(
 
 
 # ── /v1/benchmark ───────────────────────────────────────────────────
+
+
+@benchmark_router.get("/snapshot/history", response_model=list[BenchmarkSnapshotRow])
+def get_benchmark_history(
+    metric: Annotated[str, Query(description="Metric name (e.g. policy_rate)")],
+    from_: Annotated[Optional[str], Query(alias="from", pattern=DATE_RE)] = None,
+    to: Annotated[Optional[str], Query(pattern=DATE_RE)] = None,
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> list[dict]:
+    """History of a single ``sbp_benchmark_snapshot`` metric, oldest first."""
+    where = ["metric = ?"]
+    params: list = [metric]
+    if from_:
+        where.append("date >= ?")
+        params.append(from_)
+    if to:
+        where.append("date <= ?")
+        params.append(to)
+    cur = con.execute(
+        f"SELECT date, metric, value FROM sbp_benchmark_snapshot "
+        f"WHERE {' AND '.join(where)} ORDER BY date",
+        params,
+    )
+    return [dict(r) for r in cur.fetchall()]
+
+
+@benchmark_router.get("/status", response_model=GenericRow)
+def get_bond_market_status(
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> dict:
+    """``bond_market`` repo's status dict (used to gate the Trading
+    Volume section)."""
+    try:
+        return bond_repo.get_bond_market_status(con) or {}
+    except Exception:
+        return {}
 
 
 @benchmark_router.get("/snapshot", response_model=BenchmarkSnapshot)

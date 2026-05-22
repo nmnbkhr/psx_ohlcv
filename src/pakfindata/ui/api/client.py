@@ -622,6 +622,21 @@ def get_benchmark_snapshot() -> Optional[dict]:
     return _safe_get("/v1/benchmark/snapshot")
 
 
+def get_benchmark_history(
+    metric: str, from_: Optional[str] = None, to: Optional[str] = None
+) -> Optional[list[dict]]:
+    params: dict = {"metric": metric}
+    if from_:
+        params["from"] = from_
+    if to:
+        params["to"] = to
+    return _safe_get("/v1/benchmark/snapshot/history", params=params)
+
+
+def get_bond_market_status() -> Optional[dict]:
+    return _safe_get("/v1/benchmark/status")
+
+
 def get_policy_rate_history(limit: int = 100) -> Optional[list[dict]]:
     return _safe_get("/v1/rates/policy/history", params={"limit": limit})
 
@@ -943,6 +958,8 @@ __all__ = [
     "get_sovereign_curve",
     "get_bond_trading_daily",
     "get_benchmark_snapshot",
+    "get_benchmark_history",
+    "get_bond_market_status",
     "get_policy_rate_history",
     "get_npc_vs_rfr_spread",
     "get_npc_carry",
