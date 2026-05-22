@@ -481,6 +481,46 @@ def get_fx_analytics(pair: str) -> Optional[dict]:
     return _safe_get(f"/v1/fx/analytics/{pair}", on_404=None)
 
 
+# ── NCCPL Flow Intelligence (1.7.G.4.5a) ──────────────────────────────────
+
+
+@st.cache_data(ttl=60)
+def get_nccpl_coverage() -> Optional[dict]:
+    return _safe_get("/v1/nccpl/coverage")
+
+
+@st.cache_data(ttl=300)
+def get_nccpl_fipi(limit: int = 20) -> Optional[list[dict]]:
+    return _safe_get("/v1/nccpl/fipi", params={"limit": limit})
+
+
+@st.cache_data(ttl=300)
+def get_nccpl_lipi(limit: int = 20) -> Optional[list[dict]]:
+    return _safe_get("/v1/nccpl/lipi", params={"limit": limit})
+
+
+@st.cache_data(ttl=600)
+def get_nccpl_sector_dates(limit: int = 60) -> Optional[list[str]]:
+    return _safe_get("/v1/nccpl/sector-dates", params={"limit": limit})
+
+
+@st.cache_data(ttl=300)
+def get_nccpl_sector(date: str) -> Optional[list[dict]]:
+    if not date:
+        return []
+    return _safe_get("/v1/nccpl/sector", params={"date": date})
+
+
+@st.cache_data(ttl=300)
+def get_nccpl_sector_heatmap(days: int = 20) -> Optional[list[dict]]:
+    return _safe_get("/v1/nccpl/sector-heatmap", params={"days": days})
+
+
+@st.cache_data(ttl=300)
+def get_nccpl_flows_derived(limit: int = 1000) -> Optional[list[dict]]:
+    return _safe_get("/v1/nccpl/flows-derived", params={"limit": limit})
+
+
 @st.cache_data(ttl=300)
 def get_fx_normalized_performance(
     pairs: list[str],
@@ -1579,5 +1619,13 @@ __all__ = [
     "get_fx_pairs",
     "get_fx_analytics",
     "get_fx_normalized_performance",
+    # nccpl flow intelligence (1.7.G.4.5a)
+    "get_nccpl_coverage",
+    "get_nccpl_fipi",
+    "get_nccpl_lipi",
+    "get_nccpl_sector_dates",
+    "get_nccpl_sector",
+    "get_nccpl_sector_heatmap",
+    "get_nccpl_flows_derived",
     "use_worker_sync",
 ]

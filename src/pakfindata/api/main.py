@@ -42,6 +42,7 @@ from pakfindata.api.routes import indices as indices_route
 from pakfindata.api.routes import intraday as intraday_route
 from pakfindata.api.routes import jobs as jobs_route
 from pakfindata.api.routes import market as market_route
+from pakfindata.api.routes import nccpl as nccpl_route
 from pakfindata.api.routes import sync as sync_route
 from pakfindata.api.routes import tick_logs as tick_logs_route
 
@@ -143,6 +144,7 @@ app.include_router(funds_route.etfs_router)
 app.include_router(commodities_route.commodities_router)
 app.include_router(commodities_route.khistocks_router)
 app.include_router(commodities_route.pmex_portal_router)
+app.include_router(nccpl_route.router)
 app.include_router(admin_route.admin_router)
 app.include_router(sync_route.router)
 app.include_router(jobs_route.router)
