@@ -1,12 +1,15 @@
 """Yield Curve Analytics — sovereign curve with synthetic extension.
 
-Reads: sovereign_curve table
+Reads: /v1/curve/sovereign (page-side)
+Engine layer (curve_analytics.persist_synthetic_rates) still writes
+``*_SYN`` rows directly into ``sovereign_curve`` — that exception is
+documented in CLAUDE.md and stays untouched here (Phase 1.7 is
+UI-layer migration only).
 Shows: PKISRV, PKRV, PKFRV curves with Linear / Cubic Spline / NSS methods
 """
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import timedelta, timezone
 from pathlib import Path
 
@@ -15,6 +18,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from pakfindata.ui.api import client as api_client
 from pakfindata.ui.components.helpers import render_footer
 
 try:
@@ -35,7 +39,12 @@ from pakfindata.engine.curve_analytics import (
 )
 
 PKT = timezone(timedelta(hours=5))
-DB_PATH = Path("/home/smnb/psxdata_rescue/psx.sqlite")
+# Engine-layer write path (persist_synthetic_rates + source_convergence)
+# still takes a DB path directly. Documented exception in CLAUDE.md
+# (engine writes synthetic rates to sovereign_curve); kept here for those
+# two calls only — all page reads go via /v1/curve/sovereign.
+from pakfindata.settings import get_settings as _get_settings
+DB_PATH = Path(_get_settings().db_path)
 
 _C = {
     "bg": "#0B0E11", "card": "#141820", "border": "#1E2530",
@@ -46,48 +55,43 @@ _C = {
 }
 
 
-def _con():
-    return sqlite3.connect(str(DB_PATH))
-
-
 def _load_curve(date_str: str, source: str) -> pd.DataFrame:
-    con = _con()
-    df = pd.read_sql_query(
-        "SELECT tenor, days, yield_pct FROM sovereign_curve "
-        "WHERE date = ? AND source = ? ORDER BY days",
-        con, params=[date_str, source],
-    )
-    con.close()
-    return df
+    """Curve points for a (date, source) via /v1/curve/sovereign."""
+    rows = api_client.get_sovereign_curve(date=date_str, source=source) or []
+    if not rows:
+        return pd.DataFrame(columns=["tenor", "days", "yield_pct"])
+    df = pd.DataFrame(rows)[["tenor", "days", "yield_pct"]]
+    return df.sort_values("days").reset_index(drop=True)
 
 
 def _available_dates(source: str) -> list[str]:
-    con = _con()
-    dates = [r[0] for r in con.execute(
-        "SELECT DISTINCT date FROM sovereign_curve "
-        "WHERE source = ? ORDER BY date DESC LIMIT 500",
-        (source,),
-    ).fetchall()]
-    con.close()
-    return dates
+    """Distinct trading dates for ``source`` (newest first, cap 500)."""
+    return api_client.get_sovereign_dates(source=source, limit=500) or []
 
 
 def _load_auction_anchors(date_str: str) -> dict:
-    """Load latest PIB auction cutoffs as NSS anchors."""
-    con = _con()
-    rows = con.execute(
-        "SELECT tenor, days, yield_pct FROM sovereign_curve "
-        "WHERE source = 'PIB' AND date >= date(?, '-60 days') AND date <= ? "
-        "ORDER BY date DESC",
-        (date_str, date_str),
-    ).fetchall()
-    con.close()
+    """Latest PIB auction cutoffs as NSS anchors.
+
+    The /v1/curve/sovereign endpoint only returns one date at a time,
+    so we fetch the most recent PIB rows for ``date_str`` and walk
+    back until we have one row per tenor (cap at the original 60-day
+    behavior).
+    """
+    from datetime import date as _date, timedelta as _td
+
+    end = _date.fromisoformat(date_str)
+    start = end - _td(days=60)
     seen: set = set()
     anchors: dict = {}
-    for tenor, days, yield_pct in rows:
-        if tenor not in seen and yield_pct > 0:
-            anchors[days / 365.25] = yield_pct
-            seen.add(tenor)
+    cur = end
+    while cur >= start and len(anchors) < 10:
+        rows = api_client.get_sovereign_curve(date=cur.isoformat(), source="PIB") or []
+        for r in rows:
+            tenor = r.get("tenor")
+            if tenor and tenor not in seen and (r.get("yield_pct") or 0) > 0:
+                anchors[r["days"] / 365.25] = r["yield_pct"]
+                seen.add(tenor)
+        cur -= _td(days=1)
     return anchors
 
 
@@ -147,12 +151,7 @@ def _build_excel(full: dict, ca: CurveAnalytics, metrics: dict,
 
 
 def _available_sources() -> list[str]:
-    con = _con()
-    sources = [r[0] for r in con.execute(
-        "SELECT DISTINCT source FROM sovereign_curve ORDER BY source"
-    ).fetchall()]
-    con.close()
-    return sources
+    return api_client.get_sovereign_sources() or []
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -597,7 +596,6 @@ def _render_data_table(full: dict, ca: CurveAnalytics, source: str, date_str: st
 
 
 def _render_history(source: str):
-    con = _con()
     tenors = ["2Y", "5Y", "10Y", "15Y", "20Y", "25Y", "30Y"]
     colors = {"2Y": _C["cyan"], "5Y": _C["blue"], "10Y": _C["gold"],
               "15Y": _C["purple"], "20Y": _C["down"],
@@ -606,15 +604,13 @@ def _render_history(source: str):
     fig = go.Figure()
     syn_source = f"{source}_SYN"
     for tenor in tenors:
-        # Query both official and synthetic sources
-        df = pd.read_sql_query(
-            "SELECT date, yield_pct FROM sovereign_curve "
-            "WHERE (source = ? OR source = ?) AND tenor = ? "
-            "ORDER BY date DESC LIMIT 500",
-            con, params=[source, syn_source, tenor],
-        )
-        if df.empty:
+        # Query both official and synthetic sources via /v1
+        rows = api_client.get_sovereign_tenor_history(
+            tenor=tenor, sources=f"{source},{syn_source}", limit=500,
+        ) or []
+        if not rows:
             continue
+        df = pd.DataFrame(rows)[["date", "yield_pct"]]
         df["date"] = pd.to_datetime(df["date"])
         df = df.sort_values("date")
         fig.add_trace(go.Scatter(
@@ -622,7 +618,6 @@ def _render_history(source: str):
             line=dict(color=colors.get(tenor, "#888"), width=1.5),
         ))
 
-    con.close()
     fig.update_layout(
         title=f"{source} Rate History by Tenor",
         xaxis=dict(gridcolor=_C["border"]),
@@ -672,15 +667,17 @@ def _render_nss_params(full: dict, source: str = "PKRV"):
     - **RMSE** = model fit error (lower = better, <5 bps is excellent)
     """)
 
-    # RMSE History chart (Step 8)
+    # RMSE History chart (Step 8) via /v1
     syn_source = f"{source}_SYN"
-    con = _con()
-    rmse_hist = pd.read_sql_query(
-        "SELECT date, yield_pct as rmse_bps FROM sovereign_curve "
-        "WHERE source = ? AND tenor = '_RMSE' ORDER BY date DESC LIMIT 365",
-        con, params=[syn_source],
-    )
-    con.close()
+    rmse_rows = api_client.get_sovereign_tenor_history(
+        tenor="_RMSE", sources=syn_source, limit=365,
+    ) or []
+    if rmse_rows:
+        rmse_hist = pd.DataFrame(rmse_rows)[["date", "yield_pct"]].rename(
+            columns={"yield_pct": "rmse_bps"}
+        )
+    else:
+        rmse_hist = pd.DataFrame(columns=["date", "rmse_bps"])
 
     if not rmse_hist.empty:
         rmse_hist["date"] = pd.to_datetime(rmse_hist["date"])

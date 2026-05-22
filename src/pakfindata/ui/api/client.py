@@ -566,6 +566,28 @@ def get_pkfrv(
     return _safe_get("/v1/yield-curves/pkfrv", params=params)
 
 
+def get_sovereign_sources() -> Optional[list[str]]:
+    return _safe_get("/v1/curve/sovereign/sources")
+
+
+def get_sovereign_tenor_history(
+    tenor: str, sources: Optional[str] = None, limit: int = 1000
+) -> Optional[list[dict]]:
+    params: dict = {"tenor": tenor, "limit": limit}
+    if sources:
+        params["sources"] = sources
+    return _safe_get("/v1/curve/sovereign/tenor-history", params=params)
+
+
+def get_sovereign_dates(
+    source: Optional[str] = None, limit: int = 500
+) -> Optional[list[str]]:
+    params: dict = {"limit": limit}
+    if source:
+        params["source"] = source
+    return _safe_get("/v1/curve/sovereign/dates", params=params)
+
+
 def get_sovereign_curve(
     date: Optional[str] = None,
     source: Optional[str] = None,
@@ -882,6 +904,9 @@ __all__ = [
     "get_pkrv",
     "get_pkisrv",
     "get_pkfrv",
+    "get_sovereign_sources",
+    "get_sovereign_dates",
+    "get_sovereign_tenor_history",
     "get_sovereign_curve",
     "get_bond_trading_daily",
     "get_benchmark_snapshot",

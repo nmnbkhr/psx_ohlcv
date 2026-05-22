@@ -292,6 +292,74 @@ def get_pkfrv(
 # ── /v1/curve/sovereign ─────────────────────────────────────────────
 
 
+@curve_router.get("/sovereign/sources", response_model=list[str])
+def get_sovereign_sources(
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> list[str]:
+    """Distinct source codes present in ``sovereign_curve``."""
+    cur = con.execute(
+        "SELECT DISTINCT source FROM sovereign_curve ORDER BY source"
+    )
+    return [r[0] for r in cur.fetchall()]
+
+
+@curve_router.get("/sovereign/dates", response_model=list[str])
+def get_sovereign_dates(
+    source: Annotated[
+        Optional[str],
+        Query(description="Restrict to a single source code"),
+    ] = None,
+    limit: Annotated[int, Query(ge=1, le=2000)] = 500,
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> list[str]:
+    """Distinct trading dates with curve data, newest first."""
+    if source:
+        cur = con.execute(
+            "SELECT DISTINCT date FROM sovereign_curve "
+            "WHERE source = ? ORDER BY date DESC LIMIT ?",
+            (source.upper(), limit),
+        )
+    else:
+        cur = con.execute(
+            "SELECT DISTINCT date FROM sovereign_curve "
+            "ORDER BY date DESC LIMIT ?",
+            (limit,),
+        )
+    return [r[0] for r in cur.fetchall()]
+
+
+@curve_router.get("/sovereign/tenor-history", response_model=list[SovereignCurveRow])
+def get_sovereign_tenor_history(
+    tenor: Annotated[str, Query(description="Tenor label (e.g. 10Y, _RMSE)")],
+    sources: Annotated[
+        Optional[str],
+        Query(description="Comma-separated source codes; omit for all"),
+    ] = None,
+    limit: Annotated[int, Query(ge=1, le=5000)] = 1000,
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> list[dict]:
+    """History of (date, yield_pct, …) for a fixed tenor across one or
+    more sources.
+
+    Backs the Curve Analytics history + NSS-RMSE charts.
+    Special tenor ``_RMSE`` returns the per-source NSS fit error.
+    """
+    where = ["tenor = ?"]
+    params: list = [tenor]
+    if sources:
+        keys = [s.strip().upper() for s in sources.split(",") if s.strip()]
+        placeholders = ",".join("?" * len(keys))
+        where.append(f"source IN ({placeholders})")
+        params.extend(keys)
+    cur = con.execute(
+        f"""SELECT date, source, tenor, days, yield_pct, bid, offer
+            FROM sovereign_curve WHERE {' AND '.join(where)}
+            ORDER BY date DESC LIMIT ?""",
+        params + [limit],
+    )
+    return [dict(r) for r in cur.fetchall()]
+
+
 @curve_router.get("/sovereign", response_model=list[SovereignCurveRow])
 def get_sovereign_curve(
     date: Annotated[Optional[str], Query(description="YYYY-MM-DD; defaults to latest", pattern=DATE_RE)] = None,
