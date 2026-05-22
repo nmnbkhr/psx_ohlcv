@@ -4,36 +4,35 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from pakfindata.ui.components.helpers import get_connection, render_footer
+from pakfindata.ui.api import client as api_client
+from pakfindata.ui.components.helpers import render_footer
 
 _CACHE_TTL = 86400
 
 
 @st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
 def _load_benchmark_snapshot():
-    from pakfindata.db.repositories.bond_market import get_benchmark_snapshot
-    con = get_connection()
-    return get_benchmark_snapshot(con)
+    """Flatten ``/v1/benchmark/snapshot`` to the legacy shape.
+
+    The /v1 endpoint returns ``{date, metrics: {...}}``; the existing
+    render code uses ``snap.pop('_date')`` + ``snap.get('policy_rate')``,
+    so we mirror that. Matches the pattern in rates_overview.py.
+    """
+    payload = api_client.get_benchmark_snapshot() or {}
+    metrics = dict(payload.get("metrics") or {})
+    metrics["_date"] = payload.get("date")
+    return metrics
 
 
 @st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
 def _load_bond_market_status():
-    from pakfindata.db.repositories.bond_market import get_bond_market_status
-    con = get_connection()
-    return get_bond_market_status(con)
+    return api_client.get_bond_market_status() or {}
 
 
 @st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
 def _load_benchmark_metric_history(metric: str):
-    con = get_connection()
-    try:
-        return pd.read_sql_query(
-            "SELECT date, value FROM sbp_benchmark_snapshot "
-            "WHERE metric = ? ORDER BY date",
-            con, params=(metric,),
-        )
-    except Exception:
-        return pd.DataFrame()
+    rows = api_client.get_benchmark_history(metric) or []
+    return pd.DataFrame(rows)
 
 
 def render_benchmark_monitor():
@@ -41,17 +40,11 @@ def render_benchmark_monitor():
     st.markdown("## Benchmark Monitor")
     st.caption("SBP benchmark rate snapshot history and trends")
 
-    con = get_connection()
-    if con is None:
-        st.error("Database connection not available")
-        return
-
-    from pakfindata.db.repositories.bond_market import init_bond_market_schema
-    init_bond_market_schema(con)
+    api_client.render_api_status_banner_if_down()
 
     # ── Latest Snapshot ──────────────────────────────────────────
     snap = _load_benchmark_snapshot()
-    if not snap:
+    if not snap or all(v is None for k, v in snap.items() if k != "_date"):
         st.info("No benchmark data. Click sync below to populate.")
     else:
         snap_date = snap.pop("_date", None)
@@ -69,7 +62,7 @@ def render_benchmark_monitor():
     st.divider()
 
     # ── Historical Trend Chart ───────────────────────────────────
-    _render_benchmark_history(con)
+    _render_benchmark_history()
 
     st.divider()
 
@@ -87,7 +80,6 @@ def render_benchmark_monitor():
     with st.expander("Sync Benchmark Data"):
         if st.button("Scrape Latest Benchmark", key="bm_sync"):
             # Phase 1.6.4: sidebar feature flag picks the path.
-            from pakfindata.ui.api import client as api_client
             if api_client.use_worker_sync():
                 api_client.run_job_with_progress(
                     "sync_benchmark",
@@ -115,7 +107,7 @@ def render_benchmark_monitor():
     render_footer()
 
 
-def _render_benchmark_history(con):
+def _render_benchmark_history():
     """Historical trend for selected benchmark metrics."""
     st.subheader("Benchmark History")
 
