@@ -470,6 +470,15 @@ def get_npc_rates(limit: int = 200) -> Optional[list[dict]]:
     return _safe_get("/v1/rates/npc", params={"limit": limit})
 
 
+def get_global_reference_rates(rate_names: Optional[str] = None) -> Optional[list[dict]]:
+    """Latest row per rate_name from ``global_reference_rates``.
+
+    ``rate_names``: optional comma-separated set, e.g. ``"SOFR,SONIA,EUSTR,TONA"``.
+    """
+    params = {"rate_names": rate_names} if rate_names else None
+    return _safe_get("/v1/rates/global", params=params)
+
+
 def use_worker_sync() -> bool:
     """Feature flag: should sync buttons enqueue worker jobs?
 
@@ -526,8 +535,9 @@ __all__ = [
     "get_fx_global_history",
     "get_fx_spread_heatmap",
     "get_fx_sync_runs",
-    # rates extras (1.7.C.1)
+    # rates extras (1.7.C.1 + 1.7.C.3)
     "get_konia",
     "get_npc_rates",
+    "get_global_reference_rates",
     "use_worker_sync",
 ]

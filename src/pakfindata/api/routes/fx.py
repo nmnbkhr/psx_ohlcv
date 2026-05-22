@@ -32,6 +32,7 @@ from pakfindata.api.schemas.fx import (
     FXRateRow,
     FXSpreadRow,
     FXSyncRunRow,
+    GlobalReferenceRateRow,
     KoniaRow,
     NPCRatesRow,
 )
@@ -231,6 +232,54 @@ def get_konia(
         (limit,),
     )
     return [dict(r) for r in cur.fetchall()]
+
+
+@rates_extra_router.get("/global", response_model=list[GlobalReferenceRateRow])
+def get_global_reference_rates(
+    rate_names: Annotated[
+        Optional[str],
+        Query(description="Comma-separated, e.g. SOFR,SONIA,EUSTR,TONA"),
+    ] = None,
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> list[dict]:
+    """Most-recent row per rate_name from ``global_reference_rates``.
+
+    If ``rate_names`` is omitted, returns the latest row for every
+    rate_name in the table (window-function-friendly). With
+    ``rate_names``, restricts to the comma-separated set.
+    """
+    try:
+        if rate_names:
+            keys = [n.strip().upper() for n in rate_names.split(",") if n.strip()]
+            placeholders = ",".join("?" * len(keys))
+            cur = con.execute(
+                f"""SELECT date, rate_name, currency, tenor, rate, volume,
+                           percentile_25, percentile_75, source
+                    FROM (
+                        SELECT *, ROW_NUMBER() OVER (
+                            PARTITION BY rate_name ORDER BY date DESC
+                        ) AS _rn
+                        FROM global_reference_rates
+                        WHERE UPPER(rate_name) IN ({placeholders})
+                    ) WHERE _rn = 1
+                    ORDER BY rate_name""",
+                tuple(keys),
+            )
+        else:
+            cur = con.execute(
+                """SELECT date, rate_name, currency, tenor, rate, volume,
+                          percentile_25, percentile_75, source
+                   FROM (
+                       SELECT *, ROW_NUMBER() OVER (
+                           PARTITION BY rate_name ORDER BY date DESC
+                       ) AS _rn
+                       FROM global_reference_rates
+                   ) WHERE _rn = 1
+                   ORDER BY rate_name"""
+            )
+        return [dict(r) for r in cur.fetchall()]
+    except sqlite3.OperationalError:
+        return []
 
 
 @rates_extra_router.get("/npc", response_model=list[NPCRatesRow])

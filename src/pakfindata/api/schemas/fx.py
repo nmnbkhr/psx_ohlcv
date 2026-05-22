@@ -76,6 +76,24 @@ class KoniaRow(BaseModel):
     rate_pct: Optional[float] = None
 
 
+class GlobalReferenceRateRow(BaseModel):
+    """One row from ``global_reference_rates``.
+
+    Source field is typically ``'nyfed'`` (SOFR/EFFR from FRBNY) or
+    ``'boe'`` (SONIA), ``'ecb'`` (EUSTR), ``'boj'`` (TONA).
+    """
+
+    date: str
+    rate_name: str
+    currency: str
+    tenor: str
+    rate: Optional[float] = None
+    volume: Optional[float] = None
+    percentile_25: Optional[float] = None
+    percentile_75: Optional[float] = None
+    source: Optional[str] = None
+
+
 class NPCRatesRow(BaseModel):
     """One row from ``npc_rates`` — non-prepayable carry rates.
 
