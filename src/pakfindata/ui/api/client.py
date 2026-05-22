@@ -1096,6 +1096,17 @@ def get_admin_table_distinct_count(
     )
 
 
+@st.cache_data(ttl=300)
+def get_admin_table_distinct(
+    table: str, col: str, limit: int = 1000
+) -> Optional[list[str]]:
+    return _safe_get(
+        f"/v1/admin/tables/{table}/distinct",
+        params={"col": col, "limit": limit},
+        on_404=[],
+    )
+
+
 @st.cache_data(ttl=60)
 def get_admin_db_stats() -> Optional[dict]:
     return _safe_get("/v1/admin/db-stats")
@@ -1238,6 +1249,7 @@ __all__ = [
     "get_admin_sync_runs",
     "get_admin_sync_failures",
     "get_admin_table_distinct_count",
+    "get_admin_table_distinct",
     "get_admin_db_stats",
     "use_worker_sync",
 ]

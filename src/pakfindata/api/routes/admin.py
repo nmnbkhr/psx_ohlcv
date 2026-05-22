@@ -138,6 +138,33 @@ def get_table_latest_date(
 
 
 @admin_router.get(
+    "/tables/{table}/distinct", response_model=list[str]
+)
+def get_table_distinct_values(
+    table: Annotated[str, Path(description="Table name (allowlisted)")],
+    col: Annotated[
+        str, Query(description="Column whose distinct values to list (allowlisted)")
+    ],
+    limit: Annotated[int, Query(ge=1, le=5000)] = 1000,
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> list[str]:
+    """``SELECT DISTINCT col FROM table ORDER BY col`` — symbol-list pickers etc.
+
+    Returns up to ``limit`` rows. NULLs are filtered out.
+    """
+    real_table = _resolve_table(con, table)
+    _resolve_columns(con, real_table, [col])
+    cur = con.execute(
+        f"SELECT DISTINCT {_quote_ident(col)} AS v "
+        f"FROM {_quote_ident(real_table)} "
+        f"WHERE {_quote_ident(col)} IS NOT NULL "
+        f"ORDER BY {_quote_ident(col)} LIMIT ?",
+        (limit,),
+    )
+    return [str(r["v"]) for r in cur.fetchall()]
+
+
+@admin_router.get(
     "/tables/{table}/distinct-count", response_model=AdminDistinctCount
 )
 def get_table_distinct_count(
