@@ -2,162 +2,97 @@
 
 SBP Policy Rate, KIBOR/KONIA money market rates, and latest
 government securities auction cutoffs in a single view.
+
+Reads through the /v1 API client (Phase 1.7.B.6).
 """
 
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
 
-from pakfindata.ui.components.helpers import get_connection, render_footer
+from pakfindata.ui.api import client as api_client
+from pakfindata.ui.components.helpers import render_footer
 
 
 # ── Cached data-loading helpers ───────────────────────────────────
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _load_benchmark_snapshot():
-    from pakfindata.db.repositories.bond_market import (
-        init_bond_market_schema,
-        get_benchmark_snapshot,
-    )
-    con = get_connection()
-    if con is None:
-        return {}
-    init_bond_market_schema(con)
-    return get_benchmark_snapshot(con) or {}
+def _load_benchmark_snapshot() -> dict:
+    """Returns ``{metrics..., _date}`` matching the legacy dict shape."""
+    payload = api_client.get_benchmark_snapshot() or {}
+    metrics = dict(payload.get("metrics") or {})
+    metrics["_date"] = payload.get("date")
+    return metrics
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_policy_rate():
-    """Fallback: latest policy rate from sbp_policy_rates table."""
-    con = get_connection()
-    if con is None:
+    """Fallback: latest policy rate from /v1/rates/policy/history."""
+    rows = api_client.get_policy_rate_history(limit=1) or []
+    if not rows:
         return None
-    try:
-        row = con.execute(
-            "SELECT policy_rate, rate_date FROM sbp_policy_rates "
-            "ORDER BY rate_date DESC LIMIT 1"
-        ).fetchone()
-        return row[0] if row else None
-    except Exception:
-        return None
+    return rows[0].get("policy_rate")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_kibor_rates():
-    """Fallback: latest KIBOR rates from kibor_daily table."""
-    con = get_connection()
-    if con is None:
-        return []
-    try:
-        kibor_df = pd.read_sql_query(
-            """SELECT tenor, bid, offer FROM kibor_daily
-               WHERE date = (SELECT MAX(date) FROM kibor_daily)
-               ORDER BY
-                 CASE tenor
-                   WHEN '1W' THEN 1 WHEN '2W' THEN 2
-                   WHEN '1M' THEN 3 WHEN '3M' THEN 4
-                   WHEN '6M' THEN 5 WHEN '9M' THEN 6
-                   WHEN '1Y' THEN 7 ELSE 8
-                 END""",
-            con,
-        )
-        rows = []
-        for _, r in kibor_df.iterrows():
-            rows.append({
-                "Tenor": f"KIBOR {r['tenor']}",
-                "Bid": f"{r['bid']:.2f}%" if r["bid"] else "N/A",
-                "Offer": f"{r['offer']:.2f}%" if r["offer"] else "N/A",
-                "Change": "",
-            })
-        return rows
-    except Exception:
-        return []
+    """Fallback: latest KIBOR latest-per-tenor."""
+    rows = api_client.get_kibor_latest_per_tenor() or []
+    formatted = []
+    for r in rows:
+        bid = r.get("bid")
+        offer = r.get("offer")
+        formatted.append({
+            "Tenor": f"KIBOR {r.get('tenor')}",
+            "Bid": f"{bid:.2f}%" if bid else "N/A",
+            "Offer": f"{offer:.2f}%" if offer else "N/A",
+            "Change": "",
+        })
+    return formatted
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_konia_rate():
-    """Latest KONIA overnight rate from konia_daily table."""
-    con = get_connection()
-    if con is None:
+    """Latest KONIA rate via /v1/rates/konia.
+
+    Defensive guard (Group C corruption) — only return values in the
+    0..50% band.
+    """
+    rows = api_client.get_konia(limit=1) or []
+    if not rows:
         return None
-    try:
-        konia = con.execute(
-            "SELECT rate, date FROM konia_daily ORDER BY date DESC LIMIT 1"
-        ).fetchone()
-        if konia and konia[0]:
-            return konia[0]
-        return None
-    except Exception:
-        return None
+    val = rows[0].get("rate_pct")
+    if val is not None and 0 < val < 50:
+        return val
+    return None
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_tbill_cutoffs():
-    """Fallback: latest T-Bill auction cutoffs from tbill_auctions table."""
-    con = get_connection()
-    if con is None:
-        return []
-    try:
-        df = pd.read_sql_query(
-            """SELECT tenor, cutoff_yield, auction_date
-               FROM tbill_auctions
-               WHERE (tenor, auction_date) IN (
-                   SELECT tenor, MAX(auction_date)
-                   FROM tbill_auctions GROUP BY tenor
-               )
-               ORDER BY
-                 CASE tenor
-                   WHEN '3M' THEN 1 WHEN '6M' THEN 2
-                   WHEN '12M' THEN 3 ELSE 4
-                 END""",
-            con,
-        )
-        rows = []
-        for _, r in df.iterrows():
-            rows.append({
-                "Tenor": r["tenor"],
-                "Cutoff": f"{r['cutoff_yield']:.2f}%",
-                "Date": r["auction_date"],
-            })
-        return rows
-    except Exception:
-        return []
+    """Latest T-Bill cutoff per tenor via /v1/treasury/tbill/latest-per-tenor."""
+    rows = api_client.get_tbill_latest_per_tenor() or []
+    return [
+        {
+            "Tenor": r.get("tenor"),
+            "Cutoff": f"{r['cutoff_yield']:.2f}%" if r.get("cutoff_yield") is not None else "—",
+            "Date": r.get("auction_date"),
+        }
+        for r in rows
+    ]
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_pib_cutoffs():
-    """Fallback: latest PIB auction cutoffs from pib_auctions table."""
-    con = get_connection()
-    if con is None:
-        return []
-    try:
-        df = pd.read_sql_query(
-            """SELECT tenor, cutoff_yield, auction_date
-               FROM pib_auctions
-               WHERE (tenor, auction_date) IN (
-                   SELECT tenor, MAX(auction_date)
-                   FROM pib_auctions GROUP BY tenor
-               )
-               ORDER BY
-                 CASE tenor
-                   WHEN '2Y' THEN 1 WHEN '3Y' THEN 2
-                   WHEN '5Y' THEN 3 WHEN '10Y' THEN 4
-                   WHEN '15Y' THEN 5 WHEN '20Y' THEN 6
-                   WHEN '30Y' THEN 7 ELSE 8
-                 END""",
-            con,
-        )
-        rows = []
-        for _, r in df.iterrows():
-            rows.append({
-                "Tenor": r["tenor"],
-                "Cutoff": f"{r['cutoff_yield']:.2f}%",
-                "Date": r["auction_date"],
-            })
-        return rows
-    except Exception:
-        return []
+    """Latest PIB cutoff per tenor via /v1/treasury/pib/latest-per-tenor."""
+    rows = api_client.get_pib_latest_per_tenor() or []
+    return [
+        {
+            "Tenor": r.get("tenor"),
+            "Cutoff": f"{r['cutoff_yield']:.2f}%" if r.get("cutoff_yield") is not None else "—",
+            "Date": r.get("auction_date"),
+        }
+        for r in rows
+    ]
 
 
 # ── Page renderer ─────────────────────────────────────────────────
@@ -165,6 +100,8 @@ def _load_pib_cutoffs():
 
 def render_rates_overview():
     """Render the Rates Overview command center page."""
+    api_client.render_api_status_banner_if_down()
+
     st.markdown("## Rates Overview")
     st.caption("KIBOR, KONIA, policy rate — the big picture")
 
@@ -172,23 +109,18 @@ def render_rates_overview():
     snap = dict(snap)  # shallow copy so pop doesn't mutate cache
     snap_date = snap.pop("_date", None)
 
-    con = get_connection()
-    if con is None:
-        st.error("Database connection not available")
-        return
-
     # ── Section 1: SBP Policy Rate Hero ──────────────────────────
-    _render_policy_rate_hero(con, snap)
+    _render_policy_rate_hero(snap)
 
     st.divider()
 
     # ── Section 2: Money Market Rates ────────────────────────────
-    _render_money_market_rates(con, snap)
+    _render_money_market_rates(snap)
 
     st.divider()
 
     # ── Section 3: Latest Auction Cutoffs ────────────────────────
-    _render_auction_cutoffs(con, snap)
+    _render_auction_cutoffs(snap)
 
     st.divider()
 
@@ -213,8 +145,6 @@ def render_rates_overview():
         col1, col2, col3 = st.columns(3)
         with col1:
             if st.button("Sync KIBOR (EasyData)", key="ro_rates"):
-                # Phase 1.6.3: sidebar feature flag picks the path.
-                from pakfindata.ui.api import client as api_client
                 if api_client.use_worker_sync():
                     api_client.run_job_with_progress(
                         "sync_kibor_easydata",
@@ -231,12 +161,9 @@ def render_rates_overview():
                         except SafeWriterBusyError:
                             st.error("Another sync is running. Wait a moment and retry.")
                         except Exception as e:
-                            # sync_kibor_easydata() already recorded the catalog failure.
                             st.error(f"Failed: {e}")
         with col2:
             if st.button("Sync Benchmark Snapshot", key="ro_bench"):
-                # Phase 1.6.4: sidebar feature flag picks the path.
-                from pakfindata.ui.api import client as api_client
                 if api_client.use_worker_sync():
                     api_client.run_job_with_progress(
                         "sync_benchmark",
@@ -256,12 +183,9 @@ def render_rates_overview():
                         except SafeWriterBusyError:
                             st.error("Another sync is running. Wait a moment and retry.")
                         except Exception as e:
-                            # sync_benchmark() already recorded the catalog failure.
                             st.error(f"Failed: {e}")
         with col3:
             if st.button("Sync Auctions", key="ro_auctions"):
-                # Phase 1.6.2: sidebar feature flag picks the path.
-                from pakfindata.ui.api import client as api_client
                 if api_client.use_worker_sync():
                     api_client.run_job_with_progress(
                         "sync_treasury_auctions",
@@ -282,7 +206,6 @@ def render_rates_overview():
                         except SafeWriterBusyError:
                             st.error("Another sync is running. Wait a moment and retry.")
                         except Exception as e:
-                            # sync_auctions() already recorded the catalog failures.
                             st.error(f"Failed: {e}")
 
     if snap_date:
@@ -291,13 +214,13 @@ def render_rates_overview():
     render_footer()
 
 
-def _render_policy_rate_hero(con, snap: dict):
+def _render_policy_rate_hero(snap: dict):
     """SBP Policy Rate as a big hero number with historical range."""
     st.subheader("SBP Policy Rate")
 
     policy_rate = snap.get("policy_rate")
 
-    # Fallback: try sbp_policy_rates table directly
+    # Fallback: try /v1/rates/policy/history
     if policy_rate is None:
         policy_rate = _load_policy_rate()
 
@@ -311,7 +234,7 @@ def _render_policy_rate_hero(con, snap: dict):
         st.info("No policy rate data. Sync benchmark snapshot to populate.")
 
 
-def _render_money_market_rates(con, snap: dict):
+def _render_money_market_rates(snap: dict):
     """KIBOR and KONIA money market rates table."""
     st.subheader("Money Market Rates")
 
@@ -337,7 +260,7 @@ def _render_money_market_rates(con, snap: dict):
                 "Change": "",
             })
 
-    # Fallback: try kibor_daily table
+    # Fallback: latest-per-tenor from kibor_daily
     if not rows:
         rows = _load_kibor_rates()
 
@@ -358,7 +281,7 @@ def _render_money_market_rates(con, snap: dict):
         st.info("No money market rate data. Run `pfsync rates sync` to fetch.")
 
 
-def _render_auction_cutoffs(con, snap: dict):
+def _render_auction_cutoffs(snap: dict):
     """Latest government securities auction cutoffs."""
     st.subheader("Government Securities — Latest Auction Cutoffs")
 
@@ -376,7 +299,7 @@ def _render_auction_cutoffs(con, snap: dict):
             if val is not None:
                 mtb_rows.append({"Tenor": label, "Cutoff": f"{val:.2f}%"})
 
-        # Fallback: query tbill_auctions table
+        # Fallback: latest-per-tenor from tbill_auctions
         if not mtb_rows:
             mtb_rows = _load_tbill_cutoffs()
 
@@ -400,7 +323,7 @@ def _render_auction_cutoffs(con, snap: dict):
             if val is not None:
                 pib_rows.append({"Tenor": label, "Cutoff": f"{val:.2f}%"})
 
-        # Fallback: query pib_auctions table
+        # Fallback: latest-per-tenor from pib_auctions
         if not pib_rows:
             pib_rows = _load_pib_cutoffs()
 
