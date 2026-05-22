@@ -56,18 +56,14 @@ def _kpi(label, value, color=None):
 # ═══════════════════════════════════════════════════════
 
 def _render_live():
-    from pakfindata.engine.ofi_strategy import load_ticks_for_ofi, compute_ofi_bars, _duck_con
+    from pakfindata.engine.ofi_strategy import load_ticks_for_ofi, compute_ofi_bars
+    from pakfindata.ui.api import client as api_client
 
     c1, c2 = st.columns([1, 1])
     with c1:
         symbol = st.text_input("Symbol", value="HUBC", key="ofi_sym").upper().strip()
     with c2:
-        con = _duck_con()
-        dates = [r[0] for r in con.execute(
-            "SELECT DISTINCT date AS d FROM tick_logs "
-            "WHERE symbol = ? ORDER BY d DESC", [symbol],
-        ).fetchall()] if symbol else []
-        con.close()
+        dates = api_client.get_tick_logs_dates(symbol) if symbol else []
         date_str = st.selectbox("Date", dates if dates else ["No data"], key="ofi_date")
 
     if not dates or date_str == "No data":
@@ -272,17 +268,14 @@ def _render_scanner():
 # ═══════════════════════════════════════════════════════
 
 def _render_research():
-    from pakfindata.engine.ofi_strategy import load_ticks_for_ofi, compute_ofi_bars, _duck_con
+    from pakfindata.engine.ofi_strategy import load_ticks_for_ofi, compute_ofi_bars
+    from pakfindata.ui.api import client as api_client
 
     symbol = st.text_input("Symbol", value="HUBC", key="ofi_res_sym").upper().strip()
     if not symbol:
         return
 
-    con = _duck_con()
-    dates = [r[0] for r in con.execute(
-        "SELECT DISTINCT date AS d FROM tick_logs WHERE symbol = ? ORDER BY d", [symbol],
-    ).fetchall()]
-    con.close()
+    dates = list(reversed(api_client.get_tick_logs_dates(symbol) or []))
 
     if not dates:
         st.info(f"No tick data for {symbol}")
