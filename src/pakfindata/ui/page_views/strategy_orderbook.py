@@ -54,18 +54,8 @@ def _render_book_tab():
     with c1:
         symbol = st.text_input("Symbol", "OGDC", key="ob_sym").strip().upper()
     with c2:
-        try:
-            from pakfindata.db.connections import _duck_con
-            con = _duck_con()
-            dates = con.execute(
-                """SELECT DISTINCT CAST(to_timestamp(timestamp) AS DATE) AS dt
-                   FROM tick_logs WHERE symbol = ?
-                   ORDER BY dt DESC LIMIT 30""",
-                [symbol]
-            ).df()
-            date_options = dates["dt"].astype(str).tolist() if not dates.empty else []
-        except Exception:
-            date_options = []
+        from pakfindata.ui.api import client as api_client
+        date_options = (api_client.get_tick_logs_dates(symbol) or [])[:30]
         date_str = st.selectbox("Date", date_options if date_options else ["N/A"], key="ob_date")
     with c3:
         max_ticks = st.number_input("Max ticks", 1000, 50000, 10000, 1000, key="ob_maxt")
