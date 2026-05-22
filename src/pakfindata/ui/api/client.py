@@ -492,6 +492,224 @@ def get_kibor_history(
     return _safe_get("/v1/rates/kibor", params=params)
 
 
+# ── Fixed Income (1.7.B.0) ─────────────────────────────────────────────────
+
+
+def get_tbill_auctions(
+    tenor: Optional[str] = None,
+    from_: Optional[str] = None,
+    to: Optional[str] = None,
+    limit: int = 500,
+) -> Optional[list[dict]]:
+    params: dict = {"limit": limit}
+    if tenor:
+        params["tenor"] = tenor
+    if from_:
+        params["from"] = from_
+    if to:
+        params["to"] = to
+    return _safe_get("/v1/treasury/tbill", params=params)
+
+
+def get_tbill_latest_per_tenor() -> Optional[list[dict]]:
+    return _safe_get("/v1/treasury/tbill/latest-per-tenor")
+
+
+def get_pib_auctions(
+    tenor: Optional[str] = None,
+    from_: Optional[str] = None,
+    to: Optional[str] = None,
+    limit: int = 500,
+) -> Optional[list[dict]]:
+    params: dict = {"limit": limit}
+    if tenor:
+        params["tenor"] = tenor
+    if from_:
+        params["from"] = from_
+    if to:
+        params["to"] = to
+    return _safe_get("/v1/treasury/pib", params=params)
+
+
+def get_pib_latest_per_tenor() -> Optional[list[dict]]:
+    return _safe_get("/v1/treasury/pib/latest-per-tenor")
+
+
+def get_gis_auctions(limit: int = 100) -> Optional[list[dict]]:
+    return _safe_get("/v1/treasury/gis", params={"limit": limit})
+
+
+def get_pkrv(
+    date: Optional[str] = None, days: int = 1
+) -> Optional[list[dict]]:
+    params: dict = {"days": days}
+    if date:
+        params["date"] = date
+    return _safe_get("/v1/yield-curves/pkrv", params=params)
+
+
+def get_pkisrv(
+    date: Optional[str] = None, days: int = 1
+) -> Optional[list[dict]]:
+    params: dict = {"days": days}
+    if date:
+        params["date"] = date
+    return _safe_get("/v1/yield-curves/pkisrv", params=params)
+
+
+def get_pkfrv(
+    date: Optional[str] = None, limit: int = 500
+) -> Optional[list[dict]]:
+    params: dict = {"limit": limit}
+    if date:
+        params["date"] = date
+    return _safe_get("/v1/yield-curves/pkfrv", params=params)
+
+
+def get_sovereign_curve(
+    date: Optional[str] = None,
+    source: Optional[str] = None,
+    include_synthetic: bool = True,
+) -> Optional[list[dict]]:
+    params: dict = {"include_synthetic": include_synthetic}
+    if date:
+        params["date"] = date
+    if source:
+        params["source"] = source
+    return _safe_get("/v1/curve/sovereign", params=params)
+
+
+def get_bond_trading_daily(
+    from_: Optional[str] = None,
+    to: Optional[str] = None,
+    security_type: Optional[str] = None,
+    limit: int = 1000,
+) -> Optional[list[dict]]:
+    params: dict = {"limit": limit}
+    if from_:
+        params["from"] = from_
+    if to:
+        params["to"] = to
+    if security_type:
+        params["security_type"] = security_type
+    return _safe_get("/v1/bonds/trading-daily", params=params)
+
+
+def get_benchmark_snapshot() -> Optional[dict]:
+    """Returns ``{date: str|None, metrics: {metric: value, ...}}``."""
+    return _safe_get("/v1/benchmark/snapshot")
+
+
+def get_policy_rate_history(limit: int = 100) -> Optional[list[dict]]:
+    return _safe_get("/v1/rates/policy/history", params={"limit": limit})
+
+
+def get_npc_vs_rfr_spread(
+    currency: Optional[str] = None, from_: Optional[str] = None
+) -> Optional[list[dict]]:
+    params: dict = {}
+    if currency:
+        params["currency"] = currency
+    if from_:
+        params["from"] = from_
+    return _safe_get("/v1/rates/npc/spread", params=params)
+
+
+def get_npc_carry(
+    currency: str = "USD", from_: Optional[str] = None
+) -> Optional[list[dict]]:
+    params: dict = {"currency": currency}
+    if from_:
+        params["from"] = from_
+    return _safe_get("/v1/rates/npc/carry", params=params)
+
+
+def get_npc_multicurrency(date: Optional[str] = None) -> Optional[list[dict]]:
+    params: dict = {}
+    if date:
+        params["date"] = date
+    return _safe_get("/v1/rates/npc/multicurrency", params=params)
+
+
+def get_npc_yield_curve(
+    currency: str = "USD", date: Optional[str] = None
+) -> Optional[dict]:
+    params: dict = {"currency": currency}
+    if date:
+        params["date"] = date
+    return _safe_get("/v1/rates/npc/yield-curve", params=params)
+
+
+def get_sofr_kibor_spread(from_: Optional[str] = None) -> Optional[list[dict]]:
+    params: dict = {}
+    if from_:
+        params["from"] = from_
+    return _safe_get("/v1/rates/global/spread/sofr-kibor", params=params)
+
+
+def get_rate_comparison() -> Optional[dict]:
+    return _safe_get("/v1/rates/global/comparison")
+
+
+def get_alm_products(
+    active_only: bool = True, asset_liability: Optional[str] = None
+) -> Optional[list[dict]]:
+    params: dict = {"active_only": active_only}
+    if asset_liability:
+        params["asset_liability"] = asset_liability
+    return _safe_get("/v1/alm/products", params=params)
+
+
+def get_alm_positions(as_of: Optional[str] = None) -> Optional[list[dict]]:
+    params: dict = {}
+    if as_of:
+        params["as_of"] = as_of
+    return _safe_get("/v1/alm/positions", params=params)
+
+
+def get_alm_repricing_gap(as_of: Optional[str] = None) -> Optional[list[dict]]:
+    params: dict = {}
+    if as_of:
+        params["as_of"] = as_of
+    return _safe_get("/v1/alm/repricing-gap", params=params)
+
+
+def get_alm_ftp_rates(as_of: Optional[str] = None) -> Optional[list[dict]]:
+    params: dict = {}
+    if as_of:
+        params["as_of"] = as_of
+    return _safe_get("/v1/alm/ftp-rates", params=params)
+
+
+def get_alm_sensitivity(as_of: Optional[str] = None) -> Optional[list[dict]]:
+    params: dict = {}
+    if as_of:
+        params["as_of"] = as_of
+    return _safe_get("/v1/alm/sensitivity", params=params)
+
+
+def get_alm_liquidity_ladder(as_of: Optional[str] = None) -> Optional[list[dict]]:
+    params: dict = {}
+    if as_of:
+        params["as_of"] = as_of
+    return _safe_get("/v1/alm/liquidity-ladder", params=params)
+
+
+def get_fi_instruments(
+    active_only: bool = True,
+    category: Optional[str] = None,
+    limit: int = 500,
+) -> Optional[list[dict]]:
+    params: dict = {"active_only": active_only, "limit": limit}
+    if category:
+        params["category"] = category
+    return _safe_get("/v1/fi/instruments", params=params)
+
+
+def get_fi_quotes_latest() -> Optional[list[dict]]:
+    return _safe_get("/v1/fi/quotes/latest")
+
+
 # ── Equities (1.7.D.0) ─────────────────────────────────────────────────────
 
 
@@ -655,6 +873,33 @@ __all__ = [
     "get_npc_rates",
     "get_global_reference_rates",
     "get_kibor_history",
+    # fixed income (1.7.B.0)
+    "get_tbill_auctions",
+    "get_tbill_latest_per_tenor",
+    "get_pib_auctions",
+    "get_pib_latest_per_tenor",
+    "get_gis_auctions",
+    "get_pkrv",
+    "get_pkisrv",
+    "get_pkfrv",
+    "get_sovereign_curve",
+    "get_bond_trading_daily",
+    "get_benchmark_snapshot",
+    "get_policy_rate_history",
+    "get_npc_vs_rfr_spread",
+    "get_npc_carry",
+    "get_npc_multicurrency",
+    "get_npc_yield_curve",
+    "get_sofr_kibor_spread",
+    "get_rate_comparison",
+    "get_alm_products",
+    "get_alm_positions",
+    "get_alm_repricing_gap",
+    "get_alm_ftp_rates",
+    "get_alm_sensitivity",
+    "get_alm_liquidity_ladder",
+    "get_fi_instruments",
+    "get_fi_quotes_latest",
     # equities (1.7.D.0)
     "get_screener",
     "get_symbol_sectors",

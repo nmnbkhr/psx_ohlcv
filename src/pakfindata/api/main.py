@@ -30,6 +30,7 @@ from pakfindata.api.config import get_settings
 from pakfindata.api.logging import configure_logging
 from pakfindata.api.routes import eod as eod_route
 from pakfindata.api.routes import equities as equities_route
+from pakfindata.api.routes import fixed_income as fi_route
 from pakfindata.api.routes import freshness as freshness_route
 from pakfindata.api.routes import fx as fx_route
 from pakfindata.api.routes import health as health_route
@@ -117,6 +118,16 @@ app.include_router(equities_route.symbols_router)
 app.include_router(equities_route.sectors_router)
 app.include_router(equities_route.companies_router)
 app.include_router(equities_route.factors_router)
+app.include_router(fi_route.treasury_router)
+app.include_router(fi_route.yield_curves_router)
+app.include_router(fi_route.curve_router)
+app.include_router(fi_route.bonds_router)
+app.include_router(fi_route.benchmark_router)
+app.include_router(fi_route.fi_router)
+app.include_router(fi_route.alm_router)
+app.include_router(fi_route.rates_policy_router)
+app.include_router(fi_route.rates_npc_extras_router)
+app.include_router(fi_route.rates_global_extras_router)
 app.include_router(sync_route.router)
 app.include_router(jobs_route.router)
 
