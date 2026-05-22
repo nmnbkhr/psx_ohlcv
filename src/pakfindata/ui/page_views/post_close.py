@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from pakfindata.config import DATA_ROOT
+from pakfindata.ui.api import client as api_client
 from pakfindata.ui.components.helpers import (
     EXPORTS_DIR,
     get_connection,
@@ -15,33 +16,28 @@ from pakfindata.ui.components.helpers import (
 
 
 # ── Cached data loaders ──────────────────────────────────────────────────────
+# Reads flow through the /v1 API client (TTL caching lives there). Writes
+# (fetch_post_close) keep a direct DB connection — Phase 1.7 is reads-only.
 
-@st.cache_data(ttl=300, show_spinner=False)
+
 def _load_post_close_stats() -> dict:
-    from pakfindata.db.repositories.post_close import get_post_close_stats
-    con = get_connection()
-    return get_post_close_stats(con)
+    return api_client.get_turnover_stats() or {
+        "total_rows": 0, "total_dates": 0, "unique_symbols": 0,
+        "min_date": None, "max_date": None,
+    }
 
 
-@st.cache_data(ttl=300, show_spinner=False)
 def _load_dates_missing_turnover(since: str, until: str | None = None) -> list[str]:
-    from pakfindata.db.repositories.post_close import get_dates_missing_turnover
-    con = get_connection()
-    return get_dates_missing_turnover(con, since=since, until=until)
+    return api_client.get_turnover_missing(since=since, until=until) or []
 
 
-@st.cache_data(ttl=300, show_spinner=False)
 def _load_post_close_dates() -> list[str]:
-    from pakfindata.db.repositories.post_close import get_post_close_dates
-    con = get_connection()
-    return get_post_close_dates(con)
+    return api_client.get_turnover_dates() or []
 
 
-@st.cache_data(ttl=300, show_spinner=False)
 def _load_post_close_data(date: str, limit: int = 500) -> pd.DataFrame:
-    from pakfindata.db.repositories.post_close import get_post_close
-    con = get_connection()
-    return get_post_close(con, date=date, limit=limit)
+    rows = api_client.get_turnover(date=date, limit=limit) or []
+    return pd.DataFrame(rows)
 
 
 def render_post_close():
@@ -49,12 +45,10 @@ def render_post_close():
     from datetime import date as date_type
     from datetime import timedelta as td
 
-    from pakfindata.db.repositories.post_close import (
-        get_dates_missing_turnover,
-        get_post_close,
-        get_post_close_dates,
-    )
     from pakfindata.sources.market_summary import fetch_post_close
+
+    if api_client.render_api_status_banner_if_down():
+        return
 
     # =================================================================
     # HEADER
@@ -137,7 +131,7 @@ def render_post_close():
 
             # Check if already exists (unless force)
             if not single_force:
-                existing = get_post_close_dates(con)
+                existing = _load_post_close_dates()
                 if date_str in existing:
                     st.info(f"Turnover for {date_str} already loaded. Use force to re-download.")
                     st.stop()
@@ -204,7 +198,7 @@ def render_post_close():
 
         # Filter out already-loaded dates unless force
         if not range_force:
-            existing = set(get_post_close_dates(con))
+            existing = set(_load_post_close_dates())
             to_process = [d for d in expected_dates if str(d) not in existing]
         else:
             to_process = expected_dates
@@ -443,9 +437,9 @@ def render_post_close():
         if st.button("Export All Dates to Disk", key="pc_export_all"):
             save_dir = EXPORTS_DIR / "post_close"
             save_dir.mkdir(parents=True, exist_ok=True)
-            all_dates = get_post_close_dates(con)
+            all_dates = _load_post_close_dates()
             for d in all_dates:
-                d_df = get_post_close(con, date=d, limit=5000)
+                d_df = _load_post_close_data(d, limit=5000)
                 if not d_df.empty:
                     d_df[["symbol", "company_name", "volume", "turnover"]].to_csv(
                         save_dir / f"turnover_{d}.csv", index=False
