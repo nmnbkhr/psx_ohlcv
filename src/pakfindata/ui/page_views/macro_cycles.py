@@ -15,7 +15,8 @@ import streamlit as st
 
 from pakfindata.engine.fft_cycles import compute_fft_cycles
 from pakfindata.engine.commentary import get_fft_rules_commentary, get_fft_ai_commentary
-from pakfindata.ui.components.helpers import get_connection, render_footer
+from pakfindata.ui.api import client as api_client
+from pakfindata.ui.components.helpers import render_footer
 
 # ═════════════════════════════════════════════════════════════════════════════
 # DESIGN SYSTEM (matches microstructure page)
@@ -141,42 +142,46 @@ def _render_price_with_ifft(df: pd.DataFrame, ifft_signal, dates):
 # ═════════════════════════════════════════════════════════════════════════════
 
 @st.cache_data(ttl=300)
-def _get_master_symbols(_con) -> list[str]:
-    rows = _con.execute(
-        "SELECT symbol FROM symbols WHERE is_active=1 ORDER BY symbol"
-    ).fetchall()
-    return [r[0] for r in rows]
+def _get_master_symbols() -> list[str]:
+    rows = api_client.get_symbols(active_only=True) or []
+    return [r["symbol"] for r in rows if r.get("symbol")]
 
 
-def _get_intraday_dates(con) -> list[str]:
-    from pakfindata.db.date_manifest import get_dates
-    return get_dates("intraday_bars")[:30]
+@st.cache_data(ttl=300)
+def _get_intraday_dates() -> list[str]:
+    """Last 30 trading dates with intraday data."""
+    dates = api_client.get_intraday_dates() or []
+    return dates[:30]
 
 
-def _load_eod_ohlcv(con, symbol: str, limit: int = 500) -> pd.DataFrame:
-    """Load EOD daily OHLCV for a symbol."""
-    df = pd.read_sql_query(
-        "SELECT date AS datetime, open, high, low, close, volume FROM eod_ohlcv "
-        "WHERE symbol=? AND volume > 0 ORDER BY date DESC LIMIT ?",
-        con, params=(symbol, limit),
-    )
-    if not df.empty:
-        df = df.iloc[::-1].reset_index(drop=True)
-        df["datetime"] = pd.to_datetime(df["datetime"])
+def _load_eod_ohlcv(symbol: str, limit: int = 500) -> pd.DataFrame:
+    """Load EOD daily OHLCV for a symbol (volume>0 filter applied client-side)."""
+    rows = api_client.get_symbol_history(symbol, limit=limit) or []
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    # Volume filter + rename to legacy column name for downstream charts.
+    if "volume" in df.columns:
+        df = df[df["volume"] > 0].copy()
+    if df.empty:
+        return df
+    df = df.rename(columns={"date": "datetime"})
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    # API returns date-descending; FFT downstream expects ascending.
+    df = df.sort_values("datetime").reset_index(drop=True)
     return df
 
 
-def _load_intraday_bars(con, symbol: str, date_str: str) -> pd.DataFrame:
+def _load_intraday_bars(symbol: str, date_str: str) -> pd.DataFrame:
     """Load intraday bars for a symbol on a date."""
-    df = pd.read_sql_query(
-        "SELECT ts AS datetime, close, volume "
-        "FROM intraday_bars WHERE symbol=? AND date=? "
-        "ORDER BY ts_epoch",
-        con,
-        params=(symbol, date_str),
-    )
-    if not df.empty:
-        df["datetime"] = pd.to_datetime(df["datetime"])
+    rows = api_client.get_intraday_bars(symbol, date_str) or []
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    if "ts" in df.columns:
+        df = df.rename(columns={"ts": "datetime"})
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    if "volume" in df.columns:
         df = df[df["volume"] > 0].reset_index(drop=True)
     return df
 
@@ -251,7 +256,7 @@ def render_macro_cycles():
     with st.expander("How to Read This Analysis (Execution Playbook)", expanded=False):
         st.markdown(_PLAYBOOK_MD)
 
-    con = get_connection()
+    api_client.render_api_status_banner_if_down()
 
     # ── Top bar: Data source, date/lookback, symbol ────────────────────────
     col_src, col_date, col_sym = st.columns([1, 1, 1])
@@ -264,7 +269,7 @@ def render_macro_cycles():
             key="fft_src",
         )
 
-    all_symbols = _get_master_symbols(con)
+    all_symbols = _get_master_symbols()
     sel_symbol = None
     sel_date = None
 
@@ -279,7 +284,7 @@ def render_macro_cycles():
                 key="fft_sym_eod",
             )
     else:  # Intraday
-        avail_dates = _get_intraday_dates(con)
+        avail_dates = _get_intraday_dates()
         with col_date:
             if avail_dates:
                 sel_date = st.selectbox("Trading Date", avail_dates, key="fft_date")
@@ -303,7 +308,7 @@ def render_macro_cycles():
     price_df = None
 
     if data_source == "EOD Daily Bars" and sel_symbol:
-        price_df = _load_eod_ohlcv(con, sel_symbol, limit=eod_days)
+        price_df = _load_eod_ohlcv(sel_symbol, limit=eod_days)
         if price_df.empty:
             st.warning(f"No EOD data for **{sel_symbol}**.")
             price_df = None
@@ -316,7 +321,7 @@ def render_macro_cycles():
             )
 
     elif data_source == "Intraday Bars" and sel_symbol and sel_date:
-        price_df = _load_intraday_bars(con, sel_symbol, sel_date)
+        price_df = _load_intraday_bars(sel_symbol, sel_date)
         if price_df.empty:
             st.warning(f"No intraday data for **{sel_symbol}** on {sel_date}.")
             price_df = None

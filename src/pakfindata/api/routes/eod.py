@@ -117,12 +117,24 @@ def eod_for_symbol(
         Optional[str],
         Query(description="Range end (YYYY-MM-DD)", pattern=DATE_RE),
     ] = None,
+    limit: Annotated[
+        Optional[int],
+        Query(
+            ge=1, le=10000,
+            description=(
+                "Trading-day count semantics. When supplied without "
+                "explicit `from`, the from-bound is dropped and the last "
+                "N rows are returned (date-descending). Combine with `to` "
+                "to anchor the right edge."
+            ),
+        ),
+    ] = None,
 ) -> list[dict]:
     """OHLCV history for a single symbol.
 
-    Default window when neither ``from`` nor ``to`` is supplied: last
-    90 days ending at the symbol's most recent row. 404 if the symbol
-    has zero rows at all (typo).
+    Default window when neither ``from``, ``to``, nor ``limit`` is
+    supplied: last 90 days ending at the symbol's most recent row.
+    404 if the symbol has zero rows at all (typo).
     """
     sym = symbol.upper()
     sym_max = eod_repo.get_max_date_for_symbol(con, sym)
@@ -136,18 +148,25 @@ def eod_for_symbol(
     else:
         _parse_date(to)  # validation only
         end = to
-    if from_ is None:
+
+    if from_ is None and limit is None:
+        # Both omitted → keep the historical default of 90 days back.
         start = (date_cls.fromisoformat(end) - timedelta(days=90)).isoformat()
+    elif from_ is None:
+        # limit supplied without from → drop the lower bound; repo's
+        # built-in ordering + LIMIT will return the last N rows.
+        start = None
     else:
         _parse_date(from_)
         start = from_
 
-    if start > end:
+    if start is not None and start > end:
         raise HTTPException(
             status_code=400, detail=f"from ({start}) must be <= to ({end})"
         )
 
     df = eod_repo.get_eod_ohlcv(
-        con, symbol=sym, start_date=start, end_date=end, limit=10_000
+        con, symbol=sym, start_date=start, end_date=end,
+        limit=limit if limit is not None else 10_000,
     )
     return df_to_records(df)

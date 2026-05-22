@@ -146,13 +146,20 @@ def get_symbol_history(
     symbol: str,
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
+    limit: Optional[int] = None,
 ) -> Optional[list[dict]]:
-    """Symbol OHLCV history; default last 90 days. 404 returns []."""
+    """Symbol OHLCV history; default last 90 days. 404 returns [].
+
+    When ``limit`` is supplied without ``from_date``, the lower-bound
+    is dropped and the last N rows are returned date-descending.
+    """
     params: dict[str, Any] = {}
     if from_date:
         params["from"] = from_date
     if to_date:
         params["to"] = to_date
+    if limit is not None:
+        params["limit"] = limit
     return _safe_get(f"/v1/eod/{symbol}", params=params, on_404=[])
 
 
