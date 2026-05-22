@@ -43,6 +43,8 @@ from pakfindata.api.schemas.equities import (
     SectorPerformanceRow,
     SectorSymbolMapRow,
     SectorValuation,
+    SymbolRow,
+    SymbolVolumeRow,
 )
 
 DATE_RE = r"^\d{4}-\d{2}-\d{2}$"
@@ -126,6 +128,77 @@ def get_screener(
     params.append(limit)
     cur = con.execute(sql, params)
     return [dict(r) for r in cur.fetchall()]
+
+
+@symbols_router.get("", response_model=list[SymbolRow])
+def get_symbols(
+    active_only: Annotated[
+        bool, Query(description="Restrict to symbols with is_active=1")
+    ] = True,
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> list[dict]:
+    """Active symbols list from the ``symbols`` master table.
+
+    Backs the symbol pickers on Group F research pages (microstructure,
+    signal_dashboard, etc.). Tiny query, cached on the client.
+    """
+    where = "WHERE is_active = 1" if active_only else ""
+    cur = con.execute(
+        f"SELECT symbol, name, sector, sector_name, is_active "
+        f"FROM symbols {where} ORDER BY symbol"
+    )
+    return [dict(r) for r in cur.fetchall()]
+
+
+@symbols_router.get("/top-by-volume", response_model=list[SymbolVolumeRow])
+def get_top_by_volume(
+    n: Annotated[int, Query(ge=1, le=500, description="Max rows")] = 30,
+    days: Annotated[int, Query(ge=1, le=365, description="Lookback window in days")] = 20,
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> list[dict]:
+    """Top N symbols by aggregate volume over the last ``days`` trading days.
+
+    Feeds ml_predictions' candidate pool and signal_intelligence's
+    correlation heatmap.
+    """
+    row = con.execute("SELECT MAX(date) FROM eod_ohlcv").fetchone()
+    if not row or not row[0]:
+        return []
+    cur = con.execute(
+        """SELECT symbol, SUM(volume) AS total_volume
+             FROM eod_ohlcv
+            WHERE date >= date(?, ?)
+              AND volume > 0
+            GROUP BY symbol
+            ORDER BY total_volume DESC
+            LIMIT ?""",
+        (row[0], f"-{days} days", n),
+    )
+    return [dict(r) for r in cur.fetchall()]
+
+
+@symbols_router.get("/futures", response_model=list[str])
+def get_futures_symbols(
+    min_data_days: Annotated[
+        int, Query(ge=1, le=365, description="Min distinct dates per base symbol")
+    ] = 30,
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> list[str]:
+    """Futures base symbols with sufficient history.
+
+    Sourced from ``futures_eod`` market_type='FUT'. Used by strategy_oi
+    for the symbol picker.
+    """
+    cur = con.execute(
+        """SELECT base_symbol
+             FROM futures_eod
+            WHERE market_type = 'FUT' AND volume > 0
+            GROUP BY base_symbol
+           HAVING COUNT(DISTINCT date) >= ?
+            ORDER BY SUM(volume) DESC""",
+        (min_data_days,),
+    )
+    return [r[0] for r in cur.fetchall()]
 
 
 @symbols_router.get("/sectors", response_model=list[str])

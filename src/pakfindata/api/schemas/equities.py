@@ -47,6 +47,31 @@ class ScreenerRow(BaseModel):
     change_pct: Optional[float] = None
 
 
+class SymbolRow(BaseModel):
+    """One row from the ``symbols`` master.
+
+    Backs the bare ``/v1/symbols`` listing — what Group F's research
+    pages (microstructure, signal_dashboard) read for symbol pickers.
+    """
+
+    symbol: str
+    name: Optional[str] = None
+    sector: Optional[str] = None
+    sector_name: Optional[str] = None
+    is_active: Optional[int] = None
+
+
+class SymbolVolumeRow(BaseModel):
+    """symbol + recent-window aggregated volume.
+
+    Backs ``/v1/symbols/top-by-volume`` — feeds ml_predictions' feature
+    pool and signal_intelligence's correlation heatmap.
+    """
+
+    symbol: str
+    total_volume: Optional[float] = None
+
+
 # ── /v1/sectors/* ───────────────────────────────────────────────────
 
 

@@ -988,6 +988,37 @@ def get_turnover(
     return _safe_get("/v1/turnover", params=params)
 
 
+# ── Research / Strategies (1.7.F.0) ────────────────────────────────────────
+
+
+@st.cache_data(ttl=600)
+def get_symbols(active_only: bool = True) -> Optional[list[dict]]:
+    return _safe_get("/v1/symbols", params={"active_only": active_only})
+
+
+@st.cache_data(ttl=300)
+def get_top_symbols_by_volume(
+    n: int = 30, days: int = 20
+) -> Optional[list[dict]]:
+    return _safe_get(
+        "/v1/symbols/top-by-volume", params={"n": n, "days": days}
+    )
+
+
+@st.cache_data(ttl=600)
+def get_futures_symbols(min_data_days: int = 30) -> Optional[list[str]]:
+    return _safe_get(
+        "/v1/symbols/futures", params={"min_data_days": min_data_days}
+    )
+
+
+@st.cache_data(ttl=300)
+def get_tick_logs_dates(symbol: str) -> Optional[list[str]]:
+    if not symbol:
+        return []
+    return _safe_get(f"/v1/tick-logs/dates/{symbol}")
+
+
 def use_worker_sync() -> bool:
     """Feature flag: should sync buttons enqueue worker jobs?
 
@@ -1111,5 +1142,10 @@ __all__ = [
     "get_turnover_dates",
     "get_turnover_missing",
     "get_turnover",
+    # research / strategies (1.7.F.0)
+    "get_symbols",
+    "get_top_symbols_by_volume",
+    "get_futures_symbols",
+    "get_tick_logs_dates",
     "use_worker_sync",
 ]
