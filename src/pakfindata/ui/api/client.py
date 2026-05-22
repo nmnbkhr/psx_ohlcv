@@ -492,6 +492,108 @@ def get_kibor_history(
     return _safe_get("/v1/rates/kibor", params=params)
 
 
+# ── Equities (1.7.D.0) ─────────────────────────────────────────────────────
+
+
+def get_screener(
+    sector: Optional[str] = None,
+    min_pe: float = 0.0,
+    max_pe: float = 1000.0,
+    min_mcap_m: float = 0.0,
+    min_volume: float = 0.0,
+    limit: int = 200,
+) -> Optional[list[dict]]:
+    params: dict = {
+        "min_pe": min_pe,
+        "max_pe": max_pe,
+        "min_mcap_m": min_mcap_m,
+        "min_volume": min_volume,
+        "limit": limit,
+    }
+    if sector and sector != "All":
+        params["sector"] = sector
+    return _safe_get("/v1/symbols/screener", params=params)
+
+
+def get_symbol_sectors() -> Optional[list[str]]:
+    return _safe_get("/v1/symbols/sectors")
+
+
+def get_sector_performance(
+    date: Optional[str] = None, min_stocks: int = 2
+) -> Optional[list[dict]]:
+    params: dict = {"min_stocks": min_stocks}
+    if date:
+        params["date"] = date
+    return _safe_get("/v1/sectors/performance", params=params)
+
+
+def get_sector_symbol_map(date: Optional[str] = None) -> Optional[list[dict]]:
+    params: dict = {}
+    if date:
+        params["date"] = date
+    return _safe_get("/v1/sectors/symbol-map", params=params)
+
+
+def get_financial_symbols() -> Optional[list[str]]:
+    return _safe_get("/v1/companies/financial-symbols")
+
+
+def get_company_financials(
+    symbol: str, period_type: Optional[str] = None
+) -> Optional[dict]:
+    """Returns ``{symbol, is_bank, rows: [...]}``."""
+    params: dict = {}
+    if period_type:
+        params["period_type"] = period_type
+    return _safe_get(
+        f"/v1/companies/{symbol.upper()}/financials", params=params
+    )
+
+
+def get_sector_valuation(symbol: str) -> Optional[dict]:
+    return _safe_get(f"/v1/companies/{symbol.upper()}/sector-valuation")
+
+
+def get_company_profile_extras(symbol: str) -> Optional[dict]:
+    """Returns ``{profile: {...}|None, key_people: [...]}``."""
+    return _safe_get(f"/v1/companies/{symbol.upper()}/profile-extras")
+
+
+def get_company_announcements(
+    symbol: str, limit: int = 30
+) -> Optional[list[dict]]:
+    return _safe_get(
+        f"/v1/companies/{symbol.upper()}/announcements",
+        params={"limit": limit},
+    )
+
+
+def get_company_dividend_payouts(
+    symbol: str, limit: int = 20
+) -> Optional[list[dict]]:
+    return _safe_get(
+        f"/v1/companies/{symbol.upper()}/dividend-payouts",
+        params={"limit": limit},
+    )
+
+
+def get_factor_raw_data() -> Optional[dict]:
+    """Returns ``{rows: [...], snapshot_count: int}``."""
+    return _safe_get("/v1/factors/raw-data")
+
+
+def get_factor_risk_stats(
+    symbols: list[str], days: int = 90
+) -> Optional[list[dict]]:
+    if not symbols:
+        return []
+    return _safe_get(
+        "/v1/factors/risk-stats",
+        params={"symbols": ",".join(symbols), "days": days},
+    )
+
+
 def use_worker_sync() -> bool:
     """Feature flag: should sync buttons enqueue worker jobs?
 
@@ -553,5 +655,18 @@ __all__ = [
     "get_npc_rates",
     "get_global_reference_rates",
     "get_kibor_history",
+    # equities (1.7.D.0)
+    "get_screener",
+    "get_symbol_sectors",
+    "get_sector_performance",
+    "get_sector_symbol_map",
+    "get_financial_symbols",
+    "get_company_financials",
+    "get_sector_valuation",
+    "get_company_profile_extras",
+    "get_company_announcements",
+    "get_company_dividend_payouts",
+    "get_factor_raw_data",
+    "get_factor_risk_stats",
     "use_worker_sync",
 ]

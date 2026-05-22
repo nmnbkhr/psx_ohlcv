@@ -29,6 +29,7 @@ from pakfindata.api.auth import BearerAuthMiddleware
 from pakfindata.api.config import get_settings
 from pakfindata.api.logging import configure_logging
 from pakfindata.api.routes import eod as eod_route
+from pakfindata.api.routes import equities as equities_route
 from pakfindata.api.routes import freshness as freshness_route
 from pakfindata.api.routes import fx as fx_route
 from pakfindata.api.routes import health as health_route
@@ -112,6 +113,10 @@ app.include_router(market_route.market_router)
 app.include_router(market_route.rates_router)
 app.include_router(fx_route.fx_router)
 app.include_router(fx_route.rates_extra_router)
+app.include_router(equities_route.symbols_router)
+app.include_router(equities_route.sectors_router)
+app.include_router(equities_route.companies_router)
+app.include_router(equities_route.factors_router)
 app.include_router(sync_route.router)
 app.include_router(jobs_route.router)
 
