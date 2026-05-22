@@ -413,6 +413,63 @@ def run_job_with_progress(
     return last_job
 
 
+def get_fx_latest(source: str = "interbank") -> Optional[list[dict]]:
+    """All currencies @ latest date for one FX source."""
+    return _safe_get("/v1/fx/latest", params={"source": source})
+
+
+def get_fx_latest_one(currency: str, source: str = "interbank") -> Optional[dict]:
+    """Latest row for one currency from one source (404 → None)."""
+    return _safe_get(
+        f"/v1/fx/latest/{currency}", params={"source": source}, on_404=None
+    )
+
+
+def get_fx_history(
+    currency: str, source: str = "interbank", limit: int = 500
+) -> Optional[list[dict]]:
+    """Date-desc history for one currency in one source."""
+    return _safe_get(
+        "/v1/fx/history",
+        params={"currency": currency, "source": source, "limit": limit},
+    )
+
+
+def get_fx_ohlcv(pair: str, limit: int = 1000) -> Optional[list[dict]]:
+    """``fx_ohlcv`` history for one pair (e.g. USD/PKR)."""
+    return _safe_get(f"/v1/fx/ohlcv/{pair}", params={"limit": limit})
+
+
+def get_fx_global_pairs() -> Optional[list[str]]:
+    """Distinct global pairs in ``commodity_fx_rates``."""
+    return _safe_get("/v1/fx/global-pairs")
+
+
+def get_fx_global_history(pair: str, limit: int = 1000) -> Optional[list[dict]]:
+    """``commodity_fx_rates`` history for one global pair."""
+    return _safe_get(f"/v1/fx/global-history/{pair}", params={"limit": limit})
+
+
+def get_fx_spread_heatmap(limit: int = 150) -> Optional[list[dict]]:
+    """Interbank-vs-kerb spread bundle."""
+    return _safe_get("/v1/fx/spread-heatmap", params={"limit": limit})
+
+
+def get_fx_sync_runs(limit: int = 10) -> Optional[list[dict]]:
+    """Recent ``fx_sync_runs`` rows."""
+    return _safe_get("/v1/fx/sync-runs", params={"limit": limit})
+
+
+def get_konia(limit: int = 1) -> Optional[list[dict]]:
+    """Latest KONIA rows."""
+    return _safe_get("/v1/rates/konia", params={"limit": limit})
+
+
+def get_npc_rates(limit: int = 200) -> Optional[list[dict]]:
+    """``npc_rates`` rows (carry rates)."""
+    return _safe_get("/v1/rates/npc", params={"limit": limit})
+
+
 def use_worker_sync() -> bool:
     """Feature flag: should sync buttons enqueue worker jobs?
 
@@ -460,5 +517,17 @@ __all__ = [
     "submit_job",
     "cancel_job",
     "run_job_with_progress",
+    # fx (1.7.C.1)
+    "get_fx_latest",
+    "get_fx_latest_one",
+    "get_fx_history",
+    "get_fx_ohlcv",
+    "get_fx_global_pairs",
+    "get_fx_global_history",
+    "get_fx_spread_heatmap",
+    "get_fx_sync_runs",
+    # rates extras (1.7.C.1)
+    "get_konia",
+    "get_npc_rates",
     "use_worker_sync",
 ]

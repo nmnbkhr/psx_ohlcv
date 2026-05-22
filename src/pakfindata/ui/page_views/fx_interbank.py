@@ -1,83 +1,73 @@
-"""FX Interbank vs Open Market — spread visualization and comparison."""
+"""FX Interbank vs Open Market — spread visualization and comparison.
+
+Phase 1.7.C.2: page reads via :mod:`pakfindata.ui.api.client`. The Sync
+buttons (1.6 territory) keep their existing safe_writer + worker-flag
+path; only the read side migrated here.
+"""
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from pakfindata.ui.components.helpers import get_connection, render_footer
+from pakfindata.ui.api import client as api_client
+from pakfindata.ui.components.helpers import render_footer
 
 
 _KEY_CURRENCIES = ["USD", "EUR", "GBP", "SAR", "AED", "CNY"]
 
-_FX_TABLES = {
-    "Interbank": "sbp_fx_interbank",
-    "Open Market": "sbp_fx_open_market",
-    "Kerb": "forex_kerb",
+_SOURCE_LABELS: dict[str, str] = {
+    "interbank": "Interbank",
+    "open_market": "Open Market",
+    "kerb": "Kerb",
 }
 
 
-# ── Cached data loaders ──────────────────────────────────────────────────────
-
 @st.cache_data(ttl=3600, show_spinner=False)
-def _load_latest_rate(table: str, currency: str) -> dict | None:
-    """Get latest rate for a currency from a table (cached)."""
-    try:
-        con = get_connection()
-        row = con.execute(
-            f"""SELECT date, buying, selling FROM {table}
-                WHERE UPPER(currency) = ? ORDER BY date DESC LIMIT 1""",
-            (currency.upper(),),
-        ).fetchone()
-        return dict(row) if row else None
-    except Exception:
-        return None
+def _load_latest_rate(source: str, currency: str) -> dict | None:
+    """Latest rate for a currency from one FX source."""
+    return api_client.get_fx_latest_one(currency, source=source)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_spread_history(currency: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Load interbank and kerb history for a currency (cached)."""
-    con = get_connection()
-    try:
-        ib_df = pd.read_sql_query(
-            """SELECT date, selling as ib_selling FROM sbp_fx_interbank
-               WHERE UPPER(currency) = ? ORDER BY date LIMIT 365""",
-            con, params=(currency.upper(),),
-        )
-    except Exception:
-        ib_df = pd.DataFrame()
-    try:
-        kerb_df = pd.read_sql_query(
-            """SELECT date, selling as kerb_selling FROM forex_kerb
-               WHERE UPPER(currency) = ? ORDER BY date LIMIT 365""",
-            con, params=(currency.upper(),),
-        )
-    except Exception:
-        kerb_df = pd.DataFrame()
+    """Interbank + kerb history for a currency (last 365 rows each, oldest→newest)."""
+    ib_rows = api_client.get_fx_history(currency, source="interbank", limit=365) or []
+    kerb_rows = api_client.get_fx_history(currency, source="kerb", limit=365) or []
+
+    # API returns date-DESC; the chart wants ascending. Sort here.
+    ib_df = pd.DataFrame(ib_rows)
+    if not ib_df.empty:
+        ib_df = ib_df.sort_values("date").rename(columns={"selling": "ib_selling"})
+        ib_df = ib_df[["date", "ib_selling"]]
+
+    kerb_df = pd.DataFrame(kerb_rows)
+    if not kerb_df.empty:
+        kerb_df = kerb_df.sort_values("date").rename(columns={"selling": "kerb_selling"})
+        kerb_df = kerb_df[["date", "kerb_selling"]]
+
     return ib_df, kerb_df
 
 
 def render_fx_interbank():
     """Render Interbank vs Open Market comparison page."""
+    if not api_client.render_api_status_banner_if_down():
+        return
+
     st.markdown("## Interbank vs Open Market")
     st.caption("Compare SBP interbank, open market, and kerb rates with spread analysis")
 
-    con = get_connection()
-    if con is None:
-        st.error("Database connection not available")
-        return
-
     # ── Rate Cards ───────────────────────────────────────────────
-    _render_rate_comparison(con)
+    _render_rate_comparison()
 
     st.divider()
 
     # ── Spread Analysis ──────────────────────────────────────────
-    _render_spread_chart(con)
+    _render_spread_chart()
 
     st.divider()
 
     # ── Historical Spread ────────────────────────────────────────
-    _render_spread_history(con)
+    _render_spread_history()
 
     # ── Sync Section ─────────────────────────────────────────────
     st.divider()
@@ -125,7 +115,7 @@ def render_fx_interbank():
     render_footer()
 
 
-def _render_rate_comparison(con):
+def _render_rate_comparison():
     """Side-by-side rate comparison for key currencies."""
     st.subheader("Rate Comparison")
 
@@ -133,21 +123,21 @@ def _render_rate_comparison(con):
         cols = st.columns([1, 2, 2, 2, 1])
         cols[0].markdown(f"**{currency}/PKR**")
 
-        for i, (src_name, table) in enumerate(_FX_TABLES.items()):
-            rate = _load_latest_rate(table, currency)
+        for i, (src_key, src_label) in enumerate(_SOURCE_LABELS.items()):
+            rate = _load_latest_rate(src_key, currency)
             with cols[i + 1]:
-                if rate:
+                if rate and rate.get("buying") is not None and rate.get("selling") is not None:
                     st.metric(
-                        src_name,
+                        src_label,
                         f"{rate['buying']:.2f} / {rate['selling']:.2f}",
                         help=f"Buy / Sell as of {rate['date']}",
                     )
                 else:
-                    st.metric(src_name, "N/A")
+                    st.metric(src_label, "N/A")
 
         # Spread
-        ib = _load_latest_rate("sbp_fx_interbank", currency)
-        kerb = _load_latest_rate("forex_kerb", currency)
+        ib = _load_latest_rate("interbank", currency)
+        kerb = _load_latest_rate("kerb", currency)
         with cols[4]:
             if ib and kerb and ib.get("selling") and kerb.get("selling"):
                 spread = kerb["selling"] - ib["selling"]
@@ -156,14 +146,14 @@ def _render_rate_comparison(con):
                 st.metric("Spread", "N/A")
 
 
-def _render_spread_chart(con):
+def _render_spread_chart():
     """Bar chart comparing interbank vs kerb rates."""
     st.subheader("Spread Analysis")
 
     spreads = []
     for currency in _KEY_CURRENCIES:
-        ib = _load_latest_rate("sbp_fx_interbank", currency)
-        kerb = _load_latest_rate("forex_kerb", currency)
+        ib = _load_latest_rate("interbank", currency)
+        kerb = _load_latest_rate("kerb", currency)
         if ib and kerb and ib.get("selling") and kerb.get("selling"):
             spreads.append({
                 "Currency": currency,
@@ -198,7 +188,7 @@ def _render_spread_chart(con):
         st.dataframe(df, width='stretch', hide_index=True)
 
 
-def _render_spread_history(con):
+def _render_spread_history():
     """Historical interbank vs kerb spread for selected currency."""
     st.subheader("Historical Spread")
 
