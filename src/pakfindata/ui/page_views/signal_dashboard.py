@@ -32,6 +32,7 @@ from pakfindata.engine.signal_score import (
     batch_results_to_dataframe,
     BatchScanResult,
 )
+from pakfindata.ui.api import client as api_client
 from pakfindata.ui.components.helpers import get_connection, render_footer
 
 from pakfindata.services.llm_client import llm
@@ -143,67 +144,57 @@ def _metric_card(label: str, value: str, sub: str = "") -> str:
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+def _eod_from_date(limit: int) -> str:
+    """Resolve a `from_date` string that covers approximately `limit`
+    trading days (using a 1.8x calendar-day buffer for weekends/holidays)."""
+    cal_days = max(int(limit * 1.8), 60)
+    return (
+        datetime.date.today() - datetime.timedelta(days=cal_days)
+    ).isoformat()
+
+
 def _get_symbols() -> list[str]:
-    """Get active symbols from symbols table (cached)."""
-    try:
-        con = get_connection()
-        rows = con.execute(
-            "SELECT symbol FROM symbols WHERE is_active = 1 ORDER BY symbol"
-        ).fetchall()
-        return [r["symbol"] for r in rows]
-    except Exception:
-        return []
+    """Get active symbols list via /v1/symbols (cached at client)."""
+    rows = api_client.get_symbols(active_only=True) or []
+    return [r["symbol"] for r in rows]
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
 def _get_symbol_info(symbol: str) -> dict:
-    """Get sector info for a symbol (cached)."""
-    try:
-        con = get_connection()
-        row = con.execute(
-            "SELECT sector, sector_name FROM symbols WHERE symbol = ?", (symbol,)
-        ).fetchone()
-        if row:
-            return {"sector": row["sector"], "sector_name": row["sector_name"]}
-    except Exception:
-        pass
+    """Get sector info for a symbol — filter the cached /v1/symbols payload."""
+    rows = api_client.get_symbols(active_only=True) or []
+    for r in rows:
+        if r.get("symbol") == symbol:
+            return {"sector": r.get("sector"), "sector_name": r.get("sector_name")}
     return {"sector": None, "sector_name": None}
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
 def _get_eod_data(symbol: str, limit: int = 600) -> pd.DataFrame:
-    """Query EOD OHLCV from eod_ohlcv table (cached)."""
-    try:
-        con = get_connection()
-        return pd.read_sql_query(
-            """SELECT date, open, high, low, close, volume
-               FROM eod_ohlcv
-               WHERE symbol = ?
-               ORDER BY date DESC LIMIT ?""",
-            con,
-            params=(symbol, limit),
-        ).sort_values("date").reset_index(drop=True)
-    except Exception:
+    """Query EOD OHLCV via /v1/eod/{symbol} (cached at client).
+
+    Client requests a wide-enough window via from_date and trims to the
+    last ``limit`` rows here.
+    """
+    rows = api_client.get_symbol_history(
+        symbol=symbol, from_date=_eod_from_date(limit)
+    ) or []
+    if not rows:
         return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    keep = [c for c in ["date", "open", "high", "low", "close", "volume"] if c in df.columns]
+    df = df[keep].sort_values("date").tail(limit).reset_index(drop=True)
+    return df
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
 def _get_index_data(limit: int = 600) -> pd.DataFrame:
-    """Query KSE-100 daily data for relative strength (cached)."""
-    con = get_connection()
+    """Query KSE-100 daily data via /v1/eod/{symbol} — tries known aliases."""
     for idx_sym in ("KSE100", "KSE-100", "KSEALL"):
-        try:
-            df = pd.read_sql_query(
-                """SELECT date, close FROM eod_ohlcv
-                   WHERE symbol = ? ORDER BY date DESC LIMIT ?""",
-                con,
-                params=(idx_sym, limit),
-            )
-            if not df.empty:
-                return df.sort_values("date").reset_index(drop=True)
-        except Exception:
-            continue
+        rows = api_client.get_symbol_history(
+            symbol=idx_sym, from_date=_eod_from_date(limit)
+        ) or []
+        if rows:
+            df = pd.DataFrame(rows)
+            keep = [c for c in ["date", "close"] if c in df.columns]
+            return df[keep].sort_values("date").tail(limit).reset_index(drop=True)
     return pd.DataFrame()
 
 
@@ -239,17 +230,8 @@ def _get_intraday_data(symbol: str, limit: int = 5000) -> pd.DataFrame:
     from pathlib import Path
     import duckdb
 
-    try:
-        con = get_connection()
-        row = con.execute(
-            "SELECT MAX(date) FROM intraday_daily_summary "
-            "WHERE symbol = ? AND market = 'REG'",
-            (symbol,),
-        ).fetchone()
-        latest_date = row[0] if row and row[0] else None
-    except Exception:
-        latest_date = None
-
+    dates = api_client.get_intraday_dates() or []
+    latest_date = dates[0] if dates else None
     if not latest_date:
         return pd.DataFrame()
 
@@ -292,18 +274,10 @@ def _get_tick_data(
     from pathlib import Path
     import duckdb
 
-    # Cheap lookup: does this (symbol, market) combo have any data?
-    try:
-        con = get_connection()
-        row = con.execute(
-            "SELECT MAX(date) FROM intraday_daily_summary "
-            "WHERE symbol = ? AND market = ?",
-            (symbol, market),
-        ).fetchone()
-        latest_date = row[0] if row and row[0] else None
-    except Exception:
-        latest_date = None
-
+    # Latest summary date — page falls through gracefully if this symbol+market
+    # combo has no rows in that file (DuckDB returns empty df).
+    dates = api_client.get_intraday_dates() or []
+    latest_date = dates[0] if dates else None
     if not latest_date:
         return pd.DataFrame()
 
@@ -334,26 +308,9 @@ def _get_tick_data(
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _check_tick_table_exists() -> bool:
-    """True when at least one JSONL tick file exists on disk (fast filesystem check)."""
+    """True when at least one JSONL tick file exists on disk."""
     from pathlib import Path
-    if any(Path("/mnt/e/psxdata/tick_logs_cloud").glob("ticks_*.jsonl")):
-        return True
-    # Retained fallback for legacy environments without cloud JSONL
-    try:
-        from pakfindata.db.connections import duck_fetchone
-        row = duck_fetchone("SELECT COUNT(*) FROM tick_logs LIMIT 1")
-        if row and row[0] > 0:
-            return True
-    except Exception:
-        pass
-    try:
-        con = get_connection()
-        row = con.execute(
-            "SELECT COUNT(*) as cnt FROM tick_logs LIMIT 1"
-        ).fetchone()
-        return row["cnt"] > 0 if row else False
-    except Exception:
-        return False
+    return any(Path("/mnt/e/psxdata/tick_logs_cloud").glob("ticks_*.jsonl"))
 
 
 def _is_market_open() -> bool:
@@ -1014,17 +971,9 @@ def _render_signal_commentary(report: SignalReport, symbol: str):
 _ALL_MARKET = "── ALL (Batch Scanner) ──"
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
 def _get_sectors() -> list[str]:
-    """Get distinct sector names (cached)."""
-    try:
-        con = get_connection()
-        rows = con.execute(
-            "SELECT DISTINCT sector_name FROM symbols WHERE is_active = 1 AND sector_name IS NOT NULL ORDER BY sector_name"
-        ).fetchall()
-        return [r["sector_name"] for r in rows if r["sector_name"]]
-    except Exception:
-        return []
+    """Get distinct sector names via /v1/symbols/sectors."""
+    return api_client.get_symbol_sectors() or []
 
 
 def _run_batch_scan(
@@ -1241,30 +1190,29 @@ def _render_batch_scanner(results: list[BatchScanResult], top_n: int):
     st.caption("Select a specific symbol from the dropdown for full 3-layer deep analysis.")
 
 
-def _render_intelligence_brief(symbol: str, con):
+def _render_intelligence_brief(symbol: str):
     """Cross-data intelligence brief — combines all data sources for a symbol."""
     from datetime import datetime, timedelta, timezone
 
     pkt = timezone(timedelta(hours=5))
     today = datetime.now(pkt).strftime("%Y-%m-%d")
 
-    # Price action
-    try:
-        eod = con.execute(
-            "SELECT close, prev_close, volume, high, low, open FROM eod_ohlcv "
-            "WHERE symbol = ? ORDER BY date DESC LIMIT 1",
-            (symbol,),
-        ).fetchone()
-    except Exception:
-        eod = None
+    # Price action — latest EOD row via /v1/eod/{symbol}; client returns
+    # the full default 90-day window, we take the last row.
+    eod_rows = api_client.get_symbol_history(symbol=symbol) or []
+    eod = eod_rows[-1] if eod_rows else None
 
     col_price, col_micro = st.columns(2)
 
     with col_price:
         st.markdown("**Price Action**")
         if eod:
-            close, prev, vol, high, low, opn = eod
-            chg = close - prev if prev else 0
+            close = eod.get("close")
+            prev = eod.get("prev_close")
+            vol = eod.get("volume")
+            high = eod.get("high")
+            low = eod.get("low")
+            chg = (close - prev) if (close is not None and prev) else 0
             chg_pct = (chg / prev * 100) if prev else 0
             st.markdown(
                 f"Close: **{close:.2f}** ({chg:+.2f}, {chg_pct:+.2f}%)  \n"
@@ -1301,17 +1249,14 @@ def _render_intelligence_brief(symbol: str, con):
     with col_deriv:
         st.markdown("**Derivatives**")
         try:
-            fut = con.execute(
-                """SELECT close, volume, contract_month FROM futures_eod
-                   WHERE base_symbol = ? AND market_type IN ('FUT', 'CONT')
-                     AND close > 0 AND contract_month IS NOT NULL
-                   ORDER BY date DESC, contract_month LIMIT 1""",
-                (symbol,),
-            ).fetchone()
+            fut = api_client.get_latest_futures(base_symbol=symbol)
             if fut and eod:
-                fut_close, fut_vol, month = fut
-                basis = fut_close - eod[0]
-                basis_pct = (basis / eod[0] * 100) if eod[0] else 0
+                fut_close = fut.get("close")
+                fut_vol = fut.get("volume")
+                month = fut.get("contract_month")
+                eod_close = eod.get("close")
+                basis = fut_close - eod_close if eod_close else 0
+                basis_pct = (basis / eod_close * 100) if eod_close else 0
                 signal = "Premium (Bullish)" if basis > 0 else "Discount (Bearish)"
                 st.markdown(
                     f"Futures: **{fut_close:.2f}** ({month})  \n"
@@ -1347,8 +1292,13 @@ def _render_intelligence_brief(symbol: str, con):
 
 def render_signal_dashboard():
     """Main entry point for the Signal Analysis page."""
+    if api_client.render_api_status_banner_if_down():
+        return
+
     st.markdown(_PAGE_CSS, unsafe_allow_html=True)
 
+    # Engine batch scanner reads DB directly per CLAUDE.md exception —
+    # connection retained for that call path only.
     con = get_connection()
     symbols = _get_symbols()
 
@@ -1502,7 +1452,7 @@ def render_signal_dashboard():
 
     # ── Intelligence Brief ──
     with st.expander("Intelligence Brief — Cross-Data Summary", expanded=False):
-        _render_intelligence_brief(symbol, con)
+        _render_intelligence_brief(symbol)
 
     # ── AI Commentary ──
     _render_signal_commentary(report, symbol)
