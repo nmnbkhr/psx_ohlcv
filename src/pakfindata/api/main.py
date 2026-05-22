@@ -30,6 +30,7 @@ from pakfindata.api.config import get_settings
 from pakfindata.api.logging import configure_logging
 from pakfindata.api.routes import eod as eod_route
 from pakfindata.api.routes import freshness as freshness_route
+from pakfindata.api.routes import fx as fx_route
 from pakfindata.api.routes import health as health_route
 from pakfindata.api.routes import indices as indices_route
 from pakfindata.api.routes import jobs as jobs_route
@@ -109,6 +110,8 @@ app.include_router(eod_route.router)
 app.include_router(indices_route.router)
 app.include_router(market_route.market_router)
 app.include_router(market_route.rates_router)
+app.include_router(fx_route.fx_router)
+app.include_router(fx_route.rates_extra_router)
 app.include_router(sync_route.router)
 app.include_router(jobs_route.router)
 
