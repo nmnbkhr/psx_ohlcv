@@ -20,6 +20,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
+from pakfindata.ui.api import client as api_client
 from pakfindata.ui.components.helpers import get_connection, render_footer
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -52,44 +53,38 @@ BUCKETS_ORDER = ["ON", "1D-1M", "1M-3M", "3M-6M", "6M-1Y", "1Y-2Y", "2Y-3Y", "3Y
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _load_repricing_gap() -> pd.DataFrame:
-    from pakfindata.db.repositories.alm import get_repricing_gap
-    con = get_connection()
-    return get_repricing_gap(con)
+    rows = api_client.get_alm_repricing_gap() or []
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _load_ftp_rates() -> pd.DataFrame:
-    from pakfindata.db.repositories.alm import get_ftp_rates
-    con = get_connection()
-    return get_ftp_rates(con)
+    rows = api_client.get_alm_ftp_rates() or []
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _load_sensitivity() -> pd.DataFrame:
-    from pakfindata.db.repositories.alm import get_sensitivity
-    con = get_connection()
-    return get_sensitivity(con)
+    rows = api_client.get_alm_sensitivity() or []
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _load_liquidity_ladder() -> pd.DataFrame:
-    from pakfindata.db.repositories.alm import get_liquidity_ladder
-    con = get_connection()
-    return get_liquidity_ladder(con)
+    rows = api_client.get_alm_liquidity_ladder() or []
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _load_alm_products(active_only: bool = True) -> pd.DataFrame:
-    from pakfindata.db.repositories.alm import get_alm_products
-    con = get_connection()
-    return get_alm_products(con, active_only=active_only)
+    rows = api_client.get_alm_products(active_only=active_only) or []
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _load_alm_positions() -> pd.DataFrame:
-    from pakfindata.db.repositories.alm import get_alm_positions
-    con = get_connection()
-    return get_alm_positions(con)
+    rows = api_client.get_alm_positions() or []
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
 def _fig(height=400, **kw):
@@ -159,24 +154,33 @@ def render_alm_dashboard():
 def _render_overview(con):
     _section("RATE ENVIRONMENT")
 
-    # Pull live rates for context
-    konia_row = con.execute("SELECT rate_pct, date FROM konia_daily ORDER BY date DESC LIMIT 1").fetchone()
-    policy_row = con.execute("SELECT policy_rate, rate_date FROM sbp_policy_rates ORDER BY rate_date DESC LIMIT 1").fetchone()
-    kibor_3m = con.execute("SELECT offer, date FROM kibor_daily WHERE tenor='3M' ORDER BY date DESC LIMIT 1").fetchone()
-    kibor_6m = con.execute("SELECT offer, date FROM kibor_daily WHERE tenor='6M' ORDER BY date DESC LIMIT 1").fetchone()
+    # Pull live rates for context via /v1
+    strip = api_client.get_rates_strip() or {}
+    konia_rows = api_client.get_konia(limit=1) or []
+    kibor_rows = api_client.get_kibor_latest_per_tenor() or []
+    kibor_by_tenor = {r.get("tenor"): r for r in kibor_rows}
+    kibor_3m = kibor_by_tenor.get("3M") or {}
+    kibor_6m = kibor_by_tenor.get("6M") or {}
+    konia_pct = konia_rows[0].get("rate_pct") if konia_rows else None
+    # Group C defensive guard — corrupt KONIA values render as "N/A"
+    konia_display = (
+        f"{konia_pct:.2f}%" if konia_pct is not None and 0 < konia_pct < 50 else "N/A"
+    )
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        _card("SBP Policy Rate", f"{policy_row['policy_rate']:.2f}%" if policy_row else "N/A",
+        pr = strip.get("sbp_policy_rate")
+        _card("SBP Policy Rate", f"{pr:.2f}%" if pr is not None else "N/A",
               color=_C["liability"])
     with c2:
-        _card("KONIA (ON)", f"{konia_row['rate_pct']:.2f}%" if konia_row else "N/A",
-              color="#45B7D1")
+        _card("KONIA (ON)", konia_display, color="#45B7D1")
     with c3:
-        _card("KIBOR 3M Offer", f"{kibor_3m['offer']:.2f}%" if kibor_3m else "N/A",
+        o3 = kibor_3m.get("offer")
+        _card("KIBOR 3M Offer", f"{o3:.2f}%" if o3 is not None else "N/A",
               color=_C["asset"])
     with c4:
-        _card("KIBOR 6M Offer", f"{kibor_6m['offer']:.2f}%" if kibor_6m else "N/A",
+        o6 = kibor_6m.get("offer")
+        _card("KIBOR 6M Offer", f"{o6:.2f}%" if o6 is not None else "N/A",
               color=_C["nii"])
 
     # ALM summary cards
