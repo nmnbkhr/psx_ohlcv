@@ -1112,6 +1112,132 @@ def get_admin_db_stats() -> Optional[dict]:
     return _safe_get("/v1/admin/db-stats")
 
 
+# ── Funds + ETFs (1.7.G.2.0) ───────────────────────────────────────────────
+
+
+@st.cache_data(ttl=300)
+def get_funds(
+    category: Optional[str] = None,
+    amc_code: Optional[str] = None,
+    fund_type: Optional[str] = None,
+    is_shariah: Optional[int] = None,
+    active_only: bool = True,
+    limit: int = 2000,
+) -> Optional[list[dict]]:
+    params: dict = {"active_only": active_only, "limit": limit}
+    if category:
+        params["category"] = category
+    if amc_code:
+        params["amc_code"] = amc_code
+    if fund_type:
+        params["fund_type"] = fund_type
+    if is_shariah is not None:
+        params["is_shariah"] = is_shariah
+    return _safe_get("/v1/funds", params=params)
+
+
+@st.cache_data(ttl=300)
+def get_fund_categories() -> Optional[list[str]]:
+    return _safe_get("/v1/funds/categories")
+
+
+@st.cache_data(ttl=300)
+def get_fund_amcs() -> Optional[list[dict]]:
+    return _safe_get("/v1/funds/amcs")
+
+
+@st.cache_data(ttl=60)
+def get_funds_nav_latest(limit: int = 2000) -> Optional[list[dict]]:
+    return _safe_get("/v1/funds/nav-latest", params={"limit": limit})
+
+
+@st.cache_data(ttl=300)
+def get_fund_performance_leaders(
+    metric: str = "return_365d",
+    category: Optional[str] = None,
+    limit: int = 50,
+    direction: str = "top",
+) -> Optional[list[dict]]:
+    params: dict = {"metric": metric, "limit": limit, "direction": direction}
+    if category:
+        params["category"] = category
+    return _safe_get("/v1/funds/performance/leaders", params=params)
+
+
+@st.cache_data(ttl=300)
+def get_fund(fund_id: str) -> Optional[dict]:
+    if not fund_id:
+        return None
+    return _safe_get(f"/v1/funds/{fund_id}", on_404=None)
+
+
+@st.cache_data(ttl=300)
+def get_fund_nav(
+    fund_id: str,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    limit: int = 2000,
+) -> Optional[list[dict]]:
+    if not fund_id:
+        return []
+    params: dict = {"limit": limit}
+    if from_date:
+        params["from"] = from_date
+    if to_date:
+        params["to"] = to_date
+    return _safe_get(f"/v1/funds/{fund_id}/nav", params=params, on_404=[])
+
+
+@st.cache_data(ttl=300)
+def get_fund_performance(fund_id: str) -> Optional[dict]:
+    if not fund_id:
+        return None
+    return _safe_get(f"/v1/funds/{fund_id}/performance", on_404=None)
+
+
+@st.cache_data(ttl=300)
+def get_fund_risk(fund_id: str) -> Optional[dict]:
+    if not fund_id:
+        return None
+    return _safe_get(f"/v1/funds/{fund_id}/risk", on_404=None)
+
+
+@st.cache_data(ttl=300)
+def get_fund_calendar_returns(fund_id: str) -> Optional[list[dict]]:
+    if not fund_id:
+        return []
+    return _safe_get(f"/v1/funds/{fund_id}/calendar-returns", on_404=[])
+
+
+@st.cache_data(ttl=300)
+def get_etfs() -> Optional[list[dict]]:
+    return _safe_get("/v1/etfs")
+
+
+@st.cache_data(ttl=300)
+def get_etf(symbol: str) -> Optional[dict]:
+    if not symbol:
+        return None
+    return _safe_get(f"/v1/etfs/{symbol}", on_404=None)
+
+
+@st.cache_data(ttl=300)
+def get_etf_nav(
+    symbol: str,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    limit: int = 2000,
+) -> Optional[list[dict]]:
+    if not symbol:
+        return []
+    params: dict = {"limit": limit}
+    if from_date:
+        params["from"] = from_date
+    if to_date:
+        params["to"] = to_date
+    return _safe_get(f"/v1/etfs/{symbol}/nav", params=params, on_404=[])
+
+
 def use_worker_sync() -> bool:
     """Feature flag: should sync buttons enqueue worker jobs?
 
@@ -1251,5 +1377,19 @@ __all__ = [
     "get_admin_table_distinct_count",
     "get_admin_table_distinct",
     "get_admin_db_stats",
+    # funds + etfs (1.7.G.2.0)
+    "get_funds",
+    "get_fund_categories",
+    "get_fund_amcs",
+    "get_funds_nav_latest",
+    "get_fund_performance_leaders",
+    "get_fund",
+    "get_fund_nav",
+    "get_fund_performance",
+    "get_fund_risk",
+    "get_fund_calendar_returns",
+    "get_etfs",
+    "get_etf",
+    "get_etf_nav",
     "use_worker_sync",
 ]

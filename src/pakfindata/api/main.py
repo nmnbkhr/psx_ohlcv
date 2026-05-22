@@ -33,6 +33,7 @@ from pakfindata.api.routes import eod as eod_route
 from pakfindata.api.routes import equities as equities_route
 from pakfindata.api.routes import fixed_income as fi_route
 from pakfindata.api.routes import freshness as freshness_route
+from pakfindata.api.routes import funds as funds_route
 from pakfindata.api.routes import futures as futures_route
 from pakfindata.api.routes import fx as fx_route
 from pakfindata.api.routes import health as health_route
@@ -136,6 +137,8 @@ app.include_router(intraday_route.intraday_router)
 app.include_router(intraday_route.turnover_router)
 app.include_router(tick_logs_route.tick_logs_router)
 app.include_router(futures_route.futures_router)
+app.include_router(funds_route.funds_router)
+app.include_router(funds_route.etfs_router)
 app.include_router(admin_route.admin_router)
 app.include_router(sync_route.router)
 app.include_router(jobs_route.router)
