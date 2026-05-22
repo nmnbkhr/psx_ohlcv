@@ -117,6 +117,29 @@ def list_tables(
 
 
 @admin_router.get(
+    "/tables/{table}/columns", response_model=list[dict]
+)
+def get_table_columns(
+    table: Annotated[str, Path(description="Table name (allowlisted)")],
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> list[dict]:
+    """PRAGMA table_info equivalent — column name, type, PK flag.
+
+    Backs the Schema Browser tab in research_terminal.py. Same
+    allowlist guard as the other admin endpoints (table resolved via
+    ``sqlite_master``).
+    """
+    real_table = _resolve_table(con, table)
+    rows = con.execute(
+        f"PRAGMA table_info({_quote_ident(real_table)})"
+    ).fetchall()
+    return [
+        {"name": r["name"], "type": r["type"], "pk": int(r["pk"])}
+        for r in rows
+    ]
+
+
+@admin_router.get(
     "/tables/{table}/latest-date", response_model=AdminLatestDate
 )
 def get_table_latest_date(

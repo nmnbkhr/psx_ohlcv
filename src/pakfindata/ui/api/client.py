@@ -1117,6 +1117,14 @@ def get_admin_tables(include_counts: bool = False) -> Optional[list[dict]]:
 
 
 @st.cache_data(ttl=60)
+@st.cache_data(ttl=3600)
+def get_admin_table_columns(table: str) -> Optional[list[dict]]:
+    """Column metadata for one table (PRAGMA table_info)."""
+    if not table:
+        return []
+    return _safe_get(f"/v1/admin/tables/{table}/columns", on_404=[])
+
+
 def get_admin_table_latest_date(
     table: str, col: str = "date"
 ) -> Optional[dict]:
@@ -1575,6 +1583,7 @@ __all__ = [
     "get_latest_futures",
     # admin / catalog introspection (1.7.G.1.0)
     "get_admin_tables",
+    "get_admin_table_columns",
     "get_admin_table_latest_date",
     "get_admin_table_duplicates",
     "get_admin_duckdb_tables",
