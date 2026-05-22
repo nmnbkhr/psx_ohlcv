@@ -1027,6 +1027,49 @@ def get_latest_futures(base_symbol: str) -> Optional[dict]:
     return _safe_get(f"/v1/futures/{base_symbol}/latest", on_404=None)
 
 
+# ── Admin (1.7.G.1.0) — raw catalog introspection ──────────────────────────
+
+
+@st.cache_data(ttl=60)
+def get_admin_tables(include_counts: bool = False) -> Optional[list[dict]]:
+    return _safe_get(
+        "/v1/admin/tables", params={"include_counts": include_counts}
+    )
+
+
+@st.cache_data(ttl=60)
+def get_admin_table_latest_date(
+    table: str, col: str = "date"
+) -> Optional[dict]:
+    return _safe_get(
+        f"/v1/admin/tables/{table}/latest-date",
+        params={"col": col},
+        on_404=None,
+    )
+
+
+@st.cache_data(ttl=300)
+def get_admin_table_duplicates(
+    table: str, by: list[str], limit: int = 20
+) -> Optional[dict]:
+    if not by:
+        return None
+    return _safe_get(
+        f"/v1/admin/tables/{table}/duplicates",
+        params={"by": ",".join(by), "limit": limit},
+        on_404=None,
+    )
+
+
+@st.cache_data(ttl=60)
+def get_admin_duckdb_tables(
+    include_counts: bool = False,
+) -> Optional[list[dict]]:
+    return _safe_get(
+        "/v1/admin/duckdb/tables", params={"include_counts": include_counts}
+    )
+
+
 def use_worker_sync() -> bool:
     """Feature flag: should sync buttons enqueue worker jobs?
 
@@ -1156,5 +1199,10 @@ __all__ = [
     "get_futures_symbols",
     "get_tick_logs_dates",
     "get_latest_futures",
+    # admin / catalog introspection (1.7.G.1.0)
+    "get_admin_tables",
+    "get_admin_table_latest_date",
+    "get_admin_table_duplicates",
+    "get_admin_duckdb_tables",
     "use_worker_sync",
 ]

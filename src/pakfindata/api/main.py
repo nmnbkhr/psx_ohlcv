@@ -28,6 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pakfindata.api.auth import BearerAuthMiddleware
 from pakfindata.api.config import get_settings
 from pakfindata.api.logging import configure_logging
+from pakfindata.api.routes import admin as admin_route
 from pakfindata.api.routes import eod as eod_route
 from pakfindata.api.routes import equities as equities_route
 from pakfindata.api.routes import fixed_income as fi_route
@@ -135,6 +136,7 @@ app.include_router(intraday_route.intraday_router)
 app.include_router(intraday_route.turnover_router)
 app.include_router(tick_logs_route.tick_logs_router)
 app.include_router(futures_route.futures_router)
+app.include_router(admin_route.admin_router)
 app.include_router(sync_route.router)
 app.include_router(jobs_route.router)
 
