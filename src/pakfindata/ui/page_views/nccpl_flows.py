@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import threading
 from datetime import datetime
 
 import numpy as np
@@ -12,6 +11,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
+from pakfindata.ui.api import client as api_client
 from pakfindata.ui.components.helpers import render_footer
 
 _C = {
@@ -45,6 +45,8 @@ def render_page():
     st.markdown("### NCCPL Flow Intelligence")
     st.caption("Foreign & local investor flows — FIPI/LIPI data from NCCPL via KhiStocks")
 
+    api_client.render_api_status_banner_if_down()
+
     tab_dash, tab_sector, tab_sync = st.tabs(
         ["Flow Dashboard", "Sector Flows", "Sync & Backfill"]
     )
@@ -65,23 +67,17 @@ def render_page():
 
 
 def _render_dashboard():
-    con = _get_con()
-    if con is None:
-        return
-
-    # Check data availability
-    count = con.execute("SELECT COUNT(*) FROM nccpl_fipi").fetchone()[0]
-    if count == 0:
+    coverage = api_client.get_nccpl_coverage() or {}
+    if coverage.get("fipi_count", 0) == 0:
         st.warning("No NCCPL flow data. Go to **Sync & Backfill** tab to fetch data.")
         return
 
-    derived = pd.read_sql(
-        "SELECT * FROM nccpl_flows_derived ORDER BY date", con,
-    )
-    if derived.empty:
+    derived_rows = api_client.get_nccpl_flows_derived(limit=10000) or []
+    if not derived_rows:
         st.warning("Derived signals not computed. Run backfill first.")
         return
 
+    derived = pd.DataFrame(derived_rows)
     latest = derived.iloc[-1]
 
     # ── Current regime banner ──
@@ -188,16 +184,14 @@ def _render_dashboard():
 
     # ── Daily net flows table ──
     with st.expander("Daily Net Flows (last 20 days)", expanded=False):
-        fipi = pd.read_sql(
-            "SELECT date, fpi_net FROM nccpl_fipi ORDER BY date DESC LIMIT 20", con,
-        )
-        lipi = pd.read_sql(
-            """SELECT date, mf_net, insurance_net, bank_net, retail_net,
-                      corporate_net, broker_net
-               FROM nccpl_lipi ORDER BY date DESC LIMIT 20""",
-            con,
-        )
-        if not fipi.empty and not lipi.empty:
+        fipi_rows = api_client.get_nccpl_fipi(limit=20) or []
+        lipi_rows = api_client.get_nccpl_lipi(limit=20) or []
+        if fipi_rows and lipi_rows:
+            fipi = pd.DataFrame(fipi_rows)[["date", "fpi_net"]]
+            lipi = pd.DataFrame(lipi_rows)[[
+                "date", "mf_net", "insurance_net", "bank_net", "retail_net",
+                "corporate_net", "broker_net",
+            ]]
             merged = fipi.merge(lipi, on="date", how="inner")
             st.dataframe(merged, width='stretch', hide_index=True)
 
@@ -208,29 +202,19 @@ def _render_dashboard():
 
 
 def _render_sector():
-    con = _get_con()
-    if con is None:
-        return
-
-    count = con.execute("SELECT COUNT(*) FROM nccpl_fipi_sector").fetchone()[0]
-    if count == 0:
+    coverage = api_client.get_nccpl_coverage() or {}
+    if coverage.get("sector_count", 0) == 0:
         st.warning("No sector flow data. Run backfill first.")
         return
 
-    # Date selector from manifest
-    from pakfindata.db.date_manifest import get_dates
-    dates = get_dates("nccpl_fipi_sector")[:60]
-
+    dates = api_client.get_nccpl_sector_dates(limit=60) or []
     if not dates:
         return
 
     selected_date = st.selectbox("Date", dates, index=0)
 
-    sector_df = pd.read_sql(
-        "SELECT sector, fpi_buy, fpi_sell, fpi_net FROM nccpl_fipi_sector WHERE date = ? ORDER BY fpi_net DESC",
-        con, params=(selected_date,),
-    )
-
+    sector_rows = api_client.get_nccpl_sector(selected_date) or []
+    sector_df = pd.DataFrame(sector_rows)
     if sector_df.empty:
         st.info(f"No sector data for {selected_date}")
         return
@@ -259,13 +243,8 @@ def _render_sector():
 
     # Sector flow heatmap over time
     st.markdown("#### Sector Flow Heatmap (Last 20 Days)")
-    heatmap_df = pd.read_sql(
-        """SELECT date, sector, fpi_net FROM nccpl_fipi_sector
-           WHERE date >= (SELECT date FROM nccpl_fipi_sector
-                          ORDER BY date DESC LIMIT 1 OFFSET 19)
-           ORDER BY date, sector""",
-        con,
-    )
+    heatmap_rows = api_client.get_nccpl_sector_heatmap(days=20) or []
+    heatmap_df = pd.DataFrame(heatmap_rows)
     if not heatmap_df.empty:
         pivot = heatmap_df.pivot_table(index="sector", columns="date", values="fpi_net", fill_value=0)
         fig2 = go.Figure(go.Heatmap(
@@ -283,39 +262,26 @@ def _render_sector():
 # TAB 3: Sync & Backfill
 # ═══════════════════════════════════════════════════════
 
-# Background sync state
-_sync_thread: threading.Thread | None = None
-_sync_status: dict = {}
-
 
 def _render_sync():
-    global _sync_thread, _sync_status
-
-    con = _get_con()
-    if con is None:
-        return
+    coverage = api_client.get_nccpl_coverage() or {}
 
     # ── Current data status ──
     st.markdown("#### Data Coverage")
 
-    fipi_count = con.execute("SELECT COUNT(*) FROM nccpl_fipi").fetchone()[0]
-    lipi_count = con.execute("SELECT COUNT(*) FROM nccpl_lipi").fetchone()[0]
-    sector_count = con.execute("SELECT COUNT(*) FROM nccpl_fipi_sector").fetchone()[0]
-    derived_count = con.execute("SELECT COUNT(*) FROM nccpl_flows_derived").fetchone()[0]
-
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        _kpi("FIPI Days", str(fipi_count), _C["cyan"])
+        _kpi("FIPI Days", str(coverage.get("fipi_count", 0)), _C["cyan"])
     with c2:
-        _kpi("LIPI Days", str(lipi_count), _C["accent"])
+        _kpi("LIPI Days", str(coverage.get("lipi_count", 0)), _C["accent"])
     with c3:
-        _kpi("Sector Rows", f"{sector_count:,}", _C["gold"])
+        _kpi("Sector Rows", f"{coverage.get('sector_count', 0):,}", _C["gold"])
     with c4:
-        _kpi("Derived Days", str(derived_count), _C["up"])
+        _kpi("Derived Days", str(coverage.get("derived_count", 0)), _C["up"])
 
-    if fipi_count > 0:
-        r = con.execute("SELECT MIN(date), MAX(date) FROM nccpl_fipi").fetchone()
-        st.caption(f"Date range: **{r[0]}** to **{r[1]}**")
+    date_min, date_max = coverage.get("date_min"), coverage.get("date_max")
+    if date_min and date_max:
+        st.caption(f"Date range: **{date_min}** to **{date_max}**")
 
     st.markdown("---")
 
@@ -325,7 +291,10 @@ def _render_sync():
 
     if st.button("Fetch Today", type="primary", key="nccpl_fetch_today"):
         today = datetime.now().strftime("%Y-%m-%d")
+        # Sync paths still open their own write connection — engine domain.
+        from pakfindata.db.connection import connect
         from pakfindata.db.repositories.nccpl_flows import date_already_fetched
+        con = connect()
         if date_already_fetched(con, today):
             st.info(f"{today} already in database")
         else:
@@ -336,6 +305,7 @@ def _render_sync():
 
             if result.get("source"):
                 st.success(f"Fetched from **{result['source']}** (Tier {result['tier']})")
+                st.cache_data.clear()
             else:
                 st.error("All sources failed")
 
@@ -381,6 +351,7 @@ def _render_sync():
                 f"Backfill complete: **{result['stored']}** new dates stored, "
                 f"{result['skipped_dates']} skipped"
             )
+            st.cache_data.clear()
             st.markdown(f"""
             | Metric | Value |
             |---|---|
@@ -398,12 +369,15 @@ def _render_sync():
     st.caption("Recalculates smart/dumb ratio, flow regime, etc. from raw FIPI+LIPI data")
 
     if st.button("Recompute", key="nccpl_recompute"):
+        from pakfindata.db.connection import connect
+        from pakfindata.sources.nccpl_flows import compute_derived_signals
+        con = connect()
         with st.spinner("Computing derived signals..."):
-            from pakfindata.sources.nccpl_flows import compute_derived_signals
             df = compute_derived_signals(con)
 
         if df is not None:
             st.success(f"Derived signals computed for {len(df)} days")
+            st.cache_data.clear()
         else:
             st.warning("Not enough data to compute derived signals")
 
@@ -411,19 +385,6 @@ def _render_sync():
 # ═══════════════════════════════════════════════════════
 # HELPERS
 # ═══════════════════════════════════════════════════════
-
-
-def _get_con():
-    """Get SQLite connection, initializing NCCPL schema if needed."""
-    try:
-        from pakfindata.db.connection import connect
-        from pakfindata.db.repositories.nccpl_flows import init_nccpl_schema, date_already_fetched
-        con = connect()
-        init_nccpl_schema(con)
-        return con
-    except Exception as e:
-        st.error(f"Database connection failed: {e}")
-        return None
 
 
 def _fmt_mn(val: float) -> str:
