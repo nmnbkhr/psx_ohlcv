@@ -14,9 +14,9 @@ possible:
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class FXRateRow(BaseModel):
@@ -104,6 +104,57 @@ class GlobalReferenceRateRow(BaseModel):
     percentile_25: Optional[float] = None
     percentile_75: Optional[float] = None
     source: Optional[str] = None
+
+
+class FXPairRow(BaseModel):
+    """One row from ``fx_pairs`` (pair master).
+
+    Extra columns kept tolerant — table varies between deployments
+    (some have ``base_currency`` / ``quote_currency`` / ``description``
+    columns, others don't).
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    pair: str
+    is_active: Optional[int] = None
+
+
+class FXAnalyticsResponse(BaseModel):
+    """Analytics computed from ``fx_ohlcv`` for one pair.
+
+    Returned by :func:`pakfindata.analytics_fx.get_fx_analytics` —
+    returns + volatility + simple trend. Light compute (pure pandas
+    over ≤300 rows); safe to serve via blocking /v1 endpoint.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    pair: str
+    error: Optional[str] = None
+    latest_date: Optional[str] = None
+    latest_close: Optional[float] = None
+    return_1W: Optional[float] = None
+    return_1M: Optional[float] = None
+    return_3M: Optional[float] = None
+    return_6M: Optional[float] = None
+    return_1Y: Optional[float] = None
+    vol_1M: Optional[float] = None
+    vol_3M: Optional[float] = None
+    trend: Optional[dict[str, Any]] = None  # {ma_period, current_close, moving_average, above_ma, pct_from_ma, trend_direction, trend_strength}
+
+
+class FXNormalizedRow(BaseModel):
+    """One row of the wide-format normalized-performance table.
+
+    Each row carries one date and one value per requested pair. Extra
+    keys are pair names → numeric values; mode=allow lets pydantic
+    keep them without per-pair schema fields.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    date: str
 
 
 class NPCRatesRow(BaseModel):

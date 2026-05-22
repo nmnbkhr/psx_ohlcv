@@ -28,7 +28,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pakfindata.api.deps import get_read_db
 from pakfindata.api.schemas.common import df_to_records
 from pakfindata.api.schemas.fx import (
+    FXAnalyticsResponse,
+    FXNormalizedRow,
     FXOhlcvRow,
+    FXPairRow,
     FXRateRow,
     FXSpreadRow,
     FXSyncRunRow,
@@ -217,6 +220,114 @@ def get_fx_sync_runs(
         return [{k: v for k, v in r.items() if k in keep} for r in rows]
     except sqlite3.OperationalError:
         return []
+
+
+@fx_router.get("/pairs", response_model=list[FXPairRow])
+def list_fx_pairs(
+    active_only: Annotated[bool, Query()] = True,
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> list[dict]:
+    """All rows from ``fx_pairs`` master.
+
+    Backs the pair dropdown on fx.py + fx_history.py — replaces the
+    legacy ``get_fx_pairs(con, active_only=True)`` repo call.
+    """
+    try:
+        if active_only:
+            cur = con.execute(
+                "SELECT * FROM fx_pairs WHERE is_active = 1 ORDER BY pair"
+            )
+        else:
+            cur = con.execute("SELECT * FROM fx_pairs ORDER BY pair")
+        return [dict(r) for r in cur.fetchall()]
+    except sqlite3.OperationalError:
+        return []
+
+
+def _coerce_native(obj):
+    """Recursively coerce numpy scalars/arrays to native Python types.
+
+    Pydantic v2 + FastAPI's JSON serializer rejects ``numpy.bool_``,
+    ``numpy.float64``, etc. The engine returns these inside the
+    ``trend`` sub-dict and other analytics fields — coerce on the
+    way out.
+    """
+    import numpy as np
+
+    if isinstance(obj, dict):
+        return {k: _coerce_native(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_coerce_native(v) for v in obj]
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    return obj
+
+
+@fx_router.get("/analytics/{pair:path}", response_model=FXAnalyticsResponse)
+def get_fx_analytics(
+    pair: str,
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> dict:
+    """Returns + volatility + simple trend for one FX pair.
+
+    Wraps :func:`pakfindata.analytics_fx.get_fx_analytics` which reads
+    ≤300 OHLCV rows and does light pandas math (returns over 1W/1M/3M/
+    6M/1Y, rolling volatility, sign-based trend). Light compute —
+    safe for blocking /v1.
+
+    The ``{pair:path}`` converter keeps the slash inside pair names
+    (e.g. ``USD/PKR``) intact.
+    """
+    from pakfindata.analytics_fx import get_fx_analytics as _engine_fx_analytics
+
+    return _coerce_native(_engine_fx_analytics(con, pair))
+
+
+@fx_router.get("/normalized-performance", response_model=list[FXNormalizedRow])
+def get_fx_normalized_performance(
+    pairs: Annotated[
+        str,
+        Query(description="Comma-separated FX pairs e.g. USD/PKR,EUR/PKR"),
+    ],
+    start_date: Annotated[Optional[str], Query()] = None,
+    end_date: Annotated[Optional[str], Query()] = None,
+    base: Annotated[float, Query(gt=0)] = 100.0,
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> list[dict]:
+    """Wide-format normalized performance across multiple FX pairs.
+
+    Each pair is normalized to ``base`` at the first available date in
+    the requested window, then carried forward. Wraps
+    :func:`pakfindata.analytics_fx.get_normalized_fx_performance`.
+
+    Response shape — one row per date with all pairs as additional
+    keys::
+
+        [{"date": "2026-01-02", "USD/PKR": 100.0, "EUR/PKR": 100.0},
+         {"date": "2026-01-03", "USD/PKR": 100.4, "EUR/PKR":  99.8},
+         ...]
+    """
+    from pakfindata.analytics_fx import get_normalized_fx_performance
+
+    pair_list = [p.strip() for p in pairs.split(",") if p.strip()]
+    if not pair_list:
+        return []
+    df = get_normalized_fx_performance(
+        con, pair_list, start_date=start_date, end_date=end_date, base=base
+    )
+    if df is None or df.empty:
+        return []
+    # df has date as the index; expose it as a column so each row carries
+    # the date plus every requested pair as additional keys.
+    out = df.reset_index()
+    # The reset_index() column name varies (often "date"); rename for clarity.
+    out = out.rename(columns={out.columns[0]: "date"})
+    out["date"] = out["date"].astype(str)
+    return df_to_records(out)
 
 
 # ---------------------------------------------------------------- /v1/rates extras

@@ -460,6 +460,38 @@ def get_fx_sync_runs(limit: int = 10) -> Optional[list[dict]]:
     return _safe_get("/v1/fx/sync-runs", params={"limit": limit})
 
 
+@st.cache_data(ttl=3600)
+def get_fx_pairs(active_only: bool = True) -> Optional[list[dict]]:
+    """All rows from ``fx_pairs`` master."""
+    return _safe_get("/v1/fx/pairs", params={"active_only": active_only})
+
+
+@st.cache_data(ttl=300)
+def get_fx_analytics(pair: str) -> Optional[dict]:
+    """Returns + volatility + trend for one FX pair (light compute)."""
+    if not pair:
+        return None
+    return _safe_get(f"/v1/fx/analytics/{pair}", on_404=None)
+
+
+@st.cache_data(ttl=300)
+def get_fx_normalized_performance(
+    pairs: list[str],
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    base: float = 100.0,
+) -> Optional[list[dict]]:
+    """Wide-format normalized performance across multiple FX pairs."""
+    if not pairs:
+        return []
+    params: dict = {"pairs": ",".join(pairs), "base": base}
+    if start_date:
+        params["start_date"] = start_date
+    if end_date:
+        params["end_date"] = end_date
+    return _safe_get("/v1/fx/normalized-performance", params=params)
+
+
 def get_konia(limit: int = 1) -> Optional[list[dict]]:
     """Latest KONIA rows."""
     return _safe_get("/v1/rates/konia", params={"limit": limit})
@@ -1536,5 +1568,9 @@ __all__ = [
     "get_pmex_portal_categories",
     "get_pmex_portal_latest",
     "get_pmex_portal_history",
+    # fx pair/analytics extras (1.7.G.4.2a)
+    "get_fx_pairs",
+    "get_fx_analytics",
+    "get_fx_normalized_performance",
     "use_worker_sync",
 ]
