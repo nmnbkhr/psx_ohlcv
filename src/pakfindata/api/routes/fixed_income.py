@@ -570,6 +570,38 @@ def get_sofr_kibor_spread(
     return df_to_records(df)
 
 
+@rates_global_extras_router.get("/latest", response_model=list[GenericRow])
+def get_global_rates_latest(
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> list[dict]:
+    """Latest row for every (rate_name, tenor) combination in
+    ``global_reference_rates``."""
+    try:
+        df = gr_repo.get_all_latest_rates(con)
+    except Exception:
+        return []
+    return df_to_records(df)
+
+
+@rates_global_extras_router.get("/history", response_model=list[GenericRow])
+def get_global_rate_history(
+    rate_name: Annotated[str, Query(description="SOFR / EFFR / SONIA / EUSTR / TONA")],
+    tenor: Annotated[str, Query(description="Typically 'ON' for overnight rates")] = "ON",
+    from_: Annotated[Optional[str], Query(alias="from", pattern=DATE_RE)] = None,
+    limit: Annotated[int, Query(ge=0, le=5000, description="0 = no limit")] = 0,
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> list[dict]:
+    """History for a single (rate_name, tenor) — date-ascending."""
+    try:
+        df = gr_repo.get_rate_history(
+            con, rate_name=rate_name, tenor=tenor,
+            start_date=from_, limit=limit,
+        )
+    except Exception:
+        return []
+    return df_to_records(df)
+
+
 @rates_global_extras_router.get("/comparison", response_model=GenericRow)
 def get_rate_comparison(
     con: sqlite3.Connection = Depends(get_read_db),
@@ -688,6 +720,50 @@ def get_fi_instruments(
         params + [limit],
     )
     return [dict(r) for r in cur.fetchall()]
+
+
+@fi_router.get("/fcy-instruments", response_model=list[GenericRow])
+def get_fcy_instruments(
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> list[dict]:
+    """FCY-denominated instruments combined across ``fi_instruments``,
+    ``bonds_master``, and ``sukuk_master``.
+
+    Each source table contributes a ``source_table`` discriminator
+    column. Any table that doesn't exist or has no FCY rows is
+    silently skipped (graceful degradation when, e.g., bonds_master
+    is unbuilt).
+    """
+    dfs = []
+    queries = [
+        ("fi_instruments", """SELECT name, category, maturity_date, coupon_rate,
+                                     denomination_currency, reference_rate, spread_bps
+                              FROM fi_instruments
+                              WHERE denomination_currency IS NOT NULL
+                                AND denomination_currency != 'PKR'"""),
+        ("bonds_master", """SELECT symbol, issuer AS name, bond_type AS category,
+                                   maturity_date, coupon_rate,
+                                   denomination_currency, reference_rate, spread_bps
+                            FROM bonds_master
+                            WHERE denomination_currency IS NOT NULL
+                              AND denomination_currency != 'PKR'"""),
+        ("sukuk_master", """SELECT name, category, maturity_date, coupon_rate,
+                                   denomination_currency, reference_rate, spread_bps
+                            FROM sukuk_master
+                            WHERE denomination_currency IS NOT NULL
+                              AND denomination_currency != 'PKR'"""),
+    ]
+    for source_table, sql in queries:
+        try:
+            df = pd.read_sql_query(sql, con)
+            if not df.empty:
+                df["source_table"] = source_table
+                dfs.append(df)
+        except Exception:
+            continue
+    if not dfs:
+        return []
+    return df_to_records(pd.concat(dfs, ignore_index=True))
 
 
 @fi_router.get("/quotes/latest", response_model=list[FiQuoteRow])

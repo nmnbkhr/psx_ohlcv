@@ -673,6 +673,26 @@ def get_rate_comparison() -> Optional[dict]:
     return _safe_get("/v1/rates/global/comparison")
 
 
+def get_global_rates_latest() -> Optional[list[dict]]:
+    return _safe_get("/v1/rates/global/latest")
+
+
+def get_global_rate_history(
+    rate_name: str,
+    tenor: str = "ON",
+    from_: Optional[str] = None,
+    limit: int = 0,
+) -> Optional[list[dict]]:
+    params: dict = {"rate_name": rate_name, "tenor": tenor, "limit": limit}
+    if from_:
+        params["from"] = from_
+    return _safe_get("/v1/rates/global/history", params=params)
+
+
+def get_fcy_instruments() -> Optional[list[dict]]:
+    return _safe_get("/v1/fi/fcy-instruments")
+
+
 def get_alm_products(
     active_only: bool = True, asset_liability: Optional[str] = None
 ) -> Optional[list[dict]]:
@@ -930,6 +950,9 @@ __all__ = [
     "get_npc_yield_curve",
     "get_sofr_kibor_spread",
     "get_rate_comparison",
+    "get_global_rates_latest",
+    "get_global_rate_history",
+    "get_fcy_instruments",
     "get_alm_products",
     "get_alm_positions",
     "get_alm_repricing_gap",
