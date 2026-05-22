@@ -1,10 +1,19 @@
-"""Company deep analytics page."""
+"""Company deep analytics page.
+
+The smart client (``pakfindata.api_client``) is retained for the
+multi-section overview / quotes / financials / ratios / payouts
+loaders (DO NOT TOUCH; Phase 1.8.x will retire it). Migration target
+in 1.7.D.5 was the inline ``sqlite3.connect()`` / ``con.execute()``
+read sites scattered through the page body — those now go through
+``pakfindata.ui.api.client`` (the new /v1 wrapper).
+"""
 
 import pandas as pd
 import streamlit as st
 
 from pakfindata.api_client import get_client
 from pakfindata.sources.deep_scraper import deep_scrape_symbol
+from pakfindata.ui.api import client as v1_client
 from pakfindata.ui.session_tracker import (
     track_button_click,
     track_page_visit,
@@ -387,26 +396,14 @@ def render_company_deep():
 
     with qs_col3:
         pe = data.get("pe_ratio")
-        # Get sector P/E for comparison
-        sector_code = data.get("sector_code") or data.get("sector")
+        # Get sector P/E for comparison via /v1/companies/{sym}/sector-valuation
         sector_pe_delta = None
-        if pe and sector_code:
-            try:
-                sector_pe_result = con.execute("""
-                    SELECT AVG(CAST(json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') AS REAL)) as avg_pe
-                    FROM company_snapshots cs
-                    JOIN symbols s ON cs.symbol = s.symbol
-                    WHERE s.sector = ?
-                    AND json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') > 0
-                    AND cs.snapshot_date = (SELECT MAX(snapshot_date) FROM company_snapshots cs2 WHERE cs2.symbol = cs.symbol)
-                """, (sector_code,)).fetchone()
-                if sector_pe_result and sector_pe_result["avg_pe"]:
-                    sector_avg_pe = sector_pe_result["avg_pe"]
-                    pe_diff = pe - sector_avg_pe
-                    # Negative delta is good (cheaper than sector)
-                    sector_pe_delta = f"{pe_diff:+.1f} vs sector"
-            except Exception:
-                pass
+        if pe:
+            sv = v1_client.get_sector_valuation(symbol)
+            if sv and sv.get("sector_avg_pe") and sv.get("sector_count", 0) >= 3:
+                pe_diff = pe - sv["sector_avg_pe"]
+                # Negative delta is good (cheaper than sector)
+                sector_pe_delta = f"{pe_diff:+.1f} vs sector"
         st.metric("P/E Ratio", f"{pe:.2f}" if pe else "N/A",
                   delta=sector_pe_delta, delta_color="inverse" if sector_pe_delta else "off",
                   help="Price-to-Earnings ratio. Lower may indicate undervaluation.")
@@ -437,84 +434,46 @@ def render_company_deep():
     # VALUATION COMPARISON - Sector Context
     # =================================================================
     pe = data.get("pe_ratio")
-    sector_code = data.get("sector_code") or data.get("sector")
+    if pe:
+        sv = v1_client.get_sector_valuation(symbol)
+        if sv and sv.get("sector_count", 0) >= 3 and sv.get("sector_avg_pe"):
+            sector_name = sv.get("sector_name") or data.get("sector_name") or "Sector"
+            min_pe = sv.get("sector_min_pe")
+            max_pe = sv.get("sector_max_pe")
+            avg_pe = sv["sector_avg_pe"]
 
-    if pe and sector_code:
-        try:
-            # Get sector valuation metrics
-            sector_valuation = con.execute("""
-                SELECT
-                    COUNT(*) as sector_count,
-                    AVG(CAST(json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') AS REAL)) as avg_pe,
-                    MIN(CAST(json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') AS REAL)) as min_pe,
-                    MAX(CAST(json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') AS REAL)) as max_pe
-                FROM company_snapshots cs
-                JOIN symbols s ON cs.symbol = s.symbol
-                WHERE s.sector = ?
-                AND CAST(json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') AS REAL) > 0
-                AND CAST(json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') AS REAL) < 500
-                AND cs.snapshot_date = (SELECT MAX(snapshot_date) FROM company_snapshots cs2 WHERE cs2.symbol = cs.symbol)
-            """, (sector_code,)).fetchone()
+            with st.expander(f"📊 Valuation vs {sector_name} Sector", expanded=False):
+                val_col1, val_col2, val_col3, val_col4 = st.columns(4)
 
-            # Get percentile rank within sector
-            pe_rank = con.execute("""
-                SELECT
-                    COUNT(*) as cheaper_count,
-                    (SELECT COUNT(*) FROM company_snapshots cs2
-                     JOIN symbols s2 ON cs2.symbol = s2.symbol
-                     WHERE s2.sector = ?
-                     AND CAST(json_extract(cs2.snapshot_json, '$.fundamentals.pe_ratio') AS REAL) > 0
-                     AND CAST(json_extract(cs2.snapshot_json, '$.fundamentals.pe_ratio') AS REAL) < 500
-                     AND cs2.snapshot_date = (SELECT MAX(snapshot_date) FROM company_snapshots cs3 WHERE cs3.symbol = cs2.symbol)
-                    ) as total_count
-                FROM company_snapshots cs
-                JOIN symbols s ON cs.symbol = s.symbol
-                WHERE s.sector = ?
-                AND CAST(json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') AS REAL) > ?
-                AND CAST(json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') AS REAL) < 500
-                AND cs.snapshot_date = (SELECT MAX(snapshot_date) FROM company_snapshots cs2 WHERE cs2.symbol = cs.symbol)
-            """, (sector_code, sector_code, pe)).fetchone()
+                with val_col1:
+                    st.metric("Your P/E", f"{pe:.1f}")
 
-            if sector_valuation and sector_valuation["sector_count"] >= 3:
-                sector_name = data.get("sector_name") or sector_code
+                with val_col2:
+                    diff = pe - avg_pe
+                    st.metric("Sector Avg P/E", f"{avg_pe:.1f}",
+                              delta=f"{diff:+.1f}", delta_color="inverse")
 
-                with st.expander(f"📊 Valuation vs {sector_name} Sector", expanded=False):
-                    val_col1, val_col2, val_col3, val_col4 = st.columns(4)
+                with val_col3:
+                    if min_pe is not None and max_pe is not None:
+                        st.metric("Sector Range", f"{min_pe:.0f} - {max_pe:.0f}")
 
-                    with val_col1:
-                        st.metric("Your P/E", f"{pe:.1f}")
+                with val_col4:
+                    pct = sv.get("pe_percentile")
+                    if pct is not None:
+                        st.metric("Cheaper Than", f"{pct:.0f}% of sector",
+                                  help="Percentage of sector stocks with higher P/E (more expensive)")
 
-                    with val_col2:
-                        avg_pe = sector_valuation["avg_pe"]
-                        diff = pe - avg_pe
-                        st.metric("Sector Avg P/E", f"{avg_pe:.1f}",
-                                  delta=f"{diff:+.1f}", delta_color="inverse")
-
-                    with val_col3:
-                        st.metric("Sector Range",
-                                  f"{sector_valuation['min_pe']:.0f} - {sector_valuation['max_pe']:.0f}")
-
-                    with val_col4:
-                        if pe_rank and pe_rank["total_count"] > 0:
-                            cheaper = pe_rank["cheaper_count"]
-                            total = pe_rank["total_count"]
-                            percentile = (cheaper / total) * 100
-                            st.metric("Cheaper Than", f"{percentile:.0f}% of sector",
-                                      help="Percentage of sector stocks with higher P/E (more expensive)")
-
-                    # Visual comparison
-                    if sector_valuation["max_pe"] > sector_valuation["min_pe"]:
-                        pe_position = (pe - sector_valuation["min_pe"]) / (sector_valuation["max_pe"] - sector_valuation["min_pe"])
-                        pe_position = min(1.0, max(0.0, pe_position))
-                        st.progress(pe_position)
-                        if pe_position < 0.33:
-                            st.caption("✅ **Value Zone** - P/E in lower third of sector range")
-                        elif pe_position < 0.67:
-                            st.caption("⚪ **Fair Value** - P/E in middle of sector range")
-                        else:
-                            st.caption("⚠️ **Premium Valuation** - P/E in upper third of sector range")
-        except Exception:
-            pass
+                # Visual comparison
+                if min_pe is not None and max_pe is not None and max_pe > min_pe:
+                    pe_position = (pe - min_pe) / (max_pe - min_pe)
+                    pe_position = min(1.0, max(0.0, pe_position))
+                    st.progress(pe_position)
+                    if pe_position < 0.33:
+                        st.caption("✅ **Value Zone** - P/E in lower third of sector range")
+                    elif pe_position < 0.67:
+                        st.caption("⚪ **Fair Value** - P/E in middle of sector range")
+                    else:
+                        st.caption("⚠️ **Premium Valuation** - P/E in upper third of sector range")
 
     # =================================================================
     # DETAILED QUOTE SECTION
@@ -594,28 +553,13 @@ def render_company_deep():
     # ----- Company Profile -----
     profile = data.get("profile_data", {})
 
-    # Enrich with company_profile table from SQLite (deep-scraped data)
+    # Enrich with company_profile + key_people from /v1
     db_profile = {}
     key_people = []
-    try:
-        import sqlite3 as _sqlite3
-        _pcon = _sqlite3.connect("/home/smnb/psxdata_rescue/psx.sqlite")
-        _pcon.execute("PRAGMA journal_mode=WAL")
-        _pcon.execute("PRAGMA busy_timeout=30000")
-        _pcon.row_factory = _sqlite3.Row
-        row = _pcon.execute(
-            "SELECT * FROM company_profile WHERE symbol = ?", (symbol,)
-        ).fetchone()
-        if row:
-            db_profile = dict(row)
-        kp_rows = _pcon.execute(
-            "SELECT name, role FROM company_key_people WHERE symbol = ? ORDER BY rowid",
-            (symbol,),
-        ).fetchall()
-        key_people = [dict(r) for r in kp_rows]
-        _pcon.close()
-    except Exception:
-        pass
+    extras = v1_client.get_company_profile_extras(symbol)
+    if extras:
+        db_profile = extras.get("profile") or {}
+        key_people = extras.get("key_people") or []
 
     if profile or data.get("company_name") or db_profile:
         st.subheader("🏢 Company Profile")
@@ -712,24 +656,8 @@ def render_company_deep():
 
     # ----- Recent Announcements (enriched from corporate_announcements table) -----
     announcements = data.get("announcements", [])
-    # Enrich with corporate_announcements from SQLite
-    db_announcements = []
-    try:
-        import sqlite3 as _sqlite3
-        _acon = _sqlite3.connect("/home/smnb/psxdata_rescue/psx.sqlite")
-        _acon.execute("PRAGMA journal_mode=WAL")
-        _acon.execute("PRAGMA busy_timeout=30000")
-        _acon.row_factory = _sqlite3.Row
-        db_ann_rows = _acon.execute(
-            "SELECT announcement_date, title, document_url "
-            "FROM corporate_announcements WHERE symbol = ? "
-            "ORDER BY announcement_date DESC LIMIT 30",
-            (symbol,),
-        ).fetchall()
-        db_announcements = [dict(r) for r in db_ann_rows]
-        _acon.close()
-    except Exception:
-        pass
+    # Enrich with corporate_announcements via /v1
+    db_announcements = v1_client.get_company_announcements(symbol, limit=30) or []
 
     all_announcements = announcements or db_announcements
     if all_announcements:
@@ -1134,43 +1062,64 @@ def render_company_deep():
                     if is_bank:
                         st.markdown("**Rate Environment**")
                         rc1, rc2, rc3, rc4 = st.columns(4)
-                        try:
-                            pr_row = con.execute(
-                                "SELECT rate_pct, effective_date FROM sbp_policy_rates ORDER BY effective_date DESC LIMIT 1"
-                            ).fetchone()
-                            kb_row = con.execute(
-                                "SELECT bid, offer, date FROM kibor_daily WHERE tenor='3M' ORDER BY date DESC LIMIT 1"
-                            ).fetchone()
-                            kb6_row = con.execute(
-                                "SELECT bid, offer, date FROM kibor_daily WHERE tenor='6M' ORDER BY date DESC LIMIT 1"
-                            ).fetchone()
-                            konia_row = con.execute(
-                                "SELECT rate_pct, date FROM konia_daily ORDER BY date DESC LIMIT 1"
-                            ).fetchone()
-                            with rc1:
-                                if pr_row:
-                                    st.metric("Policy Rate", f"{pr_row[0]:.1f}%", help=f"Since {pr_row[1]}")
-                                else:
-                                    st.metric("Policy Rate", "—")
-                            with rc2:
-                                if kb_row:
-                                    mid = (kb_row[0] + kb_row[1]) / 2 if kb_row[0] and kb_row[1] else kb_row[0]
-                                    st.metric("KIBOR 3M", f"{mid:.2f}%" if mid else "—", help=f"As of {kb_row[2]}")
-                                else:
-                                    st.metric("KIBOR 3M", "—")
-                            with rc3:
-                                if kb6_row:
-                                    mid6 = (kb6_row[0] + kb6_row[1]) / 2 if kb6_row[0] and kb6_row[1] else kb6_row[0]
-                                    st.metric("KIBOR 6M", f"{mid6:.2f}%" if mid6 else "—", help=f"As of {kb6_row[2]}")
+
+                        strip = v1_client.get_rates_strip() or {}
+                        # KIBOR 6M latest from /v1/rates/kibor (asc; take last)
+                        kb6_rows = v1_client.get_kibor_history(tenors="6M", days=30) or []
+                        kb6 = kb6_rows[-1] if kb6_rows else None
+                        konia_rows = v1_client.get_konia(limit=1) or []
+                        konia = konia_rows[0] if konia_rows else None
+
+                        with rc1:
+                            pr = strip.get("sbp_policy_rate")
+                            pr_date = strip.get("sbp_policy_date")
+                            if pr is not None:
+                                st.metric("Policy Rate", f"{pr:.1f}%", help=f"Since {pr_date}")
+                            else:
+                                st.metric("Policy Rate", "—")
+                        with rc2:
+                            kb3_bid = strip.get("kibor_3m_bid")
+                            kb3_offer = strip.get("kibor_3m_offer")
+                            kb3_date = strip.get("kibor_3m_date")
+                            mid3 = (
+                                (kb3_bid + kb3_offer) / 2
+                                if kb3_bid is not None and kb3_offer is not None
+                                else (kb3_bid if kb3_bid is not None else kb3_offer)
+                            )
+                            if mid3 is not None:
+                                st.metric("KIBOR 3M", f"{mid3:.2f}%", help=f"As of {kb3_date}")
+                            else:
+                                st.metric("KIBOR 3M", "—")
+                        with rc3:
+                            if kb6:
+                                bid6 = kb6.get("bid")
+                                offer6 = kb6.get("offer")
+                                mid6 = (
+                                    (bid6 + offer6) / 2
+                                    if bid6 is not None and offer6 is not None
+                                    else (bid6 if bid6 is not None else offer6)
+                                )
+                                if mid6 is not None:
+                                    st.metric(
+                                        "KIBOR 6M", f"{mid6:.2f}%",
+                                        help=f"As of {kb6.get('date')}",
+                                    )
                                 else:
                                     st.metric("KIBOR 6M", "—")
-                            with rc4:
-                                if konia_row:
-                                    st.metric("KONIA", f"{konia_row[0]:.2f}%", help=f"As of {konia_row[1]}")
-                                else:
-                                    st.metric("KONIA", "—")
-                        except Exception:
-                            pass  # Tables may not exist yet
+                            else:
+                                st.metric("KIBOR 6M", "—")
+                        with rc4:
+                            # Defensive: konia_daily known-corrupt (Group C
+                            # finding). Render N/A if value is outside a
+                            # plausible 0..50% band.
+                            konia_pct = konia.get("rate_pct") if konia else None
+                            if konia_pct is not None and 0 < konia_pct < 50:
+                                st.metric(
+                                    "KONIA", f"{konia_pct:.2f}%",
+                                    help=f"As of {konia.get('date')}",
+                                )
+                            else:
+                                st.metric("KONIA", "—")
             else:
                 st.info("No ratio data available. Click 'Refresh' to fetch data.")
 
@@ -1210,26 +1159,13 @@ def render_company_deep():
                 with payout_cols[2]:
                     st.metric("Bonus Issues", bonus_count)
             else:
-                # Fallback: try dividend_payouts from global scraper
-                try:
-                    import sqlite3 as _sqlite3
-                    _dcon = _sqlite3.connect("/home/smnb/psxdata_rescue/psx.sqlite")
-                    _dcon.execute("PRAGMA journal_mode=WAL")
-                    _dcon.execute("PRAGMA busy_timeout=30000")
-                    div_df = pd.read_sql_query(
-                        "SELECT announcement_date, dividend_percent, dividend_type, "
-                        "dividend_number, book_closure_from, book_closure_to "
-                        "FROM dividend_payouts WHERE symbol = ? "
-                        "ORDER BY announcement_date DESC LIMIT 20",
-                        _dcon, params=(symbol,),
-                    )
-                    _dcon.close()
-                    if not div_df.empty:
-                        st.markdown("**Dividend / Payout History** *(from global scrape)*")
-                        st.dataframe(div_df, width='stretch', hide_index=True)
-                    else:
-                        st.info("No payout history available.")
-                except Exception:
+                # Fallback: try dividend_payouts from global scraper via /v1
+                div_rows = v1_client.get_company_dividend_payouts(symbol, limit=20) or []
+                if div_rows:
+                    div_df = pd.DataFrame(div_rows)
+                    st.markdown("**Dividend / Payout History** *(from global scrape)*")
+                    st.dataframe(div_df, width='stretch', hide_index=True)
+                else:
                     st.info("No payout history available.")
     else:
         st.info(
