@@ -566,6 +566,15 @@ def get_pkfrv(
     return _safe_get("/v1/yield-curves/pkfrv", params=params)
 
 
+def get_pkfrv_bond_history(
+    bond_code: str, limit: int = 1000
+) -> Optional[list[dict]]:
+    return _safe_get(
+        f"/v1/yield-curves/pkfrv/{bond_code}/history",
+        params={"limit": limit},
+    )
+
+
 def get_sovereign_sources() -> Optional[list[str]]:
     return _safe_get("/v1/curve/sovereign/sources")
 
@@ -952,6 +961,7 @@ __all__ = [
     "get_pkrv",
     "get_pkisrv",
     "get_pkfrv",
+    "get_pkfrv_bond_history",
     "get_sovereign_sources",
     "get_sovereign_dates",
     "get_sovereign_tenor_history",

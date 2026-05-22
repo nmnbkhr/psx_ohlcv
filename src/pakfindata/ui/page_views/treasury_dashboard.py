@@ -22,6 +22,7 @@ import streamlit as st
 from pakfindata.sources.sbp_gsp import GSPScraper
 from pakfindata.sources.sbp_rates import SBPRatesScraper
 from pakfindata.sources.sbp_treasury import SBPTreasuryScraper
+from pakfindata.ui.api import client as api_client
 from pakfindata.ui.components.helpers import get_connection, render_ai_commentary, render_footer
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -102,75 +103,110 @@ def _days_ago(date_str):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_overview_kpis() -> dict:
-    """Load all overview KPI values (cached)."""
-    con = get_connection()
-    kpis = {}
-    kpis["policy"] = con.execute(
-        "SELECT policy_rate, rate_date FROM sbp_policy_rates ORDER BY rate_date DESC LIMIT 1"
-    ).fetchone()
-    kpis["kibor"] = con.execute(
-        "SELECT date, bid, offer FROM kibor_daily WHERE tenor='3M' ORDER BY date DESC LIMIT 1"
-    ).fetchone()
-    kpis["tbill"] = con.execute(
-        "SELECT cutoff_yield, auction_date FROM tbill_auctions"
-        " WHERE tenor LIKE '%3M%' OR tenor LIKE '%3 M%'"
-        " ORDER BY auction_date DESC LIMIT 1"
-    ).fetchone()
-    kpis["konia"] = con.execute(
-        "SELECT rate_pct, date FROM konia_daily ORDER BY date DESC LIMIT 1"
-    ).fetchone()
-    kpis["pkrv10"] = con.execute(
-        "SELECT yield_pct, date FROM pkrv_daily WHERE tenor_months=120 ORDER BY date DESC LIMIT 1"
-    ).fetchone()
-    try:
-        from pakfindata.db.repositories.global_rates import ensure_tables
-        ensure_tables(con)
-        kpis["sofr"] = con.execute(
-            "SELECT rate, date FROM global_rates WHERE rate_name='SOFR' AND tenor='ON'"
-            " ORDER BY date DESC LIMIT 1"
-        ).fetchone()
-    except Exception:
-        kpis["sofr"] = None
-    # Convert Row objects to dicts for caching
-    return {k: (dict(v) if v else None) for k, v in kpis.items()}
+    """Load all overview KPI values (cached) via /v1."""
+    kpis: dict = {}
+
+    # Use /v1/rates/strip for policy + KIBOR 3M + tbill 3M + PKRV 10Y
+    strip = api_client.get_rates_strip() or {}
+
+    kpis["policy"] = (
+        {"policy_rate": strip["sbp_policy_rate"], "rate_date": strip.get("sbp_policy_date")}
+        if strip.get("sbp_policy_rate") is not None else None
+    )
+    kpis["kibor"] = (
+        {
+            "date": strip.get("kibor_3m_date"),
+            "bid": strip.get("kibor_3m_bid"),
+            "offer": strip.get("kibor_3m_offer"),
+        }
+        if strip.get("kibor_3m_offer") is not None else None
+    )
+    kpis["tbill"] = (
+        {
+            "cutoff_yield": strip["tbill_3m_cutoff"],
+            "auction_date": strip.get("tbill_3m_date"),
+        }
+        if strip.get("tbill_3m_cutoff") is not None else None
+    )
+    kpis["pkrv10"] = (
+        {"yield_pct": strip["pkrv_10y_yield"], "date": strip.get("pkrv_10y_date")}
+        if strip.get("pkrv_10y_yield") is not None else None
+    )
+
+    # KONIA with Group C defensive guard
+    konia_rows = api_client.get_konia(limit=1) or []
+    if konia_rows and 0 < (konia_rows[0].get("rate_pct") or 0) < 50:
+        kpis["konia"] = konia_rows[0]
+    else:
+        kpis["konia"] = None
+
+    # SOFR latest via /v1/rates/global
+    global_rows = api_client.get_global_reference_rates(rate_names="SOFR") or []
+    sofr_on = next(
+        (r for r in global_rows if r.get("rate_name") == "SOFR" and r.get("tenor") == "ON"),
+        None,
+    )
+    kpis["sofr"] = (
+        {"rate": sofr_on["rate"], "date": sofr_on.get("date")}
+        if sofr_on and sofr_on.get("rate") is not None else None
+    )
+
+    return kpis
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_rate_history() -> tuple[dict, pd.DataFrame]:
     """Load rate history overlay data (cached). Last 3 years only."""
-    con = get_connection()
     cutoff = (pd.Timestamp.now() - pd.DateOffset(years=3)).strftime("%Y-%m-%d")
-    rate_series = [
-        ("sbp_policy_rates", "rate_date", "policy_rate", f" WHERE rate_date >= '{cutoff}'"),
-        ("kibor_daily", "date", "offer", f" WHERE tenor='3M' AND date >= '{cutoff}'"),
-        ("konia_daily", "date", "rate_pct", f" WHERE date >= '{cutoff}'"),
-    ]
-    frames = {}
-    for table, date_col, val_col, where in rate_series:
-        frames[table] = pd.read_sql_query(
-            f"SELECT {date_col} as date, {val_col} as rate FROM {table}{where} ORDER BY {date_col}",
-            con,
-        )
-    tb = pd.read_sql_query(
-        f"SELECT auction_date as date, cutoff_yield as rate FROM tbill_auctions"
-        f" WHERE tenor='3M' AND auction_date >= '{cutoff}' ORDER BY auction_date", con,
-    )
-    frames["tbill_auctions"] = tb
-    return frames, tb
+    frames: dict = {}
+
+    # Policy rate history
+    pr_rows = api_client.get_policy_rate_history(limit=500) or []
+    pr_df = pd.DataFrame([
+        {"date": r.get("rate_date"), "rate": r.get("policy_rate")}
+        for r in pr_rows if r.get("rate_date") and r["rate_date"] >= cutoff
+    ])
+    frames["sbp_policy_rates"] = pr_df.sort_values("date") if not pr_df.empty else pr_df
+
+    # KIBOR 3M history
+    kibor_rows = api_client.get_kibor_history(tenors="3M", days=3000) or []
+    kibor_df = pd.DataFrame([
+        {"date": r.get("date"), "rate": r.get("offer")}
+        for r in kibor_rows if r.get("date") and r["date"] >= cutoff
+    ])
+    frames["kibor_daily"] = kibor_df.sort_values("date") if not kibor_df.empty else kibor_df
+
+    # KONIA history (via /v1/rates/konia with a wide limit)
+    konia_rows = api_client.get_konia(limit=3000) or []
+    konia_df = pd.DataFrame([
+        {"date": r.get("date"), "rate": r.get("rate_pct")}
+        for r in konia_rows if r.get("date") and r["date"] >= cutoff
+        and r.get("rate_pct") is not None and 0 < r["rate_pct"] < 50
+    ])
+    frames["konia_daily"] = konia_df.sort_values("date") if not konia_df.empty else konia_df
+
+    # T-Bill 3M history
+    tb_rows = api_client.get_tbill_auctions(tenor="3M", from_=cutoff, limit=2000) or []
+    tb_df = pd.DataFrame([
+        {"date": r.get("auction_date"), "rate": r.get("cutoff_yield")}
+        for r in tb_rows if r.get("auction_date")
+    ])
+    if not tb_df.empty:
+        tb_df = tb_df.sort_values("date")
+    frames["tbill_auctions"] = tb_df
+    return frames, tb_df
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_policy_rate_timeline() -> pd.DataFrame:
     """Load policy rate timeline data (cached). Last 3 years."""
-    con = get_connection()
-    _pr_count = con.execute("SELECT COUNT(*) FROM sbp_policy_rates").fetchone()[0]
-    if _pr_count < 10:
-        from pakfindata.db.repositories.fixed_income import seed_sbp_policy_rates
-        seed_sbp_policy_rates(con)
     cutoff = (pd.Timestamp.now() - pd.DateOffset(years=3)).strftime("%Y-%m-%d")
-    return pd.read_sql_query(
-        f"SELECT rate_date, policy_rate FROM sbp_policy_rates WHERE rate_date >= '{cutoff}' ORDER BY rate_date", con,
-    )
+    pr_rows = api_client.get_policy_rate_history(limit=500) or []
+    df = pd.DataFrame([
+        {"rate_date": r.get("rate_date"), "policy_rate": r.get("policy_rate")}
+        for r in pr_rows if r.get("rate_date") and r["rate_date"] >= cutoff
+    ])
+    return df.sort_values("rate_date") if not df.empty else df
 
 
 def _load_pkrv_dates() -> list[str]:
@@ -181,195 +217,236 @@ def _load_pkrv_dates() -> list[str]:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_pkrv_curve(date: str) -> pd.DataFrame:
-    """Load PKRV yield curve for a date (cached)."""
-    con = get_connection()
-    return pd.read_sql_query(
-        "SELECT tenor_months, yield_pct, change_bps FROM pkrv_daily"
-        " WHERE date=? ORDER BY tenor_months",
-        con, params=(date,),
-    )
+    """Load PKRV yield curve for a date (cached) via /v1."""
+    rows = api_client.get_pkrv(date=date) or []
+    if not rows:
+        return pd.DataFrame(columns=["tenor_months", "yield_pct", "change_bps"])
+    return pd.DataFrame(rows)[["tenor_months", "yield_pct", "change_bps"]]
 
 
 def _load_pkisrv_data() -> tuple[int, list[str]]:
-    """Load PKISRV count and dates from manifest."""
+    """Load PKISRV row coverage + distinct dates."""
     from pakfindata.db.date_manifest import get_dates
     isrv_dates = get_dates("pkisrv_daily")
-    con = get_connection()
-    isrv_count = con.execute("SELECT COUNT(*) FROM pkisrv_daily").fetchone()[0]
+    # Probe count via latest-day fetch — non-empty implies the table
+    # has data; len of probe is sufficient for the "no data yet" gate.
+    isrv_count = len(api_client.get_pkisrv() or [])
     return isrv_count, isrv_dates
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_pkisrv_curve(date: str) -> pd.DataFrame:
-    """Load PKISRV curve for a date (cached)."""
-    con = get_connection()
-    return pd.read_sql_query(
-        "SELECT tenor, yield_pct FROM pkisrv_daily WHERE date=? ORDER BY tenor",
-        con, params=(date,),
-    )
+    """Load PKISRV curve for a date (cached) via /v1."""
+    rows = api_client.get_pkisrv(date=date) or []
+    if not rows:
+        return pd.DataFrame(columns=["tenor", "yield_pct"])
+    return pd.DataFrame(rows)[["tenor", "yield_pct"]]
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_auction_data(auction_type: str, tenor: str) -> tuple[int, list[str], pd.DataFrame]:
-    """Load auction data for T-Bills or PIBs (cached)."""
-    con = get_connection()
-    table = "tbill_auctions" if auction_type == "tbill" else "pib_auctions"
-    count = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-    if count == 0:
-        return count, [], pd.DataFrame()
-    tenors = [r[0] for r in con.execute(
-        f"SELECT DISTINCT tenor FROM {table} ORDER BY tenor"
-    ).fetchall()]
-    where = " WHERE tenor=?" if tenor != "All" else ""
-    params = (tenor,) if tenor != "All" else ()
+    """Load auction data for T-Bills or PIBs (cached) via /v1."""
+    fetch = (
+        api_client.get_tbill_auctions if auction_type == "tbill"
+        else api_client.get_pib_auctions
+    )
+    # Pull a generous slice; we'll filter + cap below to preserve
+    # legacy "ORDER BY auction_date DESC LIMIT 40" semantics.
+    all_rows = fetch(limit=2000) or []
+    if not all_rows:
+        return 0, [], pd.DataFrame()
+
+    df = pd.DataFrame(all_rows)
+    tenors = sorted({r for r in df["tenor"].dropna().tolist() if r})
+    if tenor != "All":
+        df = df[df["tenor"] == tenor]
+    df = df.sort_values("auction_date", ascending=False).head(40)
+
     if auction_type == "tbill":
-        df = pd.read_sql_query(
-            f"SELECT auction_date, tenor, cutoff_yield, weighted_avg_yield,"
-            f" target_amount_billions, amount_accepted_billions"
-            f" FROM tbill_auctions{where} ORDER BY auction_date DESC LIMIT 40",
-            con, params=params,
-        )
+        keep = ["auction_date", "tenor", "cutoff_yield", "weighted_avg_yield",
+                "target_amount_billions", "amount_accepted_billions"]
     else:
-        df = pd.read_sql_query(
-            f"SELECT auction_date, tenor, pib_type, cutoff_yield,"
-            f" coupon_rate, amount_accepted_billions"
-            f" FROM pib_auctions{where} ORDER BY auction_date DESC LIMIT 40",
-            con, params=params,
-        )
-    return count, tenors, df
+        keep = ["auction_date", "tenor", "pib_type", "cutoff_yield",
+                "coupon_rate", "amount_accepted_billions"]
+    keep = [c for c in keep if c in df.columns]
+    return len(all_rows), tenors, df[keep].reset_index(drop=True)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_auction_yield_map() -> pd.DataFrame:
-    """Load combined auction scatter data (cached)."""
-    con = get_connection()
-    return pd.read_sql_query(
-        """SELECT 'T-Bill' as type, tenor, auction_date, cutoff_yield,
-                  target_amount_billions, amount_accepted_billions
-           FROM tbill_auctions
-           UNION ALL
-           SELECT 'PIB', tenor, auction_date, cutoff_yield,
-                  target_amount_billions, amount_accepted_billions
-           FROM pib_auctions
-           ORDER BY auction_date DESC LIMIT 60""",
-        con,
+    """Load combined auction scatter data (cached) — T-Bills + PIBs."""
+    cols = ["type", "tenor", "auction_date", "cutoff_yield",
+            "target_amount_billions", "amount_accepted_billions"]
+    tb = api_client.get_tbill_auctions(limit=200) or []
+    pi = api_client.get_pib_auctions(limit=200) or []
+    rows = []
+    for r in tb:
+        rows.append({"type": "T-Bill", **{k: r.get(k) for k in cols[1:]}})
+    for r in pi:
+        rows.append({"type": "PIB", **{k: r.get(k) for k in cols[1:]}})
+    if not rows:
+        return pd.DataFrame(columns=cols)
+    return (
+        pd.DataFrame(rows)
+        .sort_values("auction_date", ascending=False)
+        .head(60)
+        .reset_index(drop=True)
     )
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_gis_auctions() -> pd.DataFrame:
-    """Load GIS sukuk auction data (cached)."""
-    con = get_connection()
-    return pd.read_sql_query(
-        "SELECT * FROM gis_auctions ORDER BY auction_date DESC LIMIT 20", con,
-    )
+    """Load GIS sukuk auction data (cached) via /v1."""
+    rows = api_client.get_gis_auctions(limit=20) or []
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_kibor_data() -> tuple[int, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Load all KIBOR data (cached)."""
-    con = get_connection()
-    kb_count = con.execute("SELECT COUNT(*) FROM kibor_daily").fetchone()[0]
-    if kb_count == 0:
-        return kb_count, pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    """Load all KIBOR data (cached) via /v1.
+
+    Returns ``(count, kdf, spread_df, latest_df)`` matching the legacy
+    shape — count is the row count of the kibor history slice (proxy
+    for table size), ``kdf`` is per-(date, tenor) history filtered to
+    1M/3M/6M/12M, ``spread_df`` is 3M offer-bid, ``latest_df`` is
+    latest row per tenor.
+    """
     cutoff = (pd.Timestamp.now() - pd.DateOffset(years=3)).strftime("%Y-%m-%d")
-    kdf = pd.read_sql_query(
-        f"SELECT date, tenor, bid, offer FROM kibor_daily"
-        f" WHERE tenor IN ('1M','3M','6M','12M') AND offer IS NOT NULL AND date >= '{cutoff}' ORDER BY date",
-        con,
+    history = api_client.get_kibor_history(
+        tenors="1M,3M,6M,12M", days=10000,
+    ) or []
+    if not history:
+        return 0, pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    kdf = pd.DataFrame([r for r in history if r.get("date", "") >= cutoff])
+    if kdf.empty:
+        return len(history), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    kdf = kdf[["date", "tenor", "bid", "offer"]].sort_values("date")
+
+    spread_df = (
+        kdf[kdf["tenor"] == "3M"][["date", "bid", "offer"]]
+        .dropna()
+        .copy()
     )
-    spread_df = pd.read_sql_query(
-        f"SELECT date, tenor, offer - bid as spread FROM kibor_daily"
-        f" WHERE tenor='3M' AND bid IS NOT NULL AND offer IS NOT NULL AND date >= '{cutoff}' ORDER BY date",
-        con,
+    if not spread_df.empty:
+        spread_df["tenor"] = "3M"
+        spread_df["spread"] = spread_df["offer"] - spread_df["bid"]
+        spread_df = spread_df[["date", "tenor", "spread"]]
+
+    latest_rows = api_client.get_kibor_latest_per_tenor() or []
+    latest = (
+        pd.DataFrame(latest_rows)[["date", "tenor", "bid", "offer"]]
+        if latest_rows else pd.DataFrame()
     )
-    latest = pd.read_sql_query(
-        """SELECT k.date, k.tenor, k.bid, k.offer
-           FROM kibor_daily k
-           INNER JOIN (SELECT tenor, MAX(date) as md FROM kibor_daily GROUP BY tenor) m
-             ON k.tenor=m.tenor AND k.date=m.md
-           ORDER BY k.tenor""",
-        con,
-    )
-    return kb_count, kdf, spread_df, latest
+    return len(history), kdf, spread_df, latest
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_spread_data() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Load T-Bill and KIBOR-Policy spread data (cached)."""
-    con = get_connection()
+    """Load T-Bill and KIBOR-Policy spread data (cached) via /v1."""
     cutoff = (pd.Timestamp.now() - pd.DateOffset(years=3)).strftime("%Y-%m-%d")
-    tb_spread = pd.read_sql_query(
-        f"""SELECT a.auction_date as date, a.cutoff_yield as y6, b.cutoff_yield as y12,
-                  ROUND(b.cutoff_yield - a.cutoff_yield, 4) as spread
-           FROM tbill_auctions a
-           JOIN tbill_auctions b ON a.auction_date=b.auction_date
-           WHERE a.tenor='6M' AND b.tenor='12M' AND a.auction_date >= '{cutoff}'
-           ORDER BY a.auction_date""",
-        con,
-    )
-    kibor_policy = pd.read_sql_query(
-        f"""SELECT k.date, k.offer as kibor,
-                  (SELECT p.policy_rate FROM sbp_policy_rates p
-                   WHERE p.rate_date <= k.date ORDER BY p.rate_date DESC LIMIT 1) as policy
-           FROM kibor_daily k
-           WHERE k.tenor='3M' AND k.offer IS NOT NULL AND k.date >= '{cutoff}'
-           ORDER BY k.date""",
-        con,
-    )
+
+    # T-Bill 6M vs 12M spread (joined client-side on auction_date)
+    tb6 = api_client.get_tbill_auctions(tenor="6M", from_=cutoff, limit=2000) or []
+    tb12 = api_client.get_tbill_auctions(tenor="12M", from_=cutoff, limit=2000) or []
+    if tb6 and tb12:
+        df6 = pd.DataFrame(tb6)[["auction_date", "cutoff_yield"]].rename(
+            columns={"auction_date": "date", "cutoff_yield": "y6"}
+        )
+        df12 = pd.DataFrame(tb12)[["auction_date", "cutoff_yield"]].rename(
+            columns={"auction_date": "date", "cutoff_yield": "y12"}
+        )
+        tb_spread = df6.merge(df12, on="date", how="inner")
+        tb_spread["spread"] = (tb_spread["y12"] - tb_spread["y6"]).round(4)
+        tb_spread = tb_spread.sort_values("date")
+    else:
+        tb_spread = pd.DataFrame()
+
+    # KIBOR 3M vs policy rate (as-of join client-side via merge_asof)
+    kibor_hist = api_client.get_kibor_history(tenors="3M", days=10000) or []
+    policy_hist = api_client.get_policy_rate_history(limit=500) or []
+    if kibor_hist and policy_hist:
+        kdf = pd.DataFrame([
+            {"date": r.get("date"), "kibor": r.get("offer")}
+            for r in kibor_hist if r.get("date", "") >= cutoff and r.get("offer") is not None
+        ])
+        pdf = pd.DataFrame([
+            {"date": r.get("rate_date"), "policy": r.get("policy_rate")}
+            for r in policy_hist if r.get("rate_date") and r.get("policy_rate") is not None
+        ])
+        if not kdf.empty and not pdf.empty:
+            kdf["date"] = pd.to_datetime(kdf["date"])
+            pdf["date"] = pd.to_datetime(pdf["date"])
+            kdf = kdf.sort_values("date")
+            pdf = pdf.sort_values("date")
+            kibor_policy = pd.merge_asof(kdf, pdf, on="date", direction="backward")
+            kibor_policy["date"] = kibor_policy["date"].dt.strftime("%Y-%m-%d")
+        else:
+            kibor_policy = pd.DataFrame()
+    else:
+        kibor_policy = pd.DataFrame()
     return tb_spread, kibor_policy
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_curve_steepness() -> list[dict]:
-    """Load yield curve steepness data (cached)."""
-    con = get_connection()
-    from pakfindata.db.date_manifest import get_dates
-    steep_dates = [{"date": d} for d in get_dates("pkrv_daily")[:90]]
-    steepness = []
-    for row in steep_dates:
-        d = row["date"]
-        y2 = con.execute(
-            "SELECT yield_pct FROM pkrv_daily WHERE date=? AND tenor_months=24", (d,)
-        ).fetchone()
-        y10 = con.execute(
-            "SELECT yield_pct FROM pkrv_daily WHERE date=? AND tenor_months=120", (d,)
-        ).fetchone()
-        if y2 and y10:
-            steepness.append({"date": d, "steep": y10["yield_pct"] - y2["yield_pct"]})
-    return steepness
+    """Load yield curve steepness data (cached) via /v1 history endpoints.
+
+    Falls back to tenor-history on sovereign_curve for PKRV 2Y and
+    10Y, then computes 10Y-2Y per overlapping date.
+    """
+    y2_hist = api_client.get_sovereign_tenor_history(
+        tenor="2Y", sources="PKRV", limit=5000,
+    ) or []
+    y10_hist = api_client.get_sovereign_tenor_history(
+        tenor="10Y", sources="PKRV", limit=5000,
+    ) or []
+    if not y2_hist or not y10_hist:
+        return []
+    y2_map = {r["date"]: r["yield_pct"] for r in y2_hist if r.get("yield_pct") is not None}
+    y10_map = {r["date"]: r["yield_pct"] for r in y10_hist if r.get("yield_pct") is not None}
+    overlap = sorted(set(y2_map) & set(y10_map), reverse=True)[:90]
+    return [
+        {"date": d, "steep": y10_map[d] - y2_map[d]}
+        for d in overlap
+    ]
 
 
 def _load_pkfrv_data() -> tuple[int, list[str]]:
-    """Load PKFRV bond count and dates from manifest."""
+    """Load PKFRV bond row count + distinct dates."""
     from pakfindata.db.date_manifest import get_dates
-    con = get_connection()
-    frv_count = con.execute("SELECT COUNT(*) FROM pkfrv_daily").fetchone()[0]
-    if frv_count == 0:
-        return frv_count, []
+    # Probe coverage via latest-day fetch
+    probe = api_client.get_pkfrv() or []
+    if not probe:
+        return 0, []
     dates = get_dates("pkfrv_daily")
-    return frv_count, dates
+    return len(probe), dates
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_pkfrv_bonds(date: str) -> pd.DataFrame:
-    """Load PKFRV bonds for a date (cached)."""
-    con = get_connection()
-    return pd.read_sql_query(
-        "SELECT bond_code, issue_date, maturity_date, coupon_frequency, fma_price"
-        " FROM pkfrv_daily WHERE date=? ORDER BY bond_code",
-        con, params=(date,),
-    )
+    """Load PKFRV bonds for a date (cached) via /v1."""
+    rows = api_client.get_pkfrv(date=date, limit=2000) or []
+    if not rows:
+        return pd.DataFrame(columns=[
+            "bond_code", "issue_date", "maturity_date",
+            "coupon_frequency", "fma_price",
+        ])
+    return pd.DataFrame(rows)[[
+        "bond_code", "issue_date", "maturity_date",
+        "coupon_frequency", "fma_price",
+    ]]
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_bond_history(bond_code: str) -> pd.DataFrame:
-    """Load FMA price history for a bond (cached)."""
-    con = get_connection()
-    return pd.read_sql_query(
-        "SELECT date, fma_price FROM pkfrv_daily"
-        " WHERE bond_code=? AND fma_price IS NOT NULL ORDER BY date",
-        con, params=(bond_code,),
+    """FMA price history for a single bond via /v1."""
+    rows = api_client.get_pkfrv_bond_history(bond_code, limit=2000) or []
+    if not rows:
+        return pd.DataFrame(columns=["date", "fma_price"])
+    return (
+        pd.DataFrame(rows)[["date", "fma_price"]]
+        .sort_values("date")
+        .reset_index(drop=True)
     )
 
 
@@ -1410,12 +1487,13 @@ def _render_konia_backfill_button():
 
         konia_count = 0
         try:
-            from pakfindata.ui.components.helpers import get_connection
-            con = get_connection()
-            konia_count = con.execute("SELECT COUNT(*) FROM konia_daily").fetchone()[0]
+            # Coarse coverage probe — KONIA latest row count via /v1.
+            # We can't get a row total without a dedicated endpoint, so
+            # presence of a single row is what gates the caption.
+            konia_count = len(api_client.get_konia(limit=1) or [])
         except Exception:
             pass
-        st.caption(f"Last: {konia_count} records, 0 dates" if konia_count else "No data yet")
+        st.caption(f"Has data" if konia_count else "No data yet")
 
         if st.button("Backfill KONIA (2015-Present)", key="tsy_backfill_konia"):
             started = start_konia_history_sync()

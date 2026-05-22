@@ -262,6 +262,25 @@ def get_pkisrv(
     return [dict(r) for r in cur.fetchall()]
 
 
+@yield_curves_router.get("/pkfrv/{bond_code}/history", response_model=list[PkfrvRow])
+def get_pkfrv_bond_history(
+    bond_code: Annotated[str, Path()],
+    limit: Annotated[int, Query(ge=1, le=5000)] = 1000,
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> list[dict]:
+    """FMA price history for a single PIB bond (newest first capped at
+    ``limit``; oldest first when consumed by chart code via sort)."""
+    cur = con.execute(
+        """SELECT date, bond_code, issue_date, maturity_date,
+                  coupon_frequency, fma_price, source
+           FROM pkfrv_daily
+           WHERE bond_code = ? AND fma_price IS NOT NULL
+           ORDER BY date DESC LIMIT ?""",
+        (bond_code, limit),
+    )
+    return [dict(r) for r in cur.fetchall()]
+
+
 @yield_curves_router.get("/pkfrv", response_model=list[PkfrvRow])
 def get_pkfrv(
     date: Annotated[Optional[str], Query(description="YYYY-MM-DD; defaults to latest", pattern=DATE_RE)] = None,
