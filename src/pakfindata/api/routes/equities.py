@@ -501,7 +501,10 @@ def get_factor_raw_data(
                 cs.symbol,
                 cs.snapshot_date,
                 cs.company_name,
-                cs.sector_code,
+                -- snapshot.sector_code is empty across the dataset;
+                -- expose sector_name under the sector_code alias so
+                -- the page can group by a populated field.
+                cs.sector_name AS sector_code,
                 CAST(json_extract(cs.quote_data,  '$.close')                AS REAL) AS price,
                 CAST(json_extract(cs.trading_data, '$.REG.ldcp')            AS REAL) AS ldcp,
                 CAST(json_extract(cs.trading_data, '$.REG.volume')          AS REAL) AS volume,
