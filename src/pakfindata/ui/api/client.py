@@ -522,6 +522,27 @@ def get_nccpl_flows_derived(limit: int = 1000) -> Optional[list[dict]]:
 
 
 @st.cache_data(ttl=300)
+def get_fx_adjusted_metrics(
+    fx_pair: Optional[str] = None,
+    period: Optional[str] = None,
+    symbol: Optional[str] = None,
+    as_of: Optional[str] = None,
+    limit: int = 50,
+) -> Optional[list[dict]]:
+    """Pre-computed FX-adjusted equity returns."""
+    params: dict = {"limit": limit}
+    if fx_pair:
+        params["fx_pair"] = fx_pair
+    if period:
+        params["period"] = period
+    if symbol:
+        params["symbol"] = symbol
+    if as_of:
+        params["as_of"] = as_of
+    return _safe_get("/v1/fx/adjusted-metrics", params=params)
+
+
+@st.cache_data(ttl=300)
 def get_fx_normalized_performance(
     pairs: list[str],
     start_date: Optional[str] = None,
@@ -1624,10 +1645,11 @@ __all__ = [
     "get_pmex_portal_categories",
     "get_pmex_portal_latest",
     "get_pmex_portal_history",
-    # fx pair/analytics extras (1.7.G.4.2a)
+    # fx pair/analytics extras (1.7.G.4.2a + 1.7.G.4.8)
     "get_fx_pairs",
     "get_fx_analytics",
     "get_fx_normalized_performance",
+    "get_fx_adjusted_metrics",
     # nccpl flow intelligence (1.7.G.4.5a)
     "get_nccpl_coverage",
     "get_nccpl_fipi",

@@ -3,32 +3,12 @@
 import pandas as pd
 import streamlit as st
 
-from pakfindata.analytics_fx import (
-    compute_and_store_fx_adjusted_metrics,
-    get_fx_analytics,
-    get_normalized_fx_performance,
-)
-from pakfindata.config import get_db_path
-from pakfindata.db import (
-    get_fx_adjusted_metrics,
-    get_fx_ohlcv,
-    get_fx_pairs,
-)
-from pakfindata.sync_fx import (
-    seed_fx_pairs,
-    sync_fx_pairs,
-)
-from pakfindata.ui.components.helpers import (
-    get_connection,
-    render_footer,
-)
+from pakfindata.ui.api import client as api_client
+from pakfindata.ui.components.helpers import render_footer
 
 
 def render_fx_overview():
     """FX Overview - Macro context for currency analysis."""
-    # =================================================================
-    # HEADER
-    # =================================================================
     header_col1, header_col2 = st.columns([3, 1])
     with header_col1:
         st.markdown("## 🌍 FX Overview")
@@ -39,11 +19,9 @@ def render_fx_overview():
             unsafe_allow_html=True
         )
 
-    con = get_connection()
+    api_client.render_api_status_banner_if_down()
 
-    # Get FX pairs
-    fx_pairs = get_fx_pairs(con, active_only=True)
-
+    fx_pairs = api_client.get_fx_pairs(active_only=True) or []
     if not fx_pairs:
         st.warning(
             "No FX pairs found. Run `pfsync fx seed` to seed FX pairs, "
@@ -52,7 +30,6 @@ def render_fx_overview():
         render_footer()
         return
 
-    # Pair selector
     col1, col2 = st.columns([2, 4])
 
     with col1:
@@ -63,10 +40,9 @@ def render_fx_overview():
             index=0 if "USD/PKR" in pair_names else 0,
         )
 
-    # Get analytics for selected pair
-    analytics = get_fx_analytics(con, selected_pair)
+    analytics = api_client.get_fx_analytics(selected_pair) or {}
 
-    if analytics.get("error"):
+    if not analytics or analytics.get("error"):
         st.info(
             f"No data available for {selected_pair}. "
             "Run `pfsync fx sync` to fetch data."
@@ -90,7 +66,7 @@ def render_fx_overview():
             "1 Week",
             f"{ret_1w * 100:+.2f}%",
             delta=f"{ret_1w * 100:+.2f}%",
-            delta_color="inverse"  # Red for appreciation (bad for PKR)
+            delta_color="inverse"
         )
 
     with col3:
@@ -112,11 +88,11 @@ def render_fx_overview():
         )
 
     # Trend info
-    trend = analytics.get("trend", {})
+    trend = analytics.get("trend", {}) or {}
     if trend:
         col1, col2 = st.columns(2)
         with col1:
-            direction = trend.get("trend_direction", "N/A").upper()
+            direction = (trend.get("trend_direction") or "N/A").upper()
             strength = trend.get("trend_strength", "N/A")
             if direction == "UP":
                 st.warning(f"📈 Trend: {direction} ({strength}) - PKR Depreciating")
@@ -131,7 +107,6 @@ def render_fx_overview():
     st.markdown("---")
     st.subheader("FX Rate Chart")
 
-    # Date range selector
     date_range = st.selectbox(
         "Time Range",
         ["30 Days", "90 Days", "180 Days", "1 Year"],
@@ -141,19 +116,17 @@ def render_fx_overview():
     days_map = {"30 Days": 30, "90 Days": 90, "180 Days": 180, "1 Year": 365}
     days = days_map[date_range]
 
-    # Get OHLCV data
-    df = get_fx_ohlcv(con, selected_pair, limit=days)
+    rows = api_client.get_fx_ohlcv(selected_pair, limit=days) or []
+    df = pd.DataFrame(rows) if rows else pd.DataFrame()
 
     if not df.empty:
         df = df.sort_values("date")
 
         import plotly.graph_objects as go
 
-        # Create candlestick chart
         fig = go.Figure()
 
         if len(df) <= 60:
-            # Candlestick for shorter periods
             fig.add_trace(go.Candlestick(
                 x=df["date"],
                 open=df["open"],
@@ -163,7 +136,6 @@ def render_fx_overview():
                 name=selected_pair,
             ))
         else:
-            # Line chart for longer periods
             fig.add_trace(go.Scatter(
                 x=df["date"],
                 y=df["close"],
@@ -172,7 +144,6 @@ def render_fx_overview():
                 line=dict(color="#2196F3", width=2),
             ))
 
-            # Add 50-day MA
             if len(df) >= 50:
                 df["ma50"] = df["close"].rolling(window=50).mean()
                 fig.add_trace(go.Scatter(
@@ -208,13 +179,15 @@ def render_fx_overview():
         )
 
         if compare_pairs:
-            perf_df = get_normalized_fx_performance(con, compare_pairs)
+            perf_rows = api_client.get_fx_normalized_performance(compare_pairs) or []
+            perf_df = pd.DataFrame(perf_rows)
+            if "date" in perf_df.columns:
+                perf_df = perf_df.set_index("date")
 
             if not perf_df.empty:
                 import plotly.graph_objects as go
 
                 fig = go.Figure()
-
                 for pair in compare_pairs:
                     if pair in perf_df.columns:
                         fig.add_trace(go.Scatter(
@@ -242,6 +215,8 @@ def render_fx_overview():
 
     with col1:
         if st.button("Sync FX Rates", type="primary"):
+            from pakfindata.config import get_db_path
+            from pakfindata.sync_fx import sync_fx_pairs
             with st.spinner("Syncing FX data..."):
                 summary = sync_fx_pairs(db_path=get_db_path())
                 st.success(
@@ -251,6 +226,8 @@ def render_fx_overview():
 
     with col2:
         if st.button("Seed FX Pairs"):
+            from pakfindata.config import get_db_path
+            from pakfindata.sync_fx import seed_fx_pairs
             result = seed_fx_pairs(db_path=get_db_path())
             st.success(f"Seeded {result.get('inserted', 0)} pairs")
 
@@ -259,9 +236,6 @@ def render_fx_overview():
 
 def render_fx_impact():
     """FX Impact - FX-adjusted equity performance analysis."""
-    # =================================================================
-    # HEADER
-    # =================================================================
     header_col1, header_col2 = st.columns([3, 1])
     with header_col1:
         st.markdown("## 📊 FX Impact")
@@ -272,17 +246,14 @@ def render_fx_impact():
             unsafe_allow_html=True
         )
 
-    con = get_connection()
+    api_client.render_api_status_banner_if_down()
 
-    # Get FX pairs
-    fx_pairs = get_fx_pairs(con, active_only=True)
-
+    fx_pairs = api_client.get_fx_pairs(active_only=True) or []
     if not fx_pairs:
         st.warning("No FX pairs found. Run `pfsync fx seed` first.")
         render_footer()
         return
 
-    # Filters
     col1, col2, col3 = st.columns(3)
 
     with col1:
@@ -305,7 +276,7 @@ def render_fx_impact():
         top_n = st.slider("Top N Stocks", min_value=10, max_value=50, value=20)
 
     # Get FX analytics for context
-    fx_analytics = get_fx_analytics(con, selected_pair)
+    fx_analytics = api_client.get_fx_analytics(selected_pair) or {}
 
     # Show FX context
     st.markdown("---")
@@ -329,7 +300,6 @@ def render_fx_impact():
         vol = fx_analytics.get("vol_1M", 0) or 0
         st.metric("FX Volatility", f"{vol * 100:.1f}%")
 
-    # Explanation
     st.markdown("""
     **How FX-Adjusted Returns Work:**
     - FX-Adjusted Return = Equity Return - FX Return
@@ -341,12 +311,9 @@ def render_fx_impact():
     st.markdown("---")
     st.subheader("FX-Adjusted Performance")
 
-    metrics = get_fx_adjusted_metrics(
-        con,
-        fx_pair=selected_pair,
-        period=period,
-        limit=top_n,
-    )
+    metrics = api_client.get_fx_adjusted_metrics(
+        fx_pair=selected_pair, period=period, limit=top_n,
+    ) or []
 
     if not metrics:
         st.info(
@@ -355,21 +322,23 @@ def render_fx_impact():
         )
 
         if st.button("Compute FX-Adjusted Metrics", type="primary"):
+            # Engine domain — opens its own write connection.
+            from pakfindata.analytics_fx import compute_and_store_fx_adjusted_metrics
+            from pakfindata.db.connection import connect
+            con = connect()
             with st.spinner("Computing metrics..."):
                 result = compute_and_store_fx_adjusted_metrics(
-                    con,
-                    fx_pair=selected_pair,
+                    con, fx_pair=selected_pair,
                 )
                 if result.get("success"):
                     st.success(f"Computed {result.get('metrics_stored', 0)} metrics")
+                    st.cache_data.clear()
                     st.rerun()
                 else:
                     st.error(f"Error: {result.get('error')}")
     else:
-        # Convert to DataFrame
         df = pd.DataFrame(metrics)
 
-        # Format for display
         display_df = df[["symbol", "equity_return", "fx_return", "fx_adjusted_return"]].copy()
         display_df["equity_return"] = display_df["equity_return"].apply(
             lambda x: f"{x * 100:.2f}%" if pd.notna(x) else "N/A"
@@ -385,11 +354,9 @@ def render_fx_impact():
 
         st.dataframe(display_df, width='stretch', hide_index=True)
 
-        # Visualization
         st.markdown("---")
         st.subheader("Visual Comparison")
 
-        # Select stocks to visualize
         symbols = df["symbol"].tolist()
         selected_symbols = st.multiselect(
             "Select stocks to compare",
@@ -405,7 +372,6 @@ def render_fx_impact():
 
             fig = go.Figure()
 
-            # Equity returns
             fig.add_trace(go.Bar(
                 name=f"Equity Return ({period})",
                 x=filtered_df["symbol"],
@@ -413,7 +379,6 @@ def render_fx_impact():
                 marker_color="#2196F3",
             ))
 
-            # FX-adjusted returns
             fig.add_trace(go.Bar(
                 name="FX-Adjusted Return",
                 x=filtered_df["symbol"],
@@ -431,7 +396,6 @@ def render_fx_impact():
 
             st.plotly_chart(fig, width='stretch')
 
-        # Summary stats
         st.markdown("---")
         st.subheader("Summary Statistics")
 
@@ -460,28 +424,37 @@ def render_fx_impact():
                 avg = valid_adj.mean() * 100
                 st.metric("Average Adjusted", f"{avg:.1f}%")
 
-    # Sync Section
+    # Sync Section — engine-domain calls open their own write connection.
     st.markdown("---")
     with st.expander("Sync FX Data & Compute Metrics", expanded=False):
         col1, col2, col3 = st.columns(3)
 
         with col1:
             if st.button("Seed FX Pairs", key="fxi_seed"):
+                from pakfindata.config import get_db_path
+                from pakfindata.sync_fx import seed_fx_pairs
                 result = seed_fx_pairs(db_path=get_db_path())
                 st.success(f"Seeded {result.get('inserted', 0)} pairs")
+                st.cache_data.clear()
                 st.rerun()
 
         with col2:
             if st.button("Sync FX Rates", type="primary", key="fxi_sync"):
+                from pakfindata.config import get_db_path
+                from pakfindata.sync_fx import sync_fx_pairs
                 with st.spinner("Syncing FX data..."):
                     summary = sync_fx_pairs(db_path=get_db_path())
                     st.success(
                         f"Sync: {summary.ok} OK, {summary.rows_upserted} rows"
                     )
+                    st.cache_data.clear()
                     st.rerun()
 
         with col3:
             if st.button("Compute FX-Adjusted Metrics", key="fxi_compute"):
+                from pakfindata.analytics_fx import compute_and_store_fx_adjusted_metrics
+                from pakfindata.db.connection import connect
+                con = connect()
                 with st.spinner("Computing FX-adjusted metrics..."):
                     result = compute_and_store_fx_adjusted_metrics(
                         con, fx_pair=selected_pair
@@ -490,6 +463,7 @@ def render_fx_impact():
                         st.success(
                             f"Computed metrics for {result.get('symbols_processed', 0)} symbols"
                         )
+                        st.cache_data.clear()
                         st.rerun()
                     else:
                         st.error(f"Error: {result.get('error', 'Unknown')}")

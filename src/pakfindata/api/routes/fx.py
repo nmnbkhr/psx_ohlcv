@@ -330,6 +330,33 @@ def get_fx_normalized_performance(
     return df_to_records(out)
 
 
+@fx_router.get("/adjusted-metrics", response_model=list[dict])
+def list_fx_adjusted_metrics(
+    fx_pair: Annotated[Optional[str], Query(description="e.g. USD/PKR")] = None,
+    period: Annotated[Optional[str], Query(description="1W | 1M | 3M | 6M | 1Y")] = None,
+    symbol: Annotated[Optional[str], Query(description="Equity symbol filter")] = None,
+    as_of: Annotated[Optional[str], Query(description="YYYY-MM-DD")] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 50,
+    con: sqlite3.Connection = Depends(get_read_db),
+) -> list[dict]:
+    """Pre-computed FX-adjusted equity returns from ``fx_adjusted_metrics``.
+
+    The table is populated by ``analytics_fx.compute_and_store_fx_adjusted_metrics``
+    (a write path — not exposed here). When empty, the page surfaces a
+    "Compute" button which still runs the engine directly via the
+    Streamlit process. Read endpoint is a thin pass-through to the repo.
+    """
+    from pakfindata.db.repositories.fixed_income import get_fx_adjusted_metrics
+    return get_fx_adjusted_metrics(
+        con,
+        as_of_date=as_of,
+        symbol=symbol,
+        fx_pair=fx_pair,
+        period=period,
+        limit=limit,
+    )
+
+
 # ---------------------------------------------------------------- /v1/rates extras
 
 
