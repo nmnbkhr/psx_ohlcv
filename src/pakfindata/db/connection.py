@@ -144,6 +144,11 @@ def init_schema(con: sqlite3.Connection) -> None:
     from .repositories.fixed_income import init_fund_performance_schema
     init_fund_performance_schema(con)
 
+    # Data quality layer (Phase 2.A.1) — declarative validator rules +
+    # per-run results; parallel to data_freshness.
+    from .quality_schema import init_quality_schema
+    init_quality_schema(con)
+
     _migrate_intraday_operation_cols(con)
     _migrate_turnover_col(con)
 
