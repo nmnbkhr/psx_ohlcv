@@ -1482,6 +1482,45 @@ def use_worker_sync() -> bool:
     return bool(st.session_state.get("use_worker_sync", True))
 
 
+# ---------------------------------------------------------------------------
+# Data quality (Phase 2.A.1.6) — wrappers exist but no page consumes them yet.
+# Page-level "data quality degraded" banner integration lands in Phase 2.A.3
+# as each backfilled domain gets rules; today only `indices` has any.
+# ---------------------------------------------------------------------------
+
+
+@st.cache_data(ttl=30)
+def get_quality_summary() -> Optional[list[dict]]:
+    """All domains' quality summaries (rollup of latest-result-per-rule)."""
+    return _safe_get("/v1/quality", on_404=[])
+
+
+@st.cache_data(ttl=30)
+def get_domain_quality(domain: str) -> Optional[dict]:
+    """One domain's quality summary. None on transport failure / 404."""
+    return _safe_get(f"/v1/quality/{domain}")
+
+
+@st.cache_data(ttl=30)
+def get_domain_quality_history(
+    domain: str, limit: int = 50,
+) -> Optional[list[dict]]:
+    """Recent rule outcomes for a domain, newest first. limit ≤ 500 enforced
+    server-side; default 50 keeps the round-trip small."""
+    return _safe_get(
+        f"/v1/quality/{domain}/history",
+        params={"limit": limit},
+        on_404=[],
+    )
+
+
+@st.cache_data(ttl=60)
+def get_quality_rules(domain: Optional[str] = None) -> Optional[list[dict]]:
+    """All enabled rules (or just one domain's)."""
+    path = f"/v1/quality/rules/{domain}" if domain else "/v1/quality/rules"
+    return _safe_get(path, on_404=[])
+
+
 __all__ = [
     "DEFAULT_API_URL",
     "health",
@@ -1659,4 +1698,9 @@ __all__ = [
     "get_nccpl_sector_heatmap",
     "get_nccpl_flows_derived",
     "use_worker_sync",
+    # data quality (2.A.1.6)
+    "get_quality_summary",
+    "get_domain_quality",
+    "get_domain_quality_history",
+    "get_quality_rules",
 ]
