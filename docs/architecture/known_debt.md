@@ -146,6 +146,21 @@ view.
   helper. Lesson: helper functions need their own coverage; testing
   the underlying primitive is insufficient. Apply this discipline at
   every future helper introduction.
+- **DEBT-PHASE2-FOLLOWUP-3: pkisrv_daily sync path broken — 1,049
+  files unloaded** (Milestone 2.A.3.2) — `pkisrv_daily` is empty
+  in current DB and all four backups (May 11/14/15 + the 2.A.2
+  pre-cleanup snapshot). 1,049 source files (CSVs + XLSXs) sit at
+  `/mnt/e/psxdata/rates/pkisrv/` going back to 2020-02-01 — they
+  ARE the upstream source per the canonical MUFAP path. The loader
+  (`sources/mufap_rates.py::backfill_to_db_fast()` per the project
+  memory) either never had its PKISRV branch wired or broke during
+  recovery and was never re-run. `sovereign_curve` is also empty
+  for `source='PKISRV'`, so the downstream consolidation has nothing
+  to consolidate from. Phase 2.A.5 investigates the loader, decides
+  parser strategy for the heterogeneous MUFAP files, and runs the
+  initial bulk load. 2.A.3.2 only flipped the catalog row to
+  `status='failed'` with notes pointing here so freshness queries
+  stop reporting it as 'ok'.
 - **`tbill_auctions` 175-row memory invalidated** (Milestone 2.A.3
   Step 0 audit) — Prior CLAUDE.md / Phase 0 audit notes recorded
   `tbill_auctions` as a 175-row table (2024-06 → 2026-04). Step 0
