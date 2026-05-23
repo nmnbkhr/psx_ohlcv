@@ -345,14 +345,14 @@ legacy.
 
 | Page | File | URL | Class | Reasoning |
 |---|---|---|---|---|
-| Live Market | live_market.py (282) | live-market | **DELETE** | Superseded by Live Ticker |
-| Live OHLCV | live_ohlcv.py (571) | live-ohlcv | **DELETE** | Hidden; uses deprecated tick→eod promotion path |
-| Live Indices | live_indices.py (560) | live-indices | **DELETE** | Hidden; functionality moved into Index Monitor + Dashboard |
+| Live Market | ~~live_market.py~~ | ~~live-market~~ | **DELETED 1.7.X.1** | Was: Superseded by Live Ticker |
+| Live OHLCV | ~~live_ohlcv.py~~ | ~~live-ohlcv~~ | **DELETED 1.7.X.1** | Was: Hidden; uses deprecated tick→eod promotion path |
+| Live Indices | ~~live_indices.py~~ | ~~live-indices~~ | **DELETED 1.7.X.1** | Was: Hidden; functionality moved into Index Monitor + Dashboard |
 | WS Relay | ws_relay_status.py (200) | ws-relay | **DEFER** | Operational diagnostic, rarely used |
 | Quote Monitor | regular_market.py (428) | quote-monitor | **KEEP** | Distinct snapshot view; write button via safe_writer + catalog |
-| Price Chart | candlestick.py (202) | price-chart | **MERGE** | Roll into Stock Screener or Company Profile |
-| Rankings | rankings.py (217) | rankings | **MERGE** | Functionality covered by Stock Screener + Top Performers |
-| Symbols | symbols.py (137) | symbols | **DELETE** | Trivial; functionality in `pfsync symbols list` |
+| Price Chart | ~~candlestick.py~~ | ~~price-chart~~ | **DELETED 1.7.X.1** | Was: MERGE — functionality now served by Stock Screener (G.D) via /v1/eod/{symbol} |
+| Rankings | ~~rankings.py~~ | ~~rankings~~ | **DELETED 1.7.X.1** | Was: MERGE — functionality now served by /v1/symbols/top-by-volume (G.F) + Stock Screener (G.D) |
+| Symbols | ~~symbols.py~~ | ~~symbols~~ | **DELETED 1.7.X.1** | Was: Trivial; functionality in `pfsync symbols list` |
 | Instruments | instruments.py (223) | instruments | **DEFER** | Phase 1 instrument-universe page; rarely used |
 | FI Overview | fixed_income.py::render_psx_debt_market | fi-overview | **MERGE** | Part of fixed_income.py split |
 | Bond Search | fixed_income.py::render_bonds_screener | bond-search | **MERGE** | Part of fixed_income.py split |
@@ -365,21 +365,21 @@ legacy.
 | FX Analytics | fx.py::render_fx_impact | fx-analytics | **MERGE** | Part of FX consolidation |
 | Fund Directory | funds.py::render_mutual_funds | fund-directory | **MERGE** | Roll into Fund Explorer |
 | Data Sync | data_acquisition.py (606) | data-sync | **MERGE** | Roll into Sync Center → Market Sync v1 |
-| EOD Loader | eod_loader.py (706) | eod-loader | **DELETE** | Uses deprecated promotion path; functionality in `pfsync sync` |
-| History | history.py (407) | history | **DELETE** | Generic history viewer, superseded by per-page history |
+| EOD Loader | ~~eod_loader.py~~ | ~~eod-loader~~ | **DELETED 1.7.X.1** | Was: Uses deprecated promotion path; functionality in `pfsync sync` |
+| History | ~~history.py~~ | ~~history~~ | **DELETED 1.7.X.1** | Was: Generic history viewer, superseded by per-page history |
 | Sync Monitor | sync_monitor.py (744) | sync-monitor | **MERGE** | Roll into ADMIN Market Sync v1 |
 | Data Quality | data_quality.py (620) | data-quality | **KEEP** | Distinct purpose — partial pollution dashboard |
 | Website Scan | website_scan.py (237) | website-scan | **DEFER** | Specialty; broken `sources/sectors.py` scraper dependency |
 | AI Chat | chat.py (in ui/) | ai-chat | **KEEP** | Distinct LLM agent UI |
 | AI Insights | ai_insights.py (692) | ai-insights | **KEEP** | Distinct |
-| Settings | settings.py (112) | settings | **DELETE** | Stub from Feb; no real content |
+| Settings | ~~settings.py~~ | ~~settings~~ | **DELETED 1.7.X.1** | Was: Stub from Feb; no real content |
 
 ## Cross-cutting findings
 
 - **fixed_income.py (2503 lines) hosts 8 nav entries** — has to be split during Phase 1; one of the highest-priority refactors.
 - **fund_explorer.py (2007 lines) hosts 4 nav entries** — same pattern.
 - **intraday.py (2499 lines, dirty)** — 7 tabs in one file; pre-existing dirty so Phase 0 left it alone. Phase 1 should split.
-- **6 pages still bypass safe_writer or have unclear write paths**: `indices.py`, `commodities.py`, `futures.py` (legacy promotion), `eod_loader.py` (legacy), `live_ohlcv.py` (legacy), `data_acquisition.py`. The first three need cleanup during Phase 1 migration; the last three are DELETE candidates.
+- **6 pages still bypass safe_writer or have unclear write paths**: `indices.py`, `commodities.py`, `futures.py` (legacy promotion), `eod_loader.py` (legacy), `live_ohlcv.py` (legacy), `data_acquisition.py`. The first three need cleanup during Phase 1 migration; the last three were DELETE candidates and **eod_loader.py + live_ohlcv.py were removed in Milestone 1.7.X.1** (Group G cleanup wave).
 - **FX functionality is sprawled across 5 pages**: fx_dashboard (KEEP), fx_interbank (KEEP), fx_history (MERGE), fx.py / Currency Dashboard (MERGE), FX Analytics / FX Monitor (MERGE). Consolidation candidate.
 - **Hidden pages that are real duplicates**: Yield Curve / SBP Auctions / FX Monitor / FX Analytics / Fund Directory / Sync Monitor — these all duplicate main-nav entries and exist only for URL backwards-compat. Phase 1 can sunset most.
 - **Last-edit dates** are mostly 2026-04-28 (post-NTFS-recovery commit batch) or 2026-05-18 (Phase 0.1–0.3 catalog work). Only `settings.py` (Feb 2026) and `indices.py` (May 11) stand out — Settings is a stub; Indices is pre-existing dirty.

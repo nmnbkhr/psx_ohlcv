@@ -210,14 +210,6 @@ st.set_page_config(
 )
 
 # -----------------------------------------------------------------------------
-# Page: Live Market
-# -----------------------------------------------------------------------------
-def live_market_page():
-    from pakfindata.ui.page_views.live_market import render_live_market
-    render_live_market()
-
-
-# -----------------------------------------------------------------------------
 # Page: Data Quality
 # -----------------------------------------------------------------------------
 def data_quality_page():
@@ -231,14 +223,6 @@ def data_quality_page():
 def dashboard():
     from pakfindata.ui.page_views.dashboard import render_dashboard
     render_dashboard()
-
-
-# -----------------------------------------------------------------------------
-# Page: Candlestick Explorer
-# -----------------------------------------------------------------------------
-def candlestick_explorer():
-    from pakfindata.ui.page_views.candlestick import render_candlestick
-    render_candlestick()
 
 
 # -----------------------------------------------------------------------------
@@ -258,14 +242,6 @@ def regular_market_page():
 
 
 # -----------------------------------------------------------------------------
-# Page: Symbols
-# -----------------------------------------------------------------------------
-def symbols_page():
-    from pakfindata.ui.page_views.symbols import render_symbols
-    render_symbols()
-
-
-# -----------------------------------------------------------------------------
 # Page: Futures & Contracts
 # -----------------------------------------------------------------------------
 def futures_page():
@@ -279,35 +255,6 @@ def futures_page():
 def schema_page():
     from pakfindata.ui.page_views.schema import render_schema
     render_schema()
-
-
-# -----------------------------------------------------------------------------
-# Page: Settings
-# -----------------------------------------------------------------------------
-def settings_page():
-    from pakfindata.ui.page_views.settings import render_settings
-    render_settings()
-
-
-# -----------------------------------------------------------------------------
-# Page: History
-# -----------------------------------------------------------------------------
-def history_page():
-    from pakfindata.ui.page_views.history import render_history
-    render_history()
-
-
-# -----------------------------------------------------------------------------
-# Page: EOD Data Loader
-# -----------------------------------------------------------------------------
-def eod_data_loader_page():
-    from pakfindata.ui.page_views.eod_loader import render_eod_loader
-    render_eod_loader()
-
-
-def _eod_data_loader_page_impl():
-    from pakfindata.ui.page_views.eod_loader import _eod_data_loader_page_impl
-    _eod_data_loader_page_impl()
 
 
 # -----------------------------------------------------------------------------
@@ -369,14 +316,6 @@ def sync_monitor():
 def instruments_page():
     from pakfindata.ui.page_views.instruments import render_instruments
     render_instruments()
-
-
-# =============================================================================
-# Phase 1: Rankings Page
-# =============================================================================
-def rankings_page():
-    from pakfindata.ui.page_views.rankings import render_rankings
-    render_rankings()
 
 
 # =============================================================================
@@ -648,19 +587,9 @@ def website_scan_page():
     render_website_scan()
 
 
-def live_ohlcv_page():
-    from pakfindata.ui.page_views.live_ohlcv import render_live_ohlcv
-    render_live_ohlcv()
-
-
 def live_ticker_page():
     from pakfindata.ui.page_views.live_ticker import render_live_ticker
     render_live_ticker()
-
-
-def live_indices_page():
-    from pakfindata.ui.page_views.live_indices import render_live_indices
-    render_live_indices()
 
 
 def ws_relay_status_page():
@@ -967,14 +896,8 @@ def main():
     # HIDDEN PAGES — registered for URL access but no sidebar button
     # Preserves backwards-compatible URLs for bookmarks
     _hidden_pages = {
-        "Live Market":      st.Page(live_market_page,        title="Live Market",      url_path="live-market"),
-        "Live OHLCV":       st.Page(live_ohlcv_page,         title="Live OHLCV",       url_path="live-ohlcv"),
-        "Live Indices":     st.Page(live_indices_page,        title="Live Indices",     url_path="live-indices"),
         "WS Relay":         st.Page(ws_relay_status_page,     title="WS Relay",         url_path="ws-relay"),
         "Quote Monitor":    st.Page(regular_market_page,      title="Quote Monitor",    url_path="quote-monitor"),
-        "Price Chart":      st.Page(candlestick_explorer,     title="Price Chart",      url_path="price-chart"),
-        "Rankings":         st.Page(rankings_page,            title="Rankings",          url_path="rankings"),
-        "Symbols":          st.Page(symbols_page,             title="Symbols",           url_path="symbols"),
         "Instruments":      st.Page(instruments_page,         title="Instruments",      url_path="instruments"),
         "FI Overview":      st.Page(psx_debt_market_page,     title="FI Overview",      url_path="fi-overview"),
         "Bond Search":      st.Page(bonds_screener_page,      title="Bond Search",      url_path="bond-search"),
@@ -987,14 +910,11 @@ def main():
         "FX Analytics":     st.Page(fx_impact_page,           title="FX Analytics",     url_path="fx-analytics"),
         "Fund Directory":   st.Page(mutual_funds_page,        title="Fund Directory",   url_path="fund-directory"),
         "Data Sync":        st.Page(data_acquisition_page,    title="Data Sync",        url_path="data-sync"),
-        "EOD Loader":       st.Page(eod_data_loader_page,     title="EOD Loader",       url_path="eod-loader"),
-        "History":          st.Page(history_page,             title="History",           url_path="history"),
         "Sync Monitor":     st.Page(sync_monitor,             title="Sync Monitor",     url_path="sync-monitor"),
         "Data Quality":     st.Page(data_quality_page,        title="Data Quality",     url_path="data-quality"),
         "Website Scan":     st.Page(website_scan_page,        title="Website Scan",     url_path="website-scan"),
         "AI Chat":          st.Page(chat_page,                title="AI Chat",          url_path="ai-chat"),
         "AI Insights":      st.Page(ai_insights_page,         title="AI Insights",      url_path="ai-insights"),
-        "Settings":         st.Page(settings_page,            title="Settings",          url_path="settings"),
     }
 
     # Build grouped dict for st.navigation (primary + hidden)
