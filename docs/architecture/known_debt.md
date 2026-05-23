@@ -227,11 +227,12 @@ view.
   itself so it reaps abandoned runs on its own schedule. Phase
   2.B observability work.
 - **DEBT-PHASE2-FOLLOWUP-3: pkisrv_daily sync path broken — 1,049
-  files unloaded** (Milestone 2.A.3.2) — `pkisrv_daily` is empty
-  in current DB and all four backups (May 11/14/15 + the 2.A.2
-  pre-cleanup snapshot). 1,049 source files (CSVs + XLSXs) sit at
-  `/mnt/e/psxdata/rates/pkisrv/` going back to 2020-02-01 — they
-  ARE the upstream source per the canonical MUFAP path. The loader
+  files unloaded** (Milestone 2.A.3.2 — **CLOSED via 2.A.5.2,
+  2026-05-23**) — `pkisrv_daily` is empty in current DB and all four
+  backups (May 11/14/15 + the 2.A.2 pre-cleanup snapshot). 1,049
+  source files (CSVs + XLSXs) sit at `/mnt/e/psxdata/rates/pkisrv/`
+  going back to 2020-02-01 — they ARE the upstream source per the
+  canonical MUFAP path. The loader
   (`sources/mufap_rates.py::backfill_to_db_fast()` per the project
   memory) either never had its PKISRV branch wired or broke during
   recovery and was never re-run. `sovereign_curve` is also empty
@@ -241,6 +242,57 @@ view.
   initial bulk load. 2.A.3.2 only flipped the catalog row to
   `status='failed'` with notes pointing here so freshness queries
   stop reporting it as 'ok'.
+
+  **CLOSURE (2.A.5.2, 2026-05-23):**
+
+  Outcome: FIX (zero-line rewire). Parser was correct; CLI invocation
+  existed; ran end-to-end via existing `mufap backfill-db` command.
+  Populated `pkisrv_daily` with 1,530 records spanning 2025-02-03 →
+  2026-05-06 (306 dates, ~16 months, five tenors: 1M / 3M / 6M / 9M
+  / 1Y). Catalog row updated to `status='ok'`, `row_count=1530`,
+  `last_row_date='2026-05-06'`. Smoke test against 8 sample files
+  across the date range confirmed the parser before any DB write.
+
+  Constraint surfaced during investigation: pre-2025 PKISRV files
+  contain bond prices (per-issue valuations, multi-dealer quotes in
+  2023, single-column FMA prices in 2024), NOT yield-curve tenors.
+  Upstream MUFAP changed publication format in 2025. The 802
+  pre-2025 files in `/mnt/e/psxdata/rates/pkisrv/` are NOT
+  recoverable as yield-curve data from this source. Multi-year
+  backfill of PKISRV history (FOLLOWUP-3 original framing implied
+  this) is structurally unavailable.
+
+  Forward reference: 2.A.5.3 (sovereign_curve consolidation) will
+  have PKISRV data for 2025+ only. Pre-2025 PKISRV slice in
+  `sovereign_curve` will remain empty due to the same format-break
+  constraint. FOLLOWUP-5 closure must acknowledge this.
+
+  Related new debt:
+    - FOLLOWUP-8: MUFAP backfill operational gap (pkfrv/pkisrv
+      populated only by manual Treasury Dashboard button / CLI; not
+      in cron).
+
+- **DEBT-PHASE2-FOLLOWUP-8: MUFAP backfill not in cron — pkfrv /
+  pkisrv stale without manual click** (Milestone 2.A.5.2
+  side-finding, 2026-05-23) — `sources/mufap_rates.py` exposes
+  `download_and_sync` and `backfill_to_db_fast` (callable as
+  `mufap backfill-db` or via the Treasury Dashboard "Sync" button),
+  but neither is invoked from `scripts/daily_sync.sh` or any
+  registered worker job. The pkrv path stays fresh because
+  `etl/rates.py` independently scrapes the SBP PMA page for the
+  PKRV curve; pkfrv and pkisrv have no SBP fallback. Effect: at
+  Step 0 of 2.A.5.2, pkfrv was 26 days stale (last MUFAP write
+  2026-04-27) and pkisrv was 0 rows (never populated). After
+  2.A.5.2a backfill, pkisrv is current to 2026-05-06 but will
+  again drift unless MUFAP backfill is wired into the daily
+  schedule. Forward reference: Phase 2.B daily digest should
+  detect the freshness-vs-staleness class automatically (same
+  pattern as FOLLOWUP-6). Fix candidates: (a) add a `mufap_sync`
+  worker job + cron step, (b) extend the SBP PMA scraper to also
+  drop PKISRV / PKFRV (if upstream exposes them via SBP), (c)
+  schedule the existing `mufap backfill-db` CLI directly from
+  `daily_sync.sh`. Phase 2.B work; do not address inside
+  2.A.5.
 - **`tbill_auctions` 175-row memory invalidated** (Milestone 2.A.3
   Step 0 audit) — Prior CLAUDE.md / Phase 0 audit notes recorded
   `tbill_auctions` as a 175-row table (2024-06 → 2026-04). Step 0
