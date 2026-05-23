@@ -31,6 +31,18 @@ set -u  # NOT set -e — we want to continue on per-step failure
 export PSX_DATA_ROOT="${PSX_DATA_ROOT:-/mnt/e/psxdata}"
 export PSX_DB_PATH="${PSX_DB_PATH:-$HOME/psxdata_rescue/psx.sqlite}"
 
+# Worker / API endpoint for enqueue_and_wait. Cron doesn't inherit shell rc,
+# so source the token file ourselves. Missing token → helper exits 1 at
+# parameter-expansion time (PAKFINDATA_API_TOKEN:?...) and the step's
+# API_FALLBACK_CMD takes over — but that path is rare; the file is part of
+# the systemd unit's bootstrap.
+API_ENV_FILE="$HOME/.config/pakfindata/api.env"
+if [ -r "$API_ENV_FILE" ]; then
+    # shellcheck disable=SC1090
+    set -a; . "$API_ENV_FILE"; set +a
+fi
+export PAKFINDATA_API_URL="${PAKFINDATA_API_URL:-http://127.0.0.1:8001}"
+
 LOG_DIR="$HOME/.local/share/pakfindata/logs"
 mkdir -p "$LOG_DIR"
 TODAY=$(date +%Y%m%d)
@@ -182,14 +194,27 @@ print(last_trading_day(date.today() - timedelta(days=1)))
 DOW=$(date +%u)  # 1..7, Monday=1
 
 # ── Pipeline ─────────────────────────────────────────────────────────────
+#
+# Each migrated step (1.8) sets API_FALLBACK_CMD to the prior CLI command;
+# if /v1/health probe fails inside enqueue_and_wait the helper eval's the
+# fallback so behavior degrades gracefully with no scheduling drift.
+# Steps without worker handlers (fx_rates, market_summary, announcements,
+# intraday_fetch / intraday_load, parquet_sync) keep the original direct
+# CLI invocation per the Phase 1.6 skip list.
 
-run_step "regular_market"     python -m pakfindata.cli regular-market snapshot
-run_step "indices"            python -m pakfindata.cli indices sync
-run_step "rates"              python -m pakfindata.cli rates sync
+API_FALLBACK_CMD="python -m pakfindata.cli regular-market snapshot" \
+    run_step "regular_market"     enqueue_and_wait sync_regular_market
+
+API_FALLBACK_CMD="python -m pakfindata.cli indices sync" \
+    run_step "indices"            enqueue_and_wait sync_indices
+
+API_FALLBACK_CMD="python -m pakfindata.cli rates sync" \
+    run_step "rates"              enqueue_and_wait sync_rates_bundle
 
 # T-Bill / PIB auctions are weekly (typically Wed); cheap enough to retry
 # every weekday. Run on weekdays only.
-run_step "treasury"           python -m pakfindata.cli treasury sync
+API_FALLBACK_CMD="python -m pakfindata.cli treasury sync" \
+    run_step "treasury"           enqueue_and_wait sync_treasury_auctions
 
 run_step "fx_rates"           python -m pakfindata.cli fx-rates sync-all
 
@@ -199,7 +224,8 @@ run_step "market_summary"     python -m pakfindata.cli market-summary day \
                                   --date "$PREV_TRADING_DAY" --import-eod
 
 # Summary tables read eod_ohlcv → must run AFTER market_summary above.
-run_step "summary_today"      python -m pakfindata.cli summary rebuild-today
+API_FALLBACK_CMD="python -m pakfindata.cli summary rebuild-today" \
+    run_step "summary_today"      enqueue_and_wait rebuild_eod_summary_today
 
 run_step "announcements"      python -m pakfindata.cli announcements sync
 
@@ -208,8 +234,9 @@ run_step "intraday_fetch"     python -m pakfindata.cli intraday ticks-fetch \
                                   --date "$PREV_TRADING_DAY"
 run_step "intraday_load"      python -m pakfindata.cli intraday ticks-load \
                                   --date "$PREV_TRADING_DAY"
-run_step "intraday_summaries" python -m pakfindata.cli intraday summaries-build \
-                                  --date "$PREV_TRADING_DAY"
+API_FALLBACK_CMD="python -m pakfindata.cli intraday summaries-build --date $PREV_TRADING_DAY" \
+    run_step "intraday_summaries" enqueue_and_wait build_intraday_summary \
+                                  "{\"date\": \"$PREV_TRADING_DAY\"}"
 
 # Parquet: incremental sync (only missing dates) is cheap; run every day.
 run_step "parquet_sync"       python -m pakfindata.cli parquet sync-missing
