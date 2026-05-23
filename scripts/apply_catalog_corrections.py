@@ -72,6 +72,24 @@ CORRECTIONS: list[dict[str, Any]] = [
             "notes with closure narrative."
         ),
     },
+    {
+        "id": "2.A.5.3a",
+        "domain": "sovereign_curve",
+        "kind": "recompute",
+        "notes": (
+            "Multi-source curve (KIBOR/PKRV/PKISRV/MTB/PIB/POLICY); "
+            "pre-2025 PKISRV slice empty per FOLLOWUP-3 closure; KIBOR "
+            "whitelist guard rejects FOLLOWUP-9 pollution at consolidator"
+        ),
+        "reason": (
+            "2.A.5.3 ran process_all() end-to-end after adding KIBOR tenor "
+            "whitelist filter to process_kibor_from_db and 1Y→365 mapping "
+            "to TENOR_DAYS. Produced 67,498 rows across 6 sources, "
+            "2005-06-09 → 2026-05-24. Replaces the previous single-source "
+            "KIBOR-only state (41,747 rows) that had been frozen since "
+            "2026-04-23."
+        ),
+    },
 ]
 
 

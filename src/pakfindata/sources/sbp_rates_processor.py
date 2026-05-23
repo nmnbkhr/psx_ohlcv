@@ -36,7 +36,7 @@ DB_PATH = Path("/home/smnb/psxdata_rescue/psx.sqlite")
 
 TENOR_DAYS = {
     "O/N": 1, "1W": 7, "2W": 14, "1M": 30, "2M": 60, "3M": 91, "4M": 122,
-    "6M": 182, "9M": 274, "12M": 365,
+    "6M": 182, "9M": 274, "12M": 365, "1Y": 365,
     "2Y": 730, "3Y": 1095, "4Y": 1460, "5Y": 1825,
     "6Y": 2190, "7Y": 2555, "8Y": 2920, "9Y": 3285, "10Y": 3650,
     "15Y": 5475, "20Y": 7300, "25Y": 9125, "30Y": 10950,
@@ -322,7 +322,16 @@ def process_pkisrv_from_db() -> int:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def process_kibor_from_db() -> int:
-    """Copy kibor_daily → sovereign_curve (source='KIBOR')."""
+    """Copy kibor_daily → sovereign_curve (source='KIBOR').
+
+    Defensive whitelist guard: only accepts rows whose tenor is in
+    TENOR_DAYS. kibor_daily currently contains rows written by
+    sources/fx_sync.py (currency codes as tenor) and sources/sbp_easydata.py
+    (balance-sheet labels as tenor) — these are upstream contract violations
+    tracked as DEBT-PHASE2-FOLLOWUP-9. The consolidator never trusted its
+    inputs unconditionally before either; the guard makes that explicit and
+    prevents propagating garbage into sovereign_curve.
+    """
     print("  Copying kibor_daily → sovereign_curve...", end=" ", flush=True)
     con = _get_con()
 
@@ -331,8 +340,12 @@ def process_kibor_from_db() -> int:
     ).fetchall()
 
     data = []
+    rejected = 0
     for date, tenor, bid, offer in rows:
-        days = TENOR_DAYS.get(tenor, 0)
+        if tenor not in TENOR_DAYS:
+            rejected += 1
+            continue
+        days = TENOR_DAYS[tenor]
         mid = (bid + offer) / 2 if bid and offer else (offer or bid or 0)
         if mid <= 0:
             continue
@@ -343,7 +356,7 @@ def process_kibor_from_db() -> int:
         con.commit()
 
     con.close()
-    print(f"OK ({len(data)} rows)")
+    print(f"OK ({len(data)} rows; {rejected} rejected by whitelist)")
     return len(data)
 
 
