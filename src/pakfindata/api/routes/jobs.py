@@ -47,6 +47,17 @@ router = APIRouter(prefix="/v1/jobs", tags=["jobs"])
 def submit_job(
     body: JobSubmission,
     job_type: Annotated[str, Path(description="Registered worker handler key")],
+    source: Annotated[
+        str,
+        Query(
+            description=(
+                "Submission origin tag stored on the jobs row. Defaults to "
+                "'api' for UI / ad-hoc submissions; cron's daily_sync.sh "
+                "appends ?source=cron so WHERE source='cron' queries in "
+                "Jobs Monitor distinguish scheduled from manual runs."
+            ),
+        ),
+    ] = "api",
 ) -> JobResponse:
     """Enqueue a job; returns 202 with the new job_id."""
     types = known_types()
@@ -59,7 +70,7 @@ def submit_job(
         job_type=job_type,
         params=body.params,
         priority=body.priority,
-        source="api",
+        source=source,
         notes=body.notes,
     )
     job = get_job(job_id)
