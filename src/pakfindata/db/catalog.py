@@ -154,7 +154,8 @@ def update_catalog_from_table(
     `update_catalog()` directly with an explicit `latest_date` instead.
     """
     row = con.execute(
-        "SELECT source_table, date_column FROM data_freshness WHERE domain = ?",
+        "SELECT source_table, date_column, display_name "
+        "FROM data_freshness WHERE domain = ?",
         (dataset_id,),
     ).fetchone()
     if row is None:
@@ -164,8 +165,11 @@ def update_catalog_from_table(
             f"update_catalog() directly with explicit source_table / "
             f"date_column."
         )
-    source_table, date_column = row[0], row[1]
+    source_table, date_column, display_name = row[0], row[1], row[2]
 
+    # Forward source_table/date_column/display_name to update_catalog so the
+    # ON CONFLICT UPDATE (fixed in 2.A.2.1) doesn't overwrite them with the
+    # caller-default fallbacks (dataset_id / 'date' / Title Cased name).
     try:
         result = con.execute(
             f"SELECT MAX({date_column}), COUNT(*) FROM {source_table}"
@@ -180,6 +184,9 @@ def update_catalog_from_table(
             status="failed",
             source=source,
             error=f"freshness query failed: {exc}",
+            source_table=source_table,
+            date_column=date_column,
+            display_name=display_name,
         )
         return
 
@@ -192,6 +199,9 @@ def update_catalog_from_table(
         source=source,
         error=error,
         notes=notes,
+        source_table=source_table,
+        date_column=date_column,
+        display_name=display_name,
     )
 
 
