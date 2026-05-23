@@ -123,6 +123,29 @@ view.
   redeploys. Surfaced during Milestone 1.8.2 fallback testing.
   Fix: change `PartOf=` to `BindsTo=` + `Requires=` pattern, OR remove
   the coupling and let them be independent. Phase 2 ops cleanup.
+- **DEBT-PHASE2-FOLLOWUP-2: wider scraper pollution beyond the
+  ZUMA/MUFAP sentinels** (Milestone 2.A.2 cleanup recompute) —
+  `scripts/cleanup_catalog_pollution.py` removed 1,720 sentinel-string
+  rows (ZUMA/TBILL/MUFAP/WTL) but the recompute step revealed an
+  additional ~241K rows where SYMBOL CODES (BOP/UBL/MLCF/ZTL/PIB/
+  WASLR/...) sit in date columns. Affected:
+  `pib_auctions.auction_date` (~240K), `konia_daily.date` (~600),
+  `forex_kerb.date` (~60), `regular_market_current.ts` (~50). These
+  are NOT sentinel-string mistakes — they're a scraper-class bug
+  writing symbol-keyed records into the wrong column. Out of 2.A.2
+  scope. `scripts/apply_phase2a2_remediation.py` flipped the 4
+  affected catalog rows to `status='failed'`,
+  `last_row_date=NULL`, `notes=…` so freshness queries show a
+  warning instead of a false-positive garbage date. Phase 2.A.3
+  investigates the upstream scrapers, decides recoverable vs delete,
+  and runs the deeper cleanup.
+- **Helper-function test coverage gap caught by 2.A.2.1b** (Milestone
+  2.A.2 follow-up) — Reproducer in `test_catalog_conflict_repro.py`
+  was extended in 2.A.2.1b after discovering the original tests
+  covered `update_catalog` but not the `update_catalog_from_table`
+  helper. Lesson: helper functions need their own coverage; testing
+  the underlying primitive is insufficient. Apply this discipline at
+  every future helper introduction.
 
 ## DEBT-PHASE3 — Postgres migration handles naturally
 

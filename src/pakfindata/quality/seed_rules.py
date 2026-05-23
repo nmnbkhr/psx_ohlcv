@@ -1,8 +1,11 @@
 """Seed initial ``data_quality_rules`` rows.
 
 Phase 2.A.1 seeds the ``indices`` domain only — proof of pattern.
-Phase 2.A.3 adds rules for the other ~38 registered domains as the
-backfill work surfaces "this should never happen" cases.
+Phase 2.A.2 adds one defensive
+``instrument_membership.effective_date`` rule pinned to the 1,530-row
+MUFAP cleanup. Phase 2.A.3 adds rules for the other ~38 registered
+domains as the backfill work surfaces "this should never happen"
+cases.
 
 Idempotent: ``INSERT OR REPLACE`` on ``rule_id``. Run via::
 
@@ -65,6 +68,26 @@ INITIAL_RULES: list[dict[str, Any]] = [
             "psx_indices.value sanity bound — PSX indices roughly "
             "1k (junior) to 200k (KSE100); 10M cap leaves headroom "
             "for inflation without admitting obvious garbage"
+        ),
+    },
+    # Phase 2.A.2 defensive rule — pinned to the 1,530-row MUFAP cleanup.
+    # Future writes that try to land 'MUFAP' (or any non-date string) in
+    # instrument_membership.effective_date roll back via the date_format
+    # check. Wider symbol-code pollution in this and other tables is
+    # tracked as DEBT-PHASE2-FOLLOWUP-2 (Phase 2.A.3 investigation).
+    {
+        "rule_id": "instrument_membership.effective_date_format",
+        "domain": "instrument_membership",
+        "check_type": "date_format",
+        "params": {
+            "table": "instrument_membership",
+            "column": "effective_date",
+        },
+        "severity": "error",
+        "description": (
+            "instrument_membership.effective_date must contain "
+            "YYYY-MM-DD values (catches MUFAP/symbol-code pollution "
+            "at write time; 1,530 MUFAP rows cleaned in 2.A.2.2)"
         ),
     },
 ]
