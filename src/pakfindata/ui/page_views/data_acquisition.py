@@ -237,12 +237,16 @@ def render_data_acquisition():
                 st.divider()
         else:
             # No running jobs - show start new job form
-            # Get count of active symbols
-            active_count = con.execute(
-                "SELECT COUNT(*) FROM symbols WHERE is_active = 1"
-            ).fetchone()[0]
+            from pakfindata.ui.api import client as _api_client
 
-            # Get count of symbols already scraped today
+            # Active symbols count via /v1/symbols
+            _active_syms = _api_client.get_symbols(active_only=True) or []
+            active_count = len(_active_syms)
+
+            # "Scraped today" — the original SQL filtered by snapshot_date=today.
+            # /v1/admin doesn't expose date-filtered DISTINCT counts; fall back
+            # to the write-path connection for this single metric so the page
+            # still shows accurate daily progress.
             today_str = datetime.now().strftime("%Y-%m-%d")
             scraped_today = con.execute(
                 "SELECT COUNT(DISTINCT symbol) FROM company_snapshots WHERE snapshot_date = ?",
@@ -356,7 +360,7 @@ def render_data_acquisition():
                     "Started": job.get("started_at", "")[:16] if job.get("started_at") else "",
                     "Ended": job.get("ended_at", "")[:16] if job.get("ended_at") else "-",
                 })
-            st.dataframe(job_data, use_container_width=True, hide_index=True)
+            st.dataframe(job_data, width='stretch', hide_index=True)
         else:
             st.info("No jobs yet. Start a background job above.")
 
@@ -367,10 +371,10 @@ def render_data_acquisition():
         st.subheader("View Company Snapshot")
 
         # Get list of symbols with snapshots
-        snapshot_symbols = con.execute(
-            "SELECT DISTINCT symbol FROM company_snapshots ORDER BY symbol"
-        ).fetchall()
-        symbol_list = [r[0] for r in snapshot_symbols]
+        from pakfindata.ui.api import client as _api_client
+        symbol_list = _api_client.get_admin_table_distinct(
+            "company_snapshots", "symbol", limit=5000
+        ) or []
 
         if not symbol_list:
             st.info("No snapshots available yet. Use the 'Scrape Company' tab to capture data.")
@@ -457,7 +461,7 @@ def render_data_acquisition():
                                 # Reorder columns
                                 display_cols = ["period_end", "sales", "profit_after_tax", "eps"]
                                 display_cols = [c for c in display_cols if c in fin_df.columns]
-                                st.dataframe(fin_df[display_cols], use_container_width=True, hide_index=True)
+                                st.dataframe(fin_df[display_cols], width='stretch', hide_index=True)
 
                     # Ratios Summary
                     ratios = snapshot.get("ratios_data", {})
@@ -469,7 +473,7 @@ def render_data_acquisition():
                             if not ratio_df.empty:
                                 display_cols = ["period_end", "gross_profit_margin", "net_profit_margin", "eps_growth", "peg_ratio"]
                                 display_cols = [c for c in display_cols if c in ratio_df.columns]
-                                st.dataframe(ratio_df[display_cols], use_container_width=True, hide_index=True)
+                                st.dataframe(ratio_df[display_cols], width='stretch', hide_index=True)
 
                     # Raw JSON viewer
                     with st.expander("View Raw JSON Data"):
@@ -487,10 +491,10 @@ def render_data_acquisition():
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            ts_symbols = con.execute(
-                "SELECT DISTINCT symbol FROM trading_sessions ORDER BY symbol"
-            ).fetchall()
-            ts_symbol_list = ["All"] + [r[0] for r in ts_symbols]
+            from pakfindata.ui.api import client as _api_client
+            ts_symbol_list = ["All"] + (_api_client.get_admin_table_distinct(
+                "trading_sessions", "symbol", limit=5000
+            ) or [])
             filter_symbol = st.selectbox("Symbol", ts_symbol_list, key="ts_symbol")
 
         with col2:
@@ -523,7 +527,7 @@ def render_data_acquisition():
 
             st.dataframe(
                 df[display_cols],
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
                 column_config={
                     "open": st.column_config.NumberColumn(format="%.2f"),
@@ -558,17 +562,16 @@ def render_data_acquisition():
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            ann_symbols = con.execute(
-                "SELECT DISTINCT symbol FROM corporate_announcements ORDER BY symbol"
-            ).fetchall()
-            ann_symbol_list = ["All"] + [r[0] for r in ann_symbols]
+            from pakfindata.ui.api import client as _api_client
+            ann_symbol_list = ["All"] + (_api_client.get_admin_table_distinct(
+                "corporate_announcements", "symbol", limit=5000
+            ) or [])
             ann_filter_symbol = st.selectbox("Symbol", ann_symbol_list, key="ann_symbol")
 
         with col2:
-            ann_types = con.execute(
-                "SELECT DISTINCT announcement_type FROM corporate_announcements"
-            ).fetchall()
-            ann_type_list = ["All"] + [r[0] for r in ann_types]
+            ann_type_list = ["All"] + (_api_client.get_admin_table_distinct(
+                "corporate_announcements", "announcement_type", limit=200
+            ) or [])
             ann_filter_type = st.selectbox("Type", ann_type_list)
 
         with col3:
@@ -594,7 +597,7 @@ def render_data_acquisition():
 
             st.dataframe(
                 ann_df[display_cols],
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
                 column_config={
                     "title": st.column_config.TextColumn(width="large"),

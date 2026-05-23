@@ -1,0 +1,29 @@
+[Unit]
+Description=pakfindata FastAPI service
+Documentation=file:%h/projects/pakfindata/docs/operations/api_service.md
+After=network.target
+
+[Service]
+Type=exec
+WorkingDirectory=%h/projects/pakfindata
+EnvironmentFile=%h/.config/pakfindata/api.env
+ExecStart=%h/miniforge3/envs/psx/bin/uvicorn pakfindata.api.main:app \
+    --host ${PAKFINDATA_API_HOST} \
+    --port ${PAKFINDATA_API_PORT} \
+    --log-level info \
+    --no-access-log
+Restart=on-failure
+RestartSec=5s
+
+# uvicorn handles its own signals cleanly; give it 10s for in-flight requests.
+TimeoutStopSec=10s
+KillSignal=SIGTERM
+
+# Logs flow through our JSON formatter to stdout; journald captures them
+# under the SyslogIdentifier below for easy filtering.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pakfindata-api
+
+[Install]
+WantedBy=default.target

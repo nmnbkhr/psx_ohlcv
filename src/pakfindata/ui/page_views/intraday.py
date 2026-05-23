@@ -6,11 +6,14 @@ Tabs:
   Market Pulse — Advance/decline, tick distribution, intraday momentum
   Volume — Volume leaders, unusual activity, block trades, concentration
   Movers — Gainers, losers, most active with visual cards and scatter
+  Index — IDX market ticks from JSONL tick_logs (KSE-100, KSE-30, KMI-30 etc.)
+  Dedup — Scan & deduplicate JSONL tick_logs files
   Sync — All bulk/single sync controls preserved
 """
 
+import json as _json
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -43,6 +46,7 @@ from pakfindata.sync_timeseries import (
     read_intraday_sync_progress,
     start_intraday_sync,
 )
+from pakfindata.ui.api import client as api_client
 from pakfindata.ui.components.helpers import (
     EXPORTS_DIR,
     format_volume,
@@ -52,6 +56,20 @@ from pakfindata.ui.components.helpers import (
 )
 
 INTRADAY_TEMP_DIR = Path("/mnt/e/psxdata/intradaytemp")
+
+
+def _ensure_intraday_indexes(con):
+    """Create performance indexes on intraday_bars (idempotent, runs once)."""
+    if getattr(_ensure_intraday_indexes, "_done", False):
+        return
+    try:
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_intraday_bars_ts_sym "
+            "ON intraday_bars(ts, symbol, ts_epoch, close, volume)"
+        )
+        _ensure_intraday_indexes._done = True
+    except Exception:
+        pass
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -136,39 +154,55 @@ def _ts_range(date_str: str) -> tuple[str, str]:
     return f"{date_str} 00:00:00", f"{date_str} 23:59:59"
 
 
-def _load_today_summary(con: sqlite3.Connection, date_str: str) -> pd.DataFrame:
-    """Load aggregated intraday summary for a given date."""
-    ts_start, ts_end = _ts_range(date_str)
-    return pd.read_sql_query(
-        """
-        WITH ranked AS (
-            SELECT symbol, ts_epoch, close, volume,
-                   ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY ts_epoch ASC) AS rn_first,
-                   ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY ts_epoch DESC) AS rn_last
-            FROM intraday_bars WHERE ts BETWEEN ? AND ?
-        )
-        SELECT
-            symbol,
-            COUNT(*) AS ticks,
-            MAX(CASE WHEN rn_first=1 THEN close END) AS open,
-            MAX(close) AS high,
-            MIN(close) AS low,
-            MAX(CASE WHEN rn_last=1 THEN close END) AS last_price,
-            MAX(volume) AS total_vol,
-            MAX(CASE WHEN rn_first=1 THEN ts_epoch END) AS first_epoch,
-            MAX(CASE WHEN rn_last=1 THEN ts_epoch END) AS last_epoch
-        FROM ranked
-        GROUP BY symbol
-        HAVING COUNT(*) >= 2
-        ORDER BY total_vol DESC
-        """,
-        con,
-        params=[ts_start, ts_end],
-    )
+def _last_trading_day() -> date:
+    """Return the most recent PSX trading day (Mon-Fri).
+
+    If today is a weekday and market hours haven't started, return previous
+    trading day.  On weekends, walk back to Friday.
+    """
+    from pakfindata.ui.components.helpers import MARKET_DAYS, MARKET_OPEN_HOUR
+
+    d = date.today()
+    now_hour = datetime.now().hour
+    # Before market opens on a weekday -> previous trading day
+    if d.weekday() in MARKET_DAYS and now_hour < MARKET_OPEN_HOUR:
+        d -= timedelta(days=1)
+    # Walk back over weekends
+    while d.weekday() not in MARKET_DAYS:
+        d -= timedelta(days=1)
+    return d
+
+
+def _load_today_summary(_con, date_str: str) -> pd.DataFrame:
+    """Load aggregated intraday summary for a given date from intraday_daily_summary.
+
+    Reads pre-aggregated rows via /v1/intraday/summary. Renames columns to
+    match what the downstream rendering code expects.
+    """
+    rows = api_client.get_intraday_summary(date=date_str, market="REG") or []
+    if not rows:
+        return pd.DataFrame(columns=[
+            "symbol", "ticks", "open", "high", "low", "last_price", "total_vol",
+        ])
+    df = pd.DataFrame(rows).rename(columns={
+        "tick_count": "ticks",
+        "day_open": "open",
+        "day_high": "high",
+        "day_low": "low",
+        "day_close": "last_price",
+        "day_volume": "total_vol",
+    })
+    keep = ["symbol", "ticks", "open", "high", "low", "last_price", "total_vol"]
+    return df[[c for c in keep if c in df.columns]]
 
 
 def _add_sector_info(con: sqlite3.Connection, df: pd.DataFrame, date_str: str = "") -> pd.DataFrame:
-    """Add sector_code, company_name, turnover, and pc_volume from post_close_turnover + eod_ohlcv."""
+    """Add sector_code, company_name, turnover, and pc_volume via API client.
+
+    Composes /v1/turnover (authoritative turnover + volume + company_name)
+    with /v1/eod (sector_code + company_name fallback). When date-specific
+    EOD is missing, falls back to /v1/eod/latest.
+    """
     if df.empty:
         df["sector_code"] = ""
         df["company_name"] = ""
@@ -176,51 +210,29 @@ def _add_sector_info(con: sqlite3.Connection, df: pd.DataFrame, date_str: str = 
         df["pc_volume"] = 0
         return df
 
-    syms = df["symbol"].tolist()
-    placeholders = ",".join("?" * len(syms))
+    syms = set(df["symbol"].tolist())
 
-    # 1. Get turnover + volume from post_close_turnover (authoritative source)
-    pc_date = date_str if date_str else "(SELECT MAX(date) FROM post_close_turnover)"
-    pc_date_filter = "date = ?" if date_str else f"date = {pc_date}"
-    pc_params = syms + ([date_str] if date_str else [])
-    try:
-        pc_df = pd.read_sql_query(
-            f"""SELECT symbol, turnover, volume AS pc_volume, company_name AS pc_company
-                FROM post_close_turnover
-                WHERE symbol IN ({placeholders})
-                  AND {pc_date_filter}""",
-            con,
-            params=pc_params,
-        )
-    except Exception:
-        pc_df = pd.DataFrame()
+    # 1. Turnover + volume + company_name from post_close (authoritative)
+    pc_rows = api_client.get_turnover(date=date_str or None, limit=10000) or []
+    pc_df = pd.DataFrame(pc_rows)
+    if not pc_df.empty:
+        pc_df = pc_df[pc_df["symbol"].isin(syms)].rename(
+            columns={"volume": "pc_volume", "company_name": "pc_company"}
+        )[["symbol", "turnover", "pc_volume", "pc_company"]]
 
-    # 2. Get sector_code and company_name from eod_ohlcv
-    eod_date_filter = f"date = '{date_str}'" if date_str else "date = (SELECT MAX(date) FROM eod_ohlcv)"
-    sector_df = pd.read_sql_query(
-        f"""SELECT symbol, sector_code, company_name FROM eod_ohlcv
-            WHERE symbol IN ({placeholders})
-              AND {eod_date_filter}""",
-        con,
-        params=syms,
-    )
-
-    # Fallback to latest date if no match for specific date
-    if sector_df.empty or "sector_code" not in sector_df.columns:
-        sector_df = pd.read_sql_query(
-            f"""SELECT symbol, sector_code, company_name FROM eod_ohlcv
-                WHERE symbol IN ({placeholders})
-                  AND date = (SELECT MAX(date) FROM eod_ohlcv)""",
-            con,
-            params=syms,
-        )
-
-    if sector_df.empty:
-        sector_df = pd.read_sql_query(
-            f"SELECT symbol, sector AS sector_code, name AS company_name FROM symbols WHERE symbol IN ({placeholders})",
-            con,
-            params=syms,
-        )
+    # 2. Sector + company_name from EOD for the specific date
+    eod_rows = (
+        api_client.get_eod_for_date(date_str) if date_str
+        else api_client.get_latest_eod()
+    ) or []
+    # Fallback: latest available trading day (intraday can be ahead of EOD)
+    if not eod_rows:
+        eod_rows = api_client.get_latest_eod() or []
+    sector_df = pd.DataFrame(eod_rows)
+    if not sector_df.empty:
+        sector_df = sector_df[sector_df["symbol"].isin(syms)][
+            ["symbol", "sector_code", "company_name"]
+        ]
 
     # Merge sector info
     if not sector_df.empty:
@@ -258,21 +270,35 @@ def _add_sector_info(con: sqlite3.Connection, df: pd.DataFrame, date_str: str = 
 # SECTOR CODE LABELS
 # ═════════════════════════════════════════════════════════════════════════════
 
-_SECTOR_LABELS = {
-    "0101": "Banks", "0102": "Inv.Banks", "0103": "Modaraba", "0104": "Leasing",
-    "0105": "Insurance", "0106": "Close-End Funds",
-    "0201": "Textile Composite", "0202": "Textile Spinning", "0203": "Textile Weaving",
-    "0301": "Sugar", "0302": "Food", "0303": "Tobacco",
-    "0401": "Cement", "0402": "Glass", "0403": "Ceramics",
-    "0501": "Chemical", "0502": "Pharma", "0503": "Fertilizer",
-    "0601": "Engineering", "0602": "Auto Assembler", "0603": "Auto Parts",
-    "0604": "Cable", "0605": "Transport", "0606": "Technology",
-    "0701": "Paper", "0702": "Vanaspati", "0703": "Leather",
-    "0801": "Refinery", "0802": "Power", "0803": "Oil & Gas Mktg",
-    "0804": "Oil & Gas Expl", "0805": "Gas Distribution",
-    "0807": "Real Estate",
-    "0900": "Miscellaneous", "0901": "Misc",
+_SECTOR_LABELS_RAW = {
+    "0801": "AUTOMOBILE ASSEMBLER", "0802": "AUTOMOBILE PARTS & ACCESSORIES",
+    "0803": "CABLE & ELECTRICAL GOODS", "0804": "CEMENT", "0805": "CHEMICAL",
+    "0806": "CLOSE - END MUTUAL FUND", "0807": "COMMERCIAL BANKS",
+    "0808": "ENGINEERING", "0809": "FERTILIZER",
+    "0810": "FOOD & PERSONAL CARE PRODUCTS", "0811": "GLASS & CERAMICS",
+    "0812": "INV. BANKS / INV. COS. / SECURITIES COS.", "0813": "INSURANCE",
+    "0814": "JUTE", "0815": "LEATHER & TANNERIES", "0816": "LEASING COMPANIES",
+    "0817": "MISCELLANEOUS", "0818": "MODARABAS", "0819": "OIL & GAS EXPLORATION COMPANIES",
+    "0820": "OIL & GAS MARKETING COMPANIES", "0821": "PAPER & BOARD",
+    "0822": "PHARMACEUTICALS", "0823": "POWER GENERATION & DISTRIBUTION",
+    "0824": "REFINERY", "0825": "SUGAR & ALLIED INDUSTRIES",
+    "0826": "SYNTHETIC & RAYON", "0827": "TECHNOLOGY & COMMUNICATION",
+    "0828": "TEXTILE COMPOSITE", "0829": "TEXTILE SPINNING",
+    "0830": "TEXTILE WEAVING", "0831": "TOBACCO", "0832": "TRANSPORT",
+    "0833": "VANASPATI & ALLIED INDUSTRIES", "0834": "WOOLLEN",
+    "0835": "REAL ESTATE INVESTMENT TRUST", "0836": "EXCHANGE TRADED FUNDS",
+    "0837": "PROPERTY",
 }
+# Build lookup that works with both "0807" and "807" formats
+_SECTOR_LABELS = {}
+for code, name in _SECTOR_LABELS_RAW.items():
+    _SECTOR_LABELS[code] = name
+    _SECTOR_LABELS[code.lstrip("0") or "0"] = name
+
+
+def _get_intraday_dates_cached(_con) -> list[str]:
+    """Dates that have a pre-aggregated summary row. Fast indexed read."""
+    return api_client.get_intraday_dates() or []
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -281,6 +307,9 @@ _SECTOR_LABELS = {
 
 def render_intraday():
     """Intraday Trading Terminal."""
+    if api_client.render_api_status_banner_if_down():
+        return
+
     # Auto-refresh
     service_running, service_pid = is_service_running()
     service_status = read_service_status()
@@ -302,46 +331,53 @@ def render_intraday():
         else:
             st.info("Auto-Sync OFF")
 
-    # Date selector
+    # Connection
     con = get_connection()
-    today_str = date.today().isoformat()
+    _ensure_intraday_indexes(con)
 
-    try:
-        from pakfindata.db.repositories.intraday import get_intraday_dates
-        avail_dates = get_intraday_dates(con)
-    except Exception:
-        avail_dates = [today_str]
+    # Date selector — manifest only, defaults to latest
+    avail_dates = _get_intraday_dates_cached(con)
+    if not avail_dates:
+        st.warning("No intraday data. Use Sync tab to fetch.")
+        render_footer()
+        return
 
-    sel_date = st.selectbox(
-        "Trading Date",
-        avail_dates if avail_dates else [today_str],
-        index=0,
-        key="int_date_sel",
-    )
-
-    # Load data for selected date
-    summary_df = _load_today_summary(con, sel_date)
-    if not summary_df.empty:
-        summary_df["change"] = summary_df["last_price"] - summary_df["open"]
-        summary_df["change_pct"] = (
-            summary_df["change"] / summary_df["open"] * 100
-        ).replace([np.inf, -np.inf], 0).fillna(0)
-        summary_df["range_pct"] = (
-            (summary_df["high"] - summary_df["low"]) / summary_df["low"] * 100
-        ).replace([np.inf, -np.inf], 0).fillna(0)
-        summary_df = _add_sector_info(con, summary_df, sel_date)
+    dc1, dc2 = st.columns([4, 1])
+    with dc1:
+        sel_date = st.selectbox("Trading Date", avail_dates, index=0, key="int_date_sel")
+    with dc2:
+        from pakfindata.ui.components.helpers import render_date_refresh_button
+        render_date_refresh_button(["intraday_bars"], key="int_refresh_dates")
 
     # Tabs
-    tab_dash, tab_charts, tab_pulse, tab_vol, tab_movers, tab_sync = st.tabs(
-        ["Dashboard", "Charts", "Market Pulse", "Volume", "Movers", "Sync"]
+    tab_dash, tab_charts, tab_pulse, tab_vol, tab_movers, tab_idx, tab_dedup, tab_sync = st.tabs(
+        ["Dashboard", "Charts", "Market Pulse", "Volume", "Movers", "Index", "Dedup", "Sync"]
     )
+
+    # Lazy-load summary data: only compute once per run, skip if only Sync needed
+    _summary_cache = {}
+
+    def _get_summary():
+        if "df" not in _summary_cache:
+            summary_df = _load_today_summary(con, sel_date)
+            if not summary_df.empty:
+                summary_df["change"] = summary_df["last_price"] - summary_df["open"]
+                summary_df["change_pct"] = (
+                    summary_df["change"] / summary_df["open"] * 100
+                ).replace([np.inf, -np.inf], 0).fillna(0)
+                summary_df["range_pct"] = (
+                    (summary_df["high"] - summary_df["low"]) / summary_df["low"] * 100
+                ).replace([np.inf, -np.inf], 0).fillna(0)
+                summary_df = _add_sector_info(con, summary_df, sel_date)
+            _summary_cache["df"] = summary_df
+        return _summary_cache["df"]
 
     # ═════════════════════════════════════════════════════════════════════
     # TAB 1: DASHBOARD
     # ═════════════════════════════════════════════════════════════════════
     with tab_dash:
         try:
-            _render_dashboard(con, summary_df, sel_date)
+            _render_dashboard(con, _get_summary(), sel_date)
         except Exception as e:
             st.error(f"Dashboard error: {e}")
 
@@ -350,7 +386,7 @@ def render_intraday():
     # ═════════════════════════════════════════════════════════════════════
     with tab_charts:
         try:
-            _render_charts(con, summary_df, sel_date)
+            _render_charts(con, _get_summary(), sel_date)
         except Exception as e:
             st.error(f"Charts error: {e}")
 
@@ -359,7 +395,7 @@ def render_intraday():
     # ═════════════════════════════════════════════════════════════════════
     with tab_pulse:
         try:
-            _render_market_pulse(con, summary_df, sel_date)
+            _render_market_pulse(con, _get_summary(), sel_date)
         except Exception as e:
             st.error(f"Market Pulse error: {e}")
 
@@ -368,7 +404,7 @@ def render_intraday():
     # ═════════════════════════════════════════════════════════════════════
     with tab_vol:
         try:
-            _render_volume(con, summary_df, sel_date)
+            _render_volume(con, _get_summary(), sel_date)
         except Exception as e:
             st.error(f"Volume error: {e}")
 
@@ -377,12 +413,30 @@ def render_intraday():
     # ═════════════════════════════════════════════════════════════════════
     with tab_movers:
         try:
-            _render_movers(con, summary_df, sel_date)
+            _render_movers(con, _get_summary(), sel_date)
         except Exception as e:
             st.error(f"Movers error: {e}")
 
     # ═════════════════════════════════════════════════════════════════════
-    # TAB 6: SYNC
+    # TAB 6: INDEX
+    # ═════════════════════════════════════════════════════════════════════
+    with tab_idx:
+        try:
+            _render_index_ticks(sel_date)
+        except Exception as e:
+            st.error(f"Index error: {e}")
+
+    # ═════════════════════════════════════════════════════════════════════
+    # TAB 7: DEDUP
+    # ═════════════════════════════════════════════════════════════════════
+    with tab_dedup:
+        try:
+            _render_dedup()
+        except Exception as e:
+            st.error(f"Dedup error: {e}")
+
+    # ═════════════════════════════════════════════════════════════════════
+    # TAB 8: SYNC
     # ═════════════════════════════════════════════════════════════════════
     with tab_sync:
         try:
@@ -477,7 +531,7 @@ def _render_dashboard(con, df, sel_date):
             yaxis=dict(visible=False, gridcolor=_COLORS["grid"]),
             xaxis=dict(visible=False, gridcolor=_COLORS["grid"]),
         )
-        st.plotly_chart(fig_breadth, use_container_width=True)
+        st.plotly_chart(fig_breadth, width='stretch')
 
         # Change distribution histogram
         st.markdown("**Return Distribution**")
@@ -488,32 +542,32 @@ def _render_dashboard(con, df, sel_date):
         ))
         fig_hist.add_vline(x=0, line_dash="dash", line_color=_COLORS["text_dim"])
         _apply_layout(fig_hist, height=250, xaxis_title="Change %", yaxis_title="Count")
-        st.plotly_chart(fig_hist, use_container_width=True)
+        st.plotly_chart(fig_hist, width='stretch')
 
     with col_r:
         # Top gainers and losers quick view
         st.markdown("**Top 10 Gainers**")
         top_gain = df.nlargest(10, "change_pct")[["symbol", "last_price", "change_pct", "total_vol"]]
         st.dataframe(
-            top_gain.style.applymap(
+            top_gain.style.map(
                 lambda v: f"color: {_COLORS['up']}" if isinstance(v, (int, float)) and v > 0
                 else f"color: {_COLORS['down']}" if isinstance(v, (int, float)) and v < 0
                 else "",
                 subset=["change_pct"],
             ),
-            use_container_width=True, hide_index=True, height=200,
+            width='stretch', hide_index=True, height=200,
         )
 
         st.markdown("**Top 10 Losers**")
         top_lose = df.nsmallest(10, "change_pct")[["symbol", "last_price", "change_pct", "total_vol"]]
         st.dataframe(
-            top_lose.style.applymap(
+            top_lose.style.map(
                 lambda v: f"color: {_COLORS['up']}" if isinstance(v, (int, float)) and v > 0
                 else f"color: {_COLORS['down']}" if isinstance(v, (int, float)) and v < 0
                 else "",
                 subset=["change_pct"],
             ),
-            use_container_width=True, hide_index=True, height=200,
+            width='stretch', hide_index=True, height=200,
         )
 
     st.markdown("---")
@@ -553,7 +607,7 @@ def _render_dashboard(con, df, sel_date):
                 fig_sector, height=450,
                 title=dict(text="Sectors by Volume (colored by avg change)", font=dict(size=13)),
             )
-            st.plotly_chart(fig_sector, use_container_width=True)
+            st.plotly_chart(fig_sector, width='stretch')
     else:
         st.caption("Sector data not available — run EOD sync to populate sector codes.")
 
@@ -580,14 +634,17 @@ def _render_charts(con, summary_df, sel_date):
         chart_type = st.radio("Chart", ["Candlestick", "Line"], horizontal=True, key="int_chart_type")
 
     # Load tick data for this symbol on this date
-    ts_start, ts_end = _ts_range(sel_date)
-    tick_df = pd.read_sql_query(
-        """SELECT ts, ts_epoch, open, high, low, close, volume
-           FROM intraday_bars WHERE symbol=? AND ts BETWEEN ? AND ?
-           ORDER BY ts_epoch""",
-        con,
-        params=[sel_sym, ts_start, ts_end],
-    )
+    _bar_rows = api_client.get_intraday_bars(
+        symbol=sel_sym, date=sel_date, interval="1s", limit=50000
+    ) or []
+    if _bar_rows:
+        tick_df = pd.DataFrame(_bar_rows)[
+            ["ts", "ts_epoch", "open", "high", "low", "close", "volume"]
+        ]
+    else:
+        tick_df = pd.DataFrame(
+            columns=["ts", "ts_epoch", "open", "high", "low", "close", "volume"]
+        )
 
     if tick_df.empty:
         st.info(f"No ticks for {sel_sym} on {sel_date}.")
@@ -657,7 +714,7 @@ def _render_charts(con, summary_df, sel_date):
         # Resample to ~1 min bars for cleaner candles
         tick_df_indexed = tick_df.set_index("ts_dt")
         ohlc = tick_df_indexed["close"].resample("1min").ohlc().dropna()
-        vol_1m = tick_df_indexed["volume"].resample("1min").last().fillna(method="ffill").dropna()
+        vol_1m = tick_df_indexed["volume"].resample("1min").last().ffill().dropna()
 
         if not ohlc.empty:
             bar_colors = [_COLORS["up"] if c >= o else _COLORS["down"]
@@ -725,7 +782,7 @@ def _render_charts(con, summary_df, sel_date):
     )
     fig.update_yaxes(title_text="Price (Rs.)", row=1, col=1, gridcolor=_COLORS["grid"])
     fig.update_yaxes(title_text="Vol", row=2, col=1, gridcolor=_COLORS["grid"])
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Tick-level data table
     with st.expander("Tick Data (last 100)", expanded=False):
@@ -733,7 +790,7 @@ def _render_charts(con, summary_df, sel_date):
             tick_df.sort_values("ts_epoch", ascending=False).head(100)[
                 ["ts", "open", "high", "low", "close", "volume"]
             ],
-            use_container_width=True, hide_index=True,
+            width='stretch', hide_index=True,
         )
 
 
@@ -746,68 +803,207 @@ def _render_market_pulse(con, df, sel_date):
         st.info(f"No intraday data for {sel_date}.")
         return
 
-    # Advance / Decline ratio over time (cumulative ticks)
+    # ── Tick-to-Tick Delta A/D (LAG window function approach) ──
+    # For each tick, compare price to previous tick for the same symbol.
+    # Uptick (+1): price > prev_price, Downtick (-1): price < prev_price, Flat (0).
+    # Per minute per symbol: net direction = sum of tick signs.
+    # Advancing = symbols with net positive ticks, Declining = net negative.
     st.markdown("**Intraday Advance/Decline — Tick Timeline**")
-    tick_timeline = pd.read_sql_query(
-        """SELECT
-             SUBSTR(ts, 1, 16) AS minute,
-             COUNT(DISTINCT CASE WHEN close > open THEN symbol END) AS adv,
-             COUNT(DISTINCT CASE WHEN close < open THEN symbol END) AS dec,
-             COUNT(DISTINCT symbol) AS total
-           FROM intraday_bars
-           WHERE ts BETWEEN ? AND ?
-           GROUP BY SUBSTR(ts, 1, 16)
-           ORDER BY minute""",
-        con,
-        params=[*_ts_range(sel_date)],
-    )
+    _minute_rows = api_client.get_intraday_minute_breadth(
+        date=sel_date, market="REG"
+    ) or []
+    if _minute_rows:
+        tick_timeline = pd.DataFrame(_minute_rows).rename(columns={
+            "advancing": "adv",
+            "declining": "dec",
+            "total_symbols": "total",
+        })
+        tick_timeline["minute"] = tick_timeline["minute"].str.replace("T", " ")
+        tick_timeline = tick_timeline[["minute", "adv", "dec", "total", "net_ticks"]]
+    else:
+        tick_timeline = pd.DataFrame(
+            columns=["minute", "adv", "dec", "total", "net_ticks"]
+        )
+
+    # ── Load KSE-100 intraday per-minute values via /v1/intraday/index-minute ──
+    kse_df = pd.DataFrame()
+    try:
+        _kse_rows = api_client.get_intraday_index_minute(
+            date=sel_date, symbols=["KSE100", "KSE-100", "KMIALL"]
+        ) or []
+        if _kse_rows:
+            kse_all = pd.DataFrame(_kse_rows)
+            # Collapse across symbol aliases: take one value per minute
+            kse_df = (
+                kse_all.groupby("minute", as_index=False)
+                .agg(value=("value", "last"))
+            )
+    except Exception:
+        pass  # KSE-100 overlay is optional — fail silently
 
     if not tick_timeline.empty:
         tick_timeline["net"] = tick_timeline["adv"] - tick_timeline["dec"]
-        tick_timeline["cumulative_net"] = tick_timeline["net"].cumsum()
+        tick_timeline["cumulative_ad"] = tick_timeline["net"].cumsum()
+        tick_timeline["cumulative_ticks"] = tick_timeline["net_ticks"].cumsum()
 
-        fig_ad = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
-                               row_heights=[0.6, 0.4])
-        fig_ad.add_trace(go.Scatter(
+        has_kse = not kse_df.empty
+
+        # ════════════════════════════════════════════════════════════════
+        # PANE 1: THE PULSE — Advancing vs Declining + KSE-100 Overlay
+        # ════════════════════════════════════════════════════════════════
+        fig_pulse = make_subplots(specs=[[{"secondary_y": True}]])
+        fig_pulse.add_trace(go.Scatter(
             x=tick_timeline["minute"], y=tick_timeline["adv"],
-            mode="lines", name="Advancing", line=dict(color=_COLORS["up"], width=1.5),
-            fill="tozeroy", fillcolor="rgba(0,230,118,0.15)",
-        ), row=1, col=1)
-        fig_ad.add_trace(go.Scatter(
+            mode="lines", name="Advancing",
+            line=dict(color=_COLORS["up"], width=2),
+            fill="tozeroy", fillcolor="rgba(0,230,118,0.12)",
+        ), secondary_y=False)
+        fig_pulse.add_trace(go.Scatter(
             x=tick_timeline["minute"], y=tick_timeline["dec"],
-            mode="lines", name="Declining", line=dict(color=_COLORS["down"], width=1.5),
-            fill="tozeroy", fillcolor="rgba(255,82,82,0.15)",
-        ), row=1, col=1)
-        fig_ad.add_trace(go.Bar(
-            x=tick_timeline["minute"], y=tick_timeline["cumulative_net"],
-            marker_color=[_COLORS["up"] if v >= 0 else _COLORS["down"]
-                          for v in tick_timeline["cumulative_net"]],
-            name="Cumulative Net", opacity=0.8,
-        ), row=2, col=1)
+            mode="lines", name="Declining",
+            line=dict(color=_COLORS["down"], width=2),
+            fill="tozeroy", fillcolor="rgba(255,82,82,0.12)",
+        ), secondary_y=False)
+        # KSE-100 overlay on secondary y-axis
+        if has_kse:
+            fig_pulse.add_trace(go.Scatter(
+                x=kse_df["minute"], y=kse_df["value"],
+                mode="lines", name="KSE-100",
+                line=dict(color=_COLORS["gold"], width=1.5),
+                opacity=0.85,
+            ), secondary_y=True)
         _apply_layout(
-            fig_ad, height=450,
-            legend=dict(orientation="h", y=1.05, x=0, bgcolor="rgba(0,0,0,0)"),
+            fig_pulse, height=320,
+            legend=dict(orientation="h", y=1.08, x=0, bgcolor="rgba(0,0,0,0)"),
+            title=dict(
+                text="<b>THE PULSE</b>  <span style='font-size:11px;color:#888'>Advancing vs Declining Stocks"
+                     + (" + KSE-100" if has_kse else "") + "</span>",
+                font=dict(size=13),
+            ),
+            hovermode="x unified",
         )
-        fig_ad.update_yaxes(title_text="Stocks", row=1, col=1, gridcolor=_COLORS["grid"])
-        fig_ad.update_yaxes(title_text="Cum. Net", row=2, col=1, gridcolor=_COLORS["grid"])
-        st.plotly_chart(fig_ad, use_container_width=True)
+        fig_pulse.update_yaxes(
+            title_text="Stocks", secondary_y=False,
+            gridcolor=_COLORS["grid"], showgrid=True,
+        )
+        if has_kse:
+            fig_pulse.update_yaxes(
+                title_text="KSE-100", secondary_y=True,
+                gridcolor="rgba(0,0,0,0)", showgrid=False,
+                tickfont=dict(color=_COLORS["gold"]),
+                title_font=dict(color=_COLORS["gold"]),
+            )
+        st.plotly_chart(fig_pulse, width='stretch')
+
+        # ════════════════════════════════════════════════════════════════
+        # PANE 2: THE TREND — Cumulative A/D as conditional fill area
+        # ════════════════════════════════════════════════════════════════
+        cum_ad = tick_timeline["cumulative_ad"]
+        # Split into positive and negative segments for conditional fill
+        pos_y = cum_ad.where(cum_ad >= 0, 0)
+        neg_y = cum_ad.where(cum_ad <= 0, 0)
+
+        fig_trend = go.Figure()
+        # Positive fill (green)
+        fig_trend.add_trace(go.Scatter(
+            x=tick_timeline["minute"], y=pos_y,
+            mode="lines", name="Bullish",
+            line=dict(color=_COLORS["up"], width=0),
+            fill="tozeroy", fillcolor="rgba(0,230,118,0.25)",
+            showlegend=True,
+        ))
+        # Negative fill (red)
+        fig_trend.add_trace(go.Scatter(
+            x=tick_timeline["minute"], y=neg_y,
+            mode="lines", name="Bearish",
+            line=dict(color=_COLORS["down"], width=0),
+            fill="tozeroy", fillcolor="rgba(255,82,82,0.25)",
+            showlegend=True,
+        ))
+        # The actual line on top
+        fig_trend.add_trace(go.Scatter(
+            x=tick_timeline["minute"], y=cum_ad,
+            mode="lines", name="Cumulative A/D",
+            line=dict(color="white", width=2),
+        ))
+        # Zero baseline
+        fig_trend.add_hline(y=0, line_dash="solid", line_color=_COLORS["text_dim"], line_width=1)
+        _apply_layout(
+            fig_trend, height=260,
+            legend=dict(orientation="h", y=1.08, x=0, bgcolor="rgba(0,0,0,0)"),
+            title=dict(
+                text="<b>THE TREND</b>  <span style='font-size:11px;color:#888'>Cumulative Advance/Decline Line</span>",
+                font=dict(size=13),
+            ),
+            hovermode="x unified",
+        )
+        fig_trend.update_yaxes(title_text="Cum. A/D", gridcolor=_COLORS["grid"])
+        st.plotly_chart(fig_trend, width='stretch')
+
+        # ════════════════════════════════════════════════════════════════
+        # PANE 3: THE OSCILLATOR — Net Tick Momentum histogram
+        # ════════════════════════════════════════════════════════════════
+        net_ticks = tick_timeline["net_ticks"]
+        fig_osc = go.Figure()
+        fig_osc.add_trace(go.Bar(
+            x=tick_timeline["minute"], y=net_ticks,
+            marker_color=[_COLORS["up"] if v >= 0 else _COLORS["down"] for v in net_ticks],
+            name="Net Tick Momentum", opacity=0.9,
+        ))
+        # Zero line
+        fig_osc.add_hline(y=0, line_color=_COLORS["text_dim"], line_width=1)
+        # Overbought / Oversold threshold lines
+        abs_max = max(abs(net_ticks.max()), abs(net_ticks.min()), 1)
+        # Dynamic thresholds at ~60% of max range
+        threshold = int(abs_max * 0.6)
+        if threshold > 5:
+            fig_osc.add_hline(
+                y=threshold, line_dash="dash", line_color="#B8860B", line_width=1,
+                annotation_text=f"OB +{threshold}", annotation_position="right",
+                annotation_font=dict(color="#B8860B", size=10),
+            )
+            fig_osc.add_hline(
+                y=-threshold, line_dash="dash", line_color="#B8860B", line_width=1,
+                annotation_text=f"OS -{threshold}", annotation_position="right",
+                annotation_font=dict(color="#B8860B", size=10),
+            )
+        _apply_layout(
+            fig_osc, height=240,
+            legend=dict(orientation="h", y=1.08, x=0, bgcolor="rgba(0,0,0,0)"),
+            title=dict(
+                text="<b>THE OSCILLATOR</b>  <span style='font-size:11px;color:#888'>Net Tick Momentum per Minute</span>",
+                font=dict(size=13),
+            ),
+            hovermode="x unified",
+        )
+        fig_osc.update_yaxes(title_text="Net Ticks", gridcolor=_COLORS["grid"])
+        st.plotly_chart(fig_osc, width='stretch')
+
+        # ── Summary KPIs for the breadth panel ──
+        last_ad = cum_ad.iloc[-1]
+        last_mom = tick_timeline["cumulative_ticks"].iloc[-1]
+        peak_adv = tick_timeline["adv"].max()
+        peak_dec = tick_timeline["dec"].max()
+        c1, c2, c3, c4 = st.columns(4)
+        c1.markdown(_metric_card("Cum. A/D", f"{last_ad:+.0f}", delta=last_ad), unsafe_allow_html=True)
+        c2.markdown(_metric_card("Cum. Momentum", f"{last_mom:+,.0f}", delta=last_mom), unsafe_allow_html=True)
+        c3.markdown(_metric_card("Peak Advancers", f"{peak_adv:.0f}"), unsafe_allow_html=True)
+        c4.markdown(_metric_card("Peak Decliners", f"{peak_dec:.0f}"), unsafe_allow_html=True)
 
     st.markdown("---")
 
     # Tick distribution by hour
     st.markdown("**Tick Activity by Hour**")
-    hourly = pd.read_sql_query(
-        """SELECT
-             CAST(SUBSTR(ts, 12, 2) AS INTEGER) AS hour,
-             COUNT(*) AS ticks,
-             COUNT(DISTINCT symbol) AS symbols,
-             SUM(volume) AS volume
-           FROM intraday_bars
-           WHERE ts BETWEEN ? AND ?
-           GROUP BY hour ORDER BY hour""",
-        con,
-        params=[*_ts_range(sel_date)],
-    )
+    _hourly_rows = api_client.get_intraday_hourly_breadth(
+        date=sel_date, market="REG"
+    ) or []
+    if _hourly_rows:
+        hourly = pd.DataFrame(_hourly_rows).rename(columns={
+            "tick_count": "ticks",
+            "symbol_count": "symbols",
+        })[["hour", "ticks", "symbols"]]
+    else:
+        hourly = pd.DataFrame(columns=["hour", "ticks", "symbols"])
 
     if not hourly.empty:
         fig_hourly = make_subplots(specs=[[{"secondary_y": True}]])
@@ -829,7 +1025,7 @@ def _render_market_pulse(con, df, sel_date):
         fig_hourly.update_yaxes(title_text="Ticks", secondary_y=False, gridcolor=_COLORS["grid"])
         fig_hourly.update_yaxes(title_text="Symbols", secondary_y=True, gridcolor=_COLORS["grid"])
         fig_hourly.update_xaxes(gridcolor=_COLORS["grid"])
-        st.plotly_chart(fig_hourly, use_container_width=True)
+        st.plotly_chart(fig_hourly, width='stretch')
 
     st.markdown("---")
 
@@ -849,7 +1045,136 @@ def _render_market_pulse(con, df, sel_date):
             text=bucket_counts.values.astype(int), textposition="outside",
         ))
         _apply_layout(fig_buckets, height=300, xaxis_title="Change Range", yaxis_title="Stocks")
-        st.plotly_chart(fig_buckets, use_container_width=True)
+        st.plotly_chart(fig_buckets, width='stretch')
+
+    st.markdown("---")
+
+    # ── Breadth Persistence & History ──────────────────────────────────
+    st.markdown("**Breadth History — Persisted Daily Snapshots**")
+
+    from pakfindata.db.repositories.breadth import (
+        compute_and_persist_breadth,
+        get_breadth_daily_summary,
+        get_breadth_dates,
+        get_breadth_for_date,
+    )
+
+    bcol1, bcol2 = st.columns([1, 3])
+    with bcol1:
+        if st.button(
+            f"Save Breadth ({sel_date})", key="mp_save_breadth", type="primary",
+            help="Compute tick-to-tick A/D from intraday_bars and persist minute-level breadth.",
+        ):
+            with st.spinner("Computing breadth..."):
+                n = compute_and_persist_breadth(con, sel_date)
+            if n > 0:
+                st.success(f"Saved {n} minute rows for {sel_date}")
+            else:
+                st.warning("No intraday data to compute breadth.")
+    with bcol2:
+        persisted_dates = get_breadth_dates(con)
+        if persisted_dates:
+            st.caption(f"{len(persisted_dates)} dates persisted: {persisted_dates[0]} → {persisted_dates[-1]}")
+        else:
+            st.caption("No breadth data persisted yet.")
+
+    # Daily summary table
+    daily_df = get_breadth_daily_summary(con, limit=60)
+    if not daily_df.empty:
+        # Add derived columns for display
+        daily_df["A/D Ratio"] = (daily_df["adv"] / daily_df["dec"].replace(0, 1)).round(2)
+        daily_df["Net A/D"] = daily_df["adv"] - daily_df["dec"]
+        daily_df["Breadth %"] = ((daily_df["adv"] - daily_df["dec"]) / daily_df["total"].replace(0, 1) * 100).round(1)
+
+        st.dataframe(
+            daily_df.rename(columns={
+                "date": "Date", "adv": "Adv", "dec": "Dec", "total": "Symbols",
+                "net_ticks": "Net Ticks", "cum_ad": "Cum A/D", "cum_ticks": "Cum Ticks",
+                "ingested_at": "Saved At",
+            }),
+            width='stretch', hide_index=True, height=400,
+            column_config={
+                "Date": st.column_config.TextColumn("Date", width="small"),
+                "Adv": st.column_config.NumberColumn("Adv", format="%d"),
+                "Dec": st.column_config.NumberColumn("Dec", format="%d"),
+                "Symbols": st.column_config.NumberColumn("Symbols", format="%d"),
+                "Net A/D": st.column_config.NumberColumn("Net A/D", format="%+d"),
+                "A/D Ratio": st.column_config.NumberColumn("A/D Ratio", format="%.2f"),
+                "Breadth %": st.column_config.NumberColumn("Breadth %", format="%+.1f"),
+                "Net Ticks": st.column_config.NumberColumn("Net Ticks", format="%+,d"),
+                "Cum A/D": st.column_config.NumberColumn("Cum A/D", format="%+d"),
+                "Cum Ticks": st.column_config.NumberColumn("Cum Ticks", format="%+,d"),
+                "Saved At": st.column_config.TextColumn("Saved At", width="small"),
+            },
+        )
+
+        # Multi-day cumulative A/D chart
+        if len(daily_df) > 1:
+            st.markdown("**Multi-Day Cumulative A/D**")
+            hist = daily_df.sort_values("date")
+            hist["net_ad"] = hist["adv"] - hist["dec"]
+            hist["running_ad"] = hist["net_ad"].cumsum()
+
+            fig_hist_ad = go.Figure()
+            pos_run = hist["running_ad"].where(hist["running_ad"] >= 0, 0)
+            neg_run = hist["running_ad"].where(hist["running_ad"] <= 0, 0)
+            fig_hist_ad.add_trace(go.Scatter(
+                x=hist["date"], y=pos_run,
+                mode="lines", line=dict(color=_COLORS["up"], width=0),
+                fill="tozeroy", fillcolor="rgba(0,230,118,0.2)",
+                name="Bullish", showlegend=True,
+            ))
+            fig_hist_ad.add_trace(go.Scatter(
+                x=hist["date"], y=neg_run,
+                mode="lines", line=dict(color=_COLORS["down"], width=0),
+                fill="tozeroy", fillcolor="rgba(255,82,82,0.2)",
+                name="Bearish", showlegend=True,
+            ))
+            fig_hist_ad.add_trace(go.Scatter(
+                x=hist["date"], y=hist["running_ad"],
+                mode="lines+markers", name="Running A/D",
+                line=dict(color="white", width=2),
+                marker=dict(size=5),
+            ))
+            fig_hist_ad.add_hline(y=0, line_color=_COLORS["text_dim"], line_width=1)
+            _apply_layout(
+                fig_hist_ad, height=300,
+                legend=dict(orientation="h", y=1.08, x=0, bgcolor="rgba(0,0,0,0)"),
+                title=dict(
+                    text="<b>MULTI-DAY BREADTH</b>  <span style='font-size:11px;color:#888'>Running Cumulative A/D</span>",
+                    font=dict(size=13),
+                ),
+                hovermode="x unified",
+            )
+            fig_hist_ad.update_yaxes(title_text="Running A/D", gridcolor=_COLORS["grid"])
+            st.plotly_chart(fig_hist_ad, width='stretch')
+
+    # Drill-down: view persisted minute data for a specific date
+    if persisted_dates:
+        with st.expander("Drill-down: Minute-level Breadth Data", expanded=False):
+            drill_date = st.selectbox("Select date", persisted_dates, key="mp_drill_date")
+            drill_df = get_breadth_for_date(con, drill_date)
+            if not drill_df.empty:
+                drill_df["time"] = drill_df["minute"].str[11:]  # extract HH:MM
+                drill_df["net"] = drill_df["adv"] - drill_df["dec"]
+                st.dataframe(
+                    drill_df[["time", "adv", "dec", "total", "net", "net_ticks", "cum_ad", "cum_ticks"]].rename(
+                        columns={
+                            "time": "Time", "adv": "Adv", "dec": "Dec", "total": "Total",
+                            "net": "Net A/D", "net_ticks": "Net Ticks",
+                            "cum_ad": "Cum A/D", "cum_ticks": "Cum Ticks",
+                        }
+                    ),
+                    width='stretch', hide_index=True, height=400,
+                )
+
+                st.download_button(
+                    "Download Minute CSV",
+                    drill_df.to_csv(index=False),
+                    f"breadth_{drill_date}.csv",
+                    "text/csv",
+                    key="mp_drill_csv",
+                )
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -880,7 +1205,7 @@ def _render_volume(con, df, sel_date):
         yaxis=dict(autorange="reversed", gridcolor=_COLORS["grid"]),
         xaxis_title="Volume",
     )
-    st.plotly_chart(fig_vol, use_container_width=True)
+    st.plotly_chart(fig_vol, width='stretch')
 
     st.markdown("---")
 
@@ -905,7 +1230,7 @@ def _render_volume(con, df, sel_date):
         ))
         fig_scatter.add_vline(x=0, line_dash="dash", line_color=_COLORS["text_dim"])
         _apply_layout(fig_scatter, height=450, xaxis_title="Change %", yaxis_title="Log10(Volume)")
-        st.plotly_chart(fig_scatter, use_container_width=True)
+        st.plotly_chart(fig_scatter, width='stretch')
 
     st.markdown("---")
 
@@ -935,7 +1260,7 @@ def _render_volume(con, df, sel_date):
     fig_conc.add_hline(y=80, line_dash="dash", line_color=_COLORS["text_dim"],
                        annotation_text="80%", annotation_position="right")
     _apply_layout(fig_conc, height=300, xaxis_title="Number of Stocks (ranked)", yaxis_title="Cumulative Volume %")
-    st.plotly_chart(fig_conc, use_container_width=True)
+    st.plotly_chart(fig_conc, width='stretch')
 
     st.markdown("---")
 
@@ -957,7 +1282,7 @@ def _render_volume(con, df, sel_date):
             textposition="outside",
         ))
         _apply_layout(fig_sv, height=350, xaxis_tickangle=-45)
-        st.plotly_chart(fig_sv, use_container_width=True)
+        st.plotly_chart(fig_sv, width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -987,7 +1312,7 @@ def _render_movers(con, df, sel_date):
             yaxis=dict(autorange="reversed", gridcolor=_COLORS["grid"]),
             xaxis_title="Change %",
         )
-        st.plotly_chart(fig_g, use_container_width=True)
+        st.plotly_chart(fig_g, width='stretch')
 
     with col_l:
         st.markdown("**Top Losers**")
@@ -1003,7 +1328,7 @@ def _render_movers(con, df, sel_date):
             yaxis=dict(autorange="reversed", gridcolor=_COLORS["grid"]),
             xaxis_title="Change %",
         )
-        st.plotly_chart(fig_l, use_container_width=True)
+        st.plotly_chart(fig_l, width='stretch')
 
     st.markdown("---")
 
@@ -1023,7 +1348,7 @@ def _render_movers(con, df, sel_date):
         yaxis=dict(autorange="reversed", gridcolor=_COLORS["grid"]),
         xaxis_title="Tick Count",
     )
-    st.plotly_chart(fig_active, use_container_width=True)
+    st.plotly_chart(fig_active, width='stretch')
 
     st.markdown("---")
 
@@ -1061,7 +1386,7 @@ def _render_movers(con, df, sel_date):
         xaxis_title="Price (Rs.)",
         title=dict(text="Low-High Range (diamond = last price)", font=dict(size=12)),
     )
-    st.plotly_chart(fig_range, use_container_width=True)
+    st.plotly_chart(fig_range, width='stretch')
 
     st.markdown("---")
 
@@ -1080,7 +1405,7 @@ def _render_movers(con, df, sel_date):
 
     st.dataframe(
         table_df.sort_values("PSX Vol" if "PSX Vol" in table_df.columns else "Tick Vol", ascending=False),
-        use_container_width=True, hide_index=True, height=500,
+        width='stretch', hide_index=True, height=500,
         column_config={
             "open": st.column_config.NumberColumn("Open", format="%.2f"),
             "high": st.column_config.NumberColumn("High", format="%.2f"),
@@ -1105,11 +1430,362 @@ def _render_movers(con, df, sel_date):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# TAB: INDEX — IDX market ticks from JSONL
+# ═════════════════════════════════════════════════════════════════════════════
+
+_TICK_LOGS_DIR = Path("/mnt/e/psxdata/tick_logs_cloud")
+
+
+def _list_jsonl_files():
+    """Return sorted list of JSONL files in tick_logs (newest first)."""
+    if not _TICK_LOGS_DIR.exists():
+        return []
+    return sorted(
+        [f for f in _TICK_LOGS_DIR.glob("ticks_*.jsonl") if "deduped" not in f.name],
+        reverse=True,
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_idx_from_duckdb(date_str: str) -> pd.DataFrame:
+    """Load index data from DuckDB index_ohlcv_5s (fast, pre-aggregated 5s bars)."""
+    try:
+        from pakfindata.db.connections import duck
+        df = duck(
+            "SELECT symbol, ts, o AS open, h AS high, l AS low, c AS price, "
+            "v AS volume, turnover "
+            "FROM index_ohlcv_5s WHERE ts LIKE ? ORDER BY symbol, ts",
+            [f"{date_str}%"],
+        )
+        if not df.empty:
+            df["_ts"] = pd.to_datetime(df["ts"])
+            # Compute change from first bar per symbol
+            first = df.groupby("symbol")["price"].first()
+            df["change"] = df.apply(lambda r: r["price"] - first[r["symbol"]], axis=1)
+            df["changePercent"] = df.apply(
+                lambda r: (r["change"] / first[r["symbol"]] * 100) if first[r["symbol"]] else 0, axis=1
+            )
+            return df
+    except Exception:
+        pass
+    return pd.DataFrame()
+
+
+def _load_idx_ticks(jsonl_path: Path) -> pd.DataFrame:
+    """Fallback: Load only IDX market rows from a JSONL file."""
+    rows = []
+    with open(jsonl_path) as fh:
+        for line in fh:
+            row = _json.loads(line)
+            if row.get("market") == "IDX":
+                rows.append(row)
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    df["_ts"] = pd.to_datetime(df["_ts"])
+    return df
+
+
+def _render_index_ticks(sel_date: str):
+    st.markdown("### Index Ticks (IDX Market)")
+    st.caption("Index data from DuckDB index_ohlcv_5s (5-second bars) — KSE-100, KSE-30, KMI-30, etc.")
+
+    # DuckDB primary — fast, pre-aggregated
+    df = _load_idx_from_duckdb(sel_date)
+
+    # Fallback: JSONL files
+    if df.empty:
+        files = _list_jsonl_files()
+        if not files:
+            st.warning("No index data in DuckDB or JSONL files.")
+            return
+
+        date_file_map = {f.stem.replace("ticks_", ""): f for f in files}
+        default_idx = 0
+        if sel_date in date_file_map:
+            default_idx = list(date_file_map.keys()).index(sel_date)
+
+        sel_file = st.selectbox(
+            "Tick log file (JSONL fallback)",
+            files,
+            index=default_idx,
+            format_func=lambda f: f"{f.name}  ({f.stat().st_size / 1024 / 1024:.1f} MB)",
+            key="idx_file_sel",
+        )
+
+        with st.spinner("Loading IDX ticks from JSONL..."):
+            df = _load_idx_ticks(sel_file)
+
+    if df.empty:
+        st.info("No IDX ticks in this file.")
+        return
+
+    indices = sorted(df["symbol"].unique())
+    st.markdown(f"**{len(df):,}** IDX ticks across **{len(indices)}** indices")
+
+    # ── KPIs row ──
+    latest = df.sort_values("_ts").groupby("symbol").last().reset_index()
+    kpi_cols = st.columns(min(len(indices), 6))
+    for i, idx_sym in enumerate(indices[:6]):
+        row = latest[latest["symbol"] == idx_sym]
+        if row.empty:
+            continue
+        r = row.iloc[0]
+        chg_pct = r["changePercent"] * 100 if abs(r["changePercent"]) < 1 else r["changePercent"]
+        color = "green" if r["change"] >= 0 else "red"
+        with kpi_cols[i % len(kpi_cols)]:
+            st.metric(
+                idx_sym,
+                f"{r['price']:,.2f}",
+                delta=f"{r['change']:+,.2f} ({chg_pct:+.2f}%)",
+            )
+
+    # ── Index selector for charts ──
+    sel_indices = st.multiselect(
+        "Select indices to chart", indices,
+        default=indices[:3],
+        key="idx_chart_sel",
+    )
+
+    if not sel_indices:
+        return
+
+    df_sel = df[df["symbol"].isin(sel_indices)].copy()
+
+    # ── Price chart ──
+    fig_price = go.Figure()
+    for sym in sel_indices:
+        d = df_sel[df_sel["symbol"] == sym].sort_values("_ts")
+        fig_price.add_trace(go.Scatter(
+            x=d["_ts"], y=d["price"], mode="lines", name=sym,
+            line=dict(width=1.5),
+            hovertemplate="%{x|%H:%M:%S}<br>%{y:,.2f}<extra>%{fullData.name}</extra>",
+        ))
+    fig_price.update_layout(
+        title="Index Price (Intraday)",
+        height=420,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#EAECEF", size=11),
+        xaxis=dict(gridcolor="#1e2430"), yaxis=dict(gridcolor="#1e2430"),
+        margin=dict(l=10, r=10, t=40, b=10),
+        hovermode="x unified",
+        legend=dict(orientation="h", y=1.12),
+    )
+    st.plotly_chart(fig_price, width='stretch')
+
+    # ── Change % chart ──
+    fig_chg = go.Figure()
+    for sym in sel_indices:
+        d = df_sel[df_sel["symbol"] == sym].sort_values("_ts")
+        chg_pct = d["changePercent"] * 100 if d["changePercent"].abs().max() < 1 else d["changePercent"]
+        fig_chg.add_trace(go.Scatter(
+            x=d["_ts"], y=chg_pct, mode="lines", name=sym,
+            line=dict(width=1.5),
+        ))
+    fig_chg.update_layout(
+        title="Index Change %",
+        height=320,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#EAECEF", size=11),
+        xaxis=dict(gridcolor="#1e2430"), yaxis=dict(gridcolor="#1e2430", ticksuffix="%"),
+        margin=dict(l=10, r=10, t=40, b=10),
+        hovermode="x unified",
+        legend=dict(orientation="h", y=1.12),
+    )
+    st.plotly_chart(fig_chg, width='stretch')
+
+    # ── High/Low range bar ──
+    st.markdown("#### Intraday Range")
+    range_cols = ["symbol", "low", "high", "price"]
+    if "previousClose" in latest.columns:
+        range_cols.append("previousClose")
+    range_data = latest[latest["symbol"].isin(sel_indices)][range_cols].copy()
+    if "previousClose" not in range_data.columns:
+        range_data["previousClose"] = range_data["price"] - latest.loc[range_data.index, "change"] if "change" in latest.columns else range_data["price"]
+    range_data["range_pct"] = ((range_data["high"] - range_data["low"]) / range_data["low"].replace(0, 1) * 100).round(2)
+    range_data = range_data.sort_values("range_pct", ascending=True)
+
+    fig_range = go.Figure()
+    for _, r in range_data.iterrows():
+        color = "#00E676" if r["price"] >= r["previousClose"] else "#FF5252"
+        fig_range.add_trace(go.Bar(
+            y=[r["symbol"]], x=[r["range_pct"]], orientation="h",
+            marker_color=color, name=r["symbol"],
+            text=f"{r['low']:,.2f} — {r['high']:,.2f} ({r['range_pct']:.2f}%)",
+            textposition="auto", showlegend=False,
+        ))
+    fig_range.update_layout(
+        height=max(200, len(range_data) * 40),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#EAECEF", size=11),
+        xaxis=dict(gridcolor="#1e2430", title="Range %"),
+        yaxis=dict(gridcolor="#1e2430"),
+        margin=dict(l=10, r=10, t=10, b=10),
+    )
+    st.plotly_chart(fig_range, width='stretch')
+
+    # ── Raw data table ──
+    with st.expander("Raw IDX ticks"):
+        show_cols = ["symbol", "price", "change", "changePercent", "high", "low",
+                     "previousClose", "volume", "value", "trades", "_ts"]
+        show_cols = [c for c in show_cols if c in df_sel.columns]
+        st.dataframe(
+            df_sel[show_cols].sort_values("_ts", ascending=False),
+            width='stretch', hide_index=True, height=400,
+        )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB: DEDUP — Scan & deduplicate JSONL tick_logs
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _scan_file_dupes(path: Path) -> dict:
+    """Scan a JSONL file and return dupe stats without writing."""
+    seen = set()
+    total = 0
+    dupes = 0
+    with open(path) as fh:
+        for line in fh:
+            total += 1
+            row = _json.loads(line)
+            key = (row.get("symbol"), row.get("timestamp"), row.get("price"), row.get("volume"))
+            if key in seen:
+                dupes += 1
+            seen.add(key)
+    return {"total": total, "unique": total - dupes, "dupes": dupes, "size_mb": path.stat().st_size / 1024 / 1024}
+
+
+def _dedup_file(src: Path) -> dict:
+    """Deduplicate a JSONL file → _deduped.jsonl in same folder. Returns stats."""
+    seen = set()
+    total = 0
+    kept = 0
+    dst = src.with_name(src.stem + "_deduped.jsonl")
+
+    with open(src) as fin, open(dst, "w") as fout:
+        for line in fin:
+            total += 1
+            row = _json.loads(line)
+            key = (row.get("symbol"), row.get("timestamp"), row.get("price"), row.get("volume"))
+            if key not in seen:
+                seen.add(key)
+                fout.write(line)
+                kept += 1
+
+    return {
+        "total": total, "kept": kept, "removed": total - kept,
+        "src_mb": src.stat().st_size / 1024 / 1024,
+        "dst_mb": dst.stat().st_size / 1024 / 1024,
+        "dst": dst,
+    }
+
+
+def _render_dedup():
+    st.markdown("### Tick Log Deduplicator")
+    st.caption(
+        "Scans JSONL files in `/mnt/e/psxdata/tick_logs/` for duplicate rows "
+        "(same symbol + exchange timestamp + price + volume). "
+        "Creates a `_deduped.jsonl` file — originals are never modified."
+    )
+
+    files = _list_jsonl_files()
+    if not files:
+        st.warning("No JSONL files found.")
+        return
+
+    # File selector
+    sel_files = st.multiselect(
+        "Select files to process",
+        files,
+        default=files[:1],
+        format_func=lambda f: f"{f.name}  ({f.stat().st_size / 1024 / 1024:.1f} MB)",
+        key="dedup_file_sel",
+    )
+
+    if not sel_files:
+        return
+
+    c1, c2 = st.columns(2)
+    scan_btn = c1.button("Scan for duplicates", key="dedup_scan_btn")
+    dedup_btn = c2.button("Deduplicate selected", key="dedup_run_btn", type="primary")
+
+    # ── Scan ──
+    if scan_btn:
+        results = []
+        progress = st.progress(0, text="Scanning...")
+        for i, f in enumerate(sel_files):
+            progress.progress((i + 1) / len(sel_files), text=f"Scanning {f.name}...")
+            stats = _scan_file_dupes(f)
+            stats["file"] = f.name
+            # Check if deduped version exists
+            deduped = f.with_name(f.stem + "_deduped.jsonl")
+            stats["has_deduped"] = deduped.exists()
+            results.append(stats)
+        progress.empty()
+
+        rdf = pd.DataFrame(results)
+        rdf["dupe_%"] = (rdf["dupes"] / rdf["total"] * 100).round(1)
+        rdf["saved_mb"] = (rdf["size_mb"] * rdf["dupes"] / rdf["total"]).round(1)
+        rdf = rdf[["file", "total", "unique", "dupes", "dupe_%", "size_mb", "saved_mb", "has_deduped"]]
+        rdf.columns = ["File", "Total Rows", "Unique", "Duplicates", "Dupe %", "Size (MB)", "Saveable (MB)", "Deduped Exists"]
+
+        # Color-code dupe % for visibility
+        st.dataframe(
+            rdf,
+            width='stretch', hide_index=True,
+            column_config={
+                "Dupe %": st.column_config.ProgressColumn("Dupe %", min_value=0, max_value=100, format="%.1f%%"),
+                "Size (MB)": st.column_config.NumberColumn("Size (MB)", format="%.1f"),
+                "Saveable (MB)": st.column_config.NumberColumn("Saveable (MB)", format="%.1f"),
+            },
+        )
+
+        total_dupes = rdf["Duplicates"].sum()
+        total_save = rdf["Saveable (MB)"].sum()
+        if total_dupes > 0:
+            st.warning(f"**{total_dupes:,.0f}** duplicate rows found across {len(sel_files)} file(s). Potential savings: **{total_save:.1f} MB**")
+        else:
+            st.success("All files are clean — no duplicates found.")
+
+    # ── Dedup ──
+    if dedup_btn:
+        results = []
+        progress = st.progress(0, text="Deduplicating...")
+        for i, f in enumerate(sel_files):
+            progress.progress((i + 1) / len(sel_files), text=f"Deduplicating {f.name}...")
+            stats = _dedup_file(f)
+            stats["file"] = f.name
+            results.append(stats)
+        progress.empty()
+
+        for r in results:
+            if r["removed"] > 0:
+                st.success(
+                    f"**{r['file']}**: {r['total']:,} → {r['kept']:,} "
+                    f"(removed {r['removed']:,} dupes) | "
+                    f"{r['src_mb']:.1f} MB → {r['dst_mb']:.1f} MB | "
+                    f"Saved to `{r['dst'].name}`"
+                )
+            else:
+                st.info(f"**{r['file']}**: Clean — no duplicates. Deduped copy still written.")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # TAB: SYNC (preserved from original)
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _render_sync(con, sel_date):
     today_str = date.today().isoformat()
+    last_td = _last_trading_day()
+    last_td_str = last_td.isoformat()
+
+    # Show which date the PSX API serves
+    st.info(
+        f"**PSX API serves last trading day's data:** "
+        f"**{last_td_str}** ({last_td.strftime('%A')})"
+        + (f"  \nToday is {today_str} ({date.today().strftime('%A')})"
+           if today_str != last_td_str else "")
+    )
 
     # ── Bulk sync ──
     st.markdown("### Bulk Intraday Sync — All Symbols")
@@ -1124,8 +1800,9 @@ def _render_sync(con, sel_date):
         c2.metric("Failed", progress["failed"])
         c3.metric("Ticks", f"{progress['rows_total']:,}")
         c4.metric("JSON Saved", progress.get("json_saved", 0))
-        if st.button("Refresh", key="int_bulk_refresh"):
-            st.rerun()
+        # Auto-refresh every 3s while sync is running (no st.rerun needed)
+        if HAS_AUTOREFRESH and st_autorefresh:
+            st_autorefresh(interval=3000, limit=None, key="int_bulk_sync_autorefresh")
     else:
         if progress and progress.get("status") == "completed":
             json_info = ""
@@ -1140,26 +1817,122 @@ def _render_sync(con, sel_date):
             if progress.get("json_dir"):
                 st.caption(f"JSON files: {progress['json_dir']}")
 
+        # ── Step 1: Fetch All → Disk (parallel sharded) ──
+        st.markdown("#### Step 1: Fetch All Ticks → Disk")
+        st.caption(
+            "Fetch tick data from PSX API for all symbols using **3 parallel shards** "
+            "(10 workers each) and save JSON files to disk. "
+            "SUSPENDED/DELISTED (>30 days) skipped."
+        )
+        fetch_disk_date = st.date_input(
+            "Date (output folder)",
+            value=last_td,
+            max_value=date.today(),
+            key="int_fetch_disk_date",
+        )
+        if st.button(
+            f"Fetch All Ticks → Disk ({fetch_disk_date.isoformat()})",
+            key="int_fetch_disk_btn",
+            type="primary",
+        ):
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            from pakfindata.sync_timeseries import fetch_ticks_to_disk_parallel
+
+            with st.spinner(f"Fetching ticks for {fetch_disk_date.isoformat()} (3 shards)..."):
+                try:
+                    result = fetch_ticks_to_disk_parallel(
+                        con, fetch_disk_date.isoformat(), n_shards=3,
+                    )
+                    st.success(
+                        f"Done! **{result['ok']}** symbols, "
+                        f"**{result['ticks']:,}** ticks saved. "
+                        f"{result['fail']} failed, {result['skipped']} skipped. "
+                        f"→ `{result['json_dir']}`"
+                    )
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+        st.markdown("---")
+
+        # ── Step 2: Load from Disk → SQLite ──
+        st.markdown("#### Step 2: Disk → SQLite")
+        _intraday_root = Path("/mnt/e/psxdata/intraday")
+        _disk_dates = sorted(
+            [d.name for d in _intraday_root.iterdir() if d.is_dir() and d.name[:4].isdigit()],
+            reverse=True,
+        ) if _intraday_root.is_dir() else []
+        load_disk_date = st.selectbox(
+            "Date (disk folder)", _disk_dates,
+            index=_disk_dates.index(last_td_str) if last_td_str in _disk_dates else 0,
+            key="int_load_disk_date",
+        )
         bulk_col1, bulk_col2, bulk_col3 = st.columns(3)
         with bulk_col1:
-            save_json = st.checkbox(
-                "Save JSON files", value=False, key="int_bulk_save_json",
-                help="Save raw PSX responses to /mnt/e/psxdata/intraday/{date}/{SYMBOL}.json",
-            )
             if st.button(
-                "Fetch PSX Ticks -> intraday_bars", key="int_bulk_btn", type="primary",
-                help="Fetches today's tick-level trades for all ~620 symbols.",
+                f"Load Ticks from Disk ({load_disk_date})", key="int_bulk_btn", type="primary",
+                help=f"Reads JSON files from /mnt/e/psxdata/intraday/{load_disk_date}/ and loads into intraday_bars + tick_data.",
             ):
-                started = start_intraday_sync(save_json=save_json)
-                if started:
-                    st.success("Fetching PSX ticks for all symbols")
-                else:
-                    st.warning("Already running.")
-                st.rerun()
+                from pakfindata.sync_timeseries import load_ticks_from_disk
+                with st.spinner(f"Loading ticks from disk for {load_disk_date}..."):
+                    try:
+                        result = load_ticks_from_disk(con, load_disk_date)
+                        # load_ticks_from_disk no longer commits (parallel
+                        # bulk_con removed to fix bus error). Commit on the
+                        # caller's con as Option-A scaffolding until this
+                        # button is migrated to safe_writer in Market Sync v1.
+                        con.commit()
+                        if result.get("error"):
+                            st.error(result["error"])
+                        else:
+                            st.success(
+                                f"Loaded {result['ok']}/{result['total_files']} files, "
+                                f"{result['rows_total']:,} rows → intraday_bars + tick_data"
+                            )
+                            # Update manifest once after bulk load
+                            try:
+                                from pakfindata.db.date_manifest import add_date
+                                add_date("intraday_bars", load_disk_date)
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+                # Chained step: build summary tables from JSONL
+                try:
+                    from pakfindata.db.repositories import intraday_summary as _isum
+                    if _isum.source_available(load_disk_date) == "jsonl":
+                        from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                        from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
+                        with st.spinner(f"Building summaries for {load_disk_date}..."):
+                            try:
+                                with safe_writer() as wcon:
+                                    sres = _isum.compute_all(wcon, load_disk_date)
+                                    update_catalog_from_table(wcon, "intraday_daily_summary", source="computed")
+                                    update_catalog_from_table(wcon, "intraday_minute_breadth", source="computed")
+                                    update_catalog_from_table(wcon, "intraday_hourly_summary", source="computed")
+                            except SafeWriterBusyError:
+                                sres = {"error": "Another writer holds the lock; retry shortly."}
+                        if "error" in sres:
+                            st.warning(f"Summary build skipped: {sres['error']}")
+                            for ds in ("intraday_daily_summary", "intraday_minute_breadth", "intraday_hourly_summary"):
+                                record_catalog_failure(ds, source="computed", error=sres["error"])
+                        else:
+                            t = sres["timings"]
+                            st.success(
+                                f"Summaries built in {t['total_s']}s — "
+                                f"daily: {sres['daily']}, minute: {sres['minute_breadth']}, hourly: {sres['hourly']}"
+                            )
+                            st.cache_data.clear()
+                    else:
+                        st.info(
+                            f"No JSONL for {load_disk_date} — run tick log sync to enable summary build."
+                        )
+                except Exception as e:
+                    st.warning(f"Summary build failed: {e}")
 
         with bulk_col2:
             if st.button(
-                f"intraday_bars -> JSON Disk ({today_str})", key="int_bulk_export_btn",
+                f"intraday_bars -> JSON Disk ({last_td_str})", key="int_bulk_export_btn",
                 help="Exports DB tick data to per-symbol JSON files on disk.",
             ):
                 try:
@@ -1167,17 +1940,16 @@ def _render_sync(con, sel_date):
                     from collections import defaultdict
                     from pakfindata.config import DATA_ROOT
 
-                    _ts_s, _ts_e = _ts_range(today_str)
                     rows = con.execute(
                         "SELECT symbol, ts_epoch, close, volume "
-                        "FROM intraday_bars WHERE ts BETWEEN ? AND ? ORDER BY symbol, ts_epoch",
-                        (_ts_s, _ts_e),
+                        "FROM intraday_bars WHERE date = ? ORDER BY symbol, ts_epoch",
+                        (last_td_str,),
                     ).fetchall()
                     by_sym = defaultdict(list)
                     for r in rows:
                         by_sym[r["symbol"]].append([r["ts_epoch"], r["close"], r["volume"]])
 
-                    _dir = DATA_ROOT / "intraday" / today_str
+                    _dir = DATA_ROOT / "intraday" / last_td_str
                     _dir.mkdir(parents=True, exist_ok=True)
                     for sym, data in by_sym.items():
                         (_dir / f"{sym}.json").write_text(_json.dumps(data, indent=2))
@@ -1188,15 +1960,358 @@ def _render_sync(con, sel_date):
 
         with bulk_col3:
             if st.button(
-                f"intraday_bars -> eod_ohlcv ({today_str})", key="int_bulk_promote_btn",
-                help="Aggregates intraday_bars into eod_ohlcv for today.",
+                f"intraday_bars -> eod_ohlcv ({last_td_str})", key="int_bulk_promote_btn",
+                help=f"Aggregates intraday_bars into eod_ohlcv for {last_td_str}.",
             ):
                 try:
                     from pakfindata.db.repositories.intraday import promote_intraday_to_eod
-                    eod_count = promote_intraday_to_eod(con, today_str)
-                    st.success(f"Promoted {eod_count} symbols to eod_ohlcv for {today_str}")
+                    eod_count = promote_intraday_to_eod(con, last_td_str)
+                    st.success(f"Promoted {eod_count} symbols to eod_ohlcv for {last_td_str}")
                 except Exception as e:
                     st.error(f"Promote failed: {e}")
+
+        # Row 2: Parquet export
+        st.markdown("#### Parquet Export")
+        from pathlib import Path as _Path
+        _intraday_root = _Path("/mnt/e/psxdata/intraday")
+        _avail_dates = sorted(
+            [d.name for d in _intraday_root.iterdir() if d.is_dir() and d.name[:4].isdigit()],
+            reverse=True,
+        ) if _intraday_root.is_dir() else []
+        _duck_date = st.selectbox(
+            "Date (JSON folder)", _avail_dates,
+            index=_avail_dates.index(last_td_str) if last_td_str in _avail_dates else 0,
+            key="int_duck_date_select",
+        )
+        if st.button(
+            f"Export intraday_bars → Parquet ({_duck_date})", key="int_duck_fetch_btn",
+            type="primary",
+            help=f"Exports intraday_bars for {_duck_date} from SQLite to Parquet.",
+        ):
+            try:
+                from pakfindata.db.parquet_store import export_table
+                with st.spinner(f"Exporting intraday_bars for {_duck_date}..."):
+                    rows = export_table("intraday_bars", _duck_date)
+                st.success(f"Exported intraday_bars: {rows:,} rows → Parquet/{_duck_date}.parquet")
+            except Exception as e:
+                import traceback
+                st.error(f"Parquet export failed: {e}")
+                st.code(traceback.format_exc(), language="python")
+
+        # ── Build Summary Tables from JSONL ──
+        st.markdown("#### Build Intraday Summary Tables")
+        st.caption(
+            "Aggregates `tick_logs_cloud/ticks_{date}.jsonl` into three summary tables "
+            "(`intraday_daily_summary`, `intraday_minute_breadth`, `intraday_hourly_summary`). "
+            "Parser runs via in-memory DuckDB — no persistent DuckDB file, no locks. "
+            "Output is written to SQLite."
+        )
+
+        try:
+            from pakfindata.db.repositories import intraday_summary as _isum
+            _isum.ensure_tables(con)
+            _stats = _isum.get_stats(con)
+        except Exception as _e:
+            _stats = {"total_rows": 0, "dates": 0, "first_date": None, "last_date": None}
+            st.caption(f"(summary tables not yet created: {_e})")
+
+        _sc1, _sc2, _sc3 = st.columns(3)
+        _sc1.metric("Rows", f"{_stats['total_rows']:,}")
+        _sc2.metric("Dates", _stats["dates"])
+        _sc3.metric("Last", _stats["last_date"] or "—")
+
+        _jl_root = Path("/mnt/e/psxdata/tick_logs_cloud")
+        _jl_dates = sorted(
+            [p.stem.replace("ticks_", "") for p in _jl_root.glob("ticks_*.jsonl")],
+            reverse=True,
+        ) if _jl_root.is_dir() else []
+        _sum_date = st.selectbox(
+            "Date (JSONL source)", _jl_dates,
+            index=_jl_dates.index(last_td_str) if last_td_str in _jl_dates else 0,
+            key="int_sum_date_select",
+        ) if _jl_dates else None
+
+        _sumb1, _sumb2 = st.columns(2)
+        with _sumb1:
+            if _sum_date and st.button(
+                f"Build Summaries for {_sum_date}",
+                key="int_sum_build_btn", type="primary",
+                help="Runs daily / minute breadth / hourly aggregations for this date.",
+            ):
+                # Phase 1.6.12: sidebar feature flag picks the path.
+                from pakfindata.ui.api import client as api_client
+                if api_client.use_worker_sync():
+                    api_client.run_job_with_progress(
+                        "build_intraday_summary",
+                        params={"date": _sum_date},
+                        spinner_text=f"aggregating tick JSONL for {_sum_date}",
+                        timeout_s=300.0,  # large dates can take ~30s
+                    )
+                else:
+                    from pakfindata.db.safe_writer import SafeWriterBusyError
+                    from pakfindata.etl.intraday_summary import build_for_date
+                    with st.spinner(f"Aggregating {_sum_date}..."):
+                        try:
+                            result = build_for_date(_sum_date)
+                            if result.get("skipped_reason"):
+                                st.error(result["skipped_reason"])
+                            else:
+                                t = result["timings"]
+                                st.success(
+                                    f"Done in {t['total_s']}s — "
+                                    f"daily: {result['daily']} rows ({t['daily_s']}s), "
+                                    f"minute: {result['minute_breadth']} rows ({t['minute_breadth_s']}s), "
+                                    f"hourly: {result['hourly']} rows ({t['hourly_s']}s)"
+                                )
+                                st.cache_data.clear()
+                        except SafeWriterBusyError:
+                            st.error("Another writer holds the lock; retry shortly.")
+                        except Exception as e:
+                            import traceback
+                            # build_for_date() already recorded the catalog failures.
+                            st.error(f"Build failed: {e}")
+                            st.code(traceback.format_exc(), language="python")
+
+        with _sumb2:
+            if st.button(
+                "Build Missing (all JSONL dates)",
+                key="int_sum_build_missing_btn",
+                help="Runs aggregations for every JSONL date not yet in the summary table.",
+            ):
+                # Phase 1.6.13: sidebar feature flag picks the path.
+                from pakfindata.ui.api import client as api_client
+                if api_client.use_worker_sync():
+                    api_client.run_job_with_progress(
+                        "build_intraday_summary_missing",
+                        spinner_text="building summaries for missing JSONL dates",
+                        timeout_s=900.0,  # ~5s/date × ~40 dates worst case
+                    )
+                else:
+                    from pakfindata.etl.intraday_summary import build_missing
+                    with st.spinner("Building missing dates..."):
+                        result = build_missing()
+                        if result["dates_considered"] == 0:
+                            st.info(
+                                "No missing dates — all JSONL dates already summarized."
+                            )
+                        else:
+                            st.cache_data.clear()
+                            st.success(
+                                f"Built {result['dates_built']}/{result['dates_considered']} "
+                                f"dates ({result['dates_failed']} failed, "
+                                f"{result['dates_skipped']} skipped, "
+                                f"{result['duration_ms']/1000:.1f}s)."
+                            )
+
+    st.markdown("---")
+
+    # ── Data Coverage / Gap Detector ──
+    st.markdown("### Data Coverage — Gap Detector")
+    if st.button("Scan All Dates", key="int_gap_scan"):
+        with st.spinner("Scanning all data stores..."):
+            from pathlib import Path as _P
+            from pakfindata.db.date_manifest import get_dates
+
+            # Use manifest for instant lookups
+            _eod = set(d for d in get_dates("eod_ohlcv") if d >= "2026-02-01")
+            _sq_dates = set(d for d in get_dates("intraday_bars") if d >= "2026-02-01")
+            _tb = set(get_dates("ohlcv_5s"))
+            _jl = set(get_dates("tick_jsonl"))
+            _duck_dates = _sq_dates  # same source
+
+            # Disk JSON dates (filesystem scan — fast)
+            _disk_root = _P("/mnt/e/psxdata/intraday")
+            _disk = set(
+                p.name for p in _disk_root.iterdir()
+                if p.is_dir() and p.name[:4].isdigit() and p.name >= "2026-02-01"
+            ) if _disk_root.is_dir() else set()
+
+            _all = sorted(_eod | _disk | _sq_dates | _tb | _jl | _duck_dates)
+            rows_data = []
+            for dt in _all:
+                if dt < "2026-02-01":
+                    continue
+                in_eod = dt in _eod
+                in_disk = dt in _disk
+                in_sq = dt in _sq_dates
+                in_tb = dt in _tb
+                in_jl = dt in _jl
+                in_duck = dt in _duck_dates
+
+                disk_count = ""
+                if in_disk:
+                    disk_count = str(len(list((_disk_root / dt).glob("*.json"))))
+
+                status = "OK" if (in_disk and in_sq and in_duck) else "GAP"
+                rows_data.append({
+                    "Date": dt,
+                    "EOD": "Y" if in_eod else "-",
+                    "Disk JSON": disk_count if in_disk else "MISS",
+                    "SQLite": "Y" if in_sq else "MISS",
+                    "DuckDB": "Y" if in_duck else "MISS",
+                    "TickBar": "Y" if in_tb else "-",
+                    "JSONL": "Y" if in_jl else "-",
+                    "Status": status,
+                })
+
+            import pandas as _gap_pd
+            gap_df = _gap_pd.DataFrame(rows_data)
+
+            gaps = gap_df[gap_df["Status"] == "GAP"]
+            if gaps.empty:
+                st.success(f"No gaps found across {len(gap_df)} trading dates!")
+            else:
+                st.warning(f"{len(gaps)} dates have gaps out of {len(gap_df)} total")
+
+            # Color the status column
+            def _highlight_gaps(row):
+                if row["Status"] == "GAP":
+                    return ["background-color: #3a1c1c"] * len(row)
+                return [""] * len(row)
+
+            st.dataframe(
+                gap_df.style.apply(_highlight_gaps, axis=1),
+                width='stretch',
+                height=min(len(gap_df) * 35 + 40, 600),
+            )
+
+            # Backfill suggestions
+            fillable = []
+            for _, r in gap_df.iterrows():
+                if r["Disk JSON"] == "MISS" and r["JSONL"] == "Y":
+                    fillable.append((r["Date"], "JSONL → Disk JSON"))
+                elif r["Disk JSON"] == "MISS" and r["SQLite"] == "Y":
+                    fillable.append((r["Date"], "SQLite → Disk JSON"))
+                if r["SQLite"] == "MISS" and r["Disk JSON"] not in ("MISS", ""):
+                    fillable.append((r["Date"], "Disk JSON → SQLite"))
+                if r["DuckDB"] == "MISS" and r["Disk JSON"] not in ("MISS", ""):
+                    fillable.append((r["Date"], "Disk JSON → DuckDB"))
+
+            if fillable:
+                st.markdown("**Auto-fixable gaps:**")
+                for dt, action in fillable:
+                    st.caption(f"  {dt}: {action}")
+
+                if st.button("Fix All Gaps", key="int_fix_gaps", type="primary"):
+                    import json as _json2
+                    from collections import defaultdict as _dd
+                    fixed = 0
+                    for dt, action in fillable:
+                        try:
+                            if action == "JSONL → Disk JSON":
+                                # Find JSONL file
+                                jl_file = None
+                                for _d2 in [_P("/mnt/e/psxdata/tick_logs_cloud"), _P("/mnt/e/psxdata/tick_logs_cloud")]:
+                                    candidate = _d2 / f"ticks_{dt}.jsonl"
+                                    if candidate.exists():
+                                        jl_file = candidate
+                                        break
+                                if jl_file:
+                                    out_dir = _disk_root / dt
+                                    out_dir.mkdir(parents=True, exist_ok=True)
+                                    syms = _dd(list)
+                                    with open(jl_file) as _fh:
+                                        for _line in _fh:
+                                            _row = _json2.loads(_line)
+                                            if _row.get("market") != "REG":
+                                                continue
+                                            syms[_row["symbol"]].append([_row["timestamp"], _row["price"], _row.get("volume", 0)])
+                                    for sym, trades in syms.items():
+                                        seen = set()
+                                        unique = []
+                                        for t in trades:
+                                            k = (t[0], t[1], t[2])
+                                            if k not in seen:
+                                                seen.add(k)
+                                                unique.append(t)
+                                        unique.sort(key=lambda x: x[0], reverse=True)
+                                        (out_dir / f"{sym}.json").write_text(
+                                            _json2.dumps({"status": 1, "message": "", "data": unique}, indent=2)
+                                        )
+                                    st.toast(f"Fixed {dt}: {len(syms)} symbols from JSONL")
+                                    fixed += 1
+
+                            elif action == "SQLite → Disk JSON":
+                                out_dir = _disk_root / dt
+                                out_dir.mkdir(parents=True, exist_ok=True)
+                                rows = con.execute(
+                                    "SELECT symbol, ts_epoch, close, volume FROM intraday_bars "
+                                    "WHERE ts BETWEEN ? AND ? ORDER BY symbol, ts_epoch",
+                                    (f"{dt} 00:00:00", f"{dt} 23:59:59"),
+                                ).fetchall()
+                                by_sym = _dd(list)
+                                for r in rows:
+                                    by_sym[r["symbol"]].append([r["ts_epoch"], r["close"], r["volume"]])
+                                for sym, data in by_sym.items():
+                                    data.sort(key=lambda x: x[0], reverse=True)
+                                    (out_dir / f"{sym}.json").write_text(
+                                        _json2.dumps({"status": 1, "message": "", "data": data}, indent=2)
+                                    )
+                                st.toast(f"Fixed {dt}: {len(by_sym)} symbols from SQLite")
+                                fixed += 1
+
+                            elif action == "Disk JSON → SQLite":
+                                json_dir = _disk_root / dt
+                                batch = []
+                                for jf in json_dir.glob("*.json"):
+                                    sym = jf.stem
+                                    payload = _json2.loads(jf.read_text())
+                                    data = payload.get("data", payload) if isinstance(payload, dict) else payload
+                                    if not isinstance(data, list):
+                                        continue
+                                    # Aggregate to 1s bars (v3 schema bar semantics)
+                                    by_sec: dict[int, dict] = {}
+                                    for item in data:
+                                        if not isinstance(item, list) or len(item) < 2:
+                                            continue
+                                        ts_epoch = int(item[0])
+                                        price = float(item[1])
+                                        volume = float(item[2]) if len(item) >= 3 else 0
+                                        b = by_sec.get(ts_epoch)
+                                        if b is None:
+                                            by_sec[ts_epoch] = {
+                                                "o": price, "h": price, "l": price, "c": price,
+                                                "v": volume, "tc": 1, "pv": price * volume,
+                                            }
+                                        else:
+                                            b["h"] = max(b["h"], price)
+                                            b["l"] = min(b["l"], price)
+                                            b["c"] = price
+                                            b["v"] += volume
+                                            b["tc"] += 1
+                                            b["pv"] += price * volume
+                                    for ts_epoch, b in by_sec.items():
+                                        try:
+                                            ts_str = datetime.fromtimestamp(ts_epoch).strftime("%Y-%m-%d %H:%M:%S")
+                                        except (ValueError, OSError):
+                                            continue
+                                        vwap = (b["pv"] / b["v"]) if b["v"] > 0 else b["c"]
+                                        batch.append((sym, "REG", dt, ts_str, ts_epoch,
+                                                      b["o"], b["h"], b["l"], b["c"],
+                                                      b["v"], b["tc"], vwap))
+                                con.executemany(
+                                    "INSERT OR IGNORE INTO intraday_bars "
+                                    "(symbol, market, date, ts, ts_epoch, interval, "
+                                    " open, high, low, close, volume, trade_count, vwap, source) "
+                                    "VALUES (?,?,?,?,?,'1s',?,?,?,?,?,?,?,'disk_json')",
+                                    batch,
+                                )
+                                con.commit()
+                                st.toast(f"Fixed {dt}: {len(batch):,} rows → SQLite")
+                                fixed += 1
+
+                            elif action == "Disk JSON → DuckDB":
+                                # Export to Parquet instead of DuckDB
+                                from pakfindata.db.parquet_store import export_table
+                                rows = export_table("intraday_bars", dt)
+                                st.toast(f"Fixed {dt}: {rows:,} rows → Parquet")
+                                fixed += 1
+                        except Exception as e:
+                            st.error(f"Failed {dt}: {e}")
+
+                    if fixed:
+                        st.success(f"Fixed {fixed}/{len(fillable)} gaps")
+                        st.rerun()
 
     st.markdown("---")
 
@@ -1238,7 +2353,7 @@ def _render_sync(con, sel_date):
         )
     with btn_col3:
         promote_btn = st.button(
-            f"intraday -> eod ({today_str})", key="int_sync_promote",
+            f"intraday -> eod ({last_td_str})", key="int_sync_promote",
             disabled=st.session_state.intraday_sync_running,
         )
 
@@ -1260,8 +2375,11 @@ def _render_sync(con, sel_date):
                     st.session_state.intraday_sync_result = {"action": "download", "success": True, "rows": 0}
                     status.update(label="No data", state="complete")
                 else:
+                    # Detect actual date from data timestamps
                     from pakfindata.config import DATA_ROOT
-                    json_dir = DATA_ROOT / "intraday" / today_str
+                    first_ts = df_fetched["ts"].iloc[0]
+                    detected_date = str(first_ts)[:10] if first_ts else last_td_str
+                    json_dir = DATA_ROOT / "intraday" / detected_date
                     json_dir.mkdir(parents=True, exist_ok=True)
                     json_path = json_dir / f"{sel_sym}.json"
                     json_path.write_text(json.dumps(payload, indent=2))
@@ -1273,8 +2391,9 @@ def _render_sync(con, sel_date):
                     st.session_state.intraday_sync_result = {
                         "action": "download", "success": True,
                         "rows": len(df_fetched), "json_path": str(json_path),
+                        "detected_date": detected_date,
                     }
-                    status.update(label=f"Downloaded {len(df_fetched)} ticks", state="complete")
+                    status.update(label=f"Downloaded {len(df_fetched)} ticks for {detected_date}", state="complete")
             except Exception as e:
                 st.session_state.intraday_sync_result = {"action": "download", "success": False, "error": str(e)}
                 status.update(label="Failed!", state="error")
@@ -1291,7 +2410,10 @@ def _render_sync(con, sel_date):
                 from pakfindata.sources.intraday import parse_intraday_payload
                 from pakfindata.db.repositories.intraday import upsert_intraday
 
-                json_path = DATA_ROOT / "intraday" / today_str / f"{sel_sym}.json"
+                # Try last trading day first, then today, then scan
+                json_path = DATA_ROOT / "intraday" / last_td_str / f"{sel_sym}.json"
+                if not json_path.exists():
+                    json_path = DATA_ROOT / "intraday" / today_str / f"{sel_sym}.json"
                 if not json_path.exists():
                     intraday_dir = DATA_ROOT / "intraday"
                     found = None
@@ -1329,11 +2451,11 @@ def _render_sync(con, sel_date):
         with st.status("Promoting...", expanded=True) as status:
             try:
                 from pakfindata.db.repositories.intraday import promote_intraday_to_eod
-                eod_count = promote_intraday_to_eod(con, today_str)
+                eod_count = promote_intraday_to_eod(con, last_td_str)
                 st.session_state.intraday_sync_result = {
                     "action": "promote", "success": True, "eod_promoted": eod_count,
                 }
-                status.update(label=f"Promoted {eod_count} symbols", state="complete")
+                status.update(label=f"Promoted {eod_count} symbols for {last_td_str}", state="complete")
             except Exception as e:
                 st.session_state.intraday_sync_result = {"action": "promote", "success": False, "error": str(e)}
                 status.update(label="Failed!", state="error")
@@ -1347,8 +2469,9 @@ def _render_sync(con, sel_date):
             action = result.get("action", "")
             if action == "download":
                 rows = result.get("rows", 0)
+                det_date = result.get("detected_date", "")
                 if rows > 0:
-                    st.success(f"Downloaded {rows} ticks")
+                    st.success(f"Downloaded {rows} ticks" + (f" for **{det_date}**" if det_date else ""))
                     if result.get("json_path"):
                         st.caption(f"JSON: {result['json_path']}")
                 else:

@@ -840,6 +840,9 @@ def fetch_day_with_tracking(
                 "row_count": 0,
                 "message": "Previously missing (use --retry-missing to retry)",
             }
+        elif existing["status"] == "missing":
+            # retry_missing=True — file may be available now
+            logger.info(f"{date_str}: Previously missing, retrying")
         elif existing["status"] == "failed" and not retry_failed:
             logger.info(f"{date_str}: Skipped (failed, use --retry-failed)")
             return {

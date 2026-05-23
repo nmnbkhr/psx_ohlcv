@@ -399,6 +399,8 @@ def create_instruments_sync_run(con: sqlite3.Connection, run_id: str, instrument
 def sync_index_membership(con: sqlite3.Connection) -> dict:
     """Populate instrument_membership from regular_market_current.listed_in.
 
+    Caller commits via pakfindata.db.safe_writer.
+
     Parses the comma-separated listed_in column (e.g. "ALLSHR,KSE100,KSE100PR")
     and creates parent→child rows in instrument_membership for each index→equity pair.
 
@@ -473,7 +475,6 @@ def sync_index_membership(con: sqlite3.Connection) -> dict:
             memberships += 1
             indices_seen.add(idx_code)
 
-    con.commit()
     return {
         "indices": len(indices_seen),
         "memberships": memberships,

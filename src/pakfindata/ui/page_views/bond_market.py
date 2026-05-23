@@ -1,66 +1,126 @@
-"""OTC Bond Market page — SBP benchmark rates + trading volume dashboard."""
+"""OTC Bond Market page — SBP benchmark rates + trading volume dashboard.
+
+Reads through the /v1 API client (Phase 1.7.B.4).
+"""
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from pakfindata.ui.components.helpers import get_connection, render_footer
+from pakfindata.ui.api import client as api_client
+from pakfindata.ui.components.helpers import render_footer
+
+
+# ── Cached data loaders ──────────────────────────────────────────────────────
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_pkrv_latest_curve() -> pd.DataFrame:
+    rows = api_client.get_pkrv() or []
+    if not rows:
+        return pd.DataFrame(columns=["tenor_months", "yield_pct"])
+    return pd.DataFrame(rows)[["tenor_months", "yield_pct"]]
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_benchmark_history(metric: str) -> pd.DataFrame:
+    rows = api_client.get_benchmark_history(metric=metric) or []
+    if not rows:
+        return pd.DataFrame(columns=["date", "value"])
+    return pd.DataFrame(rows)[["date", "value"]]
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_trading_volume_latest() -> pd.DataFrame:
+    """Latest-day aggregated trading volume — pulls 1 day of trades and
+    aggregates client-side. Could grow a dedicated endpoint later."""
+    rows = api_client.get_bond_trading_daily(limit=5000) or []
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    if df.empty or "date" not in df.columns:
+        return pd.DataFrame()
+    latest = df["date"].max()
+    df = df[df["date"] == latest]
+    agg = df.groupby(["date", "security_type", "segment"]).agg(
+        face_m=("face_amount", "sum"),
+        avg_yield=("yield_weighted_avg", "mean"),
+    ).reset_index()
+    return agg
 
 
 def render_bond_market():
     """Render the OTC Bond Market dashboard."""
+    api_client.render_api_status_banner_if_down()
+
     st.header("OTC Bond Market")
     st.caption(
         "SBP benchmark rates, yield curve, and secondary market data. "
         "Pakistan's bond market is 99% OTC interbank — data from SBP, not PSX."
     )
 
-    con = get_connection()
-
     # Sync buttons
     with st.expander("Sync from SBP", expanded=False):
         c1, c2 = st.columns(2)
         with c1:
             if st.button("Scrape Benchmark Snapshot", key="bm_bench_sync"):
-                with st.spinner("Fetching from SBP MSM page..."):
-                    from pakfindata.sources.sbp_bond_market import SBPBondMarketScraper
-                    from pakfindata.db.repositories.bond_market import init_bond_market_schema
-                    init_bond_market_schema(con)
-                    scraper = SBPBondMarketScraper()
-                    result = scraper.sync_benchmark(con)
-                    if result["status"] == "ok":
-                        st.success(
-                            f"Stored {result['metrics_stored']} metrics for {result['date']}"
-                        )
-                    else:
-                        st.error(result.get("error", "Unknown error"))
+                # Phase 1.6.4: sidebar feature flag picks the path.
+                from pakfindata.ui.api import client as api_client
+                if api_client.use_worker_sync():
+                    api_client.run_job_with_progress(
+                        "sync_benchmark",
+                        spinner_text="scraping SBP benchmark snapshot",
+                    )
+                else:
+                    with st.spinner("Fetching from SBP MSM page..."):
+                        from pakfindata.db.safe_writer import SafeWriterBusyError
+                        from pakfindata.etl.benchmark import sync as sync_benchmark
+                        try:
+                            result = sync_benchmark()
+                            st.cache_data.clear()
+                            if result["status"] == "ok":
+                                st.success(
+                                    f"Stored {result['metrics_stored']} metrics for {result['date']}"
+                                )
+                            else:
+                                st.error("Scrape returned a non-ok status")
+                        except SafeWriterBusyError:
+                            st.error("Another sync is running. Wait a moment and retry.")
+                        except Exception as e:
+                            # sync_benchmark() already recorded the catalog failure.
+                            st.error(f"Failed: {e}")
         with c2:
             if st.button("Sync SMTV Trading Data", key="bm_smtv_sync"):
                 with st.spinner("Downloading & parsing SBP SMTV PDF..."):
-                    from pakfindata.sources.sbp_bond_market import SBPBondMarketScraper
-                    from pakfindata.db.repositories.bond_market import init_bond_market_schema
-                    init_bond_market_schema(con)
-                    scraper = SBPBondMarketScraper()
-                    result = scraper.sync_smtv(con)
-                    if result["status"] == "ok":
-                        st.success(
-                            f"Date: {result['date']} — "
-                            f"{result['trades_stored']} trades, "
-                            f"{result['summaries_stored']} summaries stored"
-                        )
-                    else:
-                        st.warning(f"Skipped: {result.get('reason', 'unknown')}")
+                    from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                    from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
+                    try:
+                        from pakfindata.sources.sbp_bond_market import SBPBondMarketScraper
+                        scraper = SBPBondMarketScraper()  # HTTP init outside lock
+                        with safe_writer() as wcon:
+                            result = scraper.sync_smtv(wcon)
+                            update_catalog_from_table(wcon, "bond_trading_daily", source="sbp_bond_market")
+                            update_catalog_from_table(wcon, "bond_trading_summary", source="sbp_bond_market")
+                        st.cache_data.clear()
+                        if result["status"] == "ok":
+                            st.success(
+                                f"Date: {result['date']} — "
+                                f"{result['trades_stored']} trades, "
+                                f"{result['summaries_stored']} summaries stored"
+                            )
+                        else:
+                            st.warning(f"Skipped: {result.get('reason', 'unknown')}")
+                    except SafeWriterBusyError:
+                        st.error("Another sync is running. Wait a moment and retry.")
+                    except Exception as e:
+                        st.error(f"Failed: {e}")
+                        for ds in ("bond_trading_daily", "bond_trading_summary"):
+                            record_catalog_failure(ds, source="sbp_bond_market", error=e)
 
-    # Ensure schema exists
-    from pakfindata.db.repositories.bond_market import (
-        init_bond_market_schema,
-        get_benchmark_snapshot,
-        get_benchmark_history,
-        get_bond_market_status,
-    )
-    init_bond_market_schema(con)
+    # Fetch benchmark snapshot via /v1
+    snap_payload = api_client.get_benchmark_snapshot() or {}
+    snap = snap_payload.get("metrics") or {}
+    snap_date = snap_payload.get("date")
 
-    snap = get_benchmark_snapshot(con)
     if not snap:
         st.info(
             "No benchmark data yet. Click **Scrape Benchmark Snapshot** above."
@@ -68,7 +128,6 @@ def render_bond_market():
         render_footer()
         return
 
-    snap_date = snap.pop("_date", None)
     if snap_date:
         st.caption(f"Data as of: **{snap_date}**")
 
@@ -83,7 +142,7 @@ def render_bond_market():
     st.markdown("---")
 
     # Section 3: Yield Curve (MTB + PIB)
-    _render_yield_curve(snap, con)
+    _render_yield_curve(snap)
 
     st.markdown("---")
 
@@ -93,13 +152,13 @@ def render_bond_market():
     st.markdown("---")
 
     # Section 5: Benchmark History
-    _render_benchmark_history(con)
+    _render_benchmark_history()
 
     # Section 6: Bond Trading Data (when SMTV becomes available)
-    status = get_bond_market_status(con)
+    status = api_client.get_bond_market_status() or {}
     if status.get("trading_rows", 0) > 0:
         st.markdown("---")
-        _render_trading_volume(con, status)
+        _render_trading_volume(status)
 
     render_footer()
 
@@ -133,7 +192,7 @@ def _render_kibor_panel(snap: dict):
             )
 
 
-def _render_yield_curve(snap: dict, con):
+def _render_yield_curve(snap: dict):
     """Yield curve from MTB + PIB cutoff yields."""
     st.subheader("Yield Curve (MTB + PIB Cutoffs)")
 
@@ -178,12 +237,7 @@ def _render_yield_curve(snap: dict, con):
 
     # Add PKRV overlay if available
     try:
-        pkrv_df = pd.read_sql_query(
-            """SELECT tenor_months, yield_pct FROM pkrv_daily
-               WHERE date = (SELECT MAX(date) FROM pkrv_daily)
-               ORDER BY tenor_months""",
-            con,
-        )
+        pkrv_df = _load_pkrv_latest_curve()
         if not pkrv_df.empty:
             fig.add_trace(go.Scatter(
                 x=pkrv_df["tenor_months"],
@@ -206,13 +260,13 @@ def _render_yield_curve(snap: dict, con):
             ticktext=["1M", "3M", "6M", "1Y", "2Y", "3Y", "5Y", "10Y", "15Y"],
         ),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Show data table
     with st.expander("View Data Table"):
         st.dataframe(df[["label", "security", "yield_pct"]].rename(columns={
             "label": "Tenor", "security": "Type", "yield_pct": "Yield %"
-        }), use_container_width=True)
+        }), width='stretch')
 
 
 def _render_reserves(snap: dict):
@@ -233,7 +287,7 @@ def _render_reserves(snap: dict):
     c5.metric("WA Bid", f"PKR {wa_bid:,.4f}" if wa_bid else "N/A")
 
 
-def _render_benchmark_history(con):
+def _render_benchmark_history():
     """Historical trend for selected benchmark metrics."""
     st.subheader("Benchmark History")
 
@@ -266,11 +320,7 @@ def _render_benchmark_history(con):
     for label in selected:
         metric = metric_options[label]
         try:
-            df = pd.read_sql_query(
-                "SELECT date, value FROM sbp_benchmark_snapshot "
-                "WHERE metric = ? ORDER BY date",
-                con, params=(metric,),
-            )
+            df = _load_benchmark_history(metric)
             if not df.empty:
                 fig.add_trace(go.Scatter(
                     x=df["date"], y=df["value"],
@@ -285,12 +335,12 @@ def _render_benchmark_history(con):
             xaxis_title="Date",
             yaxis_title="Value",
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     else:
         st.info("No historical data available yet. Sync daily to build history.")
 
 
-def _render_trading_volume(con, status: dict):
+def _render_trading_volume(status: dict):
     """OTC bond trading volume (when SMTV data is available)."""
     st.subheader("OTC Bond Trading Volume")
     st.caption(
@@ -299,16 +349,8 @@ def _render_trading_volume(con, status: dict):
     )
 
     try:
-        df = pd.read_sql_query(
-            """SELECT date, security_type, segment,
-                      SUM(face_amount) as face_m,
-                      AVG(yield_weighted_avg) as avg_yield
-               FROM sbp_bond_trading_daily
-               WHERE date = (SELECT MAX(date) FROM sbp_bond_trading_daily)
-               GROUP BY security_type, segment""",
-            con,
-        )
+        df = _load_trading_volume_latest()
         if not df.empty:
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df, width='stretch')
     except Exception:
         st.info("No trading volume data available.")

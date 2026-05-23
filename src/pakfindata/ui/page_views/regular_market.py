@@ -16,6 +16,35 @@ from pakfindata.ui.components.helpers import (
     render_market_status_badge,
 )
 
+_CACHE_TTL = 900
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_current_market_with_sectors():
+    client = get_client()
+    con = client.connection
+    return get_current_market_with_sectors(con)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_current_market():
+    from pakfindata.sources.regular_market import get_current_market
+    client = get_client()
+    con = client.connection
+    return get_current_market(con)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_market_analytics():
+    client = get_client()
+    return client.get_latest_market_analytics()
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_top_list(list_type: str, limit: int = 5):
+    client = get_client()
+    return client.get_top_list(list_type, limit=limit)
+
 
 def render_regular_market():
     """Regular market watch - live market data display."""
@@ -30,20 +59,13 @@ def render_regular_market():
         render_market_status_badge()
 
     try:
-        from pakfindata.analytics import compute_all_analytics
-        from pakfindata.sources.regular_market import (
-            fetch_regular_market,
-            get_all_current_hashes,
-            get_current_market,
-            init_regular_market_schema,
-            insert_snapshots,
-            upsert_current,
-        )
+        from pakfindata.db.safe_writer import SafeWriterBusyError
+        from pakfindata.etl.regular_market import sync_snapshot
+        from pakfindata.sources.regular_market import get_current_market
+        from pakfindata.ui.api import client as api_client
 
         client = get_client()
-        con = client.connection  # For write operations (fetch, upsert, snapshots)
-        init_regular_market_schema(con)
-        client.init_analytics()
+        con = client.connection  # Read-only — writes go through safe_writer below
 
         # Initialize session state
         if "rm_fetch_result" not in st.session_state:
@@ -81,78 +103,80 @@ def render_regular_market():
             st.session_state.rm_fetch_result = None
             st.session_state.rm_fetch_running = True
 
-            with st.status("Fetching market data...", expanded=True) as status:
-                st.write("🔄 Fetching from PSX market-watch...")
-
-                try:
-                    df = fetch_regular_market()
-
-                    if df.empty:
+            # Phase 1.6.6: sidebar feature flag picks the path.
+            if api_client.use_worker_sync():
+                api_client.run_job_with_progress(
+                    "sync_regular_market",
+                    params={"save_unchanged": save_unchanged},
+                    spinner_text="fetching PSX market-watch snapshot",
+                )
+                st.session_state.rm_fetch_running = False
+                st.session_state.rm_fetch_result = {
+                    "success": True, "worker_mode": True
+                }
+            else:
+                with st.status("Fetching market data...", expanded=True) as status:
+                    st.write("🔄 Fetching from PSX market-watch...")
+                    try:
+                        result = sync_snapshot(save_unchanged=save_unchanged)
+                        if result["symbols"] == 0:
+                            st.session_state.rm_fetch_result = {
+                                "success": False,
+                                "error": "No data returned from PSX",
+                            }
+                            status.update(label="❌ No data returned", state="error")
+                        else:
+                            st.cache_data.clear()
+                            st.session_state.rm_fetch_result = {
+                                "success": True,
+                                "symbols": result["symbols"],
+                                "upserted": result["rows_upserted"],
+                                "snapshots": result["snapshots_saved"],
+                            }
+                            status.update(
+                                label=f"✅ Fetched {result['symbols']} symbols",
+                                state="complete",
+                            )
+                    except SafeWriterBusyError:
                         st.session_state.rm_fetch_result = {
                             "success": False,
-                            "error": "No data returned from PSX",
+                            "error": "Another sync is running. Wait a moment and retry.",
                         }
-                        status.update(label="❌ No data returned", state="error")
-                    else:
-                        # CRITICAL: Load previous hashes BEFORE upsert
-                        prev_hashes = get_all_current_hashes(con)
-
-                        # Insert snapshots first (using pre-loaded hashes)
-                        snapshots_saved = insert_snapshots(
-                            con, df,
-                            save_unchanged=save_unchanged,
-                            prev_hashes=prev_hashes,
-                        )
-
-                        # Then upsert current data
-                        rows_upserted = upsert_current(con, df)
-
-                        # Compute analytics
-                        ts = df["ts"].iloc[0] if not df.empty else None
-                        if ts:
-                            compute_all_analytics(con, ts)
-
+                        status.update(label="❌ Writer busy", state="error")
+                    except Exception as e:
+                        # sync_snapshot() already recorded the catalog failures.
                         st.session_state.rm_fetch_result = {
-                            "success": True,
-                            "symbols": len(df),
-                            "upserted": rows_upserted,
-                            "snapshots": snapshots_saved,
+                            "success": False,
+                            "error": str(e),
                         }
-                        status.update(
-                            label=f"✅ Fetched {len(df)} symbols",
-                            state="complete"
-                        )
-
-                except Exception as e:
-                    st.session_state.rm_fetch_result = {
-                        "success": False,
-                        "error": str(e),
-                    }
-                    status.update(label="❌ Fetch failed!", state="error")
-
-                finally:
-                    st.session_state.rm_fetch_running = False
+                        status.update(label="❌ Fetch failed!", state="error")
+                    finally:
+                        st.session_state.rm_fetch_running = False
 
         # Display fetch result
         if st.session_state.rm_fetch_result is not None:
             result = st.session_state.rm_fetch_result
             if result["success"]:
-                st.success(
-                    f"✅ Fetched {result['symbols']} symbols, "
-                    f"{result['upserted']} upserted, "
-                    f"{result['snapshots']} snapshots saved"
-                )
+                if result.get("worker_mode"):
+                    # Worker mode: run_job_with_progress already toasted.
+                    pass
+                else:
+                    st.success(
+                        f"✅ Fetched {result['symbols']} symbols, "
+                        f"{result['upserted']} upserted, "
+                        f"{result['snapshots']} snapshots saved"
+                    )
             else:
                 st.error(f"❌ Error: {result.get('error', 'Unknown error')}")
 
         st.markdown("---")
 
         # Load current market data from database with sector names joined
-        df = get_current_market_with_sectors(con)
+        df = _load_current_market_with_sectors()
 
         if df.empty:
             # Fallback to raw data
-            df = get_current_market(con)
+            df = _load_current_market()
 
         if df.empty:
             st.info(
@@ -165,7 +189,7 @@ def render_regular_market():
         # Market overview using pre-computed analytics
         st.subheader("📈 Market Overview")
 
-        market_analytics = client.get_latest_market_analytics()
+        market_analytics = _load_market_analytics()
         if market_analytics:
             total_symbols = market_analytics.get("total_symbols", len(df))
             gainers = market_analytics.get("gainers_count", 0)
@@ -197,11 +221,11 @@ def render_regular_market():
                     unchanged=unchanged,
                     height=300,
                 )
-                st.plotly_chart(breadth_fig, use_container_width=True)
+                st.plotly_chart(breadth_fig, width='stretch')
 
             with col2:
                 # Use analytics table for top gainers
-                top_gainers_df = client.get_top_list("gainers", limit=5)
+                top_gainers_df = _load_top_list("gainers", limit=5)
                 if top_gainers_df.empty:
                     top_gainers_df = df.nlargest(5, "change_pct")[
                         ["symbol", "change_pct"]
@@ -212,7 +236,7 @@ def render_regular_market():
                     chart_type="gainers",
                     height=300,
                 )
-                st.plotly_chart(gainers_fig, use_container_width=True)
+                st.plotly_chart(gainers_fig, width='stretch')
                 # Quick links to company analytics
                 gainer_symbols = top_gainers_df["symbol"].tolist()[:3]
                 gcols = st.columns(len(gainer_symbols))
@@ -220,12 +244,12 @@ def render_regular_market():
                     with gcols[i]:
                         if st.button(f"📈 {sym}", key=f"rm_gainer_{sym}"):
                             st.session_state.company_symbol = sym
-                            st.session_state.nav_to = "🏢 Company Analytics"
+                            st.session_state.nav_to = "Company Profile"
                             st.rerun()
 
             with col3:
                 # Use analytics table for top losers
-                top_losers_df = client.get_top_list("losers", limit=5)
+                top_losers_df = _load_top_list("losers", limit=5)
                 if top_losers_df.empty:
                     top_losers_df = df.nsmallest(5, "change_pct")[
                         ["symbol", "change_pct"]
@@ -236,7 +260,7 @@ def render_regular_market():
                     chart_type="losers",
                     height=300,
                 )
-                st.plotly_chart(losers_fig, use_container_width=True)
+                st.plotly_chart(losers_fig, width='stretch')
                 # Quick links to company analytics
                 loser_symbols = top_losers_df["symbol"].tolist()[:3]
                 lcols = st.columns(len(loser_symbols))
@@ -244,7 +268,7 @@ def render_regular_market():
                     with lcols[i]:
                         if st.button(f"📉 {sym}", key=f"rm_loser_{sym}"):
                             st.session_state.company_symbol = sym
-                            st.session_state.nav_to = "🏢 Company Analytics"
+                            st.session_state.nav_to = "Company Profile"
                             st.rerun()
 
         st.markdown("---")
@@ -326,7 +350,7 @@ def render_regular_market():
 
         st.dataframe(
             filtered_df[display_cols],
-            use_container_width=True,
+            width='stretch',
             hide_index=True,
             column_config={
                 "symbol": st.column_config.TextColumn("Symbol", width="small"),

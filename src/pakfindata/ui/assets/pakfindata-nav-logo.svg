@@ -1,0 +1,27 @@
+<svg width="240" height="44" viewBox="0 0 240 44" xmlns="http://www.w3.org/2000/svg">
+  <!-- Compact icon -->
+  <rect x="0" y="0" width="44" height="44" rx="10" fill="#0a0e17"/>
+  <g transform="translate(5, 5)">
+    <circle cx="5" cy="5" r="3" fill="#1D9E75"/>
+    <circle cx="14" cy="5" r="3" fill="#378ADD"/>
+    <circle cx="23" cy="5" r="3" fill="#378ADD"/>
+    <circle cx="32" cy="5" r="3" fill="#22c55e"/>
+    <circle cx="5" cy="14" r="3" fill="#1D9E75"/>
+    <circle cx="14" cy="14" r="3" fill="#1e293b"/>
+    <circle cx="23" cy="14" r="3" fill="#1e293b"/>
+    <circle cx="32" cy="14" r="3" fill="#378ADD"/>
+    <circle cx="5" cy="23" r="3" fill="#1D9E75"/>
+    <circle cx="14" cy="23" r="3" fill="#378ADD"/>
+    <circle cx="23" cy="23" r="3" fill="#378ADD"/>
+    <circle cx="32" cy="23" r="3" fill="#22c55e" opacity="0.5"/>
+    <circle cx="5" cy="32" r="3" fill="#1D9E75"/>
+    <circle cx="14" cy="32" r="3" fill="#1e293b"/>
+    <circle cx="23" cy="32" r="3" fill="#1e293b"/>
+    <circle cx="32" cy="32" r="3" fill="#1e293b"/>
+  </g>
+  <!-- Text -->
+  <text x="54" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18" font-weight="500" fill="#f1f5f9" letter-spacing="-0.5">pak</text>
+  <text x="99" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18" font-weight="500" fill="#378ADD" letter-spacing="-0.5">fin</text>
+  <text x="130" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18" font-weight="500" fill="#f1f5f9" letter-spacing="-0.5">data</text>
+  <text x="54" y="37" font-family="'SF Mono', 'Consolas', monospace" font-size="7" fill="#64748b" letter-spacing="2">QUANTITATIVE FINANCE</text>
+</svg>

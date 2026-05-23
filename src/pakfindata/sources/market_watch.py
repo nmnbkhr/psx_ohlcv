@@ -174,6 +174,12 @@ def refresh_symbols(db_path: Path | str | None = None) -> RefreshResult:
     con = connect(db_path)
     init_schema(con)
     upserted = upsert_symbols(con, symbols)
+
+    # Update SCD2 status history (XD/XB/XR/NC tracking)
+    from ..db.repositories.symbols import refresh_symbol_status
+    refresh_symbol_status(con)
+    con.commit()
+
     con.close()
 
     return RefreshResult(symbols_found=len(symbols), symbols_upserted=upserted)

@@ -127,7 +127,7 @@ def render_price_card(
     """Render a price card with change indicator."""
     change_html = ""
     if change_pct is not None:
-        color = "#00C853" if change_pct >= 0 else "#FF1744"
+        color = "#00C853" if change_pct >= 0 else "#FF5252"
         sign = "+" if change_pct >= 0 else ""
         change_html = f' <span style="color: {color}; font-size: 14px;">({sign}{change_pct:.2f}%)</span>'
 
@@ -252,38 +252,52 @@ def get_user_friendly_error(error: Exception) -> str:
 
 def check_data_staleness(con, table: str = "eod_ohlcv", date_col: str = "date") -> tuple[bool, str]:
     """
-    Check if data in a table is stale.
+    Check if data is stale. Reads from data_freshness catalog first
+    (single SELECT by PK), with a DB MAX(date) scan as fallback when
+    the catalog row is missing or the catalog's latest_date doesn't
+    parse (e.g. pre-existing data-pollution rows flagged as 'partial').
 
-    Also checks regular_market_current for live data.
+    Args:
+        con: SQLite connection (used only for the fallback scan).
+        table: Source table name (e.g. 'eod_ohlcv', 'psx_indices').
+        date_col: Date column on that table for the fallback scan.
 
     Returns:
-        Tuple of (is_stale, message)
+        Tuple of (is_stale, message). is_stale is True for >3 days,
+        unparseable dates, or query failures.
     """
+    # Primary: catalog by source_table — catalog rows are upserted by
+    # safe_writer sync paths so this read is authoritative if the
+    # backfill + sub-wave 2.4 wiring is in place.
     try:
-        latest_dates = []
+        from pakfindata.db.catalog import get_catalog
+        rows = get_catalog()  # all rows
+        if rows:
+            for r in rows:
+                if r.get("source_table") == table and r.get("date_column") == date_col:
+                    latest = r.get("latest_date")
+                    if latest:
+                        try:
+                            most_recent = str(latest)[:10]
+                            days_old = (datetime.now() - datetime.strptime(most_recent, "%Y-%m-%d")).days
+                            if days_old > 3:
+                                return True, f"Data is {days_old} days old (last: {most_recent})"
+                            return False, ""
+                        except (ValueError, TypeError):
+                            pass  # unparseable — fall through to DB scan
+                    break  # catalog row found but unhelpful; try DB scan
+    except Exception:
+        pass
 
-        # Check the specified table
-        try:
-            result = con.execute(
-                f"SELECT MAX({date_col}) as max_date FROM {table}"
-            ).fetchone()
-            if result and result["max_date"]:
-                latest_dates.append(str(result["max_date"])[:10])
-        except Exception:
-            pass
-
-        # Also check regular_market_current for live data
-        try:
-            result = con.execute(
-                "SELECT MAX(DATE(ts)) as max_date FROM regular_market_current"
-            ).fetchone()
-            if result and result["max_date"]:
-                latest_dates.append(str(result["max_date"])[:10])
-        except Exception:
-            pass
-
-        if latest_dates:
-            most_recent = max(latest_dates)
+    # Fallback: direct DB scan — authoritative when catalog is missing
+    # or pre-populated with non-date strings (pre-existing data pollution
+    # like 'TBILL'/'ZUMA'/'WTL' that the backfill flagged as 'partial').
+    try:
+        result = con.execute(
+            f"SELECT MAX({date_col}) as max_date FROM {table}"
+        ).fetchone()
+        if result and result["max_date"]:
+            most_recent = str(result["max_date"])[:10]
             latest_date = datetime.strptime(most_recent, "%Y-%m-%d")
             days_old = (datetime.now() - latest_date).days
             if days_old > 3:
@@ -322,7 +336,7 @@ values, consider premium data providers.
 
 # PSX market hours (Pakistan Standard Time)
 MARKET_OPEN_HOUR = 9
-MARKET_CLOSE_HOUR = 15
+MARKET_CLOSE_HOUR = 16  # Ramadan 2026: continuous 09:30-15:30, post-close till ~16:10
 MARKET_DAYS = [0, 1, 2, 3, 4]  # Monday to Friday
 
 
@@ -330,96 +344,73 @@ MARKET_DAYS = [0, 1, 2, 3, 4]  # Monday to Friday
 # DATABASE CONNECTION HELPERS
 # =============================================================================
 
-def get_connection():
-    """
-    Get database connection, initializing schema if needed.
-
-    Note: We don't cache the connection because SQLite connections
-    are not thread-safe by default. Streamlit runs in multiple threads.
-    """
-    import sqlite3 as _sqlite3
-
-    db_path = get_db_path()
-    # Use check_same_thread=False to allow connection to be used across threads
-    # timeout=30 waits up to 30s if DB is locked (e.g. during bulk sync)
-    con = _sqlite3.connect(str(db_path), check_same_thread=False, timeout=30)
-    con.row_factory = _sqlite3.Row
-
-    # Enable WAL mode for better concurrent access
-    con.execute("PRAGMA journal_mode=WAL")
-    con.execute("PRAGMA busy_timeout=30000")
-
-    # Initialize schema
-    init_schema(con)
-    return con
-
-
 @st.cache_resource
 def get_cached_connection():
     """
-    Get a cached database connection with thread-safety enabled.
+    Singleton DB connection cached across reruns.
 
-    Uses check_same_thread=False to allow Streamlit's multi-threaded access.
+    Uses check_same_thread=False for Streamlit's multi-threaded access.
+    WAL mode + busy_timeout for concurrent read/write safety.
     """
     import sqlite3 as _sqlite3
 
     db_path = get_db_path()
-    con = _sqlite3.connect(str(db_path), check_same_thread=False)
+    con = _sqlite3.connect(str(db_path), check_same_thread=False, timeout=30)
     con.row_factory = _sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA synchronous=NORMAL")
+    con.execute("PRAGMA busy_timeout=30000")
     init_schema(con)
     return con
+
+
+def get_connection():
+    """Get database connection — returns the cached singleton.
+
+    All UI pages do read-only queries, so sharing a single connection
+    is safe and eliminates per-rerun connection overhead.
+    """
+    return get_cached_connection()
 
 
 @st.cache_data(ttl=60)
 def get_data_freshness(_con) -> tuple[int | None, str | None]:
     """
-    Get data freshness info from multiple sources.
+    Get data freshness info for the dashboard's "latest EOD date" badge.
 
-    Checks eod_ohlcv, regular_market_current, and psx_indices tables
-    to find the most recent data timestamp.
+    Reads from data_freshness catalog first (single SELECT, no scan) and
+    falls back to a direct eod_ohlcv MAX(date) scan only when the catalog
+    row is missing or its latest_date is unparseable. The catalog is
+    updated atomically by every safe_writer-migrated sync path (Phase 0
+    Milestone 0.2).
 
     Returns:
         Tuple of (days_old, latest_date_str) or (None, None) if no data.
     """
-    latest_dates = []
+    # Primary: catalog — fast (one row by PK), updated atomically with writes.
+    try:
+        from pakfindata.db.catalog import get_freshness
+        days, latest, status = get_freshness("equity_eod")
+        if days is not None and latest:
+            return days, latest
+        # status='partial' or unparseable latest_date: fall through to DB scan
+        # rather than displaying garbage. The catalog still records the issue
+        # (notes column) for the Sync Monitor page to surface.
+    except Exception:
+        pass
 
-    # Check eod_ohlcv
+    # Fallback: direct DB scan — authoritative when catalog row is missing.
     try:
         result = _con.execute(
             "SELECT MAX(date) as max_date FROM eod_ohlcv"
         ).fetchone()
         if result and result["max_date"]:
-            latest_dates.append(str(result["max_date"])[:10])
+            most_recent = str(result["max_date"])[:10]
+            latest_date = datetime.strptime(most_recent, "%Y-%m-%d")
+            days_old = (datetime.now() - latest_date).days
+            return days_old, most_recent
     except Exception:
         pass
-
-    # Check regular_market_current (live market data)
-    try:
-        result = _con.execute(
-            "SELECT MAX(DATE(ts)) as max_date FROM regular_market_current"
-        ).fetchone()
-        if result and result["max_date"]:
-            latest_dates.append(str(result["max_date"])[:10])
-    except Exception:
-        pass
-
-    # Check psx_indices
-    try:
-        result = _con.execute(
-            "SELECT MAX(index_date) as max_date FROM psx_indices"
-        ).fetchone()
-        if result and result["max_date"]:
-            latest_dates.append(str(result["max_date"])[:10])
-    except Exception:
-        pass
-
-    if latest_dates:
-        # Get the most recent date
-        most_recent = max(latest_dates)
-        latest_date = datetime.strptime(most_recent, "%Y-%m-%d")
-        days_old = (datetime.now() - latest_date).days
-        return days_old, most_recent
 
     return None, None
 
@@ -428,47 +419,62 @@ def get_data_freshness(_con) -> tuple[int | None, str | None]:
 def get_domain_freshness(_con) -> pd.DataFrame:
     """Get freshness info for all data domains.
 
-    Queries each domain's source table for latest date and row count,
-    then returns a DataFrame with domain, display_name, last_date,
-    days_old, row_count, and status.
+    Reads the data_freshness catalog as a SINGLE SELECT. Pre-Phase-0.2
+    this function did 1 query for the domain registry + N queries (one
+    MAX per domain) against the source tables. Phase 0.2's catalog
+    stores last_row_date + row_count atomically with every sync, so
+    the N+1 scan is no longer needed.
+
+    Returns a DataFrame with domain, display_name, last_date, days_old,
+    row_count, and status (fresh/stale/old/empty/error/partial/failed).
     """
     try:
-        domains = _con.execute(
-            "SELECT domain, display_name, source_table, date_column FROM data_freshness"
+        rows_raw = _con.execute(
+            "SELECT domain, display_name, last_row_date, row_count, "
+            "       status AS sync_status "
+            "FROM data_freshness "
+            "ORDER BY domain"
         ).fetchall()
     except Exception:
         return pd.DataFrame()
 
-    rows = []
-    for d in domains:
-        domain = d["domain"]
-        table = d["source_table"]
-        date_col = d["date_column"]
-        try:
-            result = _con.execute(
-                f"SELECT MAX({date_col}) as last_date, COUNT(*) as cnt FROM [{table}]"
-            ).fetchone()
-            last_date = str(result["last_date"])[:10] if result["last_date"] else None
-            cnt = result["cnt"] or 0
-            if last_date:
-                days_old = (datetime.now() - datetime.strptime(last_date, "%Y-%m-%d")).days
-                status = "fresh" if days_old <= 1 else "stale" if days_old <= 3 else "old"
-            else:
-                days_old = None
-                status = "empty"
-        except Exception:
-            last_date = None
+    rows: list[dict] = []
+    for d in rows_raw:
+        last_date_raw = d["last_row_date"]
+        last_date = str(last_date_raw)[:10] if last_date_raw else None
+        sync_status = d["sync_status"] or "unknown"
+
+        # Compute display status from age (or surface sync issues directly).
+        if sync_status == "failed":
+            display_status = "error"
             days_old = None
-            cnt = 0
-            status = "error"
+        elif sync_status == "partial":
+            # Catalog flagged data-quality issue (e.g. non-date in date column)
+            display_status = "error"
+            days_old = None
+        elif not last_date:
+            display_status = "empty"
+            days_old = None
+        else:
+            try:
+                days_old = (datetime.now() - datetime.strptime(last_date, "%Y-%m-%d")).days
+                display_status = (
+                    "fresh" if days_old <= 1
+                    else "stale" if days_old <= 3
+                    else "old"
+                )
+            except (ValueError, TypeError):
+                # Unparseable date string — already-known pre-existing pollution
+                display_status = "error"
+                days_old = None
 
         rows.append({
-            "domain": domain,
+            "domain": d["domain"],
             "display_name": d["display_name"],
             "last_date": last_date,
             "days_old": days_old,
-            "row_count": cnt,
-            "status": status,
+            "row_count": d["row_count"] or 0,
+            "status": display_status,
         })
 
     return pd.DataFrame(rows) if rows else pd.DataFrame()
@@ -483,7 +489,7 @@ def render_domain_freshness_bar(con):
     status_colors = {
         "fresh": "#00C853",
         "stale": "#FF9800",
-        "old": "#FF1744",
+        "old": "#FF5252",
         "empty": "#9E9E9E",
         "error": "#9E9E9E",
     }
@@ -520,7 +526,10 @@ def render_ai_commentary(con, mode: str, context_data: dict | None = None):
         cache_key = f"ai_commentary_{mode}"
 
         if cache_key in st.session_state and st.session_state[cache_key]:
-            st.markdown(st.session_state[cache_key])
+            from pakfindata.ui.components.commentary_renderer import (
+                render_styled_commentary, render_download_button,
+            )
+            render_styled_commentary(st.session_state[cache_key], f"{mode.title()} Analysis")
             if st.button("Regenerate", key=f"ai_regen_{mode}"):
                 st.session_state[cache_key] = None
                 st.rerun()
@@ -531,6 +540,9 @@ def render_ai_commentary(con, mode: str, context_data: dict | None = None):
                 try:
                     from pakfindata.agents.prompts import InsightMode, PromptBuilder
                     from pakfindata.agents.llm_client import get_completion
+                    from pakfindata.ui.components.commentary_renderer import (
+                        render_styled_commentary, render_download_button,
+                    )
 
                     insight_mode = InsightMode[mode.upper()]
                     builder = PromptBuilder(insight_mode)
@@ -539,7 +551,7 @@ def render_ai_commentary(con, mode: str, context_data: dict | None = None):
                     response = get_completion(prompt)
 
                     st.session_state[cache_key] = response
-                    st.markdown(response)
+                    render_styled_commentary(response, f"{mode.title()} Analysis")
                 except ImportError:
                     st.warning("AI agents module not configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY.")
                 except Exception as e:
@@ -713,6 +725,17 @@ def add_sector_name_column(
     sector_col = "sector_code" if "sector_code" in df.columns else "sector"
     df["sector_name"] = df[sector_col].map(sector_map).fillna("")
     return df
+
+
+def render_date_refresh_button(tables: list[str], key: str = "date_refresh"):
+    """Render a small button to refresh date manifest for specific tables."""
+    from pakfindata.db.date_manifest import refresh_tables
+    if st.button("Refresh Dates", key=key, help="Rescan DB for latest available dates"):
+        with st.spinner("Refreshing..."):
+            result = refresh_tables(tables)
+            parts = [f"{t}: {n}" for t, n in result.items()]
+            st.toast(f"Dates refreshed — {', '.join(parts)}")
+        st.rerun()
 
 
 def render_footer():

@@ -99,7 +99,10 @@ class SBPBondMarketScraper:
         return result
 
     def sync_benchmark(self, con: sqlite3.Connection) -> dict:
-        """Scrape and sync benchmark snapshot to DB."""
+        """Scrape and sync benchmark snapshot to DB.
+
+        Caller commits via pakfindata.db.safe_writer.
+        """
         init_bond_market_schema(con)
         snapshot = self.scrape_benchmark_snapshot()
 
@@ -117,7 +120,6 @@ class SBPBondMarketScraper:
                 if ok:
                     stored += 1
 
-        con.commit()
         return {
             "status": "ok",
             "date": snapshot["date"],
@@ -489,7 +491,10 @@ class SBPBondMarketScraper:
             logger.debug("Could not archive SMTV PDF: %s", e)
 
     def sync_smtv(self, con: sqlite3.Connection) -> dict:
-        """Scrape and sync daily SMTV to DB."""
+        """Scrape and sync daily SMTV to DB.
+
+        Caller commits via pakfindata.db.safe_writer.
+        """
         init_bond_market_schema(con)
         data = self.scrape_daily_smtv()
 
@@ -511,7 +516,6 @@ class SBPBondMarketScraper:
             }):
                 summaries_stored += 1
 
-        con.commit()
         return {
             "status": "ok",
             "date": data["date"],

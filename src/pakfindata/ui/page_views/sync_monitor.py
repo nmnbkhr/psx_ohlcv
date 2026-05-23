@@ -510,13 +510,14 @@ def render_sync_monitor():
         st.session_state.announcements_sync_result = None
 
         with st.status("Syncing announcements...", expanded=True) as status:
+            from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
             try:
                 from datetime import timedelta
 
-                con = get_client().connection
                 stats = {"announcements": 0, "events": 0, "dividends": 0}
 
-                # Sync announcements
+                # Fetch all HTTP data first (outside the write lock) ───────────
+                ann_records = []
                 if sync_announcements_flag:
                     st.write("📣 Fetching company announcements...")
                     offset = 0
@@ -524,48 +525,69 @@ def render_sync_monitor():
                         records, total = fetch_announcements(announcement_type="C", offset=offset)
                         if not records:
                             break
-                        for record in records:
-                            if save_announcement(con, record):
-                                stats["announcements"] += 1
+                        ann_records.extend(records)
                         offset += len(records)
                         if offset >= total or len(records) < 20:
                             break
-                    st.write(f"   ✅ {stats['announcements']} announcements saved")
 
-                # Sync corporate events
+                events = []
                 if sync_events_flag:
                     st.write("📅 Fetching corporate events...")
                     from_date = datetime.now().strftime("%Y-%m-%d")
                     to_date = (datetime.now() + timedelta(days=365)).strftime("%Y-%m-%d")
                     events = fetch_corporate_events(from_date, to_date)
-                    for event in events:
-                        if save_corporate_event(con, event):
-                            stats["events"] += 1
-                    st.write(f"   ✅ {stats['events']} events saved")
 
-                # Sync dividends
+                symbol_payouts = []
                 if sync_dividends_flag:
                     st.write("💰 Fetching dividend payouts...")
-                    cur = con.execute("SELECT symbol FROM symbols WHERE is_active = 1")
-                    symbols = [row[0] for row in cur.fetchall()]
+                    from pakfindata.ui.api import client as _api_client
+                    _rows = _api_client.get_symbols(active_only=True) or []
+                    symbols = [r["symbol"] for r in _rows]
                     progress_bar = st.progress(0)
                     for i, symbol in enumerate(symbols):
                         try:
-                            payouts = fetch_company_payouts(symbol)
-                            for payout in payouts:
-                                if save_dividend_payout(con, payout):
-                                    stats["dividends"] += 1
+                            symbol_payouts.append((symbol, fetch_company_payouts(symbol)))
                         except Exception:
-                            pass
+                            symbol_payouts.append((symbol, []))
                         progress_bar.progress((i + 1) / len(symbols))
-                    st.write(f"   ✅ {stats['dividends']} payouts saved from {len(symbols)} symbols")
 
+                # Single safe_writer block for ALL writes ──────────────────────
+                from pakfindata.db.catalog import update_catalog_from_table
+                with safe_writer() as wcon:
+                    for record in ann_records:
+                        if save_announcement(wcon, record):
+                            stats["announcements"] += 1
+                    for event in events:
+                        if save_corporate_event(wcon, event):
+                            stats["events"] += 1
+                    for _symbol, payouts in symbol_payouts:
+                        for payout in payouts:
+                            if save_dividend_payout(wcon, payout):
+                                stats["dividends"] += 1
+                    update_catalog_from_table(wcon, "announcements", source="psx_dps")
+                    update_catalog_from_table(wcon, "corporate_events", source="psx_dps")
+                    update_catalog_from_table(wcon, "dividend_payouts", source="psx_dps")
+
+                if sync_announcements_flag:
+                    st.write(f"   ✅ {stats['announcements']} announcements saved")
+                if sync_events_flag:
+                    st.write(f"   ✅ {stats['events']} events saved")
+                if sync_dividends_flag:
+                    st.write(f"   ✅ {stats['dividends']} payouts saved from {len(symbol_payouts)} symbols")
+
+                st.cache_data.clear()
                 st.session_state.announcements_sync_result = {"success": True, "stats": stats}
                 status.update(label="✅ Announcements sync completed!", state="complete")
 
+            except SafeWriterBusyError:
+                st.session_state.announcements_sync_result = {"success": False, "error": "Another sync is running. Wait and retry."}
+                status.update(label="⏳ Another sync running — retry shortly", state="error")
             except Exception as e:
                 st.session_state.announcements_sync_result = {"success": False, "error": str(e)}
                 status.update(label="❌ Sync failed!", state="error")
+                from pakfindata.db.catalog import record_catalog_failure
+                for ds in ("announcements", "corporate_events", "dividend_payouts"):
+                    record_catalog_failure(ds, source="psx_dps", error=e)
 
             finally:
                 st.session_state.announcements_sync_running = False
@@ -625,7 +647,7 @@ def render_sync_monitor():
                 ):
                     failures_df = pd.DataFrame(summary.failures)
                     failures_df.columns = ["Symbol", "Error Type", "Error Message"]
-                    st.dataframe(failures_df, use_container_width=True, hide_index=True)
+                    st.dataframe(failures_df, width='stretch', hide_index=True)
 
             st.caption(f"Run ID: `{summary.run_id}`")
 
@@ -636,8 +658,8 @@ def render_sync_monitor():
 
     # Last Sync Summary
     try:
+        from pakfindata.ui.api import client as _api_client
         _client = get_client()
-        con = _client.connection
 
         days_old, latest_date = _client.get_data_freshness()
         badge_color, badge_text = get_freshness_badge(days_old)
@@ -653,63 +675,48 @@ def render_sync_monitor():
             elif badge_color == "red":
                 st.error(f"📅 {badge_text}")
 
-        last_run = pd.read_sql_query(
-            """
-            SELECT * FROM sync_runs
-            WHERE ended_at IS NOT NULL
-            ORDER BY ended_at DESC LIMIT 1
-            """,
-            con,
-        )
+        last_run_rows = _api_client.get_admin_sync_runs(
+            limit=1, completed_only=True
+        ) or []
 
-        if last_run.empty:
+        if not last_run_rows:
             st.info("No sync runs recorded yet.")
         else:
-            run = last_run.iloc[0]
+            run = last_run_rows[0]
             col1, col2, col3, col4 = st.columns(4)
-            started = str(run["started_at"])[:16] if run["started_at"] else "N/A"
+            started_raw = run.get("started_at") or ""
+            started = str(started_raw)[:16] if started_raw else "N/A"
             col1.metric("Started", started)
-            col2.metric("Symbols OK", run["symbols_ok"])
-            col3.metric("Symbols Failed", run["symbols_failed"])
-            col4.metric("Rows Upserted", f"{run['rows_upserted']:,}")
+            col2.metric("Symbols OK", run.get("symbols_ok") or 0)
+            col3.metric("Symbols Failed", run.get("symbols_failed") or 0)
+            col4.metric("Rows Upserted", f"{(run.get('rows_upserted') or 0):,}")
 
         st.markdown("---")
 
         # Recent Failures
         st.subheader("Recent Failures")
-        failures_df = pd.read_sql_query(
-            """
-            SELECT symbol, error_type, error_message, created_at
-            FROM sync_failures
-            ORDER BY created_at DESC
-            LIMIT 50
-            """,
-            con,
-        )
-
-        if failures_df.empty:
+        failure_rows = _api_client.get_admin_sync_failures(limit=50) or []
+        if not failure_rows:
             st.success("✅ No failures recorded!")
         else:
+            failures_df = pd.DataFrame(failure_rows)[
+                ["symbol", "error_type", "error_message", "created_at"]
+            ]
             failures_df.columns = ["Symbol", "Error Type", "Message", "Time"]
-            st.dataframe(failures_df, use_container_width=True, hide_index=True)
+            st.dataframe(failures_df, width='stretch', hide_index=True)
 
         st.markdown("---")
 
         # Sync History
         st.subheader("Sync History")
-        history_df = pd.read_sql_query(
-            """
-            SELECT run_id, started_at, mode, symbols_ok, symbols_failed, rows_upserted
-            FROM sync_runs
-            ORDER BY started_at DESC
-            LIMIT 20
-            """,
-            con,
-        )
-
-        if not history_df.empty:
+        history_rows = _api_client.get_admin_sync_runs(limit=20) or []
+        if history_rows:
+            history_df = pd.DataFrame(history_rows)[
+                ["run_id", "started_at", "mode", "symbols_ok",
+                 "symbols_failed", "rows_upserted"]
+            ]
             history_df.columns = ["Run ID", "Started", "Mode", "OK", "Failed", "Rows"]
-            st.dataframe(history_df, use_container_width=True, hide_index=True)
+            st.dataframe(history_df, width='stretch', hide_index=True)
 
     except Exception as e:
         st.error(f"Database error: {e}")

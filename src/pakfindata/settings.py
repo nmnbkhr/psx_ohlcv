@@ -15,7 +15,7 @@ class Settings:
 
     # Database — SQLite on external drive
     db_path: str = field(default_factory=lambda: os.environ.get(
-        "PSX_DB_PATH", "/mnt/e/psxdata/psx.sqlite"))
+        "PSX_DB_PATH", "/home/smnb/psxdata_rescue/psx.sqlite"))
 
     # Data directories — all on external drive
     data_root: str = field(default_factory=lambda: os.environ.get(

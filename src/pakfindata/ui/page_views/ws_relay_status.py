@@ -104,7 +104,7 @@ def render_ws_relay_status():
         if channels:
             st.markdown("#### Channel Details")
             rows = [{"Channel": ch, "Clients": cnt} for ch, cnt in channels.items()]
-            st.dataframe(rows, use_container_width=True, hide_index=True)
+            st.dataframe(rows, width='stretch', hide_index=True)
         else:
             st.caption("No active WebSocket channels (no clients connected)")
 
@@ -197,4 +197,4 @@ def _render_endpoint_reference():
                 "Description": "Swagger UI",
             },
         ]
-        st.dataframe(endpoints, use_container_width=True, hide_index=True)
+        st.dataframe(endpoints, width='stretch', hide_index=True)

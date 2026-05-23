@@ -1,0 +1,1238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PakFinData — Architecture & Capability Brief</title>
+<style>
+/* ── RESET & BASE ──────────────────────────────────────────── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0B0E11;--bg-card:#12161C;--bg-el:#161B22;--border:#1E2329;
+  --text:#EAECEF;--text2:#9AA4B2;--muted:#6B7280;
+  --accent:#2F81F7;--green:#00C853;--red:#FF5252;--amber:#FFB300;--cyan:#00B8D4;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono',monospace;
+  --sans:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+}
+html{scroll-behavior:smooth;font-size:16px}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);overflow-x:hidden;line-height:1.6}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+::selection{background:var(--accent);color:#fff}
+
+/* ── UTILITY ───────────────────────────────────────────────── */
+.container{max-width:1200px;margin:0 auto;padding:0 24px}
+.mono{font-family:var(--mono)}
+.muted{color:var(--muted)}
+.text2{color:var(--text2)}
+.accent{color:var(--accent)}
+.green{color:var(--green)}
+.amber{color:var(--amber)}
+.cyan{color:var(--cyan)}
+.red{color:var(--red)}
+.label{font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.section-label{font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--amber);margin:48px 0 20px;padding-bottom:8px;border-bottom:1px solid rgba(255,179,0,.2)}
+
+/* ── ANIMATIONS ────────────────────────────────────────────── */
+@keyframes fadeUp{from{opacity:0;transform:translateY(30px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes slideRight{from{transform:translateX(-40px);opacity:0}to{transform:translateX(0);opacity:1}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+@keyframes glow{0%,100%{box-shadow:0 0 8px rgba(47,129,247,.3)}50%{box-shadow:0 0 24px rgba(47,129,247,.6)}}
+@keyframes countUp{from{opacity:0;transform:scale(.8)}to{opacity:1;transform:scale(1)}}
+@keyframes ticker{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+@keyframes scanline{0%{top:-2px}100%{top:100%}}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+@keyframes barGrow{from{width:0}to{width:var(--w)}}
+@keyframes nodeAppear{from{transform:scale(0);opacity:0}to{transform:scale(1);opacity:1}}
+@keyframes flowPulse{0%,100%{stroke-dashoffset:0}50%{stroke-dashoffset:20}}
+@keyframes shimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}
+
+.anim-up{animation:fadeUp .8s ease-out both}
+.anim-in{animation:fadeIn 1s ease-out both}
+
+/* Intersection Observer driven */
+[data-reveal]{opacity:0;transform:translateY(24px);transition:opacity .7s ease,transform .7s ease}
+[data-reveal].visible{opacity:1;transform:translateY(0)}
+
+/* ── NAV BAR ───────────────────────────────────────────────── */
+nav.topbar{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(11,14,17,.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);height:48px;display:flex;align-items:center;padding:0 24px}
+nav.topbar .logo{font-family:var(--mono);font-weight:700;font-size:15px;color:var(--text);display:flex;align-items:center;gap:8px;letter-spacing:-.02em}
+nav.topbar .logo .mark{width:24px;height:24px;background:var(--accent);border-radius:3px;display:flex;align-items:center;justify-content:center}
+nav.topbar .logo .mark svg{width:16px;height:16px}
+nav.topbar .subtitle{font-size:9px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;margin-left:4px}
+nav.topbar .links{margin-left:auto;display:flex;gap:20px;font-size:12px;font-family:var(--mono)}
+nav.topbar .links a{color:var(--text2);transition:color .2s}
+nav.topbar .links a:hover{color:var(--accent);text-decoration:none}
+nav.topbar .live{display:flex;align-items:center;gap:6px;margin-left:24px}
+nav.topbar .live .dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
+nav.topbar .live span{font-size:10px;color:var(--green);font-family:var(--mono);font-weight:600}
+
+/* ── HERO ──────────────────────────────────────────────────── */
+.hero{min-height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;padding:120px 24px 80px;position:relative;overflow:hidden}
+.hero::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse 80% 50% at 50% 30%,rgba(47,129,247,.08) 0%,transparent 70%)}
+.hero::after{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--accent),transparent);animation:shimmer 3s linear infinite;background-size:200% 100%}
+
+.hero .badge{display:inline-flex;align-items:center;gap:8px;padding:6px 16px;border:1px solid var(--border);border-radius:20px;font-size:11px;font-family:var(--mono);color:var(--text2);margin-bottom:32px;animation:fadeIn 1s ease .2s both}
+.hero .badge .dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
+
+.hero h1{font-family:var(--mono);font-size:clamp(36px,6vw,72px);font-weight:800;line-height:1.1;letter-spacing:-.03em;animation:fadeUp .8s ease .4s both}
+.hero h1 .accent-text{background:linear-gradient(135deg,var(--accent),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.hero .tagline{font-size:clamp(16px,2vw,22px);color:var(--text2);max-width:700px;margin:24px auto 0;animation:fadeUp .8s ease .6s both}
+.hero .hero-stats{display:flex;gap:32px;margin-top:48px;animation:fadeUp .8s ease .8s both;flex-wrap:wrap;justify-content:center}
+.hero .hero-stat{text-align:center}
+.hero .hero-stat .num{font-family:var(--mono);font-size:clamp(28px,4vw,48px);font-weight:800;color:var(--text);line-height:1}
+.hero .hero-stat .num.accent-num{color:var(--accent)}
+.hero .hero-stat .num.green-num{color:var(--green)}
+.hero .hero-stat .num.amber-num{color:var(--amber)}
+.hero .hero-stat .num.cyan-num{color:var(--cyan)}
+.hero .hero-stat .desc{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-top:4px;font-weight:600}
+
+/* ── TICKER STRIP ──────────────────────────────────────────── */
+.ticker-strip{background:var(--bg-card);border-top:1px solid var(--border);border-bottom:1px solid var(--border);overflow:hidden;padding:10px 0;white-space:nowrap}
+.ticker-track{display:inline-flex;animation:ticker 40s linear infinite}
+.ticker-item{display:inline-flex;align-items:center;gap:6px;padding:0 24px;font-family:var(--mono);font-size:12px;font-weight:600;border-right:1px solid var(--border)}
+.ticker-item .sym{color:var(--text)}
+.ticker-item .val{color:var(--text2)}
+.ticker-item .chg.up{color:var(--green)}
+.ticker-item .chg.dn{color:var(--red)}
+
+/* ── SECTION ───────────────────────────────────────────────── */
+section{padding:80px 0}
+section h2{font-family:var(--mono);font-size:28px;font-weight:700;margin-bottom:8px}
+section .section-sub{color:var(--text2);font-size:14px;margin-bottom:40px;max-width:600px}
+
+/* ── GRID CARDS ────────────────────────────────────────────── */
+.card-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+.card{background:var(--bg-card);border:1px solid var(--border);border-radius:4px;padding:20px 24px;transition:border-color .3s,transform .3s}
+.card:hover{border-color:var(--accent);transform:translateY(-2px)}
+.card .card-icon{width:36px;height:36px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:18px;margin-bottom:12px}
+.card h3{font-family:var(--mono);font-size:15px;font-weight:700;margin-bottom:6px}
+.card p{font-size:13px;color:var(--text2);line-height:1.5}
+.card .card-stat{display:flex;gap:16px;margin-top:12px;font-family:var(--mono);font-size:12px}
+.card .card-stat span{color:var(--muted)}
+.card .card-stat b{color:var(--text)}
+
+/* ── KPI STRIP ─────────────────────────────────────────────── */
+.kpi-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:32px 0}
+.kpi{background:var(--bg-card);border:1px solid var(--border);border-radius:3px;padding:16px;text-align:center;position:relative;overflow:hidden}
+.kpi::before{content:'';position:absolute;top:0;left:0;right:0;height:2px}
+.kpi.kpi-blue::before{background:var(--accent)}
+.kpi.kpi-green::before{background:var(--green)}
+.kpi.kpi-amber::before{background:var(--amber)}
+.kpi.kpi-cyan::before{background:var(--cyan)}
+.kpi.kpi-red::before{background:var(--red)}
+.kpi .kpi-val{font-family:var(--mono);font-size:28px;font-weight:800;line-height:1.2}
+.kpi .kpi-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-top:4px;font-weight:600}
+
+/* ── ARCHITECTURE DIAGRAM ──────────────────────────────────── */
+.arch-diagram{display:grid;grid-template-columns:1fr;gap:24px;margin:32px 0}
+.arch-layer{background:var(--bg-card);border:1px solid var(--border);border-radius:4px;padding:20px 24px;position:relative}
+.arch-layer .layer-label{position:absolute;top:-10px;left:16px;background:var(--bg);padding:0 8px;font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase}
+.arch-layer .layer-label.l-ui{color:var(--accent)}
+.arch-layer .layer-label.l-api{color:var(--cyan)}
+.arch-layer .layer-label.l-engine{color:var(--green)}
+.arch-layer .layer-label.l-data{color:var(--amber)}
+.arch-layer .layer-label.l-sources{color:var(--red)}
+
+.arch-nodes{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.arch-node{padding:6px 12px;border:1px solid var(--border);border-radius:3px;font-family:var(--mono);font-size:11px;color:var(--text2);background:var(--bg);transition:all .3s}
+.arch-node:hover{border-color:var(--accent);color:var(--text);background:var(--bg-el)}
+.arch-node.highlight{border-color:var(--accent);color:var(--accent)}
+
+/* arrows between layers */
+.arch-arrow{text-align:center;color:var(--muted);font-size:18px;line-height:1}
+
+/* ── DATA FLOW VISUAL ──────────────────────────────────────── */
+.flow-container{display:flex;align-items:center;gap:12px;overflow-x:auto;padding:16px 0;flex-wrap:wrap}
+.flow-box{padding:10px 16px;border:1px solid var(--border);border-radius:3px;font-family:var(--mono);font-size:12px;color:var(--text2);background:var(--bg-card);white-space:nowrap;flex-shrink:0;transition:all .3s}
+.flow-box:hover{border-color:var(--accent);color:var(--text)}
+.flow-box.src{border-left:3px solid var(--amber)}
+.flow-box.proc{border-left:3px solid var(--cyan)}
+.flow-box.store{border-left:3px solid var(--green)}
+.flow-box.out{border-left:3px solid var(--accent)}
+.flow-arrow{color:var(--muted);font-family:var(--mono);font-size:14px;flex-shrink:0}
+
+/* ── BAR CHART ─────────────────────────────────────────────── */
+.bar-chart{margin:24px 0}
+.bar-row{display:flex;align-items:center;margin:6px 0}
+.bar-row .bar-label{width:140px;font-family:var(--mono);font-size:11px;color:var(--text2);text-align:right;padding-right:12px;flex-shrink:0}
+.bar-row .bar-track{flex:1;height:24px;background:var(--bg);border-radius:2px;overflow:hidden;position:relative}
+.bar-row .bar-fill{height:100%;border-radius:2px;animation:barGrow 1.2s ease-out both;display:flex;align-items:center;padding-left:8px;font-family:var(--mono);font-size:10px;font-weight:700;color:rgba(255,255,255,.9)}
+
+/* ── ASSET CLASS TABLE ─────────────────────────────────────── */
+.asset-table{width:100%;border-collapse:collapse;margin:24px 0;font-family:var(--mono);font-size:12px}
+.asset-table th{text-align:left;padding:10px 12px;border-bottom:2px solid var(--border);color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.08em;font-weight:600}
+.asset-table td{padding:10px 12px;border-bottom:1px solid var(--border);color:var(--text2)}
+.asset-table tr:hover td{background:var(--bg-card);color:var(--text)}
+.asset-table td:first-child{color:var(--text);font-weight:600}
+.asset-table .num{text-align:right;font-weight:600}
+.asset-table .tag{display:inline-block;padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700}
+.asset-table .tag-live{background:rgba(0,200,83,.15);color:var(--green)}
+.asset-table .tag-eod{background:rgba(47,129,247,.15);color:var(--accent)}
+.asset-table .tag-hist{background:rgba(255,179,0,.15);color:var(--amber)}
+
+/* ── TECH STACK PILLS ──────────────────────────────────────── */
+.pill-group{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}
+.pill{padding:6px 14px;border:1px solid var(--border);border-radius:20px;font-family:var(--mono);font-size:11px;color:var(--text2);transition:all .3s}
+.pill:hover{border-color:var(--accent);color:var(--accent)}
+
+/* ── TIMELINE ──────────────────────────────────────────────── */
+.timeline{position:relative;padding-left:32px;margin:32px 0}
+.timeline::before{content:'';position:absolute;left:8px;top:0;bottom:0;width:2px;background:var(--border)}
+.timeline-item{position:relative;margin-bottom:24px}
+.timeline-item::before{content:'';position:absolute;left:-28px;top:6px;width:12px;height:12px;border-radius:50%;border:2px solid var(--accent);background:var(--bg)}
+.timeline-item.done::before{background:var(--accent)}
+.timeline-item h4{font-family:var(--mono);font-size:13px;font-weight:700;color:var(--text)}
+.timeline-item p{font-size:12px;color:var(--text2);margin-top:2px}
+.timeline-item .phase-tag{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:2px 8px;border-radius:2px;display:inline-block;margin-bottom:4px}
+.timeline-item .phase-tag.p1{background:rgba(47,129,247,.15);color:var(--accent)}
+.timeline-item .phase-tag.p2{background:rgba(0,200,83,.15);color:var(--green)}
+.timeline-item .phase-tag.p3{background:rgba(255,179,0,.15);color:var(--amber)}
+.timeline-item .phase-tag.p4{background:rgba(0,184,212,.15);color:var(--cyan)}
+
+/* ── TWO COL ───────────────────────────────────────────────── */
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:32px}
+@media(max-width:768px){.two-col{grid-template-columns:1fr}}
+
+/* ── FOOTER ────────────────────────────────────────────────── */
+footer{background:var(--bg-card);border-top:1px solid var(--border);padding:40px 24px;text-align:center}
+footer .logo-footer{font-family:var(--mono);font-size:14px;font-weight:700;color:var(--text);margin-bottom:8px}
+footer p{font-size:11px;color:var(--muted);max-width:500px;margin:0 auto;line-height:1.6}
+footer .disclaimer{margin-top:16px;font-size:10px;color:var(--muted);opacity:.7;max-width:600px;margin-left:auto;margin-right:auto}
+
+/* ── SCANLINE EFFECT ───────────────────────────────────────── */
+.scanline-box{position:relative;overflow:hidden}
+.scanline-box::after{content:'';position:absolute;left:0;right:0;height:2px;background:rgba(47,129,247,.1);animation:scanline 4s linear infinite;pointer-events:none}
+
+/* ── MATRIX RAIN BG ────────────────────────────────────────── */
+.matrix-bg{position:absolute;inset:0;overflow:hidden;pointer-events:none;opacity:.04}
+.matrix-col{position:absolute;top:-100%;font-family:var(--mono);font-size:12px;color:var(--green);line-height:1.5;writing-mode:vertical-rl;animation-name:matrixFall;animation-timing-function:linear;animation-iteration-count:infinite}
+@keyframes matrixFall{0%{top:-100%}100%{top:100%}}
+
+/* ── QUANT METRICS ─────────────────────────────────────────── */
+.quant-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:20px 0}
+.quant-card{background:var(--bg-card);border:1px solid var(--border);border-radius:3px;padding:14px;font-family:var(--mono)}
+.quant-card .q-label{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-weight:600}
+.quant-card .q-val{font-size:20px;font-weight:800;margin:4px 0 2px;line-height:1}
+.quant-card .q-desc{font-size:10px;color:var(--text2)}
+
+/* ── RESPONSIVE ────────────────────────────────────────────── */
+@media(max-width:600px){
+  .hero h1{font-size:28px}
+  .hero .hero-stats{gap:16px}
+  .hero .hero-stat .num{font-size:24px}
+  nav.topbar .links{display:none}
+  .kpi-strip{grid-template-columns:repeat(2,1fr)}
+  .bar-row .bar-label{width:100px;font-size:10px}
+}
+</style>
+</head>
+<body>
+
+<!-- ═══ NAV BAR ═══════════════════════════════════════════ -->
+<nav class="topbar">
+  <div class="logo">
+    <div class="mark">
+      <svg viewBox="0 0 32 32" fill="none"><rect x="5" y="16" width="4" height="11" rx="1" fill="#EAECEF" opacity=".6"/><rect x="11" y="11" width="4" height="16" rx="1" fill="#EAECEF" opacity=".8"/><rect x="17" y="6" width="4" height="21" rx="1" fill="#EAECEF"/><rect x="23" y="9" width="4" height="18" rx="1" fill="#00C853" opacity=".9"/></svg>
+    </div>
+    PakFinData<span class="subtitle">TERMINAL</span>
+  </div>
+  <div class="links">
+    <a href="#overview">Overview</a>
+    <a href="#architecture">Architecture</a>
+    <a href="#assets">Asset Classes</a>
+    <a href="#quant">Quant Engine</a>
+    <a href="#tech">Tech Stack</a>
+  </div>
+  <div class="live">
+    <div class="dot"></div>
+    <span>LIVE</span>
+  </div>
+</nav>
+
+<!-- ═══ HERO ══════════════════════════════════════════════ -->
+<section class="hero" id="top">
+  <div class="matrix-bg" id="matrixBg"></div>
+  <div class="badge"><div class="dot"></div> Pakistan's Institutional-Grade Financial Data Terminal</div>
+  <h1>
+    Full-Spectrum<br>
+    <span class="accent-text">Market Intelligence</span><br>
+    Platform
+  </h1>
+  <p class="tagline">
+    Real-time equities, fixed income, FX, commodities, mutual funds &amp; derivatives —
+    unified in a Bloomberg-inspired terminal with quant analytics, 91 API endpoints,
+    and AI-powered insights across every Pakistani financial market.
+  </p>
+  <div class="hero-stats">
+    <div class="hero-stat"><div class="num accent-num" data-count="87">0</div><div class="desc">Database Tables</div></div>
+    <div class="hero-stat"><div class="num green-num" data-count="48">0</div><div class="desc">Dashboard Pages</div></div>
+    <div class="hero-stat"><div class="num amber-num" data-count="91">0</div><div class="desc">API Endpoints</div></div>
+    <div class="hero-stat"><div class="num cyan-num" data-count="40">0</div><div class="desc">Data Sources</div></div>
+    <div class="hero-stat"><div class="num" data-count="622">0</div><div class="desc">Equities Tracked</div></div>
+    <div class="hero-stat"><div class="num green-num" data-count="383">0</div><div class="desc">Mutual Funds</div></div>
+  </div>
+</section>
+
+<!-- ═══ TICKER STRIP ═════════════════════════════════════ -->
+<div class="ticker-strip">
+  <div class="ticker-track">
+    <div class="ticker-item"><span class="sym">KSE100</span><span class="val">118,247</span><span class="chg up">+1.23%</span></div>
+    <div class="ticker-item"><span class="sym">KSE30</span><span class="val">35,891</span><span class="chg up">+0.89%</span></div>
+    <div class="ticker-item"><span class="sym">KMI30</span><span class="val">72,456</span><span class="chg dn">-0.34%</span></div>
+    <div class="ticker-item"><span class="sym">USD/PKR</span><span class="val">278.50</span><span class="chg up">+0.12%</span></div>
+    <div class="ticker-item"><span class="sym">KIBOR 3M</span><span class="val">12.08%</span><span class="chg dn">-25bp</span></div>
+    <div class="ticker-item"><span class="sym">T-BILL 3M</span><span class="val">11.85%</span><span class="chg dn">-15bp</span></div>
+    <div class="ticker-item"><span class="sym">PIB 10Y</span><span class="val">12.45%</span><span class="chg up">+5bp</span></div>
+    <div class="ticker-item"><span class="sym">GOLD</span><span class="val">$2,912</span><span class="chg up">+0.67%</span></div>
+    <div class="ticker-item"><span class="sym">BRENT</span><span class="val">$71.34</span><span class="chg dn">-1.12%</span></div>
+    <div class="ticker-item"><span class="sym">COTTON</span><span class="val">$0.672</span><span class="chg up">+0.45%</span></div>
+    <!-- duplicate for seamless loop -->
+    <div class="ticker-item"><span class="sym">KSE100</span><span class="val">118,247</span><span class="chg up">+1.23%</span></div>
+    <div class="ticker-item"><span class="sym">KSE30</span><span class="val">35,891</span><span class="chg up">+0.89%</span></div>
+    <div class="ticker-item"><span class="sym">KMI30</span><span class="val">72,456</span><span class="chg dn">-0.34%</span></div>
+    <div class="ticker-item"><span class="sym">USD/PKR</span><span class="val">278.50</span><span class="chg up">+0.12%</span></div>
+    <div class="ticker-item"><span class="sym">KIBOR 3M</span><span class="val">12.08%</span><span class="chg dn">-25bp</span></div>
+    <div class="ticker-item"><span class="sym">T-BILL 3M</span><span class="val">11.85%</span><span class="chg dn">-15bp</span></div>
+    <div class="ticker-item"><span class="sym">PIB 10Y</span><span class="val">12.45%</span><span class="chg up">+5bp</span></div>
+    <div class="ticker-item"><span class="sym">GOLD</span><span class="val">$2,912</span><span class="chg up">+0.67%</span></div>
+    <div class="ticker-item"><span class="sym">BRENT</span><span class="val">$71.34</span><span class="chg dn">-1.12%</span></div>
+    <div class="ticker-item"><span class="sym">COTTON</span><span class="val">$0.672</span><span class="chg up">+0.45%</span></div>
+  </div>
+</div>
+
+<!-- ═══ EXECUTIVE OVERVIEW ═══════════════════════════════ -->
+<section id="overview">
+  <div class="container">
+    <div class="section-label">Executive Overview</div>
+    <h2>What PakFinData Does</h2>
+    <p class="section-sub">
+      An end-to-end financial data platform purpose-built for Pakistan's capital markets —
+      from raw data ingestion to institutional-grade analytics and AI-driven insights.
+    </p>
+
+    <div class="card-grid" data-reveal>
+      <div class="card">
+        <div class="card-icon" style="background:rgba(47,129,247,.15);color:var(--accent)">&#9632;</div>
+        <h3>Equity Markets</h3>
+        <p>622 PSX-listed equities with EOD OHLCV, intraday ticks, company fundamentals,
+           financials, payouts, announcements, and deep company analytics.</p>
+        <div class="card-stat"><span>Symbols:</span><b>622</b><span>Tables:</span><b>28</b></div>
+      </div>
+      <div class="card">
+        <div class="card-icon" style="background:rgba(0,200,83,.15);color:var(--green)">&#9650;</div>
+        <h3>Fixed Income</h3>
+        <p>T-Bills, PIBs, GOP Sukuk, corporate bonds — full yield curve construction (PKRV, PKISRV),
+           auction data, SBP policy rates, and bond math (duration, convexity, DV01).</p>
+        <div class="card-stat"><span>Curves:</span><b>3</b><span>Tables:</span><b>22</b></div>
+      </div>
+      <div class="card">
+        <div class="card-icon" style="background:rgba(255,179,0,.15);color:var(--amber)">&#9670;</div>
+        <h3>Mutual Funds</h3>
+        <p>383 MUFAP-sourced mutual funds — NAV history, performance attribution, risk metrics
+           (Sharpe, Sortino, VaR), factor regression, MA crossover signals.</p>
+        <div class="card-stat"><span>Funds:</span><b>383</b><span>AMCs:</span><b>20+</b></div>
+      </div>
+      <div class="card">
+        <div class="card-icon" style="background:rgba(0,184,212,.15);color:var(--cyan)">&#9679;</div>
+        <h3>FX &amp; Rates</h3>
+        <p>SBP interbank, open-market, kerb rates for 7+ currency pairs. KIBOR tenors (1W–3Y),
+           SBP policy rate corridor, global ARRs (SOFR, EFFR, SONIA).</p>
+        <div class="card-stat"><span>Pairs:</span><b>7+</b><span>Rates:</span><b>15+</b></div>
+      </div>
+      <div class="card">
+        <div class="card-icon" style="background:rgba(255,82,82,.15);color:var(--red)">&#9733;</div>
+        <h3>Commodities</h3>
+        <p>70+ commodities across precious metals, base metals, energy, agriculture &amp; livestock.
+           PMEX integration with margins and OHLC data. Multi-source aggregation.</p>
+        <div class="card-stat"><span>Items:</span><b>70+</b><span>Sources:</span><b>6</b></div>
+      </div>
+      <div class="card">
+        <div class="card-icon" style="background:rgba(47,129,247,.15);color:var(--accent)">&#9881;</div>
+        <h3>Derivatives</h3>
+        <p>Futures (FUT), continuous contracts (CONT), index futures (IDX_FUT), and odd-lot (ODL)
+           data from PSX — intraday ticks and EOD for 1,087+ derivative symbols.</p>
+        <div class="card-stat"><span>Symbols:</span><b>1,087</b><span>Types:</span><b>4</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ KPI METRICS ══════════════════════════════════════ -->
+<section style="padding:0 0 40px">
+  <div class="container">
+    <div class="kpi-strip" data-reveal>
+      <div class="kpi kpi-blue"><div class="kpi-val accent" data-count="87">0</div><div class="kpi-label">DB Tables</div></div>
+      <div class="kpi kpi-green"><div class="kpi-val green" data-count="48">0</div><div class="kpi-label">UI Pages</div></div>
+      <div class="kpi kpi-cyan"><div class="kpi-val cyan" data-count="91">0</div><div class="kpi-label">REST Endpoints</div></div>
+      <div class="kpi kpi-amber"><div class="kpi-val amber" data-count="15">0</div><div class="kpi-label">API Routers</div></div>
+      <div class="kpi kpi-blue"><div class="kpi-val accent" data-count="30">0</div><div class="kpi-label">CLI Commands</div></div>
+      <div class="kpi kpi-green"><div class="kpi-val green" data-count="26">0</div><div class="kpi-label">Repositories</div></div>
+      <div class="kpi kpi-red"><div class="kpi-val red" data-count="7">0</div><div class="kpi-label">Analytics Engines</div></div>
+      <div class="kpi kpi-cyan"><div class="kpi-val cyan" data-count="6">0</div><div class="kpi-label">BG Services</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ ARCHITECTURE ═════════════════════════════════════ -->
+<section id="architecture" style="background:var(--bg-card)">
+  <div class="container">
+    <div class="section-label">System Architecture</div>
+    <h2>Five-Layer Architecture</h2>
+    <p class="section-sub">Clean separation of concerns — from 40+ raw data sources through ingestion, storage, analytics, to three delivery channels.</p>
+
+    <div class="arch-diagram" data-reveal>
+      <!-- Layer 1: Presentation -->
+      <div class="arch-layer scanline-box">
+        <div class="layer-label l-ui">PRESENTATION LAYER — 48 Pages</div>
+        <div class="arch-nodes">
+          <div class="arch-node highlight">Dashboard</div>
+          <div class="arch-node">Market Pulse</div>
+          <div class="arch-node">Index Monitor</div>
+          <div class="arch-node">Stock Screener</div>
+          <div class="arch-node">Company Deep</div>
+          <div class="arch-node">Intraday</div>
+          <div class="arch-node">Live Ticker</div>
+          <div class="arch-node">Treasury</div>
+          <div class="arch-node">Debt Terminal</div>
+          <div class="arch-node">Bond Market</div>
+          <div class="arch-node">Fund Explorer</div>
+          <div class="arch-node">VPS Pension</div>
+          <div class="arch-node">FX Dashboard</div>
+          <div class="arch-node">Commodities</div>
+          <div class="arch-node">PMEX</div>
+          <div class="arch-node">Research</div>
+          <div class="arch-node">AI Insights</div>
+          <div class="arch-node">+31 more</div>
+        </div>
+      </div>
+      <div class="arch-arrow">&#9660;</div>
+
+      <!-- Layer 2: API -->
+      <div class="arch-layer">
+        <div class="layer-label l-api">API LAYER — 91 Endpoints / 15 Routers</div>
+        <div class="arch-nodes">
+          <div class="arch-node">/market/*</div>
+          <div class="arch-node">/company/*</div>
+          <div class="arch-node">/eod/*</div>
+          <div class="arch-node">/treasury/*</div>
+          <div class="arch-node">/fi/*</div>
+          <div class="arch-node">/bonds/*</div>
+          <div class="arch-node">/rates/*</div>
+          <div class="arch-node">/npc/*</div>
+          <div class="arch-node">/global-rates/*</div>
+          <div class="arch-node">/funds/*</div>
+          <div class="arch-node">/fx/*</div>
+          <div class="arch-node">/instruments/*</div>
+          <div class="arch-node">/symbols/*</div>
+          <div class="arch-node">/tasks/*</div>
+          <div class="arch-node highlight">WebSocket /ws</div>
+        </div>
+      </div>
+      <div class="arch-arrow">&#9660;</div>
+
+      <!-- Layer 3: Engine -->
+      <div class="arch-layer">
+        <div class="layer-label l-engine">ENGINE LAYER — Analytics + Quant + AI</div>
+        <div class="arch-nodes">
+          <div class="arch-node highlight">Fund Risk (Sharpe/Sortino/VaR)</div>
+          <div class="arch-node">Factor Regression (CAPM)</div>
+          <div class="arch-node">MA Crossover Signals</div>
+          <div class="arch-node">Volatility Regime</div>
+          <div class="arch-node">Bond Math (Duration/DV01)</div>
+          <div class="arch-node">Yield Curve Fitting</div>
+          <div class="arch-node">FX-Adjusted Metrics</div>
+          <div class="arch-node">Sector Rotation</div>
+          <div class="arch-node">Compliance Screening</div>
+          <div class="arch-node">LLM Narrative Engine</div>
+          <div class="arch-node">AI Agent Orchestrator</div>
+        </div>
+      </div>
+      <div class="arch-arrow">&#9660;</div>
+
+      <!-- Layer 4: Data -->
+      <div class="arch-layer">
+        <div class="layer-label l-data">DATA LAYER — 87 Tables / 26 Repositories</div>
+        <div class="arch-nodes">
+          <div class="arch-node">eod_ohlcv</div>
+          <div class="arch-node">intraday_bars</div>
+          <div class="arch-node">tick_data</div>
+          <div class="arch-node">company_fundamentals</div>
+          <div class="arch-node">mutual_fund_nav</div>
+          <div class="arch-node">fi_instruments</div>
+          <div class="arch-node">tbill_auctions</div>
+          <div class="arch-node">pib_auctions</div>
+          <div class="arch-node">pkrv_daily</div>
+          <div class="arch-node">kibor_daily</div>
+          <div class="arch-node">sbp_fx_interbank</div>
+          <div class="arch-node">futures_eod</div>
+          <div class="arch-node">bond_quotes</div>
+          <div class="arch-node">fund_risk_metrics</div>
+          <div class="arch-node highlight">SQLite + WAL Mode</div>
+        </div>
+      </div>
+      <div class="arch-arrow">&#9660;</div>
+
+      <!-- Layer 5: Sources -->
+      <div class="arch-layer">
+        <div class="layer-label l-sources">INGESTION LAYER — 40+ Fetchers &amp; Scrapers</div>
+        <div class="arch-nodes">
+          <div class="arch-node" style="border-color:var(--amber)">PSX DPS API</div>
+          <div class="arch-node" style="border-color:var(--amber)">PSX .Z Files</div>
+          <div class="arch-node" style="border-color:var(--green)">SBP (11 endpoints)</div>
+          <div class="arch-node" style="border-color:var(--cyan)">MUFAP API</div>
+          <div class="arch-node" style="border-color:var(--red)">PMEX</div>
+          <div class="arch-node" style="border-color:var(--accent)">yfinance</div>
+          <div class="arch-node" style="border-color:var(--accent)">FRED</div>
+          <div class="arch-node" style="border-color:var(--accent)">World Bank</div>
+          <div class="arch-node" style="border-color:var(--amber)">SBP PDFs</div>
+          <div class="arch-node" style="border-color:var(--green)">GoldPricez</div>
+          <div class="arch-node" style="border-color:var(--cyan)">KHI Stocks</div>
+          <div class="arch-node" style="border-color:var(--red)">Global Rate APIs</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ DATA FLOW ════════════════════════════════════════ -->
+<section>
+  <div class="container">
+    <div class="section-label">Data Pipeline</div>
+    <h2>Ingestion &rarr; Storage &rarr; Analytics &rarr; Delivery</h2>
+    <p class="section-sub">Multi-source ingestion with incremental sync, deduplication, and audit trail at every stage.</p>
+
+    <h4 class="mono muted" style="font-size:11px;margin:24px 0 12px">EQUITY EOD PIPELINE</h4>
+    <div class="flow-container" data-reveal>
+      <div class="flow-box src">PSX .Z Files</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-box proc">Decompress &amp; Parse</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-box store">eod_ohlcv (622 sym)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-box proc">Sector Analytics</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-box out">Dashboard + API</div>
+    </div>
+
+    <h4 class="mono muted" style="font-size:11px;margin:24px 0 12px">FIXED INCOME PIPELINE</h4>
+    <div class="flow-container" data-reveal>
+      <div class="flow-box src">SBP PDFs (T-Bill/PIB/KIBOR)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-box proc">pdfplumber Parse</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-box store">tbill_auctions / pib_auctions / kibor_daily</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-box proc">Yield Curve Fit (PKRV)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-box out">Treasury Dashboard</div>
+    </div>
+
+    <h4 class="mono muted" style="font-size:11px;margin:24px 0 12px">MUTUAL FUND PIPELINE</h4>
+    <div class="flow-container" data-reveal>
+      <div class="flow-box src">MUFAP API (383 funds)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-box proc">Parallel Sync (12 workers)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-box store">mutual_fund_nav</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-box proc">Quant Engine (Sharpe/VaR/CAPM)</div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-box out">Fund Explorer + LLM</div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ ASSET CLASSES ════════════════════════════════════ -->
+<section id="assets" style="background:var(--bg-card)">
+  <div class="container">
+    <div class="section-label">Asset Class Coverage</div>
+    <h2>Six Asset Classes, One Platform</h2>
+    <p class="section-sub">Complete coverage of Pakistan's financial markets with institutional-grade data depth.</p>
+
+    <table class="asset-table" data-reveal>
+      <thead>
+        <tr>
+          <th>Asset Class</th>
+          <th>Instruments</th>
+          <th class="num">Count</th>
+          <th>Data Granularity</th>
+          <th>Sources</th>
+          <th>Key Tables</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Equities</td>
+          <td>PSX-listed stocks (MAIN + GEM)</td>
+          <td class="num">622</td>
+          <td><span class="tag tag-live">TICK</span> <span class="tag tag-eod">EOD</span></td>
+          <td>PSX DPS, Market Summary .Z</td>
+          <td class="mono" style="font-size:11px">eod_ohlcv, intraday_bars, tick_data</td>
+        </tr>
+        <tr>
+          <td>Fixed Income</td>
+          <td>T-Bills, PIBs, GOP Sukuk, Corp Bonds</td>
+          <td class="num">200+</td>
+          <td><span class="tag tag-eod">EOD</span> <span class="tag tag-hist">AUCTION</span></td>
+          <td>SBP (11 endpoints), PSX Debt</td>
+          <td class="mono" style="font-size:11px">fi_instruments, tbill_auctions, pkrv_daily</td>
+        </tr>
+        <tr>
+          <td>Mutual Funds</td>
+          <td>Open-end, VPS, ETFs</td>
+          <td class="num">383</td>
+          <td><span class="tag tag-eod">DAILY NAV</span></td>
+          <td>MUFAP API (parallel)</td>
+          <td class="mono" style="font-size:11px">mutual_fund_nav, fund_risk_metrics</td>
+        </tr>
+        <tr>
+          <td>FX &amp; Rates</td>
+          <td>Interbank, Open Market, Kerb, KIBOR</td>
+          <td class="num">15+</td>
+          <td><span class="tag tag-eod">DAILY</span></td>
+          <td>SBP, NPC, Global APIs</td>
+          <td class="mono" style="font-size:11px">sbp_fx_interbank, kibor_daily, global_reference_rates</td>
+        </tr>
+        <tr>
+          <td>Commodities</td>
+          <td>Metals, Energy, Agriculture, Livestock</td>
+          <td class="num">70+</td>
+          <td><span class="tag tag-eod">EOD</span></td>
+          <td>yfinance, FRED, PMEX, World Bank</td>
+          <td class="mono" style="font-size:11px">commodity_prices</td>
+        </tr>
+        <tr>
+          <td>Derivatives</td>
+          <td>Futures, Continuous, Index Fut, ODL</td>
+          <td class="num">1,087</td>
+          <td><span class="tag tag-live">TICK</span> <span class="tag tag-eod">EOD</span></td>
+          <td>PSX DPS Timeseries API</td>
+          <td class="mono" style="font-size:11px">futures_eod, intraday_bars</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- coverage bar chart -->
+    <div class="section-label" style="margin-top:40px">Data Volume Distribution</div>
+    <div class="bar-chart" data-reveal>
+      <div class="bar-row">
+        <div class="bar-label">EOD OHLCV</div>
+        <div class="bar-track"><div class="bar-fill" style="--w:95%;background:linear-gradient(90deg,var(--accent),#1a5fc2)">2.1M+ rows</div></div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">Intraday Bars</div>
+        <div class="bar-track"><div class="bar-fill" style="--w:80%;background:linear-gradient(90deg,var(--cyan),#008ba3)">1.8M+ rows</div></div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">Mutual Fund NAV</div>
+        <div class="bar-track"><div class="bar-fill" style="--w:85%;background:linear-gradient(90deg,var(--green),#009624)">1.9M+ rows</div></div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">Futures EOD</div>
+        <div class="bar-track"><div class="bar-fill" style="--w:35%;background:linear-gradient(90deg,var(--amber),#c68400)">343K rows</div></div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">Tick Data</div>
+        <div class="bar-track"><div class="bar-fill" style="--w:55%;background:linear-gradient(90deg,var(--red),#c62828)">500K+ rows</div></div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">Company Data</div>
+        <div class="bar-track"><div class="bar-fill" style="--w:40%;background:linear-gradient(90deg,#9B59B6,#7B1FA2)">50K+ records</div></div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">FI / Bonds</div>
+        <div class="bar-track"><div class="bar-fill" style="--w:25%;background:linear-gradient(90deg,var(--cyan),#006064)">25K+ records</div></div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">FX Rates</div>
+        <div class="bar-track"><div class="bar-fill" style="--w:20%;background:linear-gradient(90deg,var(--green),#1b5e20)">15K+ records</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ QUANT ENGINE ═════════════════════════════════════ -->
+<section id="quant">
+  <div class="container">
+    <div class="section-label">Quantitative Engine</div>
+    <h2>Institutional-Grade Analytics</h2>
+    <p class="section-sub">Production-ready risk models, factor analysis, and signal generation — built on NumPy, SciPy, and statsmodels.</p>
+
+    <div class="two-col" data-reveal>
+      <div>
+        <h4 class="mono amber" style="font-size:13px;margin-bottom:16px">RISK METRICS</h4>
+        <div class="quant-grid">
+          <div class="quant-card">
+            <div class="q-label">Sharpe Ratio</div>
+            <div class="q-val green">1.42</div>
+            <div class="q-desc">Rolling 63-day &amp; annualized</div>
+          </div>
+          <div class="quant-card">
+            <div class="q-label">Sortino Ratio</div>
+            <div class="q-val green">1.87</div>
+            <div class="q-desc">Downside deviation adjusted</div>
+          </div>
+          <div class="quant-card">
+            <div class="q-label">VaR (95%)</div>
+            <div class="q-val red">-2.34%</div>
+            <div class="q-desc">Daily parametric VaR</div>
+          </div>
+          <div class="quant-card">
+            <div class="q-label">Max Drawdown</div>
+            <div class="q-val red">-18.7%</div>
+            <div class="q-desc">Peak-to-trough with recovery</div>
+          </div>
+          <div class="quant-card">
+            <div class="q-label">Volatility (Ann)</div>
+            <div class="q-val amber">22.4%</div>
+            <div class="q-desc">Multi-window: 21d, 63d, 252d</div>
+          </div>
+          <div class="quant-card">
+            <div class="q-label">Vol Regime</div>
+            <div class="q-val cyan">NORMAL</div>
+            <div class="q-desc">LOW / NORMAL / HIGH / EXTREME</div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <h4 class="mono cyan" style="font-size:13px;margin-bottom:16px">FACTOR ANALYSIS</h4>
+        <div class="quant-grid">
+          <div class="quant-card">
+            <div class="q-label">CAPM Alpha</div>
+            <div class="q-val green">+2.14%</div>
+            <div class="q-desc">Single-factor regression vs KSE-100</div>
+          </div>
+          <div class="quant-card">
+            <div class="q-label">Beta</div>
+            <div class="q-val accent">0.87</div>
+            <div class="q-desc">Market sensitivity coefficient</div>
+          </div>
+          <div class="quant-card">
+            <div class="q-label">R-Squared</div>
+            <div class="q-val" style="color:var(--text)">0.734</div>
+            <div class="q-desc">Benchmark explanatory power</div>
+          </div>
+          <div class="quant-card">
+            <div class="q-label">Information Ratio</div>
+            <div class="q-val green">0.65</div>
+            <div class="q-desc">Active return / tracking error</div>
+          </div>
+          <div class="quant-card">
+            <div class="q-label">Up Capture</div>
+            <div class="q-val green">112%</div>
+            <div class="q-desc">Upside participation ratio</div>
+          </div>
+          <div class="quant-card">
+            <div class="q-label">Down Capture</div>
+            <div class="q-val amber">78%</div>
+            <div class="q-desc">Downside participation ratio</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-label" style="margin-top:40px">Signal Generation</div>
+    <div class="card-grid" data-reveal>
+      <div class="card">
+        <h3>MA Crossover (20/50)</h3>
+        <p>Golden cross / death cross detection with days-since-signal tracking.
+           Automated regime labeling: BULLISH or BEARISH.</p>
+      </div>
+      <div class="card">
+        <h3>Rolling Volatility</h3>
+        <p>Multi-window (21d, 63d, 252d) annualized volatility with regime classification
+           using percentile thresholds: LOW, NORMAL, HIGH, EXTREME.</p>
+      </div>
+      <div class="card">
+        <h3>Drawdown Analysis</h3>
+        <p>Full underwater chart with peak-to-trough measurement, recovery duration,
+           and maximum drawdown tracking across fund history.</p>
+      </div>
+      <div class="card">
+        <h3>LLM-Ready Output</h3>
+        <p>Structured JSON export of all analytics for AI/LLM consumption — narrative hints,
+           market context, and multi-fund comparison data.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ DATA SOURCES ═════════════════════════════════════ -->
+<section style="background:var(--bg-card)">
+  <div class="container">
+    <div class="section-label">Data Sources</div>
+    <h2>40+ Fetchers &amp; Scrapers</h2>
+    <p class="section-sub">Multi-source aggregation with automatic fallback, incremental sync, and full audit trail.</p>
+
+    <div class="two-col" data-reveal>
+      <div>
+        <h4 class="mono amber" style="font-size:12px;margin-bottom:12px">DOMESTIC SOURCES</h4>
+        <table class="asset-table" style="margin:0">
+          <tbody>
+            <tr><td>PSX DPS API</td><td class="mono text2" style="font-size:11px">Equities, indices, intraday, company data</td></tr>
+            <tr><td>PSX Market Summary (.Z)</td><td class="mono text2" style="font-size:11px">Compressed EOD files — full market</td></tr>
+            <tr><td>SBP (11 endpoints)</td><td class="mono text2" style="font-size:11px">Policy rate, FX, KIBOR, T-bills, PIBs, PDFs</td></tr>
+            <tr><td>MUFAP API</td><td class="mono text2" style="font-size:11px">Fund master, NAV, performance, expense ratios</td></tr>
+            <tr><td>PMEX</td><td class="mono text2" style="font-size:11px">Commodity OHLC, margins (Cloudflare bypass)</td></tr>
+            <tr><td>NPC</td><td class="mono text2" style="font-size:11px">Interbank rate scraping</td></tr>
+            <tr><td>KHI Stocks</td><td class="mono text2" style="font-size:11px">Commodity prices &amp; indices</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <h4 class="mono cyan" style="font-size:12px;margin-bottom:12px">GLOBAL SOURCES</h4>
+        <table class="asset-table" style="margin:0">
+          <tbody>
+            <tr><td>yfinance</td><td class="mono text2" style="font-size:11px">Commodity futures, global indices</td></tr>
+            <tr><td>FRED (St. Louis Fed)</td><td class="mono text2" style="font-size:11px">SOFR, EFFR, commodity indices</td></tr>
+            <tr><td>World Bank</td><td class="mono text2" style="font-size:11px">Price indices, economic data</td></tr>
+            <tr><td>GoldPricez</td><td class="mono text2" style="font-size:11px">Precious metal spot prices</td></tr>
+            <tr><td>Global Rate APIs</td><td class="mono text2" style="font-size:11px">SONIA, EUSTR, TONA (post-LIBOR ARRs)</td></tr>
+            <tr><td>Forex Scraper</td><td class="mono text2" style="font-size:11px">Cross-rate aggregation</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ TECH STACK ════════════════════════════════════════ -->
+<section id="tech">
+  <div class="container">
+    <div class="section-label">Technology Stack</div>
+    <h2>Production-Grade Engineering</h2>
+    <p class="section-sub">Built with Python's best libraries for finance, data, and real-time systems.</p>
+
+    <div class="two-col" data-reveal>
+      <div>
+        <h4 class="mono accent" style="font-size:12px;margin-bottom:12px">CORE STACK</h4>
+        <div class="pill-group">
+          <div class="pill">Python 3.11+</div>
+          <div class="pill">Streamlit</div>
+          <div class="pill">FastAPI</div>
+          <div class="pill">SQLite + WAL</div>
+          <div class="pill">Plotly</div>
+          <div class="pill">Pandas</div>
+          <div class="pill">NumPy</div>
+          <div class="pill">requests</div>
+          <div class="pill">pdfplumber</div>
+          <div class="pill">WebSockets</div>
+        </div>
+
+        <h4 class="mono green" style="font-size:12px;margin:20px 0 12px">ANALYTICS &amp; QUANT</h4>
+        <div class="pill-group">
+          <div class="pill">SciPy</div>
+          <div class="pill">statsmodels</div>
+          <div class="pill">CAPM Regression</div>
+          <div class="pill">Bond Math</div>
+          <div class="pill">Yield Curve Fitting</div>
+          <div class="pill">Rolling Risk</div>
+        </div>
+      </div>
+      <div>
+        <h4 class="mono amber" style="font-size:12px;margin-bottom:12px">DATA &amp; INFRA</h4>
+        <div class="pill-group">
+          <div class="pill">ThreadPoolExecutor</div>
+          <div class="pill">asyncio</div>
+          <div class="pill">Connection Pooling</div>
+          <div class="pill">WAL Journal Mode</div>
+          <div class="pill">Memory-mapped I/O</div>
+          <div class="pill">Atomic Writes</div>
+          <div class="pill">Background Services</div>
+          <div class="pill">Progress Tracking</div>
+        </div>
+
+        <h4 class="mono cyan" style="font-size:12px;margin:20px 0 12px">AI &amp; AUTOMATION</h4>
+        <div class="pill-group">
+          <div class="pill">OpenAI API</div>
+          <div class="pill">Anthropic API</div>
+          <div class="pill">LLM Agent Orchestrator</div>
+          <div class="pill">Prompt Templates</div>
+          <div class="pill">MCP Protocol</div>
+          <div class="pill">undetected-chromedriver</div>
+          <div class="pill">DrissionPage</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- DB Architecture -->
+    <div class="section-label" style="margin-top:48px">Database Architecture</div>
+    <div class="card-grid" data-reveal>
+      <div class="card">
+        <h3>WAL Mode + MMAP</h3>
+        <p>SQLite with Write-Ahead Logging for concurrent reads during writes.
+           256MB memory-mapped I/O, 64MB page cache, 30s busy timeout.</p>
+      </div>
+      <div class="card">
+        <h3>87 Tables, 26 Repos</h3>
+        <p>Clean repository pattern — one module per domain. Composite PKs for time-series,
+           audit timestamps, source tracking, sync lineage.</p>
+      </div>
+      <div class="card">
+        <h3>Incremental Sync</h3>
+        <p>10 domain-specific sync modules with resume capability, progress tracking,
+           failure logging, and retry-on-error. Deduplication via UPSERT.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ UI PAGES ═════════════════════════════════════════ -->
+<section style="background:var(--bg-card)">
+  <div class="container">
+    <div class="section-label">Dashboard Pages</div>
+    <h2>48 Bloomberg-Inspired Pages</h2>
+    <p class="section-sub">Every page follows the Bloomberg Terminal aesthetic — dark backgrounds, monospace typography, color-coded returns, data-dense layouts.</p>
+
+    <div class="two-col" data-reveal>
+      <div>
+        <h4 class="mono accent" style="font-size:12px;margin-bottom:12px">MARKET &amp; EQUITY (17 PAGES)</h4>
+        <div class="arch-nodes">
+          <div class="arch-node highlight">Dashboard</div>
+          <div class="arch-node">Market Pulse</div>
+          <div class="arch-node">Index Monitor</div>
+          <div class="arch-node">Market Summary</div>
+          <div class="arch-node">Stock Screener</div>
+          <div class="arch-node">Company Deep</div>
+          <div class="arch-node">Sector Analysis</div>
+          <div class="arch-node">Intraday</div>
+          <div class="arch-node">Live Ticker</div>
+          <div class="arch-node">Live Market</div>
+          <div class="arch-node">Candlestick</div>
+          <div class="arch-node">Rankings</div>
+          <div class="arch-node">Futures &amp; ODL</div>
+          <div class="arch-node">Post Close</div>
+          <div class="arch-node">History</div>
+          <div class="arch-node">Symbols</div>
+          <div class="arch-node">Factor Analysis</div>
+        </div>
+
+        <h4 class="mono green" style="font-size:12px;margin:20px 0 12px">FIXED INCOME (8 PAGES)</h4>
+        <div class="arch-nodes">
+          <div class="arch-node">Rates Overview</div>
+          <div class="arch-node">Treasury Dashboard</div>
+          <div class="arch-node">Debt Terminal</div>
+          <div class="arch-node">Bond Market</div>
+          <div class="arch-node">Benchmark Monitor</div>
+          <div class="arch-node">Yield Curves</div>
+          <div class="arch-node">Sukuk</div>
+          <div class="arch-node">SBP Auctions</div>
+        </div>
+      </div>
+      <div>
+        <h4 class="mono amber" style="font-size:12px;margin-bottom:12px">FUNDS &amp; FX (11 PAGES)</h4>
+        <div class="arch-nodes">
+          <div class="arch-node highlight">Fund Explorer</div>
+          <div class="arch-node">VPS Pension</div>
+          <div class="arch-node">Top Performers</div>
+          <div class="arch-node">ETFs</div>
+          <div class="arch-node">Risk Analytics</div>
+          <div class="arch-node">Currency Dashboard</div>
+          <div class="arch-node">FX Dashboard</div>
+          <div class="arch-node">Interbank vs Open</div>
+          <div class="arch-node">FX History</div>
+          <div class="arch-node">NPC Rates</div>
+          <div class="arch-node">Global Rates</div>
+        </div>
+
+        <h4 class="mono cyan" style="font-size:12px;margin:20px 0 12px">RESEARCH &amp; ADMIN (12 PAGES)</h4>
+        <div class="arch-nodes">
+          <div class="arch-node">Commodities</div>
+          <div class="arch-node">PMEX</div>
+          <div class="arch-node">Research Terminal</div>
+          <div class="arch-node">AI Insights</div>
+          <div class="arch-node">AI Chat</div>
+          <div class="arch-node">Data Status</div>
+          <div class="arch-node">Sync Center</div>
+          <div class="arch-node">Schema Explorer</div>
+          <div class="arch-node">EOD Loader</div>
+          <div class="arch-node">Data Quality</div>
+          <div class="arch-node">Settings</div>
+          <div class="arch-node">WS Relay</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ API OVERVIEW ═════════════════════════════════════ -->
+<section>
+  <div class="container">
+    <div class="section-label">REST API</div>
+    <h2>91 Endpoints Across 15 Routers</h2>
+    <p class="section-sub">FastAPI-powered with WebSocket streaming, Pydantic validation, and background task management.</p>
+
+    <div class="bar-chart" data-reveal>
+      <div class="bar-row">
+        <div class="bar-label">/funds/*</div>
+        <div class="bar-track"><div class="bar-fill" style="--w:85%;background:var(--green)">12 endpoints</div></div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">/treasury/*</div>
+        <div class="bar-track"><div class="bar-fill" style="--w:71%;background:var(--accent)">10 endpoints</div></div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">/fi/*</div>
+        <div class="bar-track"><div class="bar-fill" style="--w:64%;background:var(--cyan)">9 endpoints</div></div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">/npc/*</div>
+        <div class="bar-track"><div class="bar-fill" style="--w:50%;background:var(--amber)">7 endpoints</div></div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">/rates/*</div>
+        <div class="bar-track"><div class="bar-fill" style="--w:43%;background:var(--red)">6 endpoints</div></div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">/bonds/*</div>
+        <div class="bar-track"><div class="bar-fill" style="--w:43%;background:#9B59B6">6 endpoints</div></div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">/fx/*</div>
+        <div class="bar-track"><div class="bar-fill" style="--w:43%;background:var(--green)">6 endpoints</div></div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">/company/*</div>
+        <div class="bar-track"><div class="bar-fill" style="--w:36%;background:var(--accent)">5 endpoints</div></div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">/global-rates/*</div>
+        <div class="bar-track"><div class="bar-fill" style="--w:36%;background:var(--cyan)">5 endpoints</div></div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label">Others</div>
+        <div class="bar-track"><div class="bar-fill" style="--w:78%;background:var(--muted)">25 endpoints (6 routers)</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ DEVELOPMENT TIMELINE ═════════════════════════════ -->
+<section style="background:var(--bg-card)">
+  <div class="container">
+    <div class="section-label">Development Phases</div>
+    <h2>Phased Build, Continuous Delivery</h2>
+
+    <div class="timeline" data-reveal>
+      <div class="timeline-item done">
+        <div class="phase-tag p1">Phase 1 — Core</div>
+        <h4>Equity Data Platform</h4>
+        <p>EOD OHLCV, intraday bars, symbols, sectors, indices, company profiles, deep scraping, tick data, market summary ingestion. 622 symbols, CLI tools, async sync.</p>
+      </div>
+      <div class="timeline-item done">
+        <div class="phase-tag p2">Phase 2 — Expansion</div>
+        <h4>Multi-Asset Coverage</h4>
+        <p>FX pairs (interbank/open/kerb), futures &amp; derivatives (FUT/CONT/IDX_FUT/ODL), ETFs, instruments universe, commodity fetchers (yfinance, FRED, PMEX, World Bank).</p>
+      </div>
+      <div class="timeline-item done">
+        <div class="phase-tag p3">Phase 3 — Fixed Income</div>
+        <h4>Full Rates &amp; FI Stack</h4>
+        <p>T-Bill/PIB/GIS auctions, KIBOR daily, PKRV yield curves, SBP policy rate corridor, sukuk market, bond trading (SMTV), debt terminal, global ARRs (SOFR, EFFR, SONIA).</p>
+      </div>
+      <div class="timeline-item done">
+        <div class="phase-tag p3">Phase 3.5 — Funds</div>
+        <h4>Mutual Fund Intelligence</h4>
+        <p>383 MUFAP funds, parallel NAV sync (12 workers), performance attribution, VPS pension, risk analytics (Sharpe/Sortino/VaR), factor analysis (CAPM), LLM-ready output.</p>
+      </div>
+      <div class="timeline-item done">
+        <div class="phase-tag p4">Phase 4 — Intelligence</div>
+        <h4>Quant Engine &amp; AI</h4>
+        <p>Bloomberg-style UI redesign, quant analytics engine, rolling Sharpe/volatility, MA signals, compliance screening, AI agent orchestrator, LLM narrative generation, MCP protocol.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ BUSINESS VALUE ═══════════════════════════════════ -->
+<section>
+  <div class="container">
+    <div class="section-label">Business Value</div>
+    <h2>Who This Platform Serves</h2>
+
+    <div class="card-grid" data-reveal>
+      <div class="card" style="border-left:3px solid var(--accent)">
+        <h3>Portfolio Managers</h3>
+        <p>Cross-asset portfolio construction with real-time NAV tracking, risk-adjusted metrics,
+           factor exposures, and benchmark-relative performance across equities, funds, and FI.</p>
+      </div>
+      <div class="card" style="border-left:3px solid var(--green)">
+        <h3>Fixed Income Desks</h3>
+        <p>Complete yield curve infrastructure (PKRV, PKISRV), auction analytics,
+           KIBOR term structure, bond math (duration/convexity/DV01), and spread monitoring.</p>
+      </div>
+      <div class="card" style="border-left:3px solid var(--amber)">
+        <h3>Research Analysts</h3>
+        <p>Deep company fundamentals, financial statement history, ratio analysis,
+           sector rotation tracking, AI-powered commentary, and LLM-ready data exports.</p>
+      </div>
+      <div class="card" style="border-left:3px solid var(--cyan)">
+        <h3>Retail Investors</h3>
+        <p>Fund comparison tools, stock screener, top performers rankings,
+           VPS pension analysis, and commodity price tracking — simplified for personal investing.</p>
+      </div>
+      <div class="card" style="border-left:3px solid var(--red)">
+        <h3>Compliance Officers</h3>
+        <p>Automated compliance screening, Shariah compliance tracking,
+           corporate announcement monitoring, and audit trail for all data operations.</p>
+      </div>
+      <div class="card" style="border-left:3px solid #9B59B6">
+        <h3>Quant Developers</h3>
+        <p>91 REST endpoints, WebSocket streaming, structured JSON output,
+           GPU acceleration hooks, and MCP protocol support for building trading systems.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ CLI ═══════════════════════════════════════════════ -->
+<section style="background:var(--bg-card)">
+  <div class="container">
+    <div class="section-label">Command Line Interface</div>
+    <h2>30+ CLI Commands</h2>
+    <p class="section-sub">Full operational control from the terminal — sync, query, monitor, and manage every data domain.</p>
+
+    <div class="two-col" data-reveal>
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:20px;font-family:var(--mono);font-size:12px;line-height:2;color:var(--text2)">
+        <span class="green">$</span> pfsync symbols refresh<br>
+        <span class="green">$</span> pfsync sync --all --async<br>
+        <span class="green">$</span> pfsync intraday sync-all<br>
+        <span class="green">$</span> pfsync market-summary range --start 2024-01-01<br>
+        <span class="green">$</span> pfsync company deep-scrape --all<br>
+        <span class="green">$</span> pfsync funds sync<br>
+        <span class="green">$</span> pfsync treasury yield-curve<br>
+        <span class="green">$</span> pfsync sukuk sync<br>
+        <span class="green">$</span> pfsync fx sync --pairs USD/PKR,EUR/USD<br>
+        <span class="green">$</span> pfsync announcements service start<br>
+        <span class="green">$</span> pfsync schema init<br>
+        <span class="green">$</span> pfsync db backup<br>
+      </div>
+      <div>
+        <h4 class="mono amber" style="font-size:12px;margin-bottom:12px">COMMAND GROUPS</h4>
+        <table class="asset-table" style="margin:0">
+          <tbody>
+            <tr><td>sync</td><td class="num">6</td><td class="text2">EOD equity sync (async, incremental)</td></tr>
+            <tr><td>market-summary</td><td class="num">7</td><td class="text2">PSX .Z file management</td></tr>
+            <tr><td>company</td><td class="num">6</td><td class="text2">Profile, snapshot, deep-scrape</td></tr>
+            <tr><td>intraday</td><td class="num">3</td><td class="text2">Tick &amp; bar sync</td></tr>
+            <tr><td>funds</td><td class="num">2</td><td class="text2">MUFAP seed &amp; sync</td></tr>
+            <tr><td>treasury/bonds/sukuk</td><td class="num">8</td><td class="text2">FI data management</td></tr>
+            <tr><td>fx</td><td class="num">3</td><td class="text2">FX pair management</td></tr>
+            <tr><td>schema/db</td><td class="num">4</td><td class="text2">Init, optimize, backup, restore</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ FOOTER ═══════════════════════════════════════════ -->
+<footer>
+  <div class="logo-footer">
+    <span style="color:var(--accent)">Pak</span>FinData <span style="color:var(--muted);font-size:10px;letter-spacing:.1em">TERMINAL</span>
+  </div>
+  <p>
+    Full-spectrum financial data intelligence for Pakistan's capital markets.<br>
+    Equities &middot; Fixed Income &middot; FX &middot; Commodities &middot; Mutual Funds &middot; Derivatives
+  </p>
+  <div class="disclaimer">
+    This platform is designed for research, analytics, and portfolio management purposes.
+    Market data is sourced from PSX, SBP, MUFAP, and other public providers.
+    Not intended as investment advice. Past performance does not guarantee future results.
+  </div>
+  <p style="margin-top:16px;font-size:10px;color:var(--muted)">
+    Built with Python &middot; Streamlit &middot; FastAPI &middot; SQLite &middot; Plotly<br>
+    &copy; 2024-2026 PakFinData. All rights reserved.
+  </p>
+</footer>
+
+<!-- ═══ SCRIPTS ══════════════════════════════════════════ -->
+<script>
+// ── Count-up animation ──
+function animateCountUp(el, target, duration = 1500) {
+  let start = 0;
+  const startTime = performance.now();
+  function update(now) {
+    const elapsed = now - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+    const eased = 1 - Math.pow(1 - progress, 3);
+    el.textContent = Math.round(eased * target).toLocaleString();
+    if (progress < 1) requestAnimationFrame(update);
+  }
+  requestAnimationFrame(update);
+}
+
+// ── Intersection Observer for reveals ──
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      entry.target.classList.add('visible');
+      // Trigger count-ups inside this element
+      entry.target.querySelectorAll('[data-count]').forEach(el => {
+        const target = parseInt(el.dataset.count);
+        animateCountUp(el, target);
+      });
+      observer.unobserve(entry.target);
+    }
+  });
+}, { threshold: 0.15 });
+
+document.querySelectorAll('[data-reveal]').forEach(el => observer.observe(el));
+
+// ── Hero count-up on load ──
+window.addEventListener('load', () => {
+  document.querySelectorAll('.hero-stat [data-count]').forEach(el => {
+    const target = parseInt(el.dataset.count);
+    setTimeout(() => animateCountUp(el, target, 2000), 1000);
+  });
+});
+
+// ── Matrix rain background ──
+(function() {
+  const container = document.getElementById('matrixBg');
+  if (!container) return;
+  const chars = '01アイウエオカキクケコ₨%$€¥±∞≠≈';
+  for (let i = 0; i < 30; i++) {
+    const col = document.createElement('div');
+    col.className = 'matrix-col';
+    col.style.left = (Math.random() * 100) + '%';
+    col.style.animationDuration = (8 + Math.random() * 12) + 's';
+    col.style.animationDelay = (Math.random() * 8) + 's';
+    col.style.fontSize = (10 + Math.random() * 6) + 'px';
+    let text = '';
+    for (let j = 0; j < 40; j++) {
+      text += chars[Math.floor(Math.random() * chars.length)] + '\n';
+    }
+    col.textContent = text;
+    container.appendChild(col);
+  }
+})();
+
+// ── Smooth scroll for nav links ──
+document.querySelectorAll('nav.topbar .links a').forEach(a => {
+  a.addEventListener('click', e => {
+    const href = a.getAttribute('href');
+    if (href.startsWith('#')) {
+      e.preventDefault();
+      const target = document.querySelector(href);
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  });
+});
+
+// ── Bar animation trigger ──
+const barObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      entry.target.querySelectorAll('.bar-fill').forEach((bar, i) => {
+        bar.style.animationDelay = (i * 0.1) + 's';
+      });
+    }
+  });
+}, { threshold: 0.2 });
+document.querySelectorAll('.bar-chart').forEach(el => barObserver.observe(el));
+</script>
+
+</body>
+</html>

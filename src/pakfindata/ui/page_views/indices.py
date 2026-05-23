@@ -25,6 +25,38 @@ from pakfindata.ui.components.helpers import (
     render_market_status_badge,
 )
 
+_CACHE_TTL = 3600
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_index_instruments(active_only: bool = True):
+    con = get_connection()
+    return get_instruments(con, instrument_type="INDEX", active_only=active_only)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_index_metrics(instrument_id: int):
+    con = get_connection()
+    return compute_all_metrics(con, instrument_id)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_ohlcv(instrument_id: int, limit: int = 2):
+    con = get_connection()
+    return get_ohlcv_instrument(con, instrument_id, limit=limit)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_constituents(symbol: str):
+    con = get_connection()
+    return get_index_constituents(con, symbol)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_normalized_performance(instrument_ids: tuple):
+    con = get_connection()
+    return get_normalized_performance(con, list(instrument_ids))
+
 
 def render_indices():
     """Comprehensive Index Analytics - All PSX indices with KPIs."""
@@ -41,7 +73,7 @@ def render_indices():
     con = get_connection()
 
     # Get all index instruments
-    indices = get_instruments(con, instrument_type="INDEX", active_only=True)
+    indices = _load_index_instruments(active_only=True)
 
     if not indices:
         st.warning("No indices found. Run `pfsync universe seed-phase1` to seed indices.")
@@ -57,7 +89,7 @@ def render_indices():
     # Compute metrics for all indices
     all_metrics = []
     for idx in indices:
-        metrics = compute_all_metrics(con, idx["instrument_id"])
+        metrics = _load_index_metrics(idx["instrument_id"])
         if "error" not in metrics:
             metrics["symbol"] = idx["symbol"]
             metrics["name"] = idx.get("name", idx["symbol"])
@@ -69,7 +101,7 @@ def render_indices():
 
         # Get latest close prices
         for i, row in metrics_df.iterrows():
-            ohlcv = get_ohlcv_instrument(con, row["instrument_id"], limit=2)
+            ohlcv = _load_ohlcv(row["instrument_id"], limit=2)
             if not ohlcv.empty:
                 latest = ohlcv.sort_values("date", ascending=False).iloc[0]
                 metrics_df.at[i, "close"] = latest.get("close", 0)
@@ -110,7 +142,7 @@ def render_indices():
         }
         display_df.rename(columns=col_names, inplace=True)
 
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        st.dataframe(display_df, width='stretch', hide_index=True)
 
     # =================================================================
     # KPI SUMMARY
@@ -121,7 +153,7 @@ def render_indices():
     if all_metrics:
         # Calculate summary stats
         valid_1m = [m.get("return_1m") for m in all_metrics if m.get("return_1m") is not None]
-        valid_1d = [m.get("change_1d") for m in all_metrics if m.get("change_1d") is not None] if "change_1d" in metrics_df.columns else []
+        valid_1d = metrics_df["change_1d"].dropna().tolist() if "change_1d" in metrics_df.columns else []
 
         col1, col2, col3, col4 = st.columns(4)
 
@@ -177,14 +209,14 @@ def render_indices():
         instrument_id = id_map.get(selected_symbol)
 
         # Get metrics for selected index
-        metrics = compute_all_metrics(con, instrument_id)
+        metrics = _load_index_metrics(instrument_id)
 
         # KPI row for selected index
         st.markdown("#### Performance Metrics")
         col1, col2, col3, col4, col5 = st.columns(5)
 
         with col1:
-            ohlcv = get_ohlcv_instrument(con, instrument_id, limit=2)
+            ohlcv = _load_ohlcv(instrument_id, limit=2)
             if not ohlcv.empty:
                 latest = ohlcv.sort_values("date", ascending=False).iloc[0]
                 st.metric("Current Value", f"{latest.get('close', 0):,.2f}")
@@ -223,7 +255,7 @@ def render_indices():
 
         # Chart
         st.markdown("#### Price Chart")
-        ohlcv_df = get_ohlcv_instrument(con, instrument_id, limit=limit)
+        ohlcv_df = _load_ohlcv(instrument_id, limit=limit)
 
         if not ohlcv_df.empty:
             ohlcv_df = ohlcv_df.sort_values("date")
@@ -246,17 +278,17 @@ def render_indices():
                     price_col="close",
                     height=400,
                 )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             st.info("No OHLCV data available. Run `pfsync instruments sync-eod` to sync index data.")
 
         # Constituents table
-        constituents = get_index_constituents(con, selected_symbol)
+        constituents = _load_constituents(selected_symbol)
         if constituents:
             st.markdown("#### Constituents ({} symbols)".format(len(constituents)))
             const_df = pd.DataFrame(constituents)[["symbol", "name"]]
             const_df.rename(columns={"symbol": "Symbol", "name": "Name"}, inplace=True)
-            st.dataframe(const_df, use_container_width=True, hide_index=True)
+            st.dataframe(const_df, width='stretch', hide_index=True)
         else:
             st.caption(
                 "No constituents loaded. Use **Download Index Data → Sync Index Membership** below."
@@ -279,7 +311,7 @@ def render_indices():
         # Get normalized performance
         compare_ids = [id_map.get(s) for s in compare_symbols if id_map.get(s)]
 
-        perf_df = get_normalized_performance(con, compare_ids)
+        perf_df = _load_normalized_performance(tuple(compare_ids))
 
         if not perf_df.empty:
             import plotly.graph_objects as go
@@ -311,7 +343,7 @@ def render_indices():
             from pakfindata.ui.charts import apply_bloomberg_layout
             apply_bloomberg_layout(fig)
 
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             st.info("No historical data available for comparison.")
 
@@ -357,7 +389,7 @@ def render_indices():
                     "vol_1m": "Vol",
                 }, inplace=True)
 
-                st.dataframe(display_df, use_container_width=True, hide_index=True)
+                st.dataframe(display_df, width='stretch', hide_index=True)
 
     # =================================================================
     # SYNC SECTION
@@ -381,14 +413,33 @@ def render_indices():
 
         with col2:
             if st.button("Sync Index Membership → instrument_membership", key="idx_membership"):
-                with st.spinner("Parsing listed_in → instrument_membership..."):
-                    result = sync_index_membership(con)
-                    st.success(
-                        "{} indices, {} memberships synced, {} skipped → instrument_membership".format(
-                            result["indices"], result["memberships"], result["skipped"]
-                        )
+                # Phase 1.6.11: sidebar feature flag picks the path.
+                from pakfindata.ui.api import client as api_client
+                if api_client.use_worker_sync():
+                    api_client.run_job_with_progress(
+                        "sync_index_membership",
+                        spinner_text="parsing listed_in → instrument_membership",
                     )
                     st.rerun()
+                else:
+                    with st.spinner("Parsing listed_in → instrument_membership..."):
+                        from pakfindata.db.safe_writer import SafeWriterBusyError
+                        from pakfindata.etl.instruments import sync_membership
+                        try:
+                            result = sync_membership()
+                            st.cache_data.clear()
+                            st.success(
+                                "{} indices, {} memberships synced, {} skipped "
+                                "→ instrument_membership".format(
+                                    result["indices"], result["memberships"], result["skipped"]
+                                )
+                            )
+                        except SafeWriterBusyError:
+                            st.error("Another sync is running. Wait a moment and retry.")
+                        except Exception as e:
+                            # sync_membership() already recorded the catalog failure.
+                            st.error(f"Sync failed: {e}")
+                        st.rerun()
 
         with col3:
             st.caption("To seed instruments, use the **Instruments** page.")

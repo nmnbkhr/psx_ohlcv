@@ -190,6 +190,7 @@ class SBPSirScraper:
             else:
                 counts["failed"] += 1
 
+        con.commit()
         return counts
 
     # ── Page parsers ─────────────────────────────────────────────

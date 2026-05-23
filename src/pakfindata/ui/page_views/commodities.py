@@ -8,9 +8,15 @@ Tabs:
   Local Markets — khistocks.com Pakistan data with visual price cards
   PMEX Portal — direct PMEX market watch data
   Export — CSV download
+
+Phase 1.7.G.3.1 — all reads go through ``/v1/commodities``,
+``/v1/khistocks``, ``/v1/pmex-portal``. Sync buttons remain — they call
+``pakfindata.commodities.sync.*`` directly (engine domain, Phase 1.6
+pattern; the sync functions open their own write connections and run
+``init_commodity_schema`` internally so the page does not need a DB
+handle).
 """
 
-import sqlite3
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -18,7 +24,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 
-from pakfindata.ui.components.helpers import get_connection
+from pakfindata.ui.api import client as api_client
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -106,44 +112,23 @@ def _metric_card(label, value, delta=None, prefix="", suffix=""):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Schema / data checks
-# ═════════════════════════════════════════════════════════════════════════════
-
-def _ensure_commodity_schema(con):
-    from pakfindata.commodities.models import init_commodity_schema
-    init_commodity_schema(con)
-
-
-def _has_commodity_data(con) -> bool:
-    try:
-        eod = con.execute("SELECT COUNT(*) as cnt FROM commodity_eod").fetchone()["cnt"]
-        if eod > 0:
-            return True
-        khi = con.execute("SELECT COUNT(*) as cnt FROM khistocks_prices").fetchone()["cnt"]
-        if khi > 0:
-            return True
-        pmex = con.execute("SELECT COUNT(*) as cnt FROM pmex_market_watch").fetchone()["cnt"]
-        return pmex > 0
-    except Exception:
-        return False
-
-
-# ═════════════════════════════════════════════════════════════════════════════
 # RENDER ENTRY POINT
 # ═════════════════════════════════════════════════════════════════════════════
 
 def render_commodities():
     st.markdown("## Commodities Terminal")
 
-    con = get_connection()
-    if con is None:
-        st.error("Database connection not available")
-        return
+    api_client.render_api_status_banner_if_down()
 
-    _ensure_commodity_schema(con)
+    has_data = api_client.get_commodity_has_data() or {
+        "commodity_eod": 0,
+        "khistocks_prices": 0,
+        "pmex_market_watch": 0,
+        "has_any": False,
+    }
 
-    if not _has_commodity_data(con):
-        _render_empty_state(con)
+    if not has_data.get("has_any"):
+        _render_empty_state()
         return
 
     tab_dash, tab_charts, tab_categories, tab_pk, tab_local, tab_pmex, tab_export = st.tabs([
@@ -156,21 +141,21 @@ def render_commodities():
         (tab_charts, _render_charts),
         (tab_categories, _render_categories),
         (tab_pk, _render_pakistan_view),
-        (tab_local, _render_local_markets),
-        (tab_pmex, _render_pmex_portal),
+        (tab_local, lambda: _render_local_markets(has_data)),
+        (tab_pmex, lambda: _render_pmex_portal(has_data)),
         (tab_export, _render_export),
     ]:
         with tab:
             try:
-                renderer(con)
+                renderer()
             except Exception as e:
                 st.error(f"Error: {e}")
 
     st.divider()
-    _render_sync_controls(con)
+    _render_sync_controls()
 
 
-def _render_empty_state(con):
+def _render_empty_state():
     st.info(
         "No commodity data found. Run the initial sync to populate data.\n\n"
         "**CLI:** `pfsync commodity sync --all`\n\n"
@@ -195,30 +180,13 @@ def _render_empty_state(con):
 # TAB 1: DASHBOARD — KPIs + sparklines + sector performance
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _render_dashboard(con):
+def _render_dashboard():
     from pakfindata.commodities.config import COMMODITY_UNIVERSE
 
     key_symbols = ["GOLD", "BRENT", "COTTON", "WHEAT", "NATURAL_GAS", "USD_PKR", "SUGAR", "COPPER"]
 
-    # Fetch latest + previous close for each
-    latest = {}
-    for sym in key_symbols:
-        rows = con.execute(
-            """SELECT symbol, date, close, open FROM commodity_eod
-               WHERE symbol=? AND source='yfinance' ORDER BY date DESC LIMIT 2""",
-            (sym,),
-        ).fetchall()
-        if not rows:
-            rows = con.execute(
-                """SELECT pair as symbol, date, close, open FROM commodity_fx_rates
-                   WHERE pair=? ORDER BY date DESC LIMIT 2""",
-                (sym,),
-            ).fetchall()
-        if rows:
-            cur = dict(rows[0])
-            prev_close = dict(rows[1])["close"] if len(rows) > 1 else cur.get("open")
-            cur["prev_close"] = prev_close
-            latest[sym] = cur
+    latest_rows = api_client.get_commodity_latest(key_symbols) or []
+    latest = {r["symbol"]: r for r in latest_rows}
 
     if not latest:
         st.warning("No recent commodity data. Run a sync first.")
@@ -248,19 +216,11 @@ def _render_dashboard(con):
     spark_cols = st.columns(4)
     for i, sym in enumerate(key_symbols[:4]):
         with spark_cols[i]:
-            _render_sparkline(con, sym)
+            _render_sparkline(sym)
 
     # ── Sector performance bar ──
     st.markdown("### Sector Performance (Latest Session)")
-    sector_data = con.execute(
-        """SELECT cs.category, AVG((e.close - e.open) / NULLIF(e.open, 0) * 100) as avg_chg
-           FROM commodity_eod e
-           JOIN commodity_symbols cs ON e.symbol=cs.symbol
-           JOIN (SELECT symbol, MAX(date) as md FROM commodity_eod WHERE source='yfinance' GROUP BY symbol)
-                latest ON e.symbol=latest.symbol AND e.date=latest.md
-           WHERE e.source='yfinance'
-           GROUP BY cs.category ORDER BY avg_chg"""
-    ).fetchall()
+    sector_data = api_client.get_commodity_sector_performance() or []
 
     if sector_data:
         cats = [r["category"] for r in sector_data]
@@ -274,47 +234,31 @@ def _render_dashboard(con):
             textposition="outside", textfont=dict(size=11),
         ))
         fig.update_layout(xaxis_title="Avg Daily Change %", showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # ── PKR prices summary ──
-    pkr_rows = con.execute(
-        """SELECT cp.symbol, cp.date, cp.pkr_price, cp.pk_unit, cp.usd_pkr
-           FROM commodity_pkr cp
-           INNER JOIN (SELECT symbol, MAX(date) as max_date FROM commodity_pkr GROUP BY symbol)
-                latest ON cp.symbol=latest.symbol AND cp.date=latest.max_date
-           ORDER BY cp.symbol"""
-    ).fetchall()
+    pkr_rows = api_client.get_commodity_pkr_latest() or []
 
     if pkr_rows:
         st.markdown("### Pakistan Prices (PKR)")
-        pkr_df = pd.DataFrame([dict(r) for r in pkr_rows])
+        pkr_df = pd.DataFrame(pkr_rows)
         pkr_df["name"] = pkr_df["symbol"].map(
             lambda s: COMMODITY_UNIVERSE[s].name if s in COMMODITY_UNIVERSE else s
         )
         pkr_df = pkr_df[["name", "symbol", "pkr_price", "pk_unit", "date", "usd_pkr"]]
         pkr_df.columns = ["Commodity", "Symbol", "PKR Price", "Unit", "Date", "USD/PKR"]
-        st.dataframe(pkr_df, use_container_width=True, hide_index=True)
+        st.dataframe(pkr_df, width='stretch', hide_index=True)
 
 
-def _render_sparkline(con, symbol: str):
+def _render_sparkline(symbol: str):
     from pakfindata.commodities.config import COMMODITY_UNIVERSE
 
-    rows = con.execute(
-        """SELECT date, close FROM commodity_eod
-           WHERE symbol=? AND source='yfinance' AND close IS NOT NULL
-           ORDER BY date DESC LIMIT 30""",
-        (symbol,),
-    ).fetchall()
-    if not rows:
-        rows = con.execute(
-            """SELECT date, close FROM commodity_fx_rates
-               WHERE pair=? AND close IS NOT NULL ORDER BY date DESC LIMIT 30""",
-            (symbol,),
-        ).fetchall()
+    rows = api_client.get_commodity_eod(symbol, limit=30) or []
+    rows = [r for r in rows if r.get("close") is not None]
     if not rows:
         return
 
-    df = pd.DataFrame([dict(r) for r in rows]).sort_values("date")
+    df = pd.DataFrame(rows).sort_values("date")
     cdef = COMMODITY_UNIVERSE.get(symbol)
     name = cdef.name if cdef else symbol
 
@@ -335,24 +279,20 @@ def _render_sparkline(con, symbol: str):
         xaxis=dict(visible=False), yaxis=dict(visible=False),
         showlegend=False, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 2: CHARTS — Candlestick/line with volume, SMA, dark theme
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _render_charts(con):
+def _render_charts():
     from pakfindata.commodities.config import COMMODITY_UNIVERSE
 
     st.markdown("### Commodity Price Charts")
 
-    all_symbols = [r["symbol"] for r in con.execute(
-        "SELECT DISTINCT symbol FROM commodity_eod ORDER BY symbol"
-    ).fetchall()]
-    fx_symbols = [r["pair"] for r in con.execute(
-        "SELECT DISTINCT pair FROM commodity_fx_rates ORDER BY pair"
-    ).fetchall()]
+    all_symbols = api_client.get_commodity_symbols() or []
+    fx_symbols = api_client.get_commodity_fx_pairs() or []
     all_available = sorted(set(all_symbols + fx_symbols))
     if not all_available:
         st.info("No commodity data available. Run a sync first.")
@@ -377,22 +317,12 @@ def _render_charts(con):
     limit_map = {"30d": 30, "90d": 90, "180d": 180, "1y": 365, "All": 10000}
     limit = limit_map.get(period, 365)
 
-    rows = con.execute(
-        """SELECT date, open, high, low, close, volume FROM commodity_eod
-           WHERE symbol=? AND source='yfinance' ORDER BY date DESC LIMIT ?""",
-        (selected, limit),
-    ).fetchall()
-    if not rows:
-        rows = con.execute(
-            """SELECT date, open, high, low, close, volume FROM commodity_fx_rates
-               WHERE pair=? ORDER BY date DESC LIMIT ?""",
-            (selected, limit),
-        ).fetchall()
+    rows = api_client.get_commodity_eod(selected, limit=limit) or []
     if not rows:
         st.info(f"No data for {selected}")
         return
 
-    df = pd.DataFrame([dict(r) for r in rows]).sort_values("date")
+    df = pd.DataFrame(rows).sort_values("date")
     cdef = COMMODITY_UNIVERSE.get(selected)
     title = f"{cdef.name} ({cdef.unit})" if cdef else selected
 
@@ -445,7 +375,7 @@ def _render_charts(con):
     fig.update_yaxes(title_text="Price", row=1, col=1)
     if has_volume:
         fig.update_yaxes(title_text="Vol", row=2, col=1)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Range analysis cards
     if len(df) > 1:
@@ -464,35 +394,26 @@ def _render_charts(con):
             _metric_card("Avg Volume", f"{avg_vol:,.0f}" if avg_vol else "—")
 
     with st.expander("Raw Data"):
-        st.dataframe(df.sort_values("date", ascending=False), use_container_width=True, hide_index=True)
+        st.dataframe(df.sort_values("date", ascending=False), width='stretch', hide_index=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 3: CATEGORIES — Browse + heatmap + correlation
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _render_categories(con):
+def _render_categories():
     from pakfindata.commodities.config import COMMODITY_UNIVERSE, CATEGORIES
 
     st.markdown("### Browse by Category")
 
     selected_cat = st.selectbox("Category", ["All"] + CATEGORIES)
 
-    rows = con.execute(
-        """SELECT e.symbol, e.date, e.close, e.open, e.volume,
-                  cs.name, cs.category, cs.unit, cs.pk_relevance
-           FROM commodity_eod e
-           INNER JOIN (SELECT symbol, MAX(date) as max_date FROM commodity_eod
-                       WHERE source='yfinance' GROUP BY symbol)
-                latest ON e.symbol=latest.symbol AND e.date=latest.max_date
-           LEFT JOIN commodity_symbols cs ON e.symbol=cs.symbol
-           WHERE e.source='yfinance' ORDER BY cs.category, cs.name"""
-    ).fetchall()
+    rows = api_client.get_commodity_categories_latest() or []
     if not rows:
         st.info("No commodity data. Run a sync first.")
         return
 
-    df = pd.DataFrame([dict(r) for r in rows])
+    df = pd.DataFrame(rows)
     if selected_cat != "All":
         df = df[df["category"] == selected_cat]
     if df.empty:
@@ -514,12 +435,12 @@ def _render_categories(con):
         textposition="outside", textfont=dict(size=10),
     ))
     fig.update_layout(xaxis_title="Daily Change %", showlegend=False)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # ── Data table ──
     display_df = df[["name", "symbol", "category", "close", "change_pct", "unit", "pk_relevance", "date"]].copy()
     display_df.columns = ["Commodity", "Symbol", "Category", "Price", "Change %", "Unit", "PK Relevance", "Date"]
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    st.dataframe(display_df, width='stretch', hide_index=True)
 
     # ── Correlation matrix (30-day) ──
     if selected_cat == "All" and len(df) >= 5:
@@ -528,12 +449,8 @@ def _render_categories(con):
         if len(top_symbols) >= 3:
             price_data = {}
             for sym in top_symbols:
-                hist = con.execute(
-                    """SELECT date, close FROM commodity_eod
-                       WHERE symbol=? AND source='yfinance' AND close IS NOT NULL
-                       ORDER BY date DESC LIMIT 30""",
-                    (sym,),
-                ).fetchall()
+                hist = api_client.get_commodity_eod(sym, limit=30) or []
+                hist = [h for h in hist if h.get("close") is not None]
                 if hist and len(hist) >= 10:
                     s = pd.Series(
                         [r["close"] for r in hist],
@@ -557,26 +474,20 @@ def _render_categories(con):
                     **_CHART_LAYOUT, height=400,
                     title=dict(text="Return Correlation (30d)", font=dict(size=13)),
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 4: PAKISTAN VIEW — PKR prices + gold premium
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _render_pakistan_view(con):
+def _render_pakistan_view():
     from pakfindata.commodities.config import COMMODITY_UNIVERSE
 
     st.markdown("### Pakistan Commodity Prices")
     st.caption("Prices converted to PKR using the latest USD/PKR exchange rate")
 
-    pkr_rows = con.execute(
-        """SELECT cp.symbol, cp.date, cp.pkr_price, cp.pk_unit, cp.usd_price, cp.usd_pkr, cp.source
-           FROM commodity_pkr cp
-           INNER JOIN (SELECT symbol, MAX(date) as max_date FROM commodity_pkr GROUP BY symbol)
-                latest ON cp.symbol=latest.symbol AND cp.date=latest.max_date
-           ORDER BY cp.symbol"""
-    ).fetchall()
+    pkr_rows = api_client.get_commodity_pkr_latest() or []
 
     if not pkr_rows:
         st.info(
@@ -585,7 +496,7 @@ def _render_pakistan_view(con):
         )
         return
 
-    df = pd.DataFrame([dict(r) for r in pkr_rows])
+    df = pd.DataFrame(pkr_rows)
     df["name"] = df["symbol"].map(
         lambda s: COMMODITY_UNIVERSE[s].name if s in COMMODITY_UNIVERSE else s
     )
@@ -635,13 +546,9 @@ def _render_pakistan_view(con):
     if sel_pkr:
         fig = _styled_fig(height=400)
         for sym in sel_pkr:
-            hist = con.execute(
-                """SELECT date, pkr_price FROM commodity_pkr
-                   WHERE symbol=? ORDER BY date DESC LIMIT 90""",
-                (sym,),
-            ).fetchall()
+            hist = api_client.get_commodity_pkr_history(sym, limit=90) or []
             if hist:
-                hdf = pd.DataFrame([dict(r) for r in hist]).sort_values("date")
+                hdf = pd.DataFrame(hist).sort_values("date")
                 cdef = COMMODITY_UNIVERSE.get(sym)
                 label = f"{cdef.name} ({cdef.pk_unit})" if cdef and cdef.pk_unit else sym
                 fig.add_trace(go.Scatter(
@@ -653,13 +560,13 @@ def _render_pakistan_view(con):
             title=dict(text="PKR Prices (90d)", font=dict(size=13)),
             yaxis_title="PKR",
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # ── Full table ──
     display = df[["name", "symbol", "pkr_price", "pk_unit", "usd_price", "usd_pkr", "date"]].copy()
     display.columns = ["Commodity", "Symbol", "PKR Price", "Unit", "USD Price", "USD/PKR", "Date"]
     display["PKR Price"] = display["PKR Price"].apply(lambda x: f"{x:,.0f}" if x else "N/A")
-    st.dataframe(display, use_container_width=True, hide_index=True)
+    st.dataframe(display, width='stretch', hide_index=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -675,24 +582,18 @@ _FEED_LABELS = {
 }
 
 
-def _render_local_markets(con):
+def _render_local_markets(has_data: dict):
     st.markdown("### Pakistan Local Markets")
     st.caption("Data from khistocks.com — PMEX, Karachi Sarafa, Akbari Mandi, LME")
 
-    try:
-        khi_count = con.execute("SELECT COUNT(*) as c FROM khistocks_prices").fetchone()["c"]
-    except Exception:
-        khi_count = 0
-
-    if khi_count == 0:
+    if has_data.get("khistocks_prices", 0) == 0:
         st.info(
             "No local market data found. Sync from khistocks.com first.\n\n"
             "**CLI:** `pfsync commodity sync --source khistocks`"
         )
         return
 
-    feeds = con.execute("SELECT DISTINCT feed FROM khistocks_prices ORDER BY feed").fetchall()
-    feed_list = [r["feed"] for r in feeds]
+    feed_list = api_client.get_khistocks_feeds() or []
 
     selected_feed = st.selectbox(
         "Market Feed", ["All Feeds"] + feed_list,
@@ -701,23 +602,9 @@ def _render_local_markets(con):
     )
 
     if selected_feed == "All Feeds":
-        rows = con.execute(
-            """SELECT kp.* FROM khistocks_prices kp
-               INNER JOIN (SELECT symbol, feed, MAX(date) as max_date
-                           FROM khistocks_prices GROUP BY symbol, feed)
-                    latest ON kp.symbol=latest.symbol AND kp.feed=latest.feed AND kp.date=latest.max_date
-               ORDER BY kp.feed, kp.symbol"""
-        ).fetchall()
+        rows = api_client.get_khistocks_latest() or []
     else:
-        rows = con.execute(
-            """SELECT kp.* FROM khistocks_prices kp
-               INNER JOIN (SELECT symbol, feed, MAX(date) as max_date
-                           FROM khistocks_prices WHERE feed=? GROUP BY symbol, feed)
-                    latest ON kp.symbol=latest.symbol AND kp.feed=latest.feed AND kp.date=latest.max_date
-               WHERE kp.feed=? ORDER BY kp.symbol""",
-            (selected_feed, selected_feed),
-        ).fetchall()
-    rows = [dict(r) for r in rows]
+        rows = api_client.get_khistocks_latest(feed=selected_feed) or []
 
     if not rows:
         st.info("No data for selected feed.")
@@ -747,7 +634,7 @@ def _render_local_markets(con):
                     hovertemplate="<b>%{y}</b><br>Change: %{x:.2f}%<extra></extra>",
                 ))
                 fig.update_layout(xaxis_title="Change %", showlegend=False)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
         # Table
         if "lme" in feed_name:
@@ -764,7 +651,7 @@ def _render_local_markets(con):
 
         available = [c for c in cols if c in group.columns]
         display = group[available].copy().dropna(axis=1, how="all")
-        st.dataframe(display, use_container_width=True, hide_index=True)
+        st.dataframe(display, width='stretch', hide_index=True)
 
     # ── History drill-down ──
     st.markdown("---")
@@ -773,10 +660,7 @@ def _render_local_markets(con):
     selected_sym = st.selectbox("Select Symbol", all_symbols, key="khi_sym_history")
 
     if selected_sym:
-        history = [dict(r) for r in con.execute(
-            "SELECT * FROM khistocks_prices WHERE symbol=? ORDER BY date DESC LIMIT 90",
-            (selected_sym,),
-        ).fetchall()]
+        history = api_client.get_khistocks_history(selected_sym, limit=90) or []
         if history:
             hist_df = pd.DataFrame(history).sort_values("date")
             price_col = "close" if hist_df["close"].notna().any() else "rate"
@@ -792,11 +676,11 @@ def _render_local_markets(con):
                     title=dict(text=f"{selected_sym} — Price History", font=dict(size=13)),
                     yaxis_title="Price",
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
             with st.expander("Raw Data"):
                 st.dataframe(hist_df.sort_values("date", ascending=False),
-                             use_container_width=True, hide_index=True)
+                             width='stretch', hide_index=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -828,26 +712,18 @@ _PMEX_CAT_COLORS = {
 }
 
 
-def _render_pmex_portal(con):
+def _render_pmex_portal(has_data: dict):
     st.markdown("### PMEX Market Watch")
     st.caption("Direct from PMEX Portal — 134 instruments across 9 categories")
 
-    try:
-        pmex_count = con.execute("SELECT COUNT(*) as c FROM pmex_market_watch").fetchone()["c"]
-    except Exception:
-        pmex_count = 0
-
-    if pmex_count == 0:
+    if has_data.get("pmex_market_watch", 0) == 0:
         st.info(
             "No PMEX data found. Sync from the PMEX portal first.\n\n"
             "**CLI:** `pfsync commodity sync --source pmex_portal`"
         )
         return
 
-    categories = con.execute(
-        "SELECT DISTINCT category FROM pmex_market_watch ORDER BY category"
-    ).fetchall()
-    cat_list = [r["category"] for r in categories]
+    cat_list = api_client.get_pmex_portal_categories() or []
 
     selected_cat = st.selectbox(
         "Category", ["All Categories"] + cat_list,
@@ -856,23 +732,10 @@ def _render_pmex_portal(con):
     )
 
     if selected_cat == "All Categories":
-        rows = con.execute("""
-            SELECT p.* FROM pmex_market_watch p
-            INNER JOIN (SELECT contract, MAX(snapshot_date) as max_date
-                        FROM pmex_market_watch GROUP BY contract)
-                 latest ON p.contract=latest.contract AND p.snapshot_date=latest.max_date
-            ORDER BY p.category, p.contract
-        """).fetchall()
+        rows = api_client.get_pmex_portal_latest() or []
     else:
-        rows = con.execute("""
-            SELECT p.* FROM pmex_market_watch p
-            INNER JOIN (SELECT contract, MAX(snapshot_date) as max_date
-                        FROM pmex_market_watch WHERE category=? GROUP BY contract)
-                 latest ON p.contract=latest.contract AND p.snapshot_date=latest.max_date
-            WHERE p.category=? ORDER BY p.contract
-        """, (selected_cat, selected_cat)).fetchall()
+        rows = api_client.get_pmex_portal_latest(category=selected_cat) or []
 
-    rows = [dict(r) for r in rows]
     if not rows:
         st.info("No data for selected category.")
         return
@@ -909,7 +772,7 @@ def _render_pmex_portal(con):
             fig.update_layout(
                 **_CHART_LAYOUT, height=350, showlegend=False,
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
     # ── Change distribution scatter ──
     if "change_pct" in df.columns and df["change_pct"].notna().any():
@@ -939,7 +802,7 @@ def _render_pmex_portal(con):
             )
             # Add zero line
             fig.add_vline(x=0, line_dash="dash", line_color=_COLORS["text_dim"], opacity=0.5)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
     # ── Tables by category ──
     for cat_name, group in df.groupby("category"):
@@ -958,7 +821,7 @@ def _render_pmex_portal(con):
             "change": "Change", "change_pct": "Chg%",
             "total_vol": "Volume", "state": "State",
         })
-        st.dataframe(display, use_container_width=True, hide_index=True)
+        st.dataframe(display, width='stretch', hide_index=True)
 
     # ── Contract history ──
     st.markdown("---")
@@ -967,10 +830,7 @@ def _render_pmex_portal(con):
     selected_contract = st.selectbox("Select Contract", all_contracts, key="pmex_contract_history")
 
     if selected_contract:
-        history = [dict(r) for r in con.execute(
-            "SELECT * FROM pmex_market_watch WHERE contract=? ORDER BY snapshot_date DESC LIMIT 90",
-            (selected_contract,),
-        ).fetchall()]
+        history = api_client.get_pmex_portal_history(selected_contract, limit=90) or []
         if history:
             hist_df = pd.DataFrame(history).sort_values("snapshot_date")
             price_col = "last_price" if hist_df["last_price"].notna().any() else "close"
@@ -997,54 +857,57 @@ def _render_pmex_portal(con):
                     title=dict(text=f"{selected_contract} — Price History", font=dict(size=13)),
                     yaxis_title="Price",
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
             with st.expander("Raw Data"):
                 st.dataframe(hist_df.sort_values("snapshot_date", ascending=False),
-                             use_container_width=True, hide_index=True)
+                             width='stretch', hide_index=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 7: EXPORT
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _render_export(con):
+_EXPORT_OPTIONS: dict[str, str] = {
+    "Daily OHLCV (yfinance)": "eod",
+    "Monthly Benchmarks (FRED/WorldBank)": "monthly",
+    "PKR Prices": "pkr",
+    "FX Rates": "fx",
+    "Local Markets (khistocks)": "khistocks",
+    "PMEX Market Watch": "pmex_market_watch",
+}
+
+
+def _render_export():
     st.markdown("### Export Commodity Data")
+    st.caption(
+        "Bulk export is capped at 50,000 rows per request to avoid huge payloads. "
+        "For full-history exports (e.g. 1.8M FX rows), use the CLI:"
+        " `pfsync export commodity-fx`."
+    )
 
-    export_type = st.selectbox("Data Set", [
-        "Daily OHLCV (yfinance)",
-        "Monthly Benchmarks (FRED/WorldBank)",
-        "PKR Prices",
-        "FX Rates",
-        "Local Markets (khistocks)",
-        "PMEX Market Watch",
-    ])
+    export_label = st.selectbox("Data Set", list(_EXPORT_OPTIONS.keys()))
+    dataset = _EXPORT_OPTIONS[export_label]
 
-    table_map = {
-        "Daily OHLCV (yfinance)": "SELECT * FROM commodity_eod ORDER BY symbol, date DESC",
-        "Monthly Benchmarks (FRED/WorldBank)": "SELECT * FROM commodity_monthly ORDER BY symbol, date DESC",
-        "PKR Prices": "SELECT * FROM commodity_pkr ORDER BY symbol, date DESC",
-        "FX Rates": "SELECT * FROM commodity_fx_rates ORDER BY pair, date DESC",
-        "Local Markets (khistocks)": "SELECT * FROM khistocks_prices ORDER BY feed, symbol, date DESC",
-        "PMEX Market Watch": "SELECT * FROM pmex_market_watch ORDER BY category, contract, snapshot_date DESC",
-    }
+    limit = st.slider(
+        "Row limit", min_value=100, max_value=50000, value=5000, step=500,
+        help="Higher limits = bigger CSV downloads",
+    )
 
-    try:
-        df = pd.read_sql(table_map[export_type], con)
-    except Exception:
-        df = pd.DataFrame()
-
-    if df.empty:
+    rows = api_client.get_commodity_export(dataset, limit=limit) or []
+    if not rows:
         st.info("No data available for this export.")
         return
 
+    df = pd.DataFrame(rows)
+
     st.text(f"{len(df)} rows")
-    st.dataframe(df.head(100), use_container_width=True, hide_index=True)
+    st.dataframe(df.head(100), width='stretch', hide_index=True)
 
     csv = df.to_csv(index=False)
     st.download_button(
         "Download CSV", csv,
-        file_name=f"pakfindata_commodity_{export_type.split('(')[0].strip().lower().replace(' ', '_')}.csv",
+        file_name=f"pakfindata_commodity_{export_label.split('(')[0].strip().lower().replace(' ', '_')}.csv",
         mime="text/csv",
     )
 
@@ -1053,7 +916,13 @@ def _render_export(con):
 # SYNC CONTROLS
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _render_sync_controls(con):
+def _render_sync_controls():
+    """Sync buttons — call engine sync functions directly.
+
+    Per Phase 1.6 pattern, these are engine-domain calls (not /v1 write
+    endpoints, not worker jobs). Each sync function opens its own write
+    connection and runs ``init_commodity_schema`` internally.
+    """
     with st.expander("Sync Commodity Data"):
         st.caption("Fetch latest commodity prices from free data sources.")
 
@@ -1151,10 +1020,8 @@ def _render_sync_controls(con):
                 except Exception as e:
                     st.error(f"PKR computation failed: {e}")
 
-        sync_rows = con.execute(
-            "SELECT * FROM commodity_sync_runs ORDER BY started_at DESC LIMIT 10"
-        ).fetchall()
+        sync_rows = api_client.get_commodity_sync_runs(limit=10) or []
         if sync_rows:
             st.markdown("#### Recent Sync Runs")
-            sync_df = pd.DataFrame([dict(r) for r in sync_rows])
-            st.dataframe(sync_df, use_container_width=True, hide_index=True)
+            sync_df = pd.DataFrame(sync_rows)
+            st.dataframe(sync_df, width='stretch', hide_index=True)

@@ -1,7 +1,7 @@
 """SQLite schema for commodity data tables.
 
 All tables use CREATE IF NOT EXISTS so they can be called on every startup.
-Data is stored in the same database as PSX equities (/mnt/e/psxdata/psx.sqlite).
+Data is stored in the same database as PSX equities (/home/smnb/psxdata_rescue/psx.sqlite).
 """
 
 import sqlite3

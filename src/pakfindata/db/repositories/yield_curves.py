@@ -1,4 +1,10 @@
-"""Yield curve & overnight rate repository — PKRV, KONIA, KIBOR."""
+"""Yield curve & overnight rate repository — PKRV, KONIA, KIBOR.
+
+Caller commits via pakfindata.db.safe_writer (or an explicit
+con.commit() in CLI / service entry points). The upsert_* leaves and
+init_yield_curve_schema in this module no longer commit internally
+so they compose cleanly inside a safe_writer BEGIN IMMEDIATE block.
+"""
 
 import sqlite3
 from datetime import datetime
@@ -81,9 +87,17 @@ CREATE INDEX IF NOT EXISTS idx_kibor_date ON kibor_daily(date);
 
 
 def init_yield_curve_schema(con: sqlite3.Connection) -> None:
-    """Create yield curve tables if they don't exist."""
-    con.executescript(YIELD_CURVE_SCHEMA_SQL)
-    con.commit()
+    """Create yield curve tables if they don't exist.
+
+    Splits the schema script into individual statements rather than using
+    con.executescript() — executescript always commits any pending
+    transaction first, which would end a containing safe_writer
+    BEGIN IMMEDIATE block prematurely.
+    """
+    for stmt in YIELD_CURVE_SCHEMA_SQL.split(";"):
+        stmt = stmt.strip()
+        if stmt:
+            con.execute(stmt)
 
 
 def upsert_pkrv_point(con: sqlite3.Connection, data: dict) -> bool:
@@ -106,7 +120,6 @@ def upsert_pkrv_point(con: sqlite3.Connection, data: dict) -> bool:
                 data.get("source", "SBP"),
             ),
         )
-        con.commit()
         return True
     except Exception:
         return False
@@ -130,7 +143,6 @@ def upsert_pkisrv_point(con: sqlite3.Connection, data: dict) -> bool:
                 data.get("source", "MUFAP"),
             ),
         )
-        con.commit()
         return True
     except Exception:
         return False
@@ -161,7 +173,6 @@ def upsert_pkfrv_point(con: sqlite3.Connection, data: dict) -> bool:
                 data.get("source", "MUFAP"),
             ),
         )
-        con.commit()
         return True
     except Exception:
         return False
@@ -188,7 +199,6 @@ def upsert_konia_rate(con: sqlite3.Connection, data: dict) -> bool:
                 data.get("low"),
             ),
         )
-        con.commit()
         return True
     except Exception:
         return False
@@ -212,7 +222,6 @@ def upsert_kibor_rate(con: sqlite3.Connection, data: dict) -> bool:
                 data.get("offer"),
             ),
         )
-        con.commit()
         return True
     except Exception:
         return False

@@ -43,7 +43,9 @@ def get_report_links(symbol: str) -> list[dict]:
     Returns:
         List of dicts with keys: report_type, period_ended, posting_date, url, pdf_id
     """
-    url = DPS_REPORTS_URL.format(symbol=symbol.upper())
+    from ..db.repositories.symbols import normalize_symbol
+    symbol, _ = normalize_symbol(symbol.upper())
+    url = DPS_REPORTS_URL.format(symbol=symbol)
     resp = requests.get(url, timeout=15)
     resp.raise_for_status()
 
@@ -83,16 +85,21 @@ def _download_pdf(url: str, timeout: int = 60) -> bytes:
 def _fix_split_numbers(line: str) -> str:
     """Fix numbers split by column boundaries in PDF text extraction.
 
-    Some bank PDFs have fixed-width columns that cause pdfplumber to split
+    Some PDFs have fixed-width columns that cause pdfplumber to split
     leading digits from the rest of the number, e.g.:
         "7 6,529,292" should be "76,529,292"
         "1 05,264,607" should be "105,264,607"
+        "4 5,163,137" should be "45,163,137"
+        "5 ,163,137" should be "5,163,137"  (space before comma)
 
-    The regex uses a lookbehind to only match a digit preceded by whitespace
+    The regex uses a lookbehind to only match digits preceded by whitespace
     (column boundary), followed by whitespace, then a comma-formatted number.
-    This avoids merging correctly-formatted numbers like "26 76,529,292".
     """
-    return re.sub(r"(?<=\s)(\d)\s+(\d{1,2}(?:,\d{3})+)", r"\1\2", line)
+    # Fix "5 ,163,137" → "5,163,137" (space before comma)
+    line = re.sub(r"(\d)\s+,(\d{3})", r"\1,\2", line)
+    # Fix "4 5,163,137" or "1 3,825,569" → merge leading 1-2 digits into number
+    line = re.sub(r"(?<=\s)(\d{1,2})\s+(\d{1,2}(?:,\d{3})+)", r"\1\2", line)
+    return line
 
 
 def _extract_numbers(text: str) -> list[float | None]:

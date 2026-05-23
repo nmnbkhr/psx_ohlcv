@@ -2,61 +2,140 @@
 
 SBP Policy Rate, KIBOR/KONIA money market rates, and latest
 government securities auction cutoffs in a single view.
+
+Reads through the /v1 API client (Phase 1.7.B.6).
 """
 
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
 
-from pakfindata.ui.components.helpers import get_connection, render_footer
+from pakfindata.ui.api import client as api_client
+from pakfindata.ui.components.helpers import render_footer
+
+
+# ── Cached data-loading helpers ───────────────────────────────────
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_benchmark_snapshot() -> dict:
+    """Returns ``{metrics..., _date}`` matching the legacy dict shape."""
+    payload = api_client.get_benchmark_snapshot() or {}
+    metrics = dict(payload.get("metrics") or {})
+    metrics["_date"] = payload.get("date")
+    return metrics
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_policy_rate():
+    """Fallback: latest policy rate from /v1/rates/policy/history."""
+    rows = api_client.get_policy_rate_history(limit=1) or []
+    if not rows:
+        return None
+    return rows[0].get("policy_rate")
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_kibor_rates():
+    """Fallback: latest KIBOR latest-per-tenor."""
+    rows = api_client.get_kibor_latest_per_tenor() or []
+    formatted = []
+    for r in rows:
+        bid = r.get("bid")
+        offer = r.get("offer")
+        formatted.append({
+            "Tenor": f"KIBOR {r.get('tenor')}",
+            "Bid": f"{bid:.2f}%" if bid else "N/A",
+            "Offer": f"{offer:.2f}%" if offer else "N/A",
+            "Change": "",
+        })
+    return formatted
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_konia_rate():
+    """Latest KONIA rate via /v1/rates/konia.
+
+    Defensive guard (Group C corruption) — only return values in the
+    0..50% band.
+    """
+    rows = api_client.get_konia(limit=1) or []
+    if not rows:
+        return None
+    val = rows[0].get("rate_pct")
+    if val is not None and 0 < val < 50:
+        return val
+    return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_tbill_cutoffs():
+    """Latest T-Bill cutoff per tenor via /v1/treasury/tbill/latest-per-tenor."""
+    rows = api_client.get_tbill_latest_per_tenor() or []
+    return [
+        {
+            "Tenor": r.get("tenor"),
+            "Cutoff": f"{r['cutoff_yield']:.2f}%" if r.get("cutoff_yield") is not None else "—",
+            "Date": r.get("auction_date"),
+        }
+        for r in rows
+    ]
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_pib_cutoffs():
+    """Latest PIB cutoff per tenor via /v1/treasury/pib/latest-per-tenor."""
+    rows = api_client.get_pib_latest_per_tenor() or []
+    return [
+        {
+            "Tenor": r.get("tenor"),
+            "Cutoff": f"{r['cutoff_yield']:.2f}%" if r.get("cutoff_yield") is not None else "—",
+            "Date": r.get("auction_date"),
+        }
+        for r in rows
+    ]
+
+
+# ── Page renderer ─────────────────────────────────────────────────
 
 
 def render_rates_overview():
     """Render the Rates Overview command center page."""
+    api_client.render_api_status_banner_if_down()
+
     st.markdown("## Rates Overview")
     st.caption("KIBOR, KONIA, policy rate — the big picture")
 
-    con = get_connection()
-    if con is None:
-        st.error("Database connection not available")
-        return
-
-    # Try to load benchmark data first (most comprehensive source)
-    from pakfindata.db.repositories.bond_market import (
-        init_bond_market_schema,
-        get_benchmark_snapshot,
-    )
-    init_bond_market_schema(con)
-    snap = get_benchmark_snapshot(con) or {}
+    snap = _load_benchmark_snapshot()
+    snap = dict(snap)  # shallow copy so pop doesn't mutate cache
     snap_date = snap.pop("_date", None)
 
     # ── Section 1: SBP Policy Rate Hero ──────────────────────────
-    _render_policy_rate_hero(con, snap)
+    _render_policy_rate_hero(snap)
 
     st.divider()
 
     # ── Section 2: Money Market Rates ────────────────────────────
-    _render_money_market_rates(con, snap)
+    _render_money_market_rates(snap)
 
     st.divider()
 
     # ── Section 3: Latest Auction Cutoffs ────────────────────────
-    _render_auction_cutoffs(con, snap)
+    _render_auction_cutoffs(snap)
 
     st.divider()
 
     # ── Section 4: Quick Navigation ──────────────────────────────
     c1, c2, c3 = st.columns(3)
     with c1:
-        if st.button("Yield Curves", key="ro_nav_yc", use_container_width=True):
+        if st.button("Yield Curves", key="ro_nav_yc", width='stretch'):
             st.session_state.nav_to = "Yield Curves"
             st.rerun()
     with c2:
-        if st.button("Auction History", key="ro_nav_auct", use_container_width=True):
+        if st.button("Auction History", key="ro_nav_auct", width='stretch'):
             st.session_state.nav_to = "Treasury Auctions"
             st.rerun()
     with c3:
-        if st.button("Rate Trends", key="ro_nav_bm", use_container_width=True):
+        if st.button("Rate Trends", key="ro_nav_bm", width='stretch'):
             st.session_state.nav_to = "Benchmark Monitor"
             st.rerun()
 
@@ -65,35 +144,69 @@ def render_rates_overview():
     with st.expander("Sync Rates Data"):
         col1, col2, col3 = st.columns(3)
         with col1:
-            if st.button("Sync KIBOR/KONIA", key="ro_rates"):
-                with st.spinner("Syncing rates from SBP..."):
-                    try:
-                        from pakfindata.sources.sbp_rates import SBPRatesScraper
-                        result = SBPRatesScraper().sync_rates(con)
-                        st.success(f"Rates synced: {result}")
-                    except Exception as e:
-                        st.error(f"Failed: {e}")
+            if st.button("Sync KIBOR (EasyData)", key="ro_rates"):
+                if api_client.use_worker_sync():
+                    api_client.run_job_with_progress(
+                        "sync_kibor_easydata",
+                        spinner_text="syncing KIBOR daily from SBP EasyData",
+                    )
+                else:
+                    with st.spinner("Syncing KIBOR from SBP EasyData..."):
+                        from pakfindata.db.safe_writer import SafeWriterBusyError
+                        from pakfindata.etl.rates import sync_kibor_easydata
+                        try:
+                            result = sync_kibor_easydata()
+                            st.cache_data.clear()
+                            st.success(f"KIBOR synced: {result['kibor_rows']} rows")
+                        except SafeWriterBusyError:
+                            st.error("Another sync is running. Wait a moment and retry.")
+                        except Exception as e:
+                            st.error(f"Failed: {e}")
         with col2:
             if st.button("Sync Benchmark Snapshot", key="ro_bench"):
-                with st.spinner("Fetching SBP benchmark..."):
-                    try:
-                        from pakfindata.sources.sbp_bond_market import SBPBondMarketScraper
-                        result = SBPBondMarketScraper().sync_benchmark(con)
-                        if result["status"] == "ok":
-                            st.success(f"Stored {result['metrics_stored']} metrics")
-                        else:
-                            st.error(result.get("error", "Unknown error"))
-                    except Exception as e:
-                        st.error(f"Failed: {e}")
+                if api_client.use_worker_sync():
+                    api_client.run_job_with_progress(
+                        "sync_benchmark",
+                        spinner_text="scraping SBP benchmark snapshot",
+                    )
+                else:
+                    with st.spinner("Fetching SBP benchmark..."):
+                        from pakfindata.db.safe_writer import SafeWriterBusyError
+                        from pakfindata.etl.benchmark import sync as sync_benchmark
+                        try:
+                            result = sync_benchmark()
+                            st.cache_data.clear()
+                            if result["status"] == "ok":
+                                st.success(f"Stored {result['metrics_stored']} metrics")
+                            else:
+                                st.error("Scrape returned a non-ok status")
+                        except SafeWriterBusyError:
+                            st.error("Another sync is running. Wait a moment and retry.")
+                        except Exception as e:
+                            st.error(f"Failed: {e}")
         with col3:
             if st.button("Sync Auctions", key="ro_auctions"):
-                with st.spinner("Syncing T-Bill/PIB auctions..."):
-                    try:
-                        from pakfindata.sources.sbp_treasury import SBPTreasuryScraper
-                        result = SBPTreasuryScraper().sync_treasury(con)
-                        st.success(f"Auctions synced: {result}")
-                    except Exception as e:
-                        st.error(f"Failed: {e}")
+                if api_client.use_worker_sync():
+                    api_client.run_job_with_progress(
+                        "sync_treasury_auctions",
+                        spinner_text="syncing T-Bill / PIB auctions",
+                    )
+                else:
+                    with st.spinner("Syncing T-Bill/PIB auctions..."):
+                        from pakfindata.db.safe_writer import SafeWriterBusyError
+                        from pakfindata.etl.treasury import sync_auctions
+                        try:
+                            result = sync_auctions()
+                            st.cache_data.clear()
+                            st.success(
+                                f"Auctions synced: T-Bills {result['tbills_ok']}, "
+                                f"PIBs {result['pibs_ok']} "
+                                f"(auction date: {result.get('auction_date') or '—'})"
+                            )
+                        except SafeWriterBusyError:
+                            st.error("Another sync is running. Wait a moment and retry.")
+                        except Exception as e:
+                            st.error(f"Failed: {e}")
 
     if snap_date:
         st.caption(f"Benchmark data as of: {snap_date}")
@@ -101,23 +214,15 @@ def render_rates_overview():
     render_footer()
 
 
-def _render_policy_rate_hero(con, snap: dict):
+def _render_policy_rate_hero(snap: dict):
     """SBP Policy Rate as a big hero number with historical range."""
     st.subheader("SBP Policy Rate")
 
     policy_rate = snap.get("policy_rate")
 
-    # Fallback: try sbp_policy_rates table directly
+    # Fallback: try /v1/rates/policy/history
     if policy_rate is None:
-        try:
-            row = con.execute(
-                "SELECT policy_rate, rate_date FROM sbp_policy_rates "
-                "ORDER BY rate_date DESC LIMIT 1"
-            ).fetchone()
-            if row:
-                policy_rate = row[0]
-        except Exception:
-            pass
+        policy_rate = _load_policy_rate()
 
     if policy_rate is not None:
         c1, c2, c3, c4 = st.columns(4)
@@ -129,7 +234,7 @@ def _render_policy_rate_hero(con, snap: dict):
         st.info("No policy rate data. Sync benchmark snapshot to populate.")
 
 
-def _render_money_market_rates(con, snap: dict):
+def _render_money_market_rates(snap: dict):
     """KIBOR and KONIA money market rates table."""
     st.subheader("Money Market Rates")
 
@@ -155,54 +260,28 @@ def _render_money_market_rates(con, snap: dict):
                 "Change": "",
             })
 
-    # Fallback: try kibor_daily table
+    # Fallback: latest-per-tenor from kibor_daily
     if not rows:
-        try:
-            kibor_df = pd.read_sql_query(
-                """SELECT tenor, bid, offer FROM kibor_daily
-                   WHERE date = (SELECT MAX(date) FROM kibor_daily)
-                   ORDER BY
-                     CASE tenor
-                       WHEN '1W' THEN 1 WHEN '2W' THEN 2
-                       WHEN '1M' THEN 3 WHEN '3M' THEN 4
-                       WHEN '6M' THEN 5 WHEN '9M' THEN 6
-                       WHEN '1Y' THEN 7 ELSE 8
-                     END""",
-                con,
-            )
-            for _, r in kibor_df.iterrows():
-                rows.append({
-                    "Tenor": f"KIBOR {r['tenor']}",
-                    "Bid": f"{r['bid']:.2f}%" if r["bid"] else "N/A",
-                    "Offer": f"{r['offer']:.2f}%" if r["offer"] else "N/A",
-                    "Change": "",
-                })
-        except Exception:
-            pass
+        rows = _load_kibor_rates()
 
     # KONIA
-    try:
-        konia = con.execute(
-            "SELECT rate, date FROM konia_daily ORDER BY date DESC LIMIT 1"
-        ).fetchone()
-        if konia and konia[0]:
-            rows.append({
-                "Tenor": "KONIA (Overnight)",
-                "Bid": f"{konia[0]:.2f}%",
-                "Offer": "—",
-                "Change": "",
-            })
-    except Exception:
-        pass
+    konia_rate = _load_konia_rate()
+    if konia_rate is not None:
+        rows.append({
+            "Tenor": "KONIA (Overnight)",
+            "Bid": f"{konia_rate:.2f}%",
+            "Offer": "—",
+            "Change": "",
+        })
 
     if rows:
         df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
     else:
         st.info("No money market rate data. Run `pfsync rates sync` to fetch.")
 
 
-def _render_auction_cutoffs(con, snap: dict):
+def _render_auction_cutoffs(snap: dict):
     """Latest government securities auction cutoffs."""
     st.subheader("Government Securities — Latest Auction Cutoffs")
 
@@ -220,34 +299,12 @@ def _render_auction_cutoffs(con, snap: dict):
             if val is not None:
                 mtb_rows.append({"Tenor": label, "Cutoff": f"{val:.2f}%"})
 
-        # Fallback: query tbill_auctions table
+        # Fallback: latest-per-tenor from tbill_auctions
         if not mtb_rows:
-            try:
-                df = pd.read_sql_query(
-                    """SELECT tenor, cutoff_yield, auction_date
-                       FROM tbill_auctions
-                       WHERE (tenor, auction_date) IN (
-                           SELECT tenor, MAX(auction_date)
-                           FROM tbill_auctions GROUP BY tenor
-                       )
-                       ORDER BY
-                         CASE tenor
-                           WHEN '3M' THEN 1 WHEN '6M' THEN 2
-                           WHEN '12M' THEN 3 ELSE 4
-                         END""",
-                    con,
-                )
-                for _, r in df.iterrows():
-                    mtb_rows.append({
-                        "Tenor": r["tenor"],
-                        "Cutoff": f"{r['cutoff_yield']:.2f}%",
-                        "Date": r["auction_date"],
-                    })
-            except Exception:
-                pass
+            mtb_rows = _load_tbill_cutoffs()
 
         if mtb_rows:
-            st.dataframe(pd.DataFrame(mtb_rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(mtb_rows), width='stretch', hide_index=True)
         else:
             st.info("No T-Bill auction data.")
 
@@ -266,35 +323,11 @@ def _render_auction_cutoffs(con, snap: dict):
             if val is not None:
                 pib_rows.append({"Tenor": label, "Cutoff": f"{val:.2f}%"})
 
-        # Fallback: query pib_auctions table
+        # Fallback: latest-per-tenor from pib_auctions
         if not pib_rows:
-            try:
-                df = pd.read_sql_query(
-                    """SELECT tenor, cutoff_yield, auction_date
-                       FROM pib_auctions
-                       WHERE (tenor, auction_date) IN (
-                           SELECT tenor, MAX(auction_date)
-                           FROM pib_auctions GROUP BY tenor
-                       )
-                       ORDER BY
-                         CASE tenor
-                           WHEN '2Y' THEN 1 WHEN '3Y' THEN 2
-                           WHEN '5Y' THEN 3 WHEN '10Y' THEN 4
-                           WHEN '15Y' THEN 5 WHEN '20Y' THEN 6
-                           WHEN '30Y' THEN 7 ELSE 8
-                         END""",
-                    con,
-                )
-                for _, r in df.iterrows():
-                    pib_rows.append({
-                        "Tenor": r["tenor"],
-                        "Cutoff": f"{r['cutoff_yield']:.2f}%",
-                        "Date": r["auction_date"],
-                    })
-            except Exception:
-                pass
+            pib_rows = _load_pib_cutoffs()
 
         if pib_rows:
-            st.dataframe(pd.DataFrame(pib_rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(pib_rows), width='stretch', hide_index=True)
         else:
             st.info("No PIB auction data.")

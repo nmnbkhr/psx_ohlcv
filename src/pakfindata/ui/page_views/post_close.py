@@ -2,9 +2,11 @@
 
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 from pakfindata.config import DATA_ROOT
+from pakfindata.ui.api import client as api_client
 from pakfindata.ui.components.helpers import (
     EXPORTS_DIR,
     get_connection,
@@ -13,18 +15,40 @@ from pakfindata.ui.components.helpers import (
 )
 
 
+# ── Cached data loaders ──────────────────────────────────────────────────────
+# Reads flow through the /v1 API client (TTL caching lives there). Writes
+# (fetch_post_close) keep a direct DB connection — Phase 1.7 is reads-only.
+
+
+def _load_post_close_stats() -> dict:
+    return api_client.get_turnover_stats() or {
+        "total_rows": 0, "total_dates": 0, "unique_symbols": 0,
+        "min_date": None, "max_date": None,
+    }
+
+
+def _load_dates_missing_turnover(since: str, until: str | None = None) -> list[str]:
+    return api_client.get_turnover_missing(since=since, until=until) or []
+
+
+def _load_post_close_dates() -> list[str]:
+    return api_client.get_turnover_dates() or []
+
+
+def _load_post_close_data(date: str, limit: int = 500) -> pd.DataFrame:
+    rows = api_client.get_turnover(date=date, limit=limit) or []
+    return pd.DataFrame(rows)
+
+
 def render_post_close():
     """Standalone page for post-close turnover data."""
     from datetime import date as date_type
     from datetime import timedelta as td
 
-    from pakfindata.db.repositories.post_close import (
-        get_dates_missing_turnover,
-        get_post_close,
-        get_post_close_dates,
-        get_post_close_stats,
-    )
     from pakfindata.sources.market_summary import fetch_post_close
+
+    if api_client.render_api_status_banner_if_down():
+        return
 
     # =================================================================
     # HEADER
@@ -51,8 +75,8 @@ def render_post_close():
     con = get_connection()
 
     # Stats
-    stats = get_post_close_stats(con)
-    missing_dates = get_dates_missing_turnover(con)
+    stats = _load_post_close_stats()
+    missing_dates = _load_dates_missing_turnover(since="2020-01-01")
 
     st.subheader("Statistics")
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -107,7 +131,7 @@ def render_post_close():
 
             # Check if already exists (unless force)
             if not single_force:
-                existing = get_post_close_dates(con)
+                existing = _load_post_close_dates()
                 if date_str in existing:
                     st.info(f"Turnover for {date_str} already loaded. Use force to re-download.")
                     st.stop()
@@ -174,7 +198,7 @@ def render_post_close():
 
         # Filter out already-loaded dates unless force
         if not range_force:
-            existing = set(get_post_close_dates(con))
+            existing = set(_load_post_close_dates())
             to_process = [d for d in expected_dates if str(d) not in existing]
         else:
             to_process = expected_dates
@@ -229,27 +253,89 @@ def render_post_close():
             "and download turnover for them."
         )
 
-        if missing_dates:
-            st.info(
-                f"{len(missing_dates)} dates with EOD data but no turnover: "
-                f"{missing_dates[-1]} to {missing_dates[0]}"
+        # ── Period selector ──
+        bf_col1, bf_col2 = st.columns(2)
+        with bf_col1:
+            period_options = [
+                "Last 30 days",
+                "Last 90 days",
+                "Year to date",
+                "2025",
+                "2024",
+                "2023",
+                "2022",
+                "2021",
+                "2020",
+                "All (2020–present)",
+                "Custom range",
+            ]
+            bf_period = st.selectbox(
+                "Period",
+                options=period_options,
+                index=0,
+                key="pc_bf_period",
             )
 
-            backfill_limit = st.number_input(
+        # Resolve since/until dates from period
+        today = date_type.today()
+        if bf_period == "Last 30 days":
+            bf_since = str(today - td(days=30))
+            bf_until = str(today)
+        elif bf_period == "Last 90 days":
+            bf_since = str(today - td(days=90))
+            bf_until = str(today)
+        elif bf_period == "Year to date":
+            bf_since = f"{today.year}-01-01"
+            bf_until = str(today)
+        elif bf_period == "All (2020–present)":
+            bf_since = "2020-01-01"
+            bf_until = str(today)
+        elif bf_period == "Custom range":
+            with bf_col2:
+                bf_custom_start = st.date_input(
+                    "From",
+                    value=today - td(days=365),
+                    max_value=today,
+                    key="pc_bf_custom_start",
+                )
+                bf_custom_end = st.date_input(
+                    "To",
+                    value=today,
+                    max_value=today,
+                    key="pc_bf_custom_end",
+                )
+            bf_since = str(bf_custom_start)
+            bf_until = str(bf_custom_end)
+        else:
+            # Year selection (e.g. "2024")
+            year = int(bf_period)
+            bf_since = f"{year}-01-01"
+            bf_until = f"{year}-12-31"
+
+        # Query missing dates for selected period
+        bf_missing = _load_dates_missing_turnover(since=bf_since, until=bf_until)
+
+        if bf_missing:
+            st.info(
+                f"{len(bf_missing)} dates with EOD data but no turnover "
+                f"({bf_missing[-1]} to {bf_missing[0]})"
+            )
+
+            bf_limit = st.number_input(
                 "Max dates to process",
                 min_value=1,
-                max_value=len(missing_dates),
-                value=min(30, len(missing_dates)),
+                max_value=len(bf_missing),
+                value=min(50, len(bf_missing)),
                 key="pc_backfill_limit",
                 help="Process the most recent dates first",
             )
 
             if st.button(
-                f"Backfill {backfill_limit} dates",
+                f"Backfill {bf_limit} dates",
                 key="pc_backfill_run",
                 type="primary",
             ):
-                to_process = missing_dates[:backfill_limit]
+                to_process = bf_missing[:bf_limit]
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 ok_count = 0
@@ -279,7 +365,7 @@ def render_post_close():
                     f"{miss_count} missing (404), {fail_count} failed"
                 )
         else:
-            st.success("All dates with EOD data have turnover loaded.")
+            st.success(f"All dates in selected period have turnover loaded.")
 
     # =========================================================================
     # Tab 4: History
@@ -287,7 +373,7 @@ def render_post_close():
     with tab_history:
         st.subheader("Turnover Data")
 
-        dates = get_post_close_dates(con)
+        dates = _load_post_close_dates()
         if dates:
             selected_date = st.selectbox(
                 "Select date",
@@ -295,7 +381,7 @@ def render_post_close():
                 key="pc_history_date",
             )
 
-            df = get_post_close(con, date=selected_date, limit=500)
+            df = _load_post_close_data(selected_date, limit=500)
             if not df.empty:
                 import pandas as pd
 
@@ -342,7 +428,7 @@ def render_post_close():
                 df_display["Volume"] = df_display["Volume"].apply(
                     lambda x: f"{x:,.0f}" if x else "0"
                 )
-                st.dataframe(df_display, use_container_width=True, height=400)
+                st.dataframe(df_display, width='stretch', height=400)
             else:
                 st.info("No data for selected date.")
 
@@ -351,9 +437,9 @@ def render_post_close():
         if st.button("Export All Dates to Disk", key="pc_export_all"):
             save_dir = EXPORTS_DIR / "post_close"
             save_dir.mkdir(parents=True, exist_ok=True)
-            all_dates = get_post_close_dates(con)
+            all_dates = _load_post_close_dates()
             for d in all_dates:
-                d_df = get_post_close(con, date=d, limit=5000)
+                d_df = _load_post_close_data(d, limit=5000)
                 if not d_df.empty:
                     d_df[["symbol", "company_name", "volume", "turnover"]].to_csv(
                         save_dir / f"turnover_{d}.csv", index=False

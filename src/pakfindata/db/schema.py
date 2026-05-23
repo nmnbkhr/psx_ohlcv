@@ -13,6 +13,54 @@ CREATE TABLE IF NOT EXISTS symbols (
     updated_at         TEXT NOT NULL
 );
 
+-- Status definitions — labels and descriptions for each status code.
+-- DB-driven so new statuses from PSX can be added without code changes.
+CREATE TABLE IF NOT EXISTS symbol_status_definitions (
+    status          TEXT PRIMARY KEY,
+    label           TEXT NOT NULL,
+    description     TEXT,
+    is_suffix       INTEGER DEFAULT 1,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- SCD2: tracks every status transition for each base symbol.
+-- Written only on CHANGE — enables as-is and as-was queries.
+CREATE TABLE IF NOT EXISTS symbol_status_history (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol          TEXT NOT NULL,           -- base symbol (HBL, not HBLXD)
+    status          TEXT NOT NULL,           -- NORMAL, XD, XB, XR, XA, XI, XW, NC, WU
+    start_date      TEXT NOT NULL,           -- date this status period started (YYYY-MM-DD)
+    end_date        TEXT,                    -- date this status ended (NULL = still active)
+    is_current      INTEGER DEFAULT 1,       -- 1 if active now, 0 if closed
+    source_symbol   TEXT NOT NULL,           -- symbol as seen on market watch (HBLXD or HBL)
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(symbol, status, start_date)
+);
+CREATE INDEX IF NOT EXISTS idx_ssh_symbol ON symbol_status_history(symbol);
+CREATE INDEX IF NOT EXISTS idx_ssh_current ON symbol_status_history(is_current) WHERE is_current = 1;
+
+-- Company listing status from PSX company page (SUSPENDED, WINDING-UP, DEFAULTER, etc.)
+-- Separate from trading statuses (XD/XB/XR) which are per-day market events.
+-- This tracks the company's overall listing/regulatory status on the exchange.
+CREATE TABLE IF NOT EXISTS company_listing_status (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol          TEXT NOT NULL,
+    status          TEXT NOT NULL,           -- SUSPENDED, WINDING-UP, DEFAULTER, DELISTED, etc.
+    is_current      INTEGER DEFAULT 1,       -- 1 if still active
+    first_seen      TEXT NOT NULL,           -- when we first detected this status
+    last_seen       TEXT NOT NULL,           -- last time we confirmed this status
+    removed_at      TEXT,                    -- when status was no longer on the page (NULL = still active)
+    source          TEXT DEFAULT 'PSX_DPS',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(symbol, status, first_seen)
+);
+CREATE INDEX IF NOT EXISTS idx_cls_symbol ON company_listing_status(symbol);
+CREATE INDEX IF NOT EXISTS idx_cls_current ON company_listing_status(is_current) WHERE is_current = 1;
+CREATE INDEX IF NOT EXISTS idx_cls_status ON company_listing_status(status);
+
 CREATE TABLE IF NOT EXISTS eod_ohlcv (
     symbol       TEXT NOT NULL,
     date         TEXT NOT NULL,
@@ -58,38 +106,57 @@ CREATE TABLE IF NOT EXISTS sync_failures (
 
 CREATE INDEX IF NOT EXISTS idx_sync_failures_run ON sync_failures(run_id);
 
--- Data freshness tracking per domain
+-- Data freshness / catalog tracking per dataset (a.k.a. domain).
+-- Single source of truth for "what data is current?".
+-- Written atomically by every safe_writer sync path via db/catalog.py.
+-- Read by every UI freshness query.
+-- Indexes on `source` / `status` are created by _migrate_data_freshness_table
+-- in db/connection.py — they reference columns added by that same migration
+-- so they cannot live here (this SQL runs before migrations on existing DBs).
 CREATE TABLE IF NOT EXISTS data_freshness (
-    domain         TEXT PRIMARY KEY,
-    display_name   TEXT NOT NULL,
-    source_table   TEXT NOT NULL,
-    date_column    TEXT NOT NULL DEFAULT 'date',
-    last_sync_at   TEXT,
-    last_row_date  TEXT,
-    row_count      INTEGER DEFAULT 0,
-    status         TEXT DEFAULT 'unknown'
+    domain           TEXT PRIMARY KEY,            -- dataset_id (snake_case)
+    display_name     TEXT NOT NULL,
+    source_table     TEXT NOT NULL,
+    date_column      TEXT NOT NULL DEFAULT 'date',
+    last_sync_at     TEXT,                        -- ISO8601, set on every update
+    last_row_date    TEXT,                        -- MAX(date_column) in source_table
+    row_count        INTEGER DEFAULT 0,
+    status           TEXT DEFAULT 'unknown',      -- 'ok' | 'partial' | 'failed' | 'unknown'
+    last_sync_error  TEXT,                        -- NULL on success
+    source           TEXT,                        -- 'psx_dps' | 'sbp_easydata' | 'mufap' | 'computed' | ...
+    schema_version   INTEGER NOT NULL DEFAULT 1,
+    notes            TEXT,                        -- free text
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Intraday bars table for storing intraday time series data
+-- Intraday bars (v3 schema): market-aware, multi-resolution OHLCV
+-- market: REG | ODL | FUT | CONT | IDX_FUT — prevents REG/ODL collision for dual-market ETFs
+-- interval: '1s' | '5s' | '1m' | '5m' — lets one table hold multiple resolutions
 CREATE TABLE IF NOT EXISTS intraday_bars (
-    symbol      TEXT NOT NULL,
-    ts          TEXT NOT NULL,
-    ts_epoch    INTEGER NOT NULL,
-    open        REAL NULL,
-    high        REAL NULL,
-    low         REAL NULL,
-    close       REAL NULL,
-    volume      REAL NULL,
-    interval    TEXT NOT NULL DEFAULT 'int',
-    operation   TEXT NOT NULL DEFAULT 'insert',
-    process_ts  TEXT NOT NULL DEFAULT (datetime('now')),
-    ingested_at TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (symbol, ts, close)
+    symbol       TEXT NOT NULL,
+    market       TEXT NOT NULL DEFAULT 'REG',
+    date         TEXT NOT NULL,
+    ts           TEXT NOT NULL,
+    ts_epoch     INTEGER NOT NULL,
+    interval     TEXT NOT NULL DEFAULT '1s',
+    open         REAL,
+    high         REAL,
+    low          REAL,
+    close        REAL,
+    volume       REAL DEFAULT 0,
+    value        REAL DEFAULT 0,
+    trade_count  INTEGER DEFAULT 0,
+    vwap         REAL,
+    source       TEXT DEFAULT 'legacy',
+    ingested_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (symbol, market, ts_epoch, interval)
 );
 
-CREATE INDEX IF NOT EXISTS idx_intraday_bars_symbol ON intraday_bars(symbol);
-CREATE INDEX IF NOT EXISTS idx_intraday_bars_ts ON intraday_bars(ts);
+CREATE INDEX IF NOT EXISTS idx_ib_date_symbol     ON intraday_bars(date, symbol);
+CREATE INDEX IF NOT EXISTS idx_ib_symbol_ts       ON intraday_bars(symbol, ts_epoch);
+CREATE INDEX IF NOT EXISTS idx_ib_market_date     ON intraday_bars(market, date);
 CREATE INDEX IF NOT EXISTS idx_intraday_bars_ts_epoch ON intraday_bars(ts_epoch);
+CREATE INDEX IF NOT EXISTS idx_ib_symbol_interval ON intraday_bars(symbol, interval, ts_epoch);
 
 -- Intraday sync state tracking
 CREATE TABLE IF NOT EXISTS intraday_sync_state (
@@ -112,6 +179,7 @@ CREATE TABLE IF NOT EXISTS company_profile (
     symbol              TEXT PRIMARY KEY,
     company_name        TEXT NULL,
     sector_name         TEXT NULL,
+    listing_status      TEXT NULL,           -- e.g. 'SUSPENDED,WINDING-UP' or NULL for normal
     business_description TEXT NULL,
     address             TEXT NULL,
     website             TEXT NULL,
@@ -1034,6 +1102,34 @@ CREATE TABLE IF NOT EXISTS instruments_sync_runs (
 );
 
 -- =============================================================================
+-- INSTRUMENT REGISTRY — Universal lookup across all asset classes
+-- Thin reference layer: one row per instrument, points to operational tables
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS instrument_registry (
+    registry_id     TEXT PRIMARY KEY,
+    symbol          TEXT NOT NULL,
+    name            TEXT,
+    asset_class     TEXT NOT NULL,
+    instrument_type TEXT NOT NULL,
+    source          TEXT NOT NULL,
+    source_table    TEXT,
+    source_id       TEXT,
+    isin            TEXT,
+    currency        TEXT DEFAULT 'PKR',
+    sector          TEXT,
+    is_active       INTEGER DEFAULT 1,
+    discovered_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ir_asset_class ON instrument_registry(asset_class);
+CREATE INDEX IF NOT EXISTS idx_ir_type ON instrument_registry(instrument_type);
+CREATE INDEX IF NOT EXISTS idx_ir_source ON instrument_registry(source);
+CREATE INDEX IF NOT EXISTS idx_ir_symbol ON instrument_registry(symbol);
+CREATE INDEX IF NOT EXISTS idx_ir_active ON instrument_registry(is_active) WHERE is_active = 1;
+
+-- =============================================================================
 -- Phase 2: FX Analytics Tables
 -- =============================================================================
 
@@ -1576,6 +1672,23 @@ CREATE TABLE IF NOT EXISTS kibor_rates (
 CREATE INDEX IF NOT EXISTS idx_kibor_rates_date
     ON kibor_rates(rate_date);
 
+-- SBP Weighted Average Lending & Deposit Rates (by bank type, monthly)
+-- Source: https://www.sbp.org.pk/ecodata/Lendingdepositrates_Arch.xls
+CREATE TABLE IF NOT EXISTS sbp_lending_deposit_rates (
+    rate_date           TEXT NOT NULL,              -- YYYY-MM-DD (first of month)
+    bank_type           TEXT NOT NULL,              -- 'all_banks','public','private','foreign','specialized','dfis','mfbs','all_fi'
+    lending_rate        REAL,                       -- Weighted avg lending rate (%)
+    deposit_rate        REAL,                       -- Weighted avg deposit rate (%)
+    lending_excl_zero   REAL,                       -- Lending excl zero markup (%)
+    deposit_excl_zero   REAL,                       -- Deposit excl zero markup (%)
+    source              TEXT NOT NULL DEFAULT 'SBP_XLS',
+    ingested_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY(rate_date, bank_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sbp_ldr_date
+    ON sbp_lending_deposit_rates(rate_date);
+
 -- =============================================================================
 -- COMPOSITE / COVERING INDEXES for common query patterns
 -- =============================================================================
@@ -1595,4 +1708,247 @@ CREATE INDEX IF NOT EXISTS idx_fin_ann_date
 -- Company quote snapshots queried by symbol + timestamp
 CREATE INDEX IF NOT EXISTS idx_quote_snap_symbol_ts
     ON company_quote_snapshots(symbol, ts);
+
+-- =============================================================================
+-- FUND QUANT ENGINE TABLES
+-- =============================================================================
+
+-- Risk metrics computed from NAV history (materialized for performance)
+CREATE TABLE IF NOT EXISTS fund_risk_metrics (
+    fund_id              TEXT PRIMARY KEY,
+    fund_name            TEXT,
+    category             TEXT,
+    -- Returns
+    return_1m            REAL,
+    return_3m            REAL,
+    return_6m            REAL,
+    return_1y            REAL,
+    return_2y            REAL,
+    return_3y            REAL,
+    return_5y            REAL,
+    return_ytd           REAL,
+    return_since_inception REAL,
+    -- Risk metrics
+    volatility_1y        REAL,
+    sharpe_ratio         REAL,
+    sortino_ratio        REAL,
+    max_drawdown         REAL,
+    max_drawdown_start   TEXT,
+    max_drawdown_end     TEXT,
+    beta                 REAL,
+    alpha                REAL,
+    r_squared            REAL,
+    var_95               REAL,
+    cvar_95              REAL,
+    information_ratio    REAL,
+    tracking_error       REAL,
+    treynor_ratio        REAL,
+    up_capture           REAL,
+    down_capture         REAL,
+    -- Metadata
+    nav_count            INTEGER,
+    first_nav_date       TEXT,
+    last_nav_date        TEXT,
+    computed_at          TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_frm_category
+    ON fund_risk_metrics(category);
+CREATE INDEX IF NOT EXISTS idx_frm_fund
+    ON fund_risk_metrics(fund_name);
+
+-- MA crossover and volatility signals
+CREATE TABLE IF NOT EXISTS fund_signals (
+    fund_name      TEXT NOT NULL,
+    signal_date    TEXT NOT NULL,
+    signal_type    TEXT NOT NULL,  -- 'MA_CROSS', 'DRAWDOWN_ALERT', 'VOL_REGIME'
+    signal_value   TEXT NOT NULL,  -- 'BULLISH', 'BEARISH', 'HIGH_VOL', etc.
+    details        TEXT,           -- JSON with additional context
+    PRIMARY KEY (fund_name, signal_date, signal_type)
+);
+
+-- Calendar year returns per fund (materialized)
+CREATE TABLE IF NOT EXISTS fund_calendar_returns (
+    fund_id       TEXT NOT NULL,
+    year          INTEGER NOT NULL,
+    return_pct    REAL,
+    first_nav     REAL,
+    last_nav      REAL,
+    trading_days  INTEGER,
+    computed_at   TEXT,
+    PRIMARY KEY (fund_id, year)
+);
+
+-- Compliance screening results
+CREATE TABLE IF NOT EXISTS compliance_screening (
+    entity_name    TEXT NOT NULL,
+    entity_type    TEXT NOT NULL,  -- 'AMC', 'DIRECTOR', 'INVESTOR'
+    screened_at    TEXT NOT NULL,
+    status         TEXT NOT NULL,  -- 'CLEAR', 'MATCH', 'POTENTIAL_MATCH', 'NOT_SCREENED'
+    risk_score     REAL DEFAULT 0.0,
+    result_json    TEXT,           -- full screening result as JSON
+    PRIMARY KEY (entity_name, entity_type, screened_at)
+);
+
+-- =============================================================================
+-- ALM (ASSET-LIABILITY MANAGEMENT) TABLES
+-- Separate from PSX/market tables — bank balance sheet & FTP analytics
+-- =============================================================================
+
+-- Product catalog: bank's asset & liability products
+CREATE TABLE IF NOT EXISTS alm_products (
+    product_code        TEXT PRIMARY KEY,          -- 'CASA_CURR', 'TDR_6M', 'CORP_LOAN_KIBOR3M'
+    product_name        TEXT NOT NULL,
+    product_type        TEXT NOT NULL,              -- 'deposit', 'loan', 'investment', 'borrowing', 'equity'
+    asset_liability     TEXT NOT NULL,              -- 'A' (asset) or 'L' (liability)
+    rate_type           TEXT NOT NULL,              -- 'fixed', 'floating', 'administered', 'zero'
+    reference_rate      TEXT,                       -- 'KIBOR_3M', 'KIBOR_6M', 'PKRV', 'SBP_POLICY', NULL
+    spread_bps          INTEGER DEFAULT 0,          -- contractual spread over reference rate
+    repricing_freq_months INTEGER,                  -- NULL=bullet/fixed, 1/3/6/12 for floating
+    contractual_maturity_months INTEGER,            -- legal maturity
+    behavioral_maturity_months INTEGER,             -- modeled maturity (CASA core vs volatile)
+    currency            TEXT DEFAULT 'PKR',
+    is_islamic          INTEGER DEFAULT 0,          -- 1=Islamic product (use PKISRV curve)
+    liq_premium_bps     INTEGER DEFAULT 0,          -- liquidity premium add-on for FTP
+    optionality_cost_bps INTEGER DEFAULT 0,         -- prepayment/early-withdrawal cost
+    core_pct            REAL DEFAULT 1.0,           -- for CASA: fraction that is stable/core (0-1)
+    core_tenor_months   INTEGER,                    -- tenor assigned to core CASA portion
+    volatile_tenor_months INTEGER DEFAULT 0,        -- tenor for volatile portion (typically ON)
+    category            TEXT,                       -- 'CASA', 'TDR', 'CORPORATE', 'CONSUMER', 'SME', 'SLR', 'INTERBANK'
+    is_active           INTEGER DEFAULT 1,
+    created_at          TEXT DEFAULT (datetime('now')),
+    updated_at          TEXT DEFAULT (datetime('now'))
+);
+
+-- Balance sheet positions by repricing bucket (daily or monthly snapshot)
+CREATE TABLE IF NOT EXISTS alm_positions (
+    as_of_date          TEXT NOT NULL,              -- YYYY-MM-DD
+    product_code        TEXT NOT NULL,
+    bucket              TEXT NOT NULL,              -- 'ON','1D-1M','1M-3M','3M-6M','6M-1Y','1Y-2Y','2Y-3Y','3Y-5Y','5Y-10Y','10Y+'
+    outstanding_mn      REAL NOT NULL,              -- PKR millions
+    weighted_avg_rate   REAL,                       -- actual customer rate (%)
+    num_accounts        INTEGER,
+    avg_remaining_mat_months REAL,                  -- average remaining maturity
+    source              TEXT DEFAULT 'MANUAL',      -- 'MANUAL', 'CBS_IMPORT', 'API'
+    ingested_at         TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (as_of_date, product_code, bucket)
+);
+
+CREATE INDEX IF NOT EXISTS idx_alm_pos_date ON alm_positions(as_of_date);
+CREATE INDEX IF NOT EXISTS idx_alm_pos_product ON alm_positions(product_code);
+
+-- FTP rates computed daily per product
+CREATE TABLE IF NOT EXISTS alm_ftp_rates (
+    as_of_date          TEXT NOT NULL,
+    product_code        TEXT NOT NULL,
+    ftp_curve           TEXT,                       -- 'PKRV', 'PKISRV', 'KIBOR', 'KONIA', 'SOFR'
+    ftp_tenor_months    REAL,                       -- matched-maturity tenor used
+    ftp_base_rate       REAL NOT NULL,              -- rate from curve at matched tenor (%)
+    liq_premium_bps     REAL DEFAULT 0,             -- term liquidity charge (bps)
+    credit_spread_bps   REAL DEFAULT 0,             -- credit risk component (bps)
+    optionality_bps     REAL DEFAULT 0,             -- prepayment/early-break cost (bps)
+    total_ftp_rate      REAL NOT NULL,              -- all-in FTP rate (%)
+    customer_rate       REAL,                       -- actual weighted avg rate on book (%)
+    ftp_margin_bps      REAL,                       -- spread earned = (customer - FTP)*100 for A, (FTP - customer)*100 for L
+    outstanding_mn      REAL,                       -- balance for P&L attribution
+    daily_nii_mn        REAL,                       -- margin * balance / 365 (daily NII contribution)
+    computed_at         TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (as_of_date, product_code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_alm_ftp_date ON alm_ftp_rates(as_of_date);
+
+-- NII / EVE sensitivity scenarios
+CREATE TABLE IF NOT EXISTS alm_sensitivity (
+    as_of_date          TEXT NOT NULL,
+    scenario            TEXT NOT NULL,              -- 'BASE', '+100bps', '-100bps', '+200bps', '-200bps', 'SBP_CUT_150'
+    shock_bps           INTEGER,                    -- parallel shift magnitude
+    nii_base_mn         REAL,                       -- base NII (annual, PKR mn)
+    nii_shocked_mn      REAL,                       -- shocked NII
+    nii_impact_mn       REAL,                       -- change in NII
+    nii_pct_change      REAL,                       -- % change
+    eve_base_mn         REAL,                       -- base Economic Value of Equity
+    eve_shocked_mn      REAL,
+    eve_impact_mn       REAL,
+    eve_pct_change      REAL,
+    duration_gap        REAL,                       -- modified duration gap
+    computed_at         TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (as_of_date, scenario)
+);
+
+CREATE INDEX IF NOT EXISTS idx_alm_sens_date ON alm_sensitivity(as_of_date);
+
+-- Liquidity maturity ladder
+CREATE TABLE IF NOT EXISTS alm_liquidity_ladder (
+    as_of_date          TEXT NOT NULL,
+    bucket              TEXT NOT NULL,              -- 'ON','1D-1M','1M-3M','3M-6M','6M-1Y','1Y+'
+    inflows_mn          REAL DEFAULT 0,             -- maturing assets + expected inflows (PKR mn)
+    outflows_mn         REAL DEFAULT 0,             -- maturing liabilities + expected outflows
+    net_gap_mn          REAL,                       -- inflows - outflows
+    cumulative_gap_mn   REAL,                       -- running sum of net gap
+    hqla_mn             REAL,                       -- High Quality Liquid Assets in bucket
+    lcr_pct             REAL,                       -- Liquidity Coverage Ratio proxy
+    computed_at         TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (as_of_date, bucket)
+);
+
+CREATE INDEX IF NOT EXISTS idx_alm_liq_date ON alm_liquidity_ladder(as_of_date);
+
+-- Monthly FTP P&L attribution (volume vs rate vs mix)
+CREATE TABLE IF NOT EXISTS alm_ftp_pnl (
+    month               TEXT NOT NULL,              -- YYYY-MM
+    product_code        TEXT NOT NULL,
+    avg_balance_mn      REAL,                       -- average outstanding for the month
+    avg_customer_rate   REAL,                       -- avg weighted customer rate
+    avg_ftp_rate        REAL,                       -- avg FTP rate for the month
+    avg_margin_bps      REAL,                       -- avg spread
+    nii_contribution_mn REAL,                       -- margin * balance * days/365
+    volume_effect_mn    REAL,                       -- change in NII due to balance change
+    rate_effect_mn      REAL,                       -- change in NII due to rate change
+    mix_effect_mn       REAL,                       -- residual cross-effect
+    computed_at         TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (month, product_code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_alm_pnl_month ON alm_ftp_pnl(month);
+
+-- Full tick logs from JSONL files (all fields preserved)
+CREATE TABLE IF NOT EXISTS tick_logs (
+    symbol         TEXT NOT NULL,
+    market         TEXT NOT NULL,
+    timestamp      REAL NOT NULL,
+    _ts            TEXT NOT NULL,
+    price          REAL,
+    open           REAL,
+    high           REAL,
+    low            REAL,
+    change         REAL,
+    change_pct     REAL,
+    volume         INTEGER DEFAULT 0,
+    value          REAL DEFAULT 0,
+    trades         INTEGER DEFAULT 0,
+    bid            REAL DEFAULT 0,
+    ask            REAL DEFAULT 0,
+    bid_vol        INTEGER DEFAULT 0,
+    ask_vol        INTEGER DEFAULT 0,
+    prev_close     REAL,
+    source_file    TEXT,
+    ingested_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (symbol, market, timestamp, price, volume, trades)
+);
+
+-- _load_ticks: WHERE _ts LIKE '2026-03-13%' ORDER BY timestamp
+CREATE INDEX IF NOT EXISTS idx_tick_logs_ts_date ON tick_logs(_ts, timestamp);
+
+-- Per-symbol queries: WHERE symbol = ? AND market = 'REG'
+CREATE INDEX IF NOT EXISTS idx_tick_logs_sym_market ON tick_logs(symbol, market, timestamp);
+
+-- Market-wide scans: WHERE market = ? (breadth, correlation)
+CREATE INDEX IF NOT EXISTS idx_tick_logs_market_ts ON tick_logs(market, _ts);
+
+-- Sync tracking: DISTINCT source_file
+CREATE INDEX IF NOT EXISTS idx_tick_logs_source ON tick_logs(source_file);
+
+-- Epoch range queries (raw timestamp lookups)
+CREATE INDEX IF NOT EXISTS idx_tick_logs_epoch ON tick_logs(timestamp);
 """

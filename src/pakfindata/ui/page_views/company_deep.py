@@ -1,10 +1,19 @@
-"""Company deep analytics page."""
+"""Company deep analytics page.
+
+The smart client (``pakfindata.api_client``) is retained for the
+multi-section overview / quotes / financials / ratios / payouts
+loaders (DO NOT TOUCH; Phase 1.8.x will retire it). Migration target
+in 1.7.D.5 was the inline ``sqlite3.connect()`` / ``con.execute()``
+read sites scattered through the page body — those now go through
+``pakfindata.ui.api.client`` (the new /v1 wrapper).
+"""
 
 import pandas as pd
 import streamlit as st
 
 from pakfindata.api_client import get_client
 from pakfindata.sources.deep_scraper import deep_scrape_symbol
+from pakfindata.ui.api import client as v1_client
 from pakfindata.ui.session_tracker import (
     track_button_click,
     track_page_visit,
@@ -15,6 +24,38 @@ from pakfindata.ui.components.helpers import (
     format_volume,
     render_footer,
 )
+
+
+# ── Cached data loaders ──────────────────────────────────────────────────────
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _load_company_overview(symbol: str) -> dict | None:
+    client = get_client()
+    return client.get_company_overview(symbol)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _load_company_quotes(symbol: str, limit: int = 100) -> pd.DataFrame:
+    client = get_client()
+    return client.get_company_quotes(symbol, limit=limit)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _load_company_financials(symbol: str) -> pd.DataFrame:
+    client = get_client()
+    return client.get_company_financials(symbol)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _load_company_ratios(symbol: str) -> pd.DataFrame:
+    client = get_client()
+    return client.get_company_ratios(symbol)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _load_company_payouts(symbol: str) -> pd.DataFrame:
+    client = get_client()
+    return client.get_company_payouts(symbol)
 
 
 def _fmt_pkr(value) -> str:
@@ -57,7 +98,7 @@ def render_company_deep():
         ).strip().upper()
 
     with search_col2:
-        refresh_data = st.button("🔄 Refresh", type="primary", use_container_width=True)
+        refresh_data = st.button("🔄 Refresh", type="primary", width='stretch')
 
     with search_col3:
         st.caption(f"{len(symbols_with_profiles)} companies")
@@ -287,7 +328,7 @@ def render_company_deep():
     # =================================================================
     # FETCH DATA
     # =================================================================
-    unified_data = client.get_company_overview(symbol)
+    unified_data = _load_company_overview(symbol)
     signals = client.get_company_latest_signals(symbol)
     quote_stats = client.get_company_quote_stats(symbol)
 
@@ -315,7 +356,7 @@ def render_company_deep():
     change_pct = data.get("change_pct") or 0
 
     # Determine color based on change
-    price_color = "#00C853" if change_pct >= 0 else "#FF1744"
+    price_color = "#00C853" if change_pct >= 0 else "#FF5252"
     change_sign = "+" if change_pct >= 0 else ""
     arrow = "▲" if change_pct > 0 else "▼" if change_pct < 0 else "●"
 
@@ -355,26 +396,14 @@ def render_company_deep():
 
     with qs_col3:
         pe = data.get("pe_ratio")
-        # Get sector P/E for comparison
-        sector_code = data.get("sector_code") or data.get("sector")
+        # Get sector P/E for comparison via /v1/companies/{sym}/sector-valuation
         sector_pe_delta = None
-        if pe and sector_code:
-            try:
-                sector_pe_result = con.execute("""
-                    SELECT AVG(CAST(json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') AS REAL)) as avg_pe
-                    FROM company_snapshots cs
-                    JOIN symbols s ON cs.symbol = s.symbol
-                    WHERE s.sector = ?
-                    AND json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') > 0
-                    AND cs.snapshot_date = (SELECT MAX(snapshot_date) FROM company_snapshots cs2 WHERE cs2.symbol = cs.symbol)
-                """, (sector_code,)).fetchone()
-                if sector_pe_result and sector_pe_result["avg_pe"]:
-                    sector_avg_pe = sector_pe_result["avg_pe"]
-                    pe_diff = pe - sector_avg_pe
-                    # Negative delta is good (cheaper than sector)
-                    sector_pe_delta = f"{pe_diff:+.1f} vs sector"
-            except Exception:
-                pass
+        if pe:
+            sv = v1_client.get_sector_valuation(symbol)
+            if sv and sv.get("sector_avg_pe") and sv.get("sector_count", 0) >= 3:
+                pe_diff = pe - sv["sector_avg_pe"]
+                # Negative delta is good (cheaper than sector)
+                sector_pe_delta = f"{pe_diff:+.1f} vs sector"
         st.metric("P/E Ratio", f"{pe:.2f}" if pe else "N/A",
                   delta=sector_pe_delta, delta_color="inverse" if sector_pe_delta else "off",
                   help="Price-to-Earnings ratio. Lower may indicate undervaluation.")
@@ -405,84 +434,46 @@ def render_company_deep():
     # VALUATION COMPARISON - Sector Context
     # =================================================================
     pe = data.get("pe_ratio")
-    sector_code = data.get("sector_code") or data.get("sector")
+    if pe:
+        sv = v1_client.get_sector_valuation(symbol)
+        if sv and sv.get("sector_count", 0) >= 3 and sv.get("sector_avg_pe"):
+            sector_name = sv.get("sector_name") or data.get("sector_name") or "Sector"
+            min_pe = sv.get("sector_min_pe")
+            max_pe = sv.get("sector_max_pe")
+            avg_pe = sv["sector_avg_pe"]
 
-    if pe and sector_code:
-        try:
-            # Get sector valuation metrics
-            sector_valuation = con.execute("""
-                SELECT
-                    COUNT(*) as sector_count,
-                    AVG(CAST(json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') AS REAL)) as avg_pe,
-                    MIN(CAST(json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') AS REAL)) as min_pe,
-                    MAX(CAST(json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') AS REAL)) as max_pe
-                FROM company_snapshots cs
-                JOIN symbols s ON cs.symbol = s.symbol
-                WHERE s.sector = ?
-                AND CAST(json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') AS REAL) > 0
-                AND CAST(json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') AS REAL) < 500
-                AND cs.snapshot_date = (SELECT MAX(snapshot_date) FROM company_snapshots cs2 WHERE cs2.symbol = cs.symbol)
-            """, (sector_code,)).fetchone()
+            with st.expander(f"📊 Valuation vs {sector_name} Sector", expanded=False):
+                val_col1, val_col2, val_col3, val_col4 = st.columns(4)
 
-            # Get percentile rank within sector
-            pe_rank = con.execute("""
-                SELECT
-                    COUNT(*) as cheaper_count,
-                    (SELECT COUNT(*) FROM company_snapshots cs2
-                     JOIN symbols s2 ON cs2.symbol = s2.symbol
-                     WHERE s2.sector = ?
-                     AND CAST(json_extract(cs2.snapshot_json, '$.fundamentals.pe_ratio') AS REAL) > 0
-                     AND CAST(json_extract(cs2.snapshot_json, '$.fundamentals.pe_ratio') AS REAL) < 500
-                     AND cs2.snapshot_date = (SELECT MAX(snapshot_date) FROM company_snapshots cs3 WHERE cs3.symbol = cs2.symbol)
-                    ) as total_count
-                FROM company_snapshots cs
-                JOIN symbols s ON cs.symbol = s.symbol
-                WHERE s.sector = ?
-                AND CAST(json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') AS REAL) > ?
-                AND CAST(json_extract(cs.snapshot_json, '$.fundamentals.pe_ratio') AS REAL) < 500
-                AND cs.snapshot_date = (SELECT MAX(snapshot_date) FROM company_snapshots cs2 WHERE cs2.symbol = cs.symbol)
-            """, (sector_code, sector_code, pe)).fetchone()
+                with val_col1:
+                    st.metric("Your P/E", f"{pe:.1f}")
 
-            if sector_valuation and sector_valuation["sector_count"] >= 3:
-                sector_name = data.get("sector_name") or sector_code
+                with val_col2:
+                    diff = pe - avg_pe
+                    st.metric("Sector Avg P/E", f"{avg_pe:.1f}",
+                              delta=f"{diff:+.1f}", delta_color="inverse")
 
-                with st.expander(f"📊 Valuation vs {sector_name} Sector", expanded=False):
-                    val_col1, val_col2, val_col3, val_col4 = st.columns(4)
+                with val_col3:
+                    if min_pe is not None and max_pe is not None:
+                        st.metric("Sector Range", f"{min_pe:.0f} - {max_pe:.0f}")
 
-                    with val_col1:
-                        st.metric("Your P/E", f"{pe:.1f}")
+                with val_col4:
+                    pct = sv.get("pe_percentile")
+                    if pct is not None:
+                        st.metric("Cheaper Than", f"{pct:.0f}% of sector",
+                                  help="Percentage of sector stocks with higher P/E (more expensive)")
 
-                    with val_col2:
-                        avg_pe = sector_valuation["avg_pe"]
-                        diff = pe - avg_pe
-                        st.metric("Sector Avg P/E", f"{avg_pe:.1f}",
-                                  delta=f"{diff:+.1f}", delta_color="inverse")
-
-                    with val_col3:
-                        st.metric("Sector Range",
-                                  f"{sector_valuation['min_pe']:.0f} - {sector_valuation['max_pe']:.0f}")
-
-                    with val_col4:
-                        if pe_rank and pe_rank["total_count"] > 0:
-                            cheaper = pe_rank["cheaper_count"]
-                            total = pe_rank["total_count"]
-                            percentile = (cheaper / total) * 100
-                            st.metric("Cheaper Than", f"{percentile:.0f}% of sector",
-                                      help="Percentage of sector stocks with higher P/E (more expensive)")
-
-                    # Visual comparison
-                    if sector_valuation["max_pe"] > sector_valuation["min_pe"]:
-                        pe_position = (pe - sector_valuation["min_pe"]) / (sector_valuation["max_pe"] - sector_valuation["min_pe"])
-                        pe_position = min(1.0, max(0.0, pe_position))
-                        st.progress(pe_position)
-                        if pe_position < 0.33:
-                            st.caption("✅ **Value Zone** - P/E in lower third of sector range")
-                        elif pe_position < 0.67:
-                            st.caption("⚪ **Fair Value** - P/E in middle of sector range")
-                        else:
-                            st.caption("⚠️ **Premium Valuation** - P/E in upper third of sector range")
-        except Exception:
-            pass
+                # Visual comparison
+                if min_pe is not None and max_pe is not None and max_pe > min_pe:
+                    pe_position = (pe - min_pe) / (max_pe - min_pe)
+                    pe_position = min(1.0, max(0.0, pe_position))
+                    st.progress(pe_position)
+                    if pe_position < 0.33:
+                        st.caption("✅ **Value Zone** - P/E in lower third of sector range")
+                    elif pe_position < 0.67:
+                        st.caption("⚪ **Fair Value** - P/E in middle of sector range")
+                    else:
+                        st.caption("⚠️ **Premium Valuation** - P/E in upper third of sector range")
 
     # =================================================================
     # DETAILED QUOTE SECTION
@@ -561,19 +552,31 @@ def render_company_deep():
 
     # ----- Company Profile -----
     profile = data.get("profile_data", {})
-    if profile or data.get("company_name"):
+
+    # Enrich with company_profile + key_people from /v1
+    db_profile = {}
+    key_people = []
+    extras = v1_client.get_company_profile_extras(symbol)
+    if extras:
+        db_profile = extras.get("profile") or {}
+        key_people = extras.get("key_people") or []
+
+    if profile or data.get("company_name") or db_profile:
         st.subheader("🏢 Company Profile")
 
         profile_cols = st.columns(2)
         with profile_cols[0]:
-            st.markdown(f"**Company Name:** {data.get('company_name') or profile.get('company_name', 'N/A')}")
-            st.markdown(f"**Sector:** {data.get('sector_name') or profile.get('sector', 'N/A')}")
+            st.markdown(f"**Company Name:** {data.get('company_name') or db_profile.get('company_name') or profile.get('company_name', 'N/A')}")
+            st.markdown(f"**Sector:** {data.get('sector_name') or db_profile.get('sector_name') or profile.get('sector', 'N/A')}")
             st.markdown(f"**Listed In:** {profile.get('listed_in', 'N/A')}")
             shares = data.get("total_shares") or profile.get("shares_outstanding")
             if shares:
                 st.markdown(f"**Shares Outstanding:** {shares:,}")
             else:
                 st.markdown("**Shares Outstanding:** N/A")
+            website = db_profile.get("website", "")
+            if website:
+                st.markdown(f"**Website:** [{website}]({website})")
 
         with profile_cols[1]:
             paid_up = profile.get("paid_up_capital")
@@ -584,11 +587,35 @@ def render_company_deep():
             st.markdown(f"**Face Value:** {profile.get('face_value', 'N/A')}")
             st.markdown(f"**Market Lot:** {profile.get('market_lot', 'N/A')}")
             st.markdown(f"**Fiscal Year End:** {profile.get('fiscal_year_end', 'N/A')}")
+            auditor = db_profile.get("auditor", "")
+            if auditor:
+                st.markdown(f"**Auditor:** {auditor}")
+            registrar = db_profile.get("registrar") or profile.get("registrar", "")
+            if registrar:
+                st.markdown(f"**Registrar:** {registrar}")
 
-        # Additional info in expander
+        # Business description
+        desc = db_profile.get("business_description") or db_profile.get("description", "")
+        if desc and len(desc) > 10:
+            with st.expander("Business Description", expanded=False):
+                st.markdown(desc)
+
+        # Key people
+        if key_people:
+            with st.expander(f"Key People ({len(key_people)})", expanded=False):
+                kp_df = pd.DataFrame(key_people)
+                st.dataframe(kp_df, width='stretch', hide_index=True)
+
+        # More details
         with st.expander("More Details"):
-            st.markdown(f"**Registrar:** {profile.get('registrar', 'N/A')}")
-            st.markdown(f"**Last Updated:** {data.get('scraped_at', 'N/A')}")
+            address = db_profile.get("address", "")
+            if address:
+                st.markdown(f"**Address:** {address}")
+            phone = db_profile.get("phone", "")
+            if phone:
+                st.markdown(f"**Phone:** {phone}")
+            updated = db_profile.get("updated_at") or data.get("scraped_at", "N/A")
+            st.markdown(f"**Last Updated:** {updated}")
 
     # ----- Trading Sessions (Multi-Market) -----
     trading_sessions = data.get("trading_sessions", {})
@@ -627,34 +654,44 @@ def render_company_deep():
         else:
             st.info("No trading session data available.")
 
-    # ----- Recent Announcements -----
+    # ----- Recent Announcements (enriched from corporate_announcements table) -----
     announcements = data.get("announcements", [])
-    if announcements:
+    # Enrich with corporate_announcements via /v1
+    db_announcements = v1_client.get_company_announcements(symbol, limit=30) or []
+
+    all_announcements = announcements or db_announcements
+    if all_announcements:
         st.markdown("---")
         st.subheader("📣 Recent Announcements")
 
         # Show count
-        st.caption(f"Showing {len(announcements)} most recent announcements")
+        st.caption(f"Showing {len(all_announcements)} most recent announcements")
 
-        for ann in announcements[:5]:
-            with st.expander(f"{ann.get('announcement_date', 'N/A')} - {ann.get('announcement_type', 'News')}"):
-                st.markdown(f"**{ann.get('title', 'No title')}**")
+        for ann in all_announcements[:5]:
+            date_str = ann.get("announcement_date", "N/A")
+            title = ann.get("title", ann.get("subject", "No title"))
+            ann_type = ann.get("announcement_type", "News")
+            doc_url = ann.get("document_url", "")
+            with st.expander(f"{date_str} - {ann_type}"):
+                st.markdown(f"**{title}**")
                 if ann.get("content"):
-                    st.markdown(ann.get("content", "")[:500] + "..." if len(ann.get("content", "")) > 500 else ann.get("content", ""))
+                    st.markdown(ann["content"][:500] + "..." if len(ann["content"]) > 500 else ann["content"])
+                if doc_url:
+                    st.markdown(f"[View Document]({doc_url})")
 
-        if len(announcements) > 5:
-            with st.expander(f"View all {len(announcements)} announcements"):
-                ann_df = pd.DataFrame(announcements)
-                display_cols = ["announcement_date", "announcement_type", "title"]
+        if len(all_announcements) > 5:
+            with st.expander(f"View all {len(all_announcements)} announcements"):
+                ann_df = pd.DataFrame(all_announcements)
+                display_cols = ["announcement_date", "announcement_type", "title", "document_url"]
                 available_cols = [c for c in display_cols if c in ann_df.columns]
                 if available_cols:
-                    st.dataframe(ann_df[available_cols], use_container_width=True, hide_index=True)
+                    st.dataframe(ann_df[available_cols], width='stretch', hide_index=True)
 
     # ----- Charts -----
     st.subheader("📈 Charts")
 
     # Get quote history for charts
-    quotes_df = client.get_company_quotes(symbol, limit=100)
+    quotes_df = _load_company_quotes(symbol, limit=100)
 
     if not quotes_df.empty and len(quotes_df) > 1:
         import plotly.graph_objects as go
@@ -685,7 +722,7 @@ def render_company_deep():
                 yaxis={"range": [price_min - padding, price_max + padding]},
                 margin={"l": 60, "r": 20, "t": 20, "b": 60},
             )
-            st.plotly_chart(fig_price, use_container_width=True)
+            st.plotly_chart(fig_price, width='stretch')
 
         with chart_tabs[1]:
             # Volume bar chart
@@ -704,7 +741,7 @@ def render_company_deep():
                 hovermode="x unified",
                 margin={"l": 60, "r": 20, "t": 20, "b": 60},
             )
-            st.plotly_chart(fig_vol, use_container_width=True)
+            st.plotly_chart(fig_vol, width='stretch')
 
         # Stats
         if quote_stats:
@@ -730,9 +767,9 @@ def render_company_deep():
     st.subheader("📊 Financial Data")
 
     # Fetch financial data
-    financials_df = client.get_company_financials(symbol)
-    ratios_df = client.get_company_ratios(symbol)
-    payouts_df = client.get_company_payouts(symbol)
+    financials_df = _load_company_financials(symbol)
+    ratios_df = _load_company_ratios(symbol)
+    payouts_df = _load_company_payouts(symbol)
 
     has_financial_data = (
         not financials_df.empty or
@@ -809,7 +846,7 @@ def render_company_deep():
                         ]
                         st.dataframe(
                             sub_df[available_cols].head(10),
-                            use_container_width=True,
+                            width='stretch',
                             hide_index=True,
                             column_config={k: v for k, v in fin_col_config.items() if k in available_cols},
                         )
@@ -860,7 +897,7 @@ def render_company_deep():
                             if len(available_cols) > 1:
                                 st.dataframe(
                                     sub_df[available_cols].head(10),
-                                    use_container_width=True,
+                                    width='stretch',
                                     hide_index=True,
                                     column_config={k: v for k, v in bs_col_config.items() if k in available_cols},
                                 )
@@ -946,7 +983,7 @@ def render_company_deep():
                             if len(available_cols) > 1:
                                 st.dataframe(
                                     sub_df[available_cols].head(10),
-                                    use_container_width=True,
+                                    width='stretch',
                                     hide_index=True,
                                     column_config={k: v for k, v in ratio_col_config.items() if k in available_cols},
                                 )
@@ -965,7 +1002,7 @@ def render_company_deep():
                             if len(available_cols) > 1:
                                 st.dataframe(
                                     sub_df[available_cols].head(10),
-                                    use_container_width=True,
+                                    width='stretch',
                                     hide_index=True,
                                     column_config={k: v for k, v in ratio_col_config.items() if k in available_cols},
                                 )
@@ -984,7 +1021,7 @@ def render_company_deep():
                             if len(available_cols) > 1:
                                 st.dataframe(
                                     sub_df[available_cols].head(10),
-                                    use_container_width=True,
+                                    width='stretch',
                                     hide_index=True,
                                     column_config={k: v for k, v in ratio_col_config.items() if k in available_cols},
                                 )
@@ -1025,43 +1062,64 @@ def render_company_deep():
                     if is_bank:
                         st.markdown("**Rate Environment**")
                         rc1, rc2, rc3, rc4 = st.columns(4)
-                        try:
-                            pr_row = con.execute(
-                                "SELECT rate_pct, effective_date FROM sbp_policy_rates ORDER BY effective_date DESC LIMIT 1"
-                            ).fetchone()
-                            kb_row = con.execute(
-                                "SELECT bid, offer, date FROM kibor_daily WHERE tenor='3M' ORDER BY date DESC LIMIT 1"
-                            ).fetchone()
-                            kb6_row = con.execute(
-                                "SELECT bid, offer, date FROM kibor_daily WHERE tenor='6M' ORDER BY date DESC LIMIT 1"
-                            ).fetchone()
-                            konia_row = con.execute(
-                                "SELECT rate_pct, date FROM konia_daily ORDER BY date DESC LIMIT 1"
-                            ).fetchone()
-                            with rc1:
-                                if pr_row:
-                                    st.metric("Policy Rate", f"{pr_row[0]:.1f}%", help=f"Since {pr_row[1]}")
-                                else:
-                                    st.metric("Policy Rate", "—")
-                            with rc2:
-                                if kb_row:
-                                    mid = (kb_row[0] + kb_row[1]) / 2 if kb_row[0] and kb_row[1] else kb_row[0]
-                                    st.metric("KIBOR 3M", f"{mid:.2f}%" if mid else "—", help=f"As of {kb_row[2]}")
-                                else:
-                                    st.metric("KIBOR 3M", "—")
-                            with rc3:
-                                if kb6_row:
-                                    mid6 = (kb6_row[0] + kb6_row[1]) / 2 if kb6_row[0] and kb6_row[1] else kb6_row[0]
-                                    st.metric("KIBOR 6M", f"{mid6:.2f}%" if mid6 else "—", help=f"As of {kb6_row[2]}")
+
+                        strip = v1_client.get_rates_strip() or {}
+                        # KIBOR 6M latest from /v1/rates/kibor (asc; take last)
+                        kb6_rows = v1_client.get_kibor_history(tenors="6M", days=30) or []
+                        kb6 = kb6_rows[-1] if kb6_rows else None
+                        konia_rows = v1_client.get_konia(limit=1) or []
+                        konia = konia_rows[0] if konia_rows else None
+
+                        with rc1:
+                            pr = strip.get("sbp_policy_rate")
+                            pr_date = strip.get("sbp_policy_date")
+                            if pr is not None:
+                                st.metric("Policy Rate", f"{pr:.1f}%", help=f"Since {pr_date}")
+                            else:
+                                st.metric("Policy Rate", "—")
+                        with rc2:
+                            kb3_bid = strip.get("kibor_3m_bid")
+                            kb3_offer = strip.get("kibor_3m_offer")
+                            kb3_date = strip.get("kibor_3m_date")
+                            mid3 = (
+                                (kb3_bid + kb3_offer) / 2
+                                if kb3_bid is not None and kb3_offer is not None
+                                else (kb3_bid if kb3_bid is not None else kb3_offer)
+                            )
+                            if mid3 is not None:
+                                st.metric("KIBOR 3M", f"{mid3:.2f}%", help=f"As of {kb3_date}")
+                            else:
+                                st.metric("KIBOR 3M", "—")
+                        with rc3:
+                            if kb6:
+                                bid6 = kb6.get("bid")
+                                offer6 = kb6.get("offer")
+                                mid6 = (
+                                    (bid6 + offer6) / 2
+                                    if bid6 is not None and offer6 is not None
+                                    else (bid6 if bid6 is not None else offer6)
+                                )
+                                if mid6 is not None:
+                                    st.metric(
+                                        "KIBOR 6M", f"{mid6:.2f}%",
+                                        help=f"As of {kb6.get('date')}",
+                                    )
                                 else:
                                     st.metric("KIBOR 6M", "—")
-                            with rc4:
-                                if konia_row:
-                                    st.metric("KONIA", f"{konia_row[0]:.2f}%", help=f"As of {konia_row[1]}")
-                                else:
-                                    st.metric("KONIA", "—")
-                        except Exception:
-                            pass  # Tables may not exist yet
+                            else:
+                                st.metric("KIBOR 6M", "—")
+                        with rc4:
+                            # Defensive: konia_daily known-corrupt (Group C
+                            # finding). Render N/A if value is outside a
+                            # plausible 0..50% band.
+                            konia_pct = konia.get("rate_pct") if konia else None
+                            if konia_pct is not None and 0 < konia_pct < 50:
+                                st.metric(
+                                    "KONIA", f"{konia_pct:.2f}%",
+                                    help=f"As of {konia.get('date')}",
+                                )
+                            else:
+                                st.metric("KONIA", "—")
             else:
                 st.info("No ratio data available. Click 'Refresh' to fetch data.")
 
@@ -1083,7 +1141,7 @@ def render_company_deep():
                 }
                 st.dataframe(
                     payouts_df[available_cols].head(20),
-                    use_container_width=True,
+                    width='stretch',
                     hide_index=True,
                     column_config=col_config,
                 )
@@ -1101,7 +1159,14 @@ def render_company_deep():
                 with payout_cols[2]:
                     st.metric("Bonus Issues", bonus_count)
             else:
-                st.info("No payout history available.")
+                # Fallback: try dividend_payouts from global scraper via /v1
+                div_rows = v1_client.get_company_dividend_payouts(symbol, limit=20) or []
+                if div_rows:
+                    div_df = pd.DataFrame(div_rows)
+                    st.markdown("**Dividend / Payout History** *(from global scrape)*")
+                    st.dataframe(div_df, width='stretch', hide_index=True)
+                else:
+                    st.info("No payout history available.")
     else:
         st.info(
             "No financial data available yet. "

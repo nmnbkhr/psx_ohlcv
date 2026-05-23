@@ -1,0 +1,35 @@
+<svg width="100" height="100" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="100" height="100" rx="20" fill="#0a0e17"/>
+  <g transform="translate(12, 12)">
+    <!-- Row 1: P top -->
+    <circle cx="10" cy="10" r="5" fill="#1D9E75"/>
+    <circle cx="26" cy="10" r="5" fill="#378ADD"/>
+    <circle cx="42" cy="10" r="5" fill="#378ADD"/>
+    <circle cx="58" cy="10" r="5" fill="#22c55e"/>
+    <circle cx="74" cy="10" r="5" fill="#1e293b"/>
+    <!-- Row 2: P bowl right -->
+    <circle cx="10" cy="26" r="5" fill="#1D9E75"/>
+    <circle cx="26" cy="26" r="5" fill="#1e293b"/>
+    <circle cx="42" cy="26" r="5" fill="#1e293b"/>
+    <circle cx="58" cy="26" r="5" fill="#378ADD"/>
+    <circle cx="74" cy="26" r="5" fill="#1e293b"/>
+    <!-- Row 3: P bowl close -->
+    <circle cx="10" cy="42" r="5" fill="#1D9E75"/>
+    <circle cx="26" cy="42" r="5" fill="#378ADD"/>
+    <circle cx="42" cy="42" r="5" fill="#378ADD"/>
+    <circle cx="58" cy="42" r="5" fill="#22c55e" opacity="0.5"/>
+    <circle cx="74" cy="42" r="5" fill="#1e293b"/>
+    <!-- Row 4: stem only -->
+    <circle cx="10" cy="58" r="5" fill="#1D9E75"/>
+    <circle cx="26" cy="58" r="5" fill="#1e293b"/>
+    <circle cx="42" cy="58" r="5" fill="#1e293b"/>
+    <circle cx="58" cy="58" r="5" fill="#1e293b"/>
+    <circle cx="74" cy="58" r="5" fill="#1e293b"/>
+    <!-- Row 5: stem only -->
+    <circle cx="10" cy="74" r="5" fill="#1D9E75"/>
+    <circle cx="26" cy="74" r="5" fill="#1e293b"/>
+    <circle cx="42" cy="74" r="5" fill="#1e293b"/>
+    <circle cx="58" cy="74" r="5" fill="#1e293b"/>
+    <circle cx="74" cy="74" r="5" fill="#1e293b"/>
+  </g>
+</svg>

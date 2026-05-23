@@ -71,13 +71,26 @@ CREATE INDEX IF NOT EXISTS idx_gis_date ON gis_auctions(auction_date);
 
 
 def init_treasury_schema(con: sqlite3.Connection) -> None:
-    """Create treasury tables if they don't exist."""
-    con.executescript(TREASURY_SCHEMA_SQL)
-    con.commit()
+    """Create treasury tables if they don't exist.
+
+    Caller commits via pakfindata.db.safe_writer.
+
+    Splits TREASURY_SCHEMA_SQL on semicolons rather than using
+    con.executescript() — executescript() implicitly commits any pending
+    transaction first, which would end a safe_writer BEGIN IMMEDIATE
+    transaction prematurely.
+    """
+    for stmt in TREASURY_SCHEMA_SQL.split(";"):
+        stmt = stmt.strip()
+        if stmt:
+            con.execute(stmt)
 
 
 def upsert_tbill_auction(con: sqlite3.Connection, data: dict) -> bool:
-    """Insert or update a T-Bill auction record."""
+    """Insert or update a T-Bill auction record.
+
+    Caller commits via pakfindata.db.safe_writer.
+    """
     try:
         con.execute(
             """INSERT INTO tbill_auctions
@@ -110,14 +123,16 @@ def upsert_tbill_auction(con: sqlite3.Connection, data: dict) -> bool:
                 data.get("settlement_date"),
             ),
         )
-        con.commit()
         return True
     except Exception:
         return False
 
 
 def upsert_pib_auction(con: sqlite3.Connection, data: dict) -> bool:
-    """Insert or update a PIB auction record."""
+    """Insert or update a PIB auction record.
+
+    Caller commits via pakfindata.db.safe_writer.
+    """
     try:
         con.execute(
             """INSERT INTO pib_auctions
@@ -149,14 +164,16 @@ def upsert_pib_auction(con: sqlite3.Connection, data: dict) -> bool:
                 data.get("maturity_date"),
             ),
         )
-        con.commit()
         return True
     except Exception:
         return False
 
 
 def upsert_gis_auction(con: sqlite3.Connection, data: dict) -> bool:
-    """Insert or update a GIS auction record."""
+    """Insert or update a GIS auction record.
+
+    Caller commits via pakfindata.db.safe_writer.
+    """
     try:
         con.execute(
             """INSERT INTO gis_auctions
@@ -182,7 +199,6 @@ def upsert_gis_auction(con: sqlite3.Connection, data: dict) -> bool:
                 data.get("maturity_date"),
             ),
         )
-        con.commit()
         return True
     except Exception:
         return False

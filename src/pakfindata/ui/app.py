@@ -4,8 +4,9 @@ PakFinData Explorer - Streamlit Dashboard.
 Run with: streamlit run src/pakfindata/ui/app.py
 """
 
+from pathlib import Path as _P
 from dotenv import load_dotenv
-load_dotenv()  # Load .env file (OPENAI_API_KEY, etc.)
+load_dotenv(_P(__file__).resolve().parents[3] / ".env")  # Load project root .env
 
 from datetime import datetime, timedelta
 import sys
@@ -32,7 +33,6 @@ try:
 except Exception:
     pass
 
-from pakfindata import init_schema
 from pakfindata.analytics import (
     get_current_market_with_sectors,
     get_latest_market_analytics,
@@ -41,14 +41,12 @@ from pakfindata.analytics import (
     init_analytics_schema,
 )
 from pakfindata.config import (
-    DATA_ROOT,
     DEFAULT_DB_PATH,
     DEFAULT_LOG_FILE,
     DEFAULT_SYNC_CONFIG,
     SyncConfig,
     get_db_path,
 )
-from pakfindata.db import get_sector_map
 from pakfindata.query import (
     get_company_latest_signals,
     get_company_quote_stats,
@@ -96,17 +94,12 @@ from pakfindata.ui.charts import (
     make_volume_chart,
 )
 from pakfindata.ui.themes import (
-    get_theme_css,
     get_theme,
     get_chart_colors,
     get_plotly_layout,
-    THEME_NAMES,
-    ThemeName,
 )
 from pakfindata.ui.session_tracker import (
-    get_session_id,
     init_session_tracking,
-    render_session_activity_panel,
     track_button_click,
     track_download,
     track_page_visit,
@@ -114,6 +107,54 @@ from pakfindata.ui.session_tracker import (
     track_symbol_search,
 )
 from pakfindata.ui.chat import chat_page
+from pakfindata.ui.logo import render_logo, render_powered_by, render_disclaimer
+
+# Shared helpers — canonical versions live in helpers.py; import instead of duplicating
+from pakfindata.ui.components.helpers import (
+    # Theme system
+    init_theme,
+    get_current_theme,
+    set_theme,
+    inject_theme_css,
+    # Formatting
+    format_price_change,
+    format_volume,
+    format_price,
+    # Rendering helpers
+    render_market_status_badge,
+    render_ticker_tape,
+    render_price_card,
+    # UI enhancement helpers
+    render_skeleton_loader,
+    render_data_warning,
+    render_data_info,
+    render_data_error,
+    render_empty_state,
+    render_freshness_badge,
+    render_section_with_loading,
+    get_user_friendly_error,
+    # Data freshness & staleness
+    check_data_staleness,
+    get_data_freshness,
+    get_freshness_badge,
+    # DB connection
+    get_cached_connection,
+    get_connection,
+    # Market helpers
+    is_market_closed,
+    # Sector helpers
+    get_sector_names,
+    add_sector_name_column,
+    # Constants
+    EXPORTS_DIR,
+    OHLCV_TOOLTIPS,
+    DATA_QUALITY_NOTICE,
+    MARKET_OPEN_HOUR,
+    MARKET_CLOSE_HOUR,
+    MARKET_DAYS,
+    # Footer
+    render_footer,
+)
 
 # Deep scraper imports for Bloomberg-style data
 from pakfindata.sources.deep_scraper import (
@@ -157,497 +198,16 @@ from pakfindata.analytics_fx import (
 from pakfindata.sync_fx import sync_fx_pairs, seed_fx_pairs
 
 # Page config - must be first Streamlit command
+# Try to load favicon from SVG asset
+_favicon_path = Path(__file__).parent / "assets" / "pakfindata-favicon.svg"
+_page_icon = _favicon_path.read_text() if _favicon_path.exists() else "📊"
+
 st.set_page_config(
-    page_title="PakFinData Explorer",
-    page_icon="📈",
+    page_title="PakFinData Terminal",
+    page_icon=_page_icon,
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
-# =============================================================================
-# THEME SYSTEM
-# Supports multiple themes: default (original) and bloomberg (professional terminal)
-# Theme is persisted in session_state and applied via CSS injection
-# =============================================================================
-
-def init_theme():
-    """Initialize theme in session state if not set."""
-    if "theme" not in st.session_state:
-        # Default to Bloomberg theme for professional trading terminal look
-        st.session_state.theme = "bloomberg"
-
-
-def get_current_theme() -> ThemeName:
-    """Get current theme from session state."""
-    init_theme()
-    return st.session_state.theme
-
-
-def set_theme(theme_name: ThemeName):
-    """Set theme in session state."""
-    if theme_name in THEME_NAMES:
-        st.session_state.theme = theme_name
-
-
-def inject_theme_css():
-    """Inject current theme CSS into the page."""
-    theme_name = get_current_theme()
-    css = get_theme_css(theme_name)
-    st.markdown(css, unsafe_allow_html=True)
-
-
-# Theme initialised inside main() — no module-level st.markdown() calls
-# to avoid rendering outside the st.navigation() page lifecycle.
-
-
-def format_price_change(value: float, include_sign: bool = True) -> str:
-    """Format price change with color indicator."""
-    if value > 0:
-        sign = "+" if include_sign else ""
-        return f'<span class="price-up">{sign}{value:.2f}%</span>'
-    elif value < 0:
-        return f'<span class="price-down">{value:.2f}%</span>'
-    else:
-        return f'<span class="price-neutral">0.00%</span>'
-
-
-def format_volume(volume: float) -> str:
-    """Format volume with appropriate suffix."""
-    if volume >= 1e9:
-        return f"{volume/1e9:.2f}B"
-    elif volume >= 1e6:
-        return f"{volume/1e6:.2f}M"
-    elif volume >= 1e3:
-        return f"{volume/1e3:.1f}K"
-    else:
-        return f"{volume:,.0f}"
-
-
-def format_price(price: float, currency: str = "Rs.") -> str:
-    """Format price with currency."""
-    if price >= 1000:
-        return f"{currency} {price:,.2f}"
-    else:
-        return f"{currency} {price:.2f}"
-
-
-def render_market_status_badge():
-    """Render market open/closed badge."""
-    if is_market_closed():
-        st.markdown(
-            '<span class="market-status market-closed">● Market Closed</span>',
-            unsafe_allow_html=True
-        )
-    else:
-        st.markdown(
-            '<span class="market-status market-open">● Market Open</span>',
-            unsafe_allow_html=True
-        )
-
-
-def render_ticker_tape(symbols_data: list[dict]):
-    """Render a horizontal ticker tape of symbols with changes."""
-    html_parts = []
-    for item in symbols_data[:10]:
-        symbol = item.get("symbol", "")
-        change = item.get("change_pct", 0) or 0
-        css_class = "ticker-up" if change >= 0 else "ticker-down"
-        sign = "+" if change >= 0 else ""
-        html_parts.append(
-            f'<span class="ticker-item {css_class}">'
-            f'<b>{symbol}</b> {sign}{change:.2f}%</span>'
-        )
-    st.markdown(" ".join(html_parts), unsafe_allow_html=True)
-
-
-def render_price_card(
-    label: str,
-    price: float,
-    change: float = None,
-    change_pct: float = None,
-    subtitle: str = None
-):
-    """Render a price card with change indicator."""
-    change_html = ""
-    if change_pct is not None:
-        color = "#00C853" if change_pct >= 0 else "#FF1744"
-        sign = "+" if change_pct >= 0 else ""
-        change_html = f' <span style="color: {color}; font-size: 14px;">({sign}{change_pct:.2f}%)</span>'
-
-    st.markdown(
-        f"""
-        <div style="padding: 12px; background: rgba(255,255,255,0.02); border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);">
-            <div style="font-size: 12px; color: #888; margin-bottom: 4px;">{label}</div>
-            <div style="font-size: 24px; font-weight: 600; font-family: monospace;">
-                Rs. {price:,.2f}{change_html}
-            </div>
-            {f'<div style="font-size: 11px; color: #666; margin-top: 4px;">{subtitle}</div>' if subtitle else ''}
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-
-# =============================================================================
-# UI ENHANCEMENT HELPERS
-# Loading states, error messages, and data freshness indicators
-# =============================================================================
-
-def render_skeleton_loader(height: int = 100, text: str = "Loading..."):
-    """Render a skeleton loading placeholder."""
-    st.markdown(
-        f"""
-        <div class="skeleton" style="height: {height}px; display: flex; align-items: center; justify-content: center;">
-            <span style="color: #666; font-size: 13px;">{text}</span>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-
-def render_data_warning(message: str, icon: str = "⚠️"):
-    """Render a warning banner for data issues."""
-    st.markdown(
-        f'<div class="data-warning">{icon} {message}</div>',
-        unsafe_allow_html=True
-    )
-
-
-def render_data_info(message: str, icon: str = "ℹ️"):
-    """Render an info banner."""
-    st.markdown(
-        f'<div class="data-info">{icon} {message}</div>',
-        unsafe_allow_html=True
-    )
-
-
-def render_data_error(message: str, icon: str = "❌"):
-    """Render an error banner for failed operations."""
-    st.markdown(
-        f'<div class="data-error">{icon} {message}</div>',
-        unsafe_allow_html=True
-    )
-
-
-def render_empty_state(message: str, icon: str = "📭"):
-    """Render an empty state placeholder."""
-    st.markdown(
-        f"""
-        <div class="empty-state">
-            <div class="empty-state-icon">{icon}</div>
-            <div>{message}</div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-
-def render_freshness_badge(days_old: int | None, date_str: str | None) -> str:
-    """Render a data freshness badge with appropriate color."""
-    if days_old is None or date_str is None:
-        return '<span class="data-old">No data</span>'
-    elif days_old == 0:
-        return f'<span class="data-fresh">✓ Today ({date_str})</span>'
-    elif days_old == 1:
-        return f'<span class="data-fresh">Yesterday ({date_str})</span>'
-    elif days_old <= 3:
-        return f'<span class="data-stale">{days_old} days old ({date_str})</span>'
-    else:
-        return f'<span class="data-old">{days_old} days old ({date_str})</span>'
-
-
-def render_section_with_loading(title: str, data_loader_func, empty_message: str = "No data available"):
-    """
-    Render a section with loading state handling.
-
-    Args:
-        title: Section title
-        data_loader_func: Function that loads and renders data, should return True if data exists
-        empty_message: Message to show if no data
-    """
-    try:
-        with st.spinner(f"Loading {title}..."):
-            has_data = data_loader_func()
-        if not has_data:
-            render_empty_state(empty_message, "📭")
-    except Exception as e:
-        render_data_error(f"Failed to load {title}: {str(e)[:100]}")
-
-
-def get_user_friendly_error(error: Exception) -> str:
-    """Convert technical errors to user-friendly messages."""
-    error_str = str(error).lower()
-
-    if "no such table" in error_str:
-        return "Database tables not initialized. Try syncing data first."
-    elif "connection" in error_str or "database" in error_str:
-        return "Unable to connect to database. Please check your settings."
-    elif "timeout" in error_str:
-        return "Request timed out. The server may be slow or unavailable."
-    elif "network" in error_str or "connection refused" in error_str:
-        return "Network error. Please check your internet connection."
-    elif "permission" in error_str:
-        return "Permission denied. Check file/folder permissions."
-    else:
-        # Return a truncated version of the original error
-        return f"An error occurred: {str(error)[:100]}"
-
-
-def check_data_staleness(con, table: str = "eod_ohlcv", date_col: str = "date") -> tuple[bool, str]:
-    """
-    Check if data in a table is stale.
-
-    Also checks regular_market_current for live data.
-
-    Returns:
-        Tuple of (is_stale, message)
-    """
-    try:
-        latest_dates = []
-
-        # Check the specified table
-        try:
-            result = con.execute(
-                f"SELECT MAX({date_col}) as max_date FROM {table}"
-            ).fetchone()
-            if result and result["max_date"]:
-                latest_dates.append(str(result["max_date"])[:10])
-        except Exception:
-            pass
-
-        # Also check regular_market_current for live data
-        try:
-            result = con.execute(
-                "SELECT MAX(DATE(ts)) as max_date FROM regular_market_current"
-            ).fetchone()
-            if result and result["max_date"]:
-                latest_dates.append(str(result["max_date"])[:10])
-        except Exception:
-            pass
-
-        if latest_dates:
-            most_recent = max(latest_dates)
-            latest_date = datetime.strptime(most_recent, "%Y-%m-%d")
-            days_old = (datetime.now() - latest_date).days
-            if days_old > 3:
-                return True, f"Data is {days_old} days old (last: {most_recent})"
-            return False, ""
-        return True, "No data found in database"
-    except Exception:
-        return True, "Unable to check data freshness"
-
-
-# Exports directory
-EXPORTS_DIR = DATA_ROOT / "exports"
-
-# OHLCV field tooltips
-OHLCV_TOOLTIPS = {
-    "open": "Opening price - first traded price of the day",
-    "high": "High price - derived from max(open, close). "
-            "Note: PSX API doesn't provide actual intraday highs.",
-    "low": "Low price - derived from min(open, close). "
-           "Note: PSX API doesn't provide actual intraday lows.",
-    "close": "Closing price - last traded price of the day",
-    "volume": "Volume - total number of shares traded during the day",
-}
-
-# Data quality notice
-DATA_QUALITY_NOTICE = """
-**Data Quality Note:** The PSX API provides only open, close, and volume data.
-High/Low values are **derived** from max/min(open, close) and do not represent
-actual intraday price extremes. For technical analysis requiring true high/low
-values, consider premium data providers.
-"""
-
-# PSX market hours (Pakistan Standard Time)
-MARKET_OPEN_HOUR = 9
-MARKET_CLOSE_HOUR = 15
-MARKET_DAYS = [0, 1, 2, 3, 4]  # Monday to Friday
-
-
-# -----------------------------------------------------------------------------
-# Helper Functions
-# -----------------------------------------------------------------------------
-def get_connection():
-    """
-    Get database connection, initializing schema if needed.
-
-    Note: We don't cache the connection because SQLite connections
-    are not thread-safe by default. Streamlit runs in multiple threads.
-    """
-    import sqlite3 as _sqlite3
-
-    db_path = get_db_path()
-    # Use check_same_thread=False to allow connection to be used across threads
-    con = _sqlite3.connect(str(db_path), check_same_thread=False)
-    con.row_factory = _sqlite3.Row
-
-    # Enable WAL mode for better concurrent access
-    con.execute("PRAGMA journal_mode=WAL")
-
-    # Initialize schema
-    init_schema(con)
-    return con
-
-
-@st.cache_resource
-def get_cached_connection():
-    """
-    Get a cached database connection with thread-safety enabled.
-
-    Uses check_same_thread=False to allow Streamlit's multi-threaded access.
-    """
-    import sqlite3 as _sqlite3
-
-    db_path = get_db_path()
-    con = _sqlite3.connect(str(db_path), check_same_thread=False)
-    con.row_factory = _sqlite3.Row
-    con.execute("PRAGMA journal_mode=WAL")
-    init_schema(con)
-    return con
-
-
-@st.cache_data(ttl=60)
-def get_data_freshness(_con) -> tuple[int | None, str | None]:
-    """
-    Get data freshness info from multiple sources.
-
-    Checks eod_ohlcv, regular_market_current, and psx_indices tables
-    to find the most recent data timestamp.
-
-    Returns:
-        Tuple of (days_old, latest_date_str) or (None, None) if no data.
-    """
-    latest_dates = []
-
-    # Check eod_ohlcv
-    try:
-        result = _con.execute(
-            "SELECT MAX(date) as max_date FROM eod_ohlcv"
-        ).fetchone()
-        if result and result["max_date"]:
-            latest_dates.append(str(result["max_date"])[:10])
-    except Exception:
-        pass
-
-    # Check regular_market_current (live market data)
-    try:
-        result = _con.execute(
-            "SELECT MAX(DATE(ts)) as max_date FROM regular_market_current"
-        ).fetchone()
-        if result and result["max_date"]:
-            latest_dates.append(str(result["max_date"])[:10])
-    except Exception:
-        pass
-
-    # Check psx_indices
-    try:
-        result = _con.execute(
-            "SELECT MAX(index_date) as max_date FROM psx_indices"
-        ).fetchone()
-        if result and result["max_date"]:
-            latest_dates.append(str(result["max_date"])[:10])
-    except Exception:
-        pass
-
-    if latest_dates:
-        # Get the most recent date
-        most_recent = max(latest_dates)
-        latest_date = datetime.strptime(most_recent, "%Y-%m-%d")
-        days_old = (datetime.now() - latest_date).days
-        return days_old, most_recent
-
-    return None, None
-
-
-def is_market_closed() -> bool:
-    """Check if PSX market is currently closed."""
-    now = datetime.now()
-    # Weekend check
-    if now.weekday() not in MARKET_DAYS:
-        return True
-    # After hours check (simplified - doesn't account for PKT timezone)
-    if now.hour < MARKET_OPEN_HOUR or now.hour >= MARKET_CLOSE_HOUR:
-        return True
-    return False
-
-
-def get_freshness_badge(days_old: int | None) -> tuple[str, str]:
-    """
-    Get freshness badge color and text.
-
-    Returns:
-        Tuple of (badge_color, badge_text)
-    """
-    if days_old is None:
-        return "gray", "No data"
-    elif days_old == 0:
-        return "green", "Fresh (today)"
-    elif days_old == 1:
-        return "green", "1 day old"
-    elif days_old <= 3:
-        return "orange", f"{days_old} days old"
-    else:
-        return "red", f"{days_old} days old"
-
-
-@st.cache_data(ttl=300)
-def get_sector_names(_con) -> dict[str, str]:
-    """
-    Get cached sector code to sector name mapping.
-
-    Returns:
-        Dict mapping sector codes to sector names.
-    """
-    try:
-        return get_sector_map(_con)
-    except Exception:
-        return {}
-
-
-def add_sector_name_column(
-    df: pd.DataFrame, sector_map: dict[str, str]
-) -> pd.DataFrame:
-    """
-    Add sector_name column to DataFrame based on sector_code.
-
-    Args:
-        df: DataFrame with sector_code column
-        sector_map: Dict mapping sector codes to names
-
-    Returns:
-        DataFrame with sector_name column added
-    """
-    if "sector_code" not in df.columns and "sector" not in df.columns:
-        return df
-
-    df = df.copy()
-    sector_col = "sector_code" if "sector_code" in df.columns else "sector"
-    df["sector_name"] = df[sector_col].map(sector_map).fillna("")
-    return df
-
-
-def render_footer():
-    """Render footer with data source attribution and session activity."""
-    st.markdown("---")
-
-    # Session activity panel
-    render_session_activity_panel()
-
-    st.caption(
-        "Data source: [PSX DPS](https://dps.psx.com.pk) | "
-        f"Session: {get_session_id()} | "
-        f"Last refreshed: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-    )
-
-
-# -----------------------------------------------------------------------------
-# Page: Live Market
-# -----------------------------------------------------------------------------
-def live_market_page():
-    from pakfindata.ui.page_views.live_market import render_live_market
-    render_live_market()
-
 
 # -----------------------------------------------------------------------------
 # Page: Data Quality
@@ -663,14 +223,6 @@ def data_quality_page():
 def dashboard():
     from pakfindata.ui.page_views.dashboard import render_dashboard
     render_dashboard()
-
-
-# -----------------------------------------------------------------------------
-# Page: Candlestick Explorer
-# -----------------------------------------------------------------------------
-def candlestick_explorer():
-    from pakfindata.ui.page_views.candlestick import render_candlestick
-    render_candlestick()
 
 
 # -----------------------------------------------------------------------------
@@ -690,14 +242,6 @@ def regular_market_page():
 
 
 # -----------------------------------------------------------------------------
-# Page: Symbols
-# -----------------------------------------------------------------------------
-def symbols_page():
-    from pakfindata.ui.page_views.symbols import render_symbols
-    render_symbols()
-
-
-# -----------------------------------------------------------------------------
 # Page: Futures & Contracts
 # -----------------------------------------------------------------------------
 def futures_page():
@@ -711,35 +255,6 @@ def futures_page():
 def schema_page():
     from pakfindata.ui.page_views.schema import render_schema
     render_schema()
-
-
-# -----------------------------------------------------------------------------
-# Page: Settings
-# -----------------------------------------------------------------------------
-def settings_page():
-    from pakfindata.ui.page_views.settings import render_settings
-    render_settings()
-
-
-# -----------------------------------------------------------------------------
-# Page: History
-# -----------------------------------------------------------------------------
-def history_page():
-    from pakfindata.ui.page_views.history import render_history
-    render_history()
-
-
-# -----------------------------------------------------------------------------
-# Page: EOD Data Loader
-# -----------------------------------------------------------------------------
-def eod_data_loader_page():
-    from pakfindata.ui.page_views.eod_loader import render_eod_loader
-    render_eod_loader()
-
-
-def _eod_data_loader_page_impl():
-    from pakfindata.ui.page_views.eod_loader import _eod_data_loader_page_impl
-    _eod_data_loader_page_impl()
 
 
 # -----------------------------------------------------------------------------
@@ -801,14 +316,6 @@ def sync_monitor():
 def instruments_page():
     from pakfindata.ui.page_views.instruments import render_instruments
     render_instruments()
-
-
-# =============================================================================
-# Phase 1: Rankings Page
-# =============================================================================
-def rankings_page():
-    from pakfindata.ui.page_views.rankings import render_rankings
-    render_rankings()
 
 
 # =============================================================================
@@ -940,24 +447,149 @@ def research_terminal_page():
     render_research_terminal()
 
 
+def signal_dashboard_page():
+    from pakfindata.ui.page_views.signal_dashboard import render_signal_dashboard
+    render_signal_dashboard()
+
+def signal_intelligence_page():
+    from pakfindata.ui.page_views.signal_intelligence import render_page
+    render_page()
+
+
+def microstructure_page():
+    from pakfindata.ui.page_views.microstructure import render_microstructure
+    render_microstructure()
+
+
+def strategy_vpin_page():
+    from pakfindata.ui.page_views.strategy_vpin import render_page
+    render_page()
+
+
+def strategy_ofi_page():
+    from pakfindata.ui.page_views.strategy_ofi import render_page
+    render_page()
+
+
+def strategy_cvd_page():
+    from pakfindata.ui.page_views.strategy_cvd import render_page
+    render_page()
+
+
+def strategy_basis_page():
+    from pakfindata.ui.page_views.strategy_basis import render_page
+    render_page()
+
+
+def strategy_oi_page():
+    from pakfindata.ui.page_views.strategy_oi import render_strategy_oi
+    render_strategy_oi()
+
+
+def strategy_pairs_page():
+    from pakfindata.ui.page_views.strategy_pairs import render_strategy_pairs
+    render_strategy_pairs()
+
+
+def strategy_vwap_page():
+    from pakfindata.ui.page_views.strategy_vwap import render_page
+    render_page()
+
+
+def strategy_hmm_page():
+    from pakfindata.ui.page_views.strategy_hmm import render_page
+    render_page()
+
+
+def nccpl_flows_page():
+    from pakfindata.ui.page_views.nccpl_flows import render_page
+    render_page()
+
+
+def strategy_sector_page():
+    from pakfindata.ui.page_views.strategy_sector import render_page
+    render_page()
+
+
+def strategy_sentiment_page():
+    from pakfindata.ui.page_views.strategy_sentiment import render_page
+    render_page()
+
+
+def strategy_orderbook_page():
+    from pakfindata.ui.page_views.strategy_orderbook import render_page
+    render_page()
+
+
+def advanced_gnn_page():
+    from pakfindata.ui.page_views.advanced_gnn import render_page
+    render_page()
+
+
+def advanced_hawkes_page():
+    from pakfindata.ui.page_views.advanced_hawkes import render_page
+    render_page()
+
+
+def advanced_rl_exec_page():
+    from pakfindata.ui.page_views.advanced_rl_exec import render_page
+    render_page()
+
+
+def strategy_simulator_page():
+    from pakfindata.ui.page_views.strategy_simulator import render_page
+    render_page()
+
+
+def portfolio_scanner_page():
+    from pakfindata.ui.page_views.portfolio_scanner import render_page
+    render_page()
+
+
+def tick_analytics_page():
+    from pakfindata.ui.page_views.tick_analytics import render_tick_analytics
+    render_tick_analytics()
+
+
+def tick_replay_page():
+    from pakfindata.ui.page_views.tick_replay import render_tick_replay
+    render_tick_replay()
+
+
+def ml_predictions_page():
+    from pakfindata.ui.page_views.ml_predictions import render_ml_predictions
+    render_ml_predictions()
+
+
+def intraday_quant_lab_page():
+    from pakfindata.ui.page_views.intraday_quant_lab import render_intraday_quant_lab
+    render_intraday_quant_lab()
+
+
+
+def macro_cycles_page():
+    from pakfindata.ui.page_views.macro_cycles import render_macro_cycles
+    render_macro_cycles()
+
+
+def sector_breadth_page():
+    from pakfindata.ui.page_views.sector_breadth import render_sector_breadth
+    render_sector_breadth()
+
+
+def market_research_page():
+    from pakfindata.ui.page_views.market_research import render_market_research
+    render_market_research()
+
+
 def website_scan_page():
     from pakfindata.ui.page_views.website_scan import render_website_scan
     render_website_scan()
 
 
-def live_ohlcv_page():
-    from pakfindata.ui.page_views.live_ohlcv import render_live_ohlcv
-    render_live_ohlcv()
-
-
 def live_ticker_page():
     from pakfindata.ui.page_views.live_ticker import render_live_ticker
     render_live_ticker()
-
-
-def live_indices_page():
-    from pakfindata.ui.page_views.live_indices import render_live_indices
-    render_live_indices()
 
 
 def ws_relay_status_page():
@@ -1009,9 +641,14 @@ def yield_curves_page():
     render_yield_curve()
 
 
+def curve_analytics_page():
+    from pakfindata.ui.page_views.curve_analytics import render_curve_analytics
+    render_curve_analytics()
+
+
 def treasury_auctions_page():
-    from pakfindata.ui.page_views.treasury_dashboard import render_treasury_dashboard
-    render_treasury_dashboard()
+    from pakfindata.ui.page_views.fixed_income import render_sbp_auction_archive
+    render_sbp_auction_archive()
 
 
 def bond_market_otc_page():
@@ -1027,6 +664,21 @@ def benchmark_monitor_page():
 def debt_terminal_page():
     from pakfindata.ui.page_views.debt_terminal import render_debt_terminal
     render_debt_terminal()
+
+
+def alm_dashboard_page():
+    from pakfindata.ui.page_views.alm_dashboard import render_alm_dashboard
+    render_alm_dashboard()
+
+
+def ftp_monitor_page():
+    from pakfindata.ui.page_views.ftp_monitor import render_ftp_monitor
+    render_ftp_monitor()
+
+
+def symbol_financials_page():
+    from pakfindata.ui.page_views.symbol_financials import render
+    render()
 
 
 def vps_pension_page():
@@ -1045,8 +697,8 @@ def etfs_page():
 
 
 def currency_dashboard_page():
-    from pakfindata.ui.page_views.fx_dashboard import render_fx_dashboard
-    render_fx_dashboard()
+    from pakfindata.ui.page_views.fx import render_fx_overview
+    render_fx_overview()
 
 
 def fx_interbank_page():
@@ -1069,6 +721,16 @@ def sync_center_page():
     render_sync_monitor()
 
 
+def jobs_monitor_page():
+    from pakfindata.ui.page_views.jobs_monitor import render_jobs_monitor
+    render_jobs_monitor()
+
+
+def app_lineage_page():
+    from pakfindata.ui.page_views.app_lineage import render_app_lineage
+    render_app_lineage()
+
+
 # -----------------------------------------------------------------------------
 # Page: Commodities Dashboard
 # -----------------------------------------------------------------------------
@@ -1083,6 +745,21 @@ def commodities_page():
 def pmex_page():
     from pakfindata.ui.page_views.pmex import render_pmex
     render_pmex()
+
+
+def pmex_analytics_page():
+    from pakfindata.ui.page_views.pmex_analytics_page import render_page
+    render_page()
+
+
+def sbp_easydata_page():
+    from pakfindata.ui.page_views.sbp_easydata import render_sbp_easydata
+    render_sbp_easydata()
+
+
+def psx_scraper_page():
+    from pakfindata.ui.page_views.psx_scraper import render_psx_scraper
+    render_psx_scraper()
 
 
 # -----------------------------------------------------------------------------
@@ -1108,6 +785,9 @@ def main():
 
     # PRIMARY PAGES — shown in sidebar (the 5 pillars + admin)
     _pages = {
+        # SIMULATOR
+        "Strategy Simulator": st.Page(strategy_simulator_page, title="Strategy Simulator", url_path="simulator"),
+        "Portfolio Scanner":  st.Page(portfolio_scanner_page,  title="Portfolio Scanner",  url_path="portfolio-scanner"),
         # MARKET OVERVIEW
         "Dashboard":          st.Page(dashboard,              title="Dashboard",          url_path="dashboard",          default=True),
         "Market Pulse":       st.Page(market_pulse_page,      title="Market Pulse",       url_path="market-pulse"),
@@ -1125,11 +805,15 @@ def main():
         # FIXED INCOME
         "Rates Overview":     st.Page(rates_overview_page,    title="Rates Overview",     url_path="rates-overview"),
         "Yield Curves":       st.Page(yield_curves_page,      title="Yield Curves",       url_path="yield-curves"),
+        "Curve Analytics":    st.Page(curve_analytics_page,   title="Curve Analytics",    url_path="curve-analytics"),
         "Treasury Auctions":  st.Page(treasury_auctions_page, title="Treasury Auctions",  url_path="treasury-auctions"),
         "Bond Market":        st.Page(bond_market_otc_page,   title="Bond Market",        url_path="bond-market"),
         "Benchmark Monitor":  st.Page(benchmark_monitor_page, title="Benchmark Monitor",  url_path="benchmark"),
         "Debt Terminal":      st.Page(debt_terminal_page,    title="Debt Terminal",      url_path="debt-terminal"),
         "Treasury":           st.Page(treasury_dashboard_page,  title="Treasury",         url_path="treasury"),
+        # ALM
+        "ALM Dashboard":      st.Page(alm_dashboard_page,      title="ALM Dashboard",    url_path="alm-dashboard"),
+        "FTP Monitor":        st.Page(ftp_monitor_page,         title="FTP Monitor",      url_path="ftp-monitor"),
         # FUNDS
         "Fund Explorer":      st.Page(fund_explorer_page,     title="Fund Explorer",      url_path="fund-explorer"),
         "VPS Pension":        st.Page(vps_pension_page,       title="VPS Pension",        url_path="vps-pension"),
@@ -1144,43 +828,76 @@ def main():
         # COMMODITIES
         "Commodities":        st.Page(commodities_page,        title="Commodities",        url_path="commodities"),
         "PMEX":               st.Page(pmex_page,               title="PMEX",               url_path="pmex"),
-        # RESEARCH
+        "PMEX Analytics":     st.Page(pmex_analytics_page,     title="PMEX Analytics",     url_path="pmex-analytics"),
+        # COMPANY FINANCIALS
+        "Symbol Financials":  st.Page(symbol_financials_page,   title="Symbol Financials", url_path="symbol-financials"),
+        # RESEARCH & QUANT
         "Research":           st.Page(research_terminal_page,   title="Research",          url_path="research"),
+        "Signal Analysis":   st.Page(signal_dashboard_page,    title="Signal Analysis",   url_path="signal-analysis"),
+        "Microstructure":     st.Page(microstructure_page,      title="Microstructure",    url_path="microstructure"),
+        "Tick Analytics":    st.Page(tick_analytics_page,      title="Tick Analytics",    url_path="tick-analytics"),
+        "Tick Replay":       st.Page(tick_replay_page,        title="Tick Replay",       url_path="tick-replay"),
+        "Quant Lab":         st.Page(intraday_quant_lab_page, title="Quant Lab",         url_path="quant-lab"),
+        "Macro Cycles":       st.Page(macro_cycles_page,        title="Macro Cycles",      url_path="macro-cycles"),
+        "Sector Breadth":     st.Page(sector_breadth_page,      title="Sector Breadth",    url_path="sector-breadth"),
+        "Market Research":    st.Page(market_research_page,     title="Market Research",   url_path="market-research"),
+        "ML Predictions":    st.Page(ml_predictions_page,      title="ML Predictions",    url_path="ml-predictions"),
+        # STRATEGIES
+        "VPIN Strategy":     st.Page(strategy_vpin_page,       title="VPIN Strategy",     url_path="vpin-strategy"),
+        "OFI Alpha":         st.Page(strategy_ofi_page,        title="OFI Alpha",         url_path="ofi-alpha"),
+        "CVD Divergence":    st.Page(strategy_cvd_page,        title="CVD Divergence",    url_path="cvd-divergence"),
+        "Basis Arb":         st.Page(strategy_basis_page,      title="Basis Arb",         url_path="basis-arb"),
+        "VWAP Execution":    st.Page(strategy_vwap_page,       title="VWAP Execution",    url_path="vwap-execution"),
+        "Macro Regime":      st.Page(strategy_hmm_page,        title="Macro Regime",      url_path="macro-regime-hmm"),
+        "Flow Intelligence": st.Page(nccpl_flows_page,         title="Flow Intelligence", url_path="flow-intelligence"),
+        "Sector Rotation":   st.Page(strategy_sector_page,     title="Sector Rotation",   url_path="sector-rotation"),
+        "LLM Sentiment":     st.Page(strategy_sentiment_page,  title="LLM Sentiment",     url_path="llm-sentiment"),
+        "OI Buildup/Unwind": st.Page(strategy_oi_page,          title="OI Buildup/Unwind", url_path="oi-buildup"),
+        "Pairs Trading":    st.Page(strategy_pairs_page,       title="Pairs Trading",     url_path="pairs-trading"),
+        # INTELLIGENCE
+        "Signal Intelligence": st.Page(signal_intelligence_page, title="Signal Intelligence", url_path="signal-intelligence"),
+        # ADVANCED
+        "Order Book Sim":   st.Page(strategy_orderbook_page, title="Order Book Sim",    url_path="orderbook-sim"),
+        "Stock Graph (GNN)": st.Page(advanced_gnn_page,      title="Stock Graph (GNN)", url_path="stock-graph-gnn"),
+        "Hawkes Process":    st.Page(advanced_hawkes_page,   title="Hawkes Process",    url_path="hawkes-process"),
+        "RL Execution":      st.Page(advanced_rl_exec_page,  title="RL Execution",      url_path="rl-execution"),
         # ADMIN
         "Data Status":        st.Page(data_status_page,       title="Data Status",        url_path="data-status"),
         "Sync Center":        st.Page(sync_center_page,       title="Sync Center",        url_path="sync-center"),
+        "Jobs Monitor":       st.Page(jobs_monitor_page,      title="Jobs Monitor",       url_path="jobs-monitor"),
         "Schema Explorer":    st.Page(schema_page,            title="Schema Explorer",    url_path="schema"),
+        "App Lineage":        st.Page(app_lineage_page,       title="App Lineage",        url_path="app-lineage"),
+        "SBP EasyData":       st.Page(sbp_easydata_page,      title="SBP EasyData",       url_path="sbp-easydata"),
+        "PSX Scraper":        st.Page(psx_scraper_page,       title="PSX Scraper",        url_path="psx-scraper"),
     }
 
     # Navigation groups — 5-pillar blueprint structure
     nav_groups = {
+        "SIMULATOR":       ["Strategy Simulator", "Portfolio Scanner"],
         "MARKET OVERVIEW": ["Dashboard", "Market Pulse", "Index Monitor"],
         "EQUITIES":        ["Market Summary", "Stock Screener", "Company Profile",
-                            "Sector Analysis", "Factors",
+                            "Sector Analysis", "Symbol Financials", "Factors",
                             "Intraday", "Live Ticker",
                             "Futures & Odd Lot", "Post Close"],
-        "FIXED INCOME":    ["Rates Overview", "Yield Curves", "Treasury Auctions",
+        "FIXED INCOME":    ["Rates Overview", "Yield Curves", "Curve Analytics", "Treasury Auctions",
                             "Bond Market", "Benchmark Monitor", "Debt Terminal",
                             "Treasury"],
+        "ALM":             ["ALM Dashboard", "FTP Monitor"],
         "FUNDS":           ["Fund Explorer", "VPS Pension", "Top Performers",
                             "Fund Analytics", "ETFs"],
         "FX & RATES":      ["Currency Dashboard", "FX Dashboard", "Interbank vs Open", "Rate History"],
-        "COMMODITIES":     ["Commodities", "PMEX"],
-        "RESEARCH":        ["Research"],
-        "ADMIN":           ["Data Status", "Sync Center", "Schema Explorer"],
+        "COMMODITIES":     ["Commodities", "PMEX", "PMEX Analytics"],
+        "RESEARCH":        ["Research", "Signal Analysis", "Microstructure", "Tick Analytics", "Tick Replay", "Quant Lab", "Macro Cycles", "Sector Breadth", "Market Research", "ML Predictions"],
+        "STRATEGIES":      ["VPIN Strategy", "OFI Alpha", "CVD Divergence", "Basis Arb", "VWAP Execution", "Macro Regime", "Flow Intelligence", "Sector Rotation", "OI Buildup/Unwind", "Pairs Trading", "LLM Sentiment"],
+        "ADVANCED":        ["Signal Intelligence", "Order Book Sim", "Stock Graph (GNN)", "Hawkes Process", "RL Execution"],
+        "ADMIN":           ["Data Status", "Sync Center", "Jobs Monitor", "Schema Explorer", "App Lineage", "SBP EasyData", "PSX Scraper"],
     }
 
     # HIDDEN PAGES — registered for URL access but no sidebar button
     # Preserves backwards-compatible URLs for bookmarks
     _hidden_pages = {
-        "Live Market":      st.Page(live_market_page,        title="Live Market",      url_path="live-market"),
-        "Live OHLCV":       st.Page(live_ohlcv_page,         title="Live OHLCV",       url_path="live-ohlcv"),
-        "Live Indices":     st.Page(live_indices_page,        title="Live Indices",     url_path="live-indices"),
         "WS Relay":         st.Page(ws_relay_status_page,     title="WS Relay",         url_path="ws-relay"),
         "Quote Monitor":    st.Page(regular_market_page,      title="Quote Monitor",    url_path="quote-monitor"),
-        "Price Chart":      st.Page(candlestick_explorer,     title="Price Chart",      url_path="price-chart"),
-        "Rankings":         st.Page(rankings_page,            title="Rankings",          url_path="rankings"),
-        "Symbols":          st.Page(symbols_page,             title="Symbols",           url_path="symbols"),
         "Instruments":      st.Page(instruments_page,         title="Instruments",      url_path="instruments"),
         "FI Overview":      st.Page(psx_debt_market_page,     title="FI Overview",      url_path="fi-overview"),
         "Bond Search":      st.Page(bonds_screener_page,      title="Bond Search",      url_path="bond-search"),
@@ -1193,14 +910,11 @@ def main():
         "FX Analytics":     st.Page(fx_impact_page,           title="FX Analytics",     url_path="fx-analytics"),
         "Fund Directory":   st.Page(mutual_funds_page,        title="Fund Directory",   url_path="fund-directory"),
         "Data Sync":        st.Page(data_acquisition_page,    title="Data Sync",        url_path="data-sync"),
-        "EOD Loader":       st.Page(eod_data_loader_page,     title="EOD Loader",       url_path="eod-loader"),
-        "History":          st.Page(history_page,             title="History",           url_path="history"),
         "Sync Monitor":     st.Page(sync_monitor,             title="Sync Monitor",     url_path="sync-monitor"),
         "Data Quality":     st.Page(data_quality_page,        title="Data Quality",     url_path="data-quality"),
         "Website Scan":     st.Page(website_scan_page,        title="Website Scan",     url_path="website-scan"),
         "AI Chat":          st.Page(chat_page,                title="AI Chat",          url_path="ai-chat"),
         "AI Insights":      st.Page(ai_insights_page,         title="AI Insights",      url_path="ai-insights"),
-        "Settings":         st.Page(settings_page,            title="Settings",          url_path="settings"),
     }
 
     # Build grouped dict for st.navigation (primary + hidden)
@@ -1294,7 +1008,8 @@ def main():
     # =================================================================
     # CUSTOM BLOOMBERG-STYLE SIDEBAR — 5-pillar navigation
     # =================================================================
-    st.sidebar.title("PakFinData")
+    with st.sidebar:
+        render_logo("sidebar")
 
     # Theme toggle
     theme_options = {
@@ -1317,7 +1032,10 @@ def main():
     st.sidebar.markdown("---")
 
     # Identify current page for button highlighting
-    current_url = pg.url_path
+    try:
+        current_url = pg.url_path
+    except AttributeError:
+        current_url = ""
 
     # Render grouped navigation with section headers
     for group_name, page_names in nav_groups.items():
@@ -1330,12 +1048,15 @@ def main():
 
         for page_name in page_names:
             page_ref = _pages[page_name]
-            is_selected = (page_ref.url_path == current_url)
+            try:
+                is_selected = (page_ref.url_path == current_url)
+            except AttributeError:
+                is_selected = (page_ref.title == pg.title)
 
             if st.sidebar.button(
                 page_name,
                 key=f"nav_{page_name}",
-                use_container_width=True,
+                width='stretch',
                 type="primary" if is_selected else "secondary",
             ):
                 st.switch_page(page_ref)
@@ -1357,14 +1078,111 @@ def main():
     except Exception:
         pass
 
+    # Tick data freshness (reads from sync_state.json — no DB scan)
+    try:
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        from pakfindata.services.sync_state import get_last_tick_date
+        _pkt = _tz(_td(hours=5))
+        _today = _dt.now(_pkt).strftime("%Y-%m-%d")
+        _tick_date, _tick_count = get_last_tick_date()
+        if _tick_date:
+            _label = f"📡 Ticks: {_tick_date}"
+            if _tick_count:
+                _label += f" ({_tick_count:,})"
+            if str(_tick_date) == _today:
+                st.sidebar.success(_label)
+            else:
+                st.sidebar.warning(_label)
+        else:
+            st.sidebar.caption("📡 Tick status: no data")
+    except Exception:
+        st.sidebar.caption("📡 Tick status unavailable")
+
+    # Ollama LLM status
+    try:
+        from pakfindata.services.llm_client import llm
+        _llm_st = llm.status()
+        if _llm_st["running"]:
+            _n_models = len(_llm_st["models"])
+            st.sidebar.markdown(
+                f'<div style="padding:4px 8px;margin:4px 0;background:rgba(0,230,118,0.1);'
+                f'border:1px solid rgba(0,230,118,0.3);border-radius:4px;font-size:10px;">'
+                f'<span style="color:#00E676">\u25cf</span> '
+                f'<span style="color:#888">Ollama</span> '
+                f'<span style="color:#E0E0E0;font-weight:700">{_n_models} model{"s" if _n_models != 1 else ""}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.sidebar.markdown(
+                '<div style="padding:4px 8px;margin:4px 0;background:rgba(255,82,82,0.1);'
+                'border:1px solid rgba(255,82,82,0.3);border-radius:4px;font-size:10px;">'
+                '<span style="color:#FF5252">\u25cf</span> '
+                '<span style="color:#888">Ollama offline</span>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+    except Exception:
+        pass
+
+    # Intelligence alerts (cached, non-blocking)
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+        _alert_file = _Path("/mnt/e/psxdata/intelligence_alerts.json")
+        if _alert_file.exists():
+            _alerts = _json.loads(_alert_file.read_text())
+            if _alerts:
+                st.sidebar.markdown("---")
+                st.sidebar.markdown("**Active Signals**")
+                for _al in _alerts[:5]:
+                    _atype = _al.get("type", "")
+                    _asym = _al.get("symbol", "")
+                    _amsg = _al.get("message", "")[:60]
+                    _adir = _al.get("direction", 0)
+                    _acol = "#00E676" if _adir > 0 else "#FF5252" if _adir < 0 else "#FFB300"
+                    st.sidebar.markdown(
+                        f'<div style="padding:4px 8px;margin-bottom:4px;border-left:3px solid {_acol};'
+                        f'font-size:11px;background:rgba(128,128,128,0.05);border-radius:0 4px 4px 0;">'
+                        f'<b>{_asym}</b> {_atype}<br>'
+                        f'<span style="color:#888">{_amsg}</span></div>',
+                        unsafe_allow_html=True,
+                    )
+    except Exception:
+        pass
+
     st.sidebar.markdown("---")
+    # Phase 1.5 feature flag: route sync buttons through the worker
+    # queue (default) or fall back to the legacy inline safe_writer
+    # path. Operator-visible toggle for fast debug switching.
+    st.session_state.setdefault("use_worker_sync", True)
+    st.sidebar.checkbox(
+        "Use worker for sync",
+        key="use_worker_sync",
+        help=(
+            "When ON, sync buttons enqueue a worker job and poll until "
+            "done. When OFF, they run inline (legacy safe_writer path)."
+        ),
+    )
+    if st.sidebar.button("Clear Cache", key="_clear_cache", type="secondary"):
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        from pakfindata.db.connections import refresh_analytics
+        refresh_analytics()
+        st.rerun()
     st.sidebar.caption("CLI: `pfsync --help`")
     st.sidebar.caption(f"DB: `{get_db_path()}`")
+    with st.sidebar:
+        render_powered_by()
 
     # =================================================================
     # EXECUTE SELECTED PAGE — framework guarantees isolation
     # =================================================================
     pg.run()
+
+    # Page footer — brand attribution + disclaimer
+    render_powered_by()
+    render_disclaimer()
 
 
 if __name__ == "__main__":

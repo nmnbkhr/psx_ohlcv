@@ -53,12 +53,12 @@ def _parse_ts_to_epoch(ts: str) -> int:
 
 def upsert_intraday(con: sqlite3.Connection, df: pd.DataFrame) -> int:
     """
-    Upsert intraday bars data from DataFrame.
+    Upsert intraday bars data from DataFrame (v3 schema: market + interval).
 
     Args:
         con: Database connection
         df: DataFrame with columns: symbol, ts, open, high, low, close, volume
-            Optionally ts_epoch (will be computed if missing)
+            Optional: ts_epoch, date, market (default 'REG'), interval (default '1s')
 
     Returns:
         Number of rows inserted or updated
@@ -66,7 +66,6 @@ def upsert_intraday(con: sqlite3.Connection, df: pd.DataFrame) -> int:
     if df.empty:
         return 0
 
-    now = now_iso()
     count = 0
 
     required_cols = {"symbol", "ts"}
@@ -75,28 +74,38 @@ def upsert_intraday(con: sqlite3.Connection, df: pd.DataFrame) -> int:
         raise ValueError(f"DataFrame missing columns: {missing}")
 
     for _, row in df.iterrows():
-        # Compute ts_epoch if not provided
+        ts_str = str(row["ts"])
         ts_epoch = row.get("ts_epoch")
         if ts_epoch is None or pd.isna(ts_epoch):
-            ts_epoch = _parse_ts_to_epoch(row["ts"])
+            ts_epoch = _parse_ts_to_epoch(ts_str)
+
+        # Derive date from ts if not supplied (v3 schema requires NOT NULL)
+        date_val = row.get("date")
+        if date_val is None or pd.isna(date_val) or not str(date_val).strip():
+            date_val = ts_str[:10]
+
+        market = row.get("market") or "REG"
+        interval = row.get("interval") or "1s"
 
         cur = con.execute(
             """
             INSERT OR IGNORE INTO intraday_bars
-                (symbol, ts, ts_epoch, open, high, low, close, volume,
-                 interval, ingested_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'int', ?)
+                (symbol, market, date, ts, ts_epoch, interval,
+                 open, high, low, close, volume, source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'upsert_intraday')
             """,
             (
                 row["symbol"],
-                row["ts"],
+                str(market),
+                str(date_val),
+                ts_str,
                 int(ts_epoch),
+                str(interval),
                 row.get("open"),
                 row.get("high"),
                 row.get("low"),
                 row.get("close"),
                 row.get("volume"),
-                now,
             ),
         )
         count += cur.rowcount
@@ -283,7 +292,13 @@ def get_intraday_stats(con: sqlite3.Connection, symbol: str) -> dict:
 def promote_intraday_to_eod(
     con: sqlite3.Connection, date: str | None = None
 ) -> int:
-    """Aggregate intraday_bars into eod_ohlcv with REAL high/low from actual trades.
+    """DEPRECATED as a population path for eod_ohlcv — canonical flow is
+    `market_summary fetch → disk → ingest_market_summary_csv` (source=
+    'market_summary'), which already carries real H/L. Kept for the existing
+    Intraday page buttons ([intraday.py:1963, 2426]) and the hidden Live
+    OHLCV page. Do not call from new code paths.
+
+    Aggregate intraday_bars into eod_ohlcv with REAL high/low from actual trades.
 
     For each symbol on the given date:
     - open  = close price of the FIRST tick (earliest ts_epoch)
@@ -416,6 +431,9 @@ def promote_intraday_to_eod(
         count += 1
 
     con.commit()
+
+    # DuckDB dual-write removed — data flows through SQLite → Parquet now
+
     con.row_factory = old_factory
     return count
 
@@ -429,7 +447,7 @@ def get_intraday_dates(con: sqlite3.Connection) -> list[str]:
     old_factory = con.row_factory
     con.row_factory = sqlite3.Row
     rows = con.execute(
-        "SELECT DISTINCT DATE(ts) AS d FROM intraday_bars ORDER BY d DESC"
+        "SELECT DISTINCT date AS d FROM intraday_bars ORDER BY d DESC"
     ).fetchall()
     con.row_factory = old_factory
     return [r["d"] for r in rows if r["d"]]

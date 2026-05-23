@@ -848,6 +848,12 @@ def verify_eod_data_sources(
 
 def backfill_eod_sources(con: sqlite3.Connection, dry_run: bool = True) -> dict:
     """
+    DEPRECATED — one-off source-column backfill, zero callers in the codebase.
+    Kept for reference / manual invocation only. The canonical EOD population
+    path is `market_summary fetch → disk CSV → ingest_market_summary_csv`; new
+    rows get `source='market_summary'` (or `'closing_rates_pdf'` on fallback)
+    at ingest time, so this backfill isn't needed on fresh data.
+
     Backfill source column for existing data based on available files.
 
     Logic:

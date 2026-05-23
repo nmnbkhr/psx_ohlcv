@@ -67,3 +67,27 @@ downloaded_output.txt
 # Scratch/prompt files
 *claude_code_prompt*.md
 claude-code-prompt-*.md
+
+# Runtime caches
+models/sentiment_cache/
+
+# Binaries / installers
+*.deb
+
+# Office docs
+*.docx
+*.pdf
+
+# Sales / marketing assets
+strategos-preview-*
+coe_marketing_assets.*
+
+# Abandoned scripts
+*.DEAD
+
+# Pre-commit audit reports (kept outside repo)
+INVESTIGATION_REPORT*.md
+KNOWN_TEST_FAILURES.md
+
+# Developer-local Claude Code config (varies per machine)
+.claude/settings.json

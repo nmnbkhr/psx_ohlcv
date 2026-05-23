@@ -67,9 +67,22 @@ CREATE INDEX IF NOT EXISTS idx_benchmark_date
 
 
 def init_bond_market_schema(con: sqlite3.Connection) -> None:
-    """Create bond market tables if they don't exist."""
-    con.executescript(BOND_MARKET_SCHEMA_SQL)
-    con.commit()
+    """Create bond market tables if they don't exist.
+
+    Caller commits via pakfindata.db.safe_writer. Production-safe even when
+    the caller doesn't commit: CREATE TABLE IF NOT EXISTS is a no-op once
+    tables exist (no DML, no transaction state to flush). Fresh-DB setup
+    flows through db.connection.init_schema which commits separately.
+
+    Splits BOND_MARKET_SCHEMA_SQL on semicolons rather than using
+    con.executescript() — executescript() implicitly commits any pending
+    transaction first, which would end a safe_writer BEGIN IMMEDIATE
+    transaction prematurely.
+    """
+    for stmt in BOND_MARKET_SCHEMA_SQL.split(";"):
+        stmt = stmt.strip()
+        if stmt:
+            con.execute(stmt)
 
 
 # ── upsert functions ───────────────────────────────────────────

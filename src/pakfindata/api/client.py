@@ -1,19 +1,61 @@
 """
-API Client for PakFinData Backend.
+API Client for pakfindata Backend.
 
 Provides a Python client for the FastAPI backend.
 Used by Streamlit frontend to communicate with the API.
+
+Phase 1.1 (1.1.3): auto-injects Bearer token from
+~/.config/pakfindata/api.env when present. Backwards-compatible with
+the Phase-0 unauthenticated mode — if no token file exists, requests
+go out without an Authorization header (legacy /api/* on Phase-0
+deployments will continue to accept them).
+
+Note: this is the per-endpoint typed client. The lower-level "smart
+client" at pakfindata.api_client (DO NOT TOUCH) auto-detects API vs
+direct-SQLite mode and is what most Streamlit pages import.
 """
 
 import os
+from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass
 
 import requests
 
 
-# Default API URL - can be overridden via environment variable
-DEFAULT_API_URL = os.environ.get("PSX_API_URL", "http://localhost:8000")
+# Default API URL - PSX_API_URL env var overrides. The api.env file
+# sets PSX_API_URL=http://127.0.0.1:8001 once the user has bootstrapped
+# Milestone 1.1; until then the legacy 8000 default applies for
+# backwards compat with Phase-0 deployments.
+DEFAULT_API_URL = os.environ.get("PSX_API_URL", "http://localhost:8001")
+
+
+_API_ENV_FILE = Path.home() / ".config" / "pakfindata" / "api.env"
+
+
+def _read_api_token() -> Optional[str]:
+    """Read PAKFINDATA_API_TOKEN from ~/.config/pakfindata/api.env.
+
+    Returns None if the file doesn't exist or the token isn't set —
+    in which case requests go out unauthenticated (legacy mode).
+    """
+    # Env var wins
+    token = os.environ.get("PAKFINDATA_API_TOKEN")
+    if token:
+        return token.strip()
+    if not _API_ENV_FILE.exists():
+        return None
+    try:
+        for line in _API_ENV_FILE.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            key, _, value = line.partition("=")
+            if key.strip() == "PAKFINDATA_API_TOKEN":
+                return value.strip().strip('"').strip("'") or None
+    except OSError:
+        return None
+    return None
 
 
 @dataclass
@@ -56,17 +98,29 @@ class LoadResult:
 class APIClient:
     """Client for PakFinData API."""
 
-    def __init__(self, base_url: str = DEFAULT_API_URL, timeout: int = 30):
+    def __init__(
+        self,
+        base_url: str = DEFAULT_API_URL,
+        timeout: int = 30,
+        token: Optional[str] = None,
+    ):
         """
         Initialize API client.
 
         Args:
             base_url: Base URL of the API server.
             timeout: Request timeout in seconds.
+            token:   Bearer token. If None, auto-loaded from
+                     ~/.config/pakfindata/api.env (or env var).
+                     If still unresolved, requests go out without
+                     an Authorization header — legacy Phase-0 mode.
         """
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.token = token if token is not None else _read_api_token()
         self._session = requests.Session()
+        if self.token:
+            self._session.headers["Authorization"] = f"Bearer {self.token}"
 
     def _request(self, method: str, path: str, **kwargs) -> dict:
         """Make HTTP request to API."""
@@ -82,15 +136,56 @@ class APIClient:
         except requests.exceptions.Timeout:
             raise APITimeoutError(f"Request timed out after {self.timeout}s")
         except requests.exceptions.HTTPError as e:
-            raise APIHTTPError(f"HTTP error: {e.response.status_code} - {e.response.text}")
+            raise APIHTTPError(
+                f"HTTP error: {e.response.status_code} - {e.response.text}",
+                status_code=e.response.status_code,
+                body=e.response.text,
+            )
+
+    def get(self, path: str, params: dict | None = None):
+        """Generic GET helper — returns the decoded JSON body.
+
+        Used by the Streamlit-side wrapper (pakfindata.ui.api.client) to
+        call /v1/* endpoints without per-endpoint shim methods. The
+        return value is whatever the endpoint serializes — dict, list,
+        list-of-dicts, etc.
+        """
+        return self._request("GET", path, params=params)
+
+    def post(self, path: str, json: dict | None = None, params: dict | None = None):
+        """Generic POST helper — returns the decoded JSON body.
+
+        Used by the Streamlit wrapper to submit jobs and similar
+        write-side calls. ``json=`` is encoded into the request body;
+        ``params=`` becomes the URL query string.
+        """
+        return self._request("POST", path, json=json, params=params)
 
     def health_check(self) -> bool:
-        """Check if API is healthy."""
+        """Check if API is healthy. Returns True iff /health returns ok-ish.
+
+        Accepts both the Phase-0 status='healthy' and the Phase-1
+        status='ok' / status='degraded' (the latter is still 'reachable'
+        but signals a DB-side issue — return True so callers can still
+        talk to the API; the detailed catalog_summary is available via
+        `health()` below).
+        """
         try:
             result = self._request("GET", "/health")
-            return result.get("status") == "healthy"
+            return result.get("status") in ("ok", "healthy", "degraded")
         except Exception:
             return False
+
+    def health(self) -> dict:
+        """Return the full /health payload.
+
+        Phase-1 format:
+            {"status": "ok"|"degraded", "version": ..., "timestamp": ...,
+             "db_path": ..., "db_status": ..., "catalog_summary": {...}}
+
+        Phase-0 legacy format: {"status": "healthy"} (no catalog_summary).
+        """
+        return self._request("GET", "/health")
 
     # =========================================================================
     # EOD Endpoints
@@ -260,8 +355,17 @@ class APITimeoutError(APIError):
 
 
 class APIHTTPError(APIError):
-    """HTTP error from API."""
-    pass
+    """HTTP error from API.
+
+    Carries ``status_code`` (int) and ``body`` (raw response text) so
+    callers can distinguish 404 / 401 / 5xx without parsing the
+    message string.
+    """
+
+    def __init__(self, message: str, status_code: int = 0, body: str = ""):
+        super().__init__(message)
+        self.status_code = status_code
+        self.body = body
 
 
 # =============================================================================
@@ -295,8 +399,11 @@ def is_api_available(base_url: str = DEFAULT_API_URL, timeout: int = 2) -> bool:
         # Check health endpoint first
         if not temp_client.health_check():
             return False
-        # Also verify the root endpoint returns our API name
+        # Also verify the root endpoint identifies as ours.
+        # Phase-0 banner used "PakFinData API"; Phase-1 lowercased to
+        # "pakfindata API". Accept either to keep callers happy across
+        # the migration.
         result = temp_client._request("GET", "/")
-        return result.get("name") == "PakFinData API"
+        return result.get("name") in ("PakFinData API", "pakfindata API")
     except Exception:
         return False

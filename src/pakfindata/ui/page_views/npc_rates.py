@@ -1,26 +1,58 @@
-"""Naya Pakistan Certificates (NPC) — Rates, Yield Curves, Cross-Currency Analytics."""
+"""Naya Pakistan Certificates (NPC) — Rates, Yield Curves, Cross-Currency Analytics.
+
+Reads through the /v1 API client (Phase 1.7.B.5). Several backing
+views (v_npc_yield_curve, v_npc_carry_trade, v_multicurrency_dashboard,
+v_npc_vs_rfr_spread) are not built in the current DB; the API
+endpoints return empty lists in that case, and the page falls
+through to "No data" infos.
+"""
 
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime
 
+from pakfindata.ui.api import client as api_client
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_latest_npc_rates() -> pd.DataFrame:
+    rows = api_client.get_npc_rates(limit=500) or []
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_npc_yield_curve(currency) -> dict:
+    return api_client.get_npc_yield_curve(currency=currency) or {}
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_npc_vs_rfr_spread() -> pd.DataFrame:
+    rows = api_client.get_npc_vs_rfr_spread() or []
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_carry_trade_analysis(currency) -> pd.DataFrame:
+    rows = api_client.get_npc_carry(currency=currency) or []
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_multicurrency_dashboard() -> pd.DataFrame:
+    rows = api_client.get_npc_multicurrency() or []
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
 
 def render_npc_rates():
     """Main entry point for NPC rates page."""
+    api_client.render_api_status_banner_if_down()
+
     st.title("Naya Pakistan Certificates (NPC)")
     st.caption("Sovereign FCY instruments | SBP-administered | Roshan Digital Accounts")
 
-    from pakfindata.db.connection import connect
-    from pakfindata.db import init_schema
-    from pakfindata.db.repositories.npc_rates import ensure_tables
-
-    con = connect()
-    init_schema(con)
-    ensure_tables(con)
-
-    # Sync controls
-    _render_sync_controls(con)
+    # Sync controls (write path — uses local connection)
+    _render_sync_controls()
 
     st.markdown("---")
 
@@ -33,15 +65,15 @@ def render_npc_rates():
     ])
 
     with tab1:
-        _render_current_rates(con)
+        _render_current_rates()
     with tab2:
-        _render_yield_curves(con)
+        _render_yield_curves()
     with tab3:
-        _render_rfr_spread(con)
+        _render_rfr_spread()
     with tab4:
-        _render_carry_trade(con)
+        _render_carry_trade()
     with tab5:
-        _render_dashboard(con)
+        _render_dashboard()
 
     st.markdown("---")
     st.caption(
@@ -50,17 +82,20 @@ def render_npc_rates():
     )
 
 
-def _render_sync_controls(con):
-    """Sync button for NPC rates."""
+def _render_sync_controls():
+    """Sync button for NPC rates (write path — opens its own connection)."""
     with st.expander("Sync NPC Rates"):
         col1, col2 = st.columns([3, 1])
         with col2:
             if st.button("Sync from SBP", type="primary", key="npc_sync_btn"):
                 with st.spinner("Fetching from SBP..."):
                     try:
+                        from pakfindata.db.connection import connect
                         from pakfindata.sources.npc_rates_scraper import NPCRatesScraper
+                        con = connect()
                         scraper = NPCRatesScraper()
                         count = scraper.sync(con, force=True)
+                        st.cache_data.clear()
                         if count > 0:
                             st.success(f"Stored {count} NPC rate records")
                         else:
@@ -70,13 +105,11 @@ def _render_sync_controls(con):
                         st.error(f"Sync failed: {e}")
 
 
-def _render_current_rates(con):
+def _render_current_rates():
     """Tab 1: Current NPC rates as a pivot table."""
-    from pakfindata.db.repositories.npc_rates import get_latest_npc_rates
-
     st.markdown("### Current NPC Rates")
 
-    df = get_latest_npc_rates(con)
+    df = _cached_latest_npc_rates()
     if df.empty:
         st.info("No NPC rate data. Click **Sync from SBP** above.")
         return
@@ -95,10 +128,10 @@ def _render_current_rates(con):
     try:
         st.dataframe(
             pivot.style.format("{:.2f}%").background_gradient(cmap="RdYlGn", axis=None),
-            use_container_width=True,
+            width='stretch',
         )
     except ImportError:
-        st.dataframe(pivot.style.format("{:.2f}%"), use_container_width=True)
+        st.dataframe(pivot.style.format("{:.2f}%"), width='stretch')
 
     # Show effective date if available
     if "effective_date" in df.columns:
@@ -111,10 +144,8 @@ def _render_current_rates(con):
         st.caption(f"Last scraped: {df['date'].iloc[0]}")
 
 
-def _render_yield_curves(con):
+def _render_yield_curves():
     """Tab 2: NPC yield curves for all currencies."""
-    from pakfindata.db.repositories.npc_rates import get_npc_yield_curve
-
     st.markdown("### NPC Yield Curves")
 
     tenor_labels = ["3M", "6M", "12M", "3Y", "5Y"]
@@ -126,7 +157,7 @@ def _render_yield_curves(con):
     colors = {"USD": "#2196F3", "GBP": "#FF9800", "EUR": "#4CAF50", "PKR": "#E91E63"}
 
     for ccy in ["USD", "GBP", "EUR", "PKR"]:
-        curve = get_npc_yield_curve(con, currency=ccy)
+        curve = _cached_npc_yield_curve(ccy)
         if not curve:
             continue
         rates = [curve.get(k) for k in tenor_keys]
@@ -153,17 +184,15 @@ def _render_yield_curves(con):
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         margin=dict(l=40, r=20, t=20, b=40),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
-def _render_rfr_spread(con):
+def _render_rfr_spread():
     """Tab 3: NPC vs Global RFR spread."""
-    from pakfindata.db.repositories.npc_rates import get_npc_vs_rfr_spread
-
     st.markdown("### NPC vs Global Risk-Free Rates")
     st.caption("NPC sovereign credit premium over SOFR (USD), SONIA (GBP), EUSTR (EUR)")
 
-    df = get_npc_vs_rfr_spread(con)
+    df = _cached_npc_vs_rfr_spread()
     if df.empty:
         st.info("No spread data. Ensure NPC and global rates are synced.")
         return
@@ -214,7 +243,7 @@ def _render_rfr_spread(con):
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         margin=dict(l=40, r=20, t=20, b=40),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Data table
     st.markdown("#### Spread Data")
@@ -222,7 +251,7 @@ def _render_rfr_spread(con):
     available = [c for c in display_cols if c in df.columns]
     st.dataframe(
         df[available],
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
         column_config={
             "npc_rate": st.column_config.NumberColumn("NPC (%)", format="%.2f"),
@@ -232,15 +261,13 @@ def _render_rfr_spread(con):
     )
 
 
-def _render_carry_trade(con):
+def _render_carry_trade():
     """Tab 4: NPC vs KIBOR carry trade analysis."""
-    from pakfindata.db.repositories.npc_rates import get_carry_trade_analysis
-
     st.markdown("### Carry Trade Analysis")
     st.caption("KIBOR vs NPC rate — spread represents PKR deposit premium over FCY NPC")
 
     currency = st.selectbox("NPC Currency", ["USD", "GBP", "EUR"], key="npc_carry_ccy")
-    df = get_carry_trade_analysis(con, currency=currency)
+    df = _cached_carry_trade_analysis(currency)
 
     if df.empty:
         st.info("No carry trade data. Ensure NPC, KIBOR, and FX rates are synced.")
@@ -267,7 +294,7 @@ def _render_carry_trade(con):
     available = [c for c in display_cols if c in df.columns]
     st.dataframe(
         df[available],
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
         column_config={
             "npc_rate": st.column_config.NumberColumn(f"NPC {currency} (%)", format="%.2f"),
@@ -278,14 +305,12 @@ def _render_carry_trade(con):
     )
 
 
-def _render_dashboard(con):
+def _render_dashboard():
     """Tab 5: Multi-currency dashboard."""
-    from pakfindata.db.repositories.npc_rates import get_multicurrency_dashboard
-
     st.markdown("### Multi-Currency Dashboard")
     st.caption("NPC + Global RFR + KIBOR + FX — comprehensive view")
 
-    df = get_multicurrency_dashboard(con)
+    df = _cached_multicurrency_dashboard()
     if df.empty:
         st.info("No dashboard data. Run sync commands first.")
         return
@@ -298,7 +323,7 @@ def _render_dashboard(con):
 
     st.dataframe(
         df,
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
         column_config={
             "npc_rate": st.column_config.NumberColumn("NPC (%)", format="%.2f"),

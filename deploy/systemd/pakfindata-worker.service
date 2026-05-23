@@ -1,0 +1,34 @@
+[Unit]
+Description=pakfindata worker (job queue dispatcher)
+Documentation=file:%h/projects/pakfindata/docs/operations/worker_service.md
+After=network.target pakfindata-api.service
+PartOf=pakfindata-api.service
+
+[Service]
+Type=exec
+WorkingDirectory=%h/projects/pakfindata
+# api.env is loaded for shared env vars (PAKFINDATA_DB_PATH, log level).
+# Worker does NOT call the API and ignores PAKFINDATA_API_TOKEN — see
+# Hard Rule 4 in PHASE1_04_WORKER_SCAFFOLD.md.
+EnvironmentFile=%h/.config/pakfindata/api.env
+ExecStart=%h/miniforge3/envs/psx/bin/python -m pakfindata.worker.main
+
+# Give the worker up to 60s on SIGTERM so the in-flight job can finish.
+# Phase 1 jobs are small; the long-running ETL paths (intraday backfill,
+# bulk EOD rebuild) migrate gradually in 1.5+ and may need a higher
+# TimeoutStopSec — revisit then.
+TimeoutStopSec=60s
+KillSignal=SIGTERM
+KillMode=mixed
+
+Restart=on-failure
+RestartSec=5s
+
+# Logs flow through our JSON formatter (configure_logging) to stdout;
+# journald captures them under the SyslogIdentifier below.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pakfindata-worker
+
+[Install]
+WantedBy=default.target

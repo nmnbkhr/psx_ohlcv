@@ -8,19 +8,21 @@ Tabs:
   Carry — Carry trade calculator, KIBOR vs global rates, NPC certificates
   FX Signals — Microservice-sourced regime, intervention, carry signals
   Sync — All sync/backfill controls
+
+Phase 1.7.C.4: all DB reads now flow through pakfindata.ui.api.client.
+The Sync tab still uses safe_writer directly for the write paths;
+those are 1.6 territory (sync buttons enqueue worker jobs by default).
 """
 
-import sqlite3
 import streamlit as st
 import pandas as pd
-import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from pakfindata.ui.components.helpers import get_connection, render_ai_commentary, render_footer
-from pakfindata.sources.sbp_fx import SBPFXScraper
 from pakfindata.sources.forex_scraper import ForexPKScraper
 from pakfindata.sources.fx_client import FXClient
+from pakfindata.ui.api import client as api_client
+from pakfindata.ui.components.helpers import render_ai_commentary, render_footer
 
 _fx = FXClient()
 
@@ -42,12 +44,13 @@ _CHART_LAYOUT = dict(
     margin=dict(l=10, r=10, t=40, b=10),
 )
 
-_KEY_CURRENCIES = ["USD", "EUR", "GBP", "SAR", "AED"]
+_KEY_CURRENCIES = ["USD", "EUR", "GBP", "SAR", "AED", "CNY"]
 
-_FX_TABLES = {
-    "Interbank": "sbp_fx_interbank",
-    "Open Market": "sbp_fx_open_market",
-    "Kerb": "forex_kerb",
+# Source labels (UI) → /v1/fx/* source keys.
+_FX_SOURCES: dict[str, str] = {
+    "Interbank": "interbank",
+    "Open Market": "open_market",
+    "Kerb": "kerb",
 }
 
 _SRC_COLORS = {
@@ -59,6 +62,91 @@ _SRC_COLORS = {
 
 _AXIS_STYLE = dict(gridcolor=_COLORS["grid"], zeroline=False)
 
+
+# ── Cached data loaders ──────────────────────────────────────────────────────
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_all_currency_rates(source: str) -> pd.DataFrame:
+    rows = api_client.get_fx_latest(source=source) or []
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_fx_history(source: str, currency: str, limit: int) -> pd.DataFrame:
+    rows = api_client.get_fx_history(currency, source=source, limit=limit) or []
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_fx_ohlcv(pair: str, limit: int) -> pd.DataFrame:
+    rows = api_client.get_fx_ohlcv(pair, limit=limit) or []
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_global_pairs() -> list[str]:
+    return api_client.get_fx_global_pairs() or []
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_global_fx_history(pair: str, limit: int) -> pd.DataFrame:
+    rows = api_client.get_fx_global_history(pair, limit=limit) or []
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_spread_heatmap() -> pd.DataFrame:
+    rows = api_client.get_fx_spread_heatmap(limit=150) or []
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_volatility_data() -> tuple[pd.DataFrame, str]:
+    """USD/PKR price history for vol/drawdown analysis.
+
+    Tries fx_ohlcv first (close column); falls back to sbp_fx_interbank
+    selling price when OHLCV is sparse.
+    """
+    rows = api_client.get_fx_ohlcv("USD/PKR", limit=5000) or []
+    df = pd.DataFrame(rows)
+    source_label = "FX OHLCV"
+    if len(df) < 10:
+        hist = api_client.get_fx_history("USD", source="interbank", limit=2000) or []
+        df = pd.DataFrame(hist)
+        if not df.empty:
+            df = df.rename(columns={"selling": "close"})[["date", "close"]]
+        source_label = "SBP Interbank"
+    if not df.empty:
+        df = df.sort_values("date").reset_index(drop=True)
+    return df, source_label
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_npc_rates() -> pd.DataFrame:
+    rows = api_client.get_npc_rates(limit=2000) or []
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_kibor_history() -> pd.DataFrame:
+    rows = api_client.get_kibor_history(tenors="1M,3M,6M,1Y", days=3000) or []
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_fx_sync_runs() -> pd.DataFrame:
+    rows = api_client.get_fx_sync_runs(limit=10) or []
+    return pd.DataFrame(rows)
+
+
+# ── Single-row lookups (no st.cache so they refresh with each render) ────────
+
+def _latest_rate(source: str, currency: str) -> dict | None:
+    """One-row FX lookup. Returns None on 404 or API down."""
+    return api_client.get_fx_latest_one(currency, source=source)
+
+
+# ── UI helpers ───────────────────────────────────────────────────────────────
 
 def _styled_fig(height=400, **kw):
     fig = go.Figure(layout={**_CHART_LAYOUT, "height": height, **kw})
@@ -86,29 +174,15 @@ def _card(label, value, delta=None, color=None):
     )
 
 
-def _get_latest_rate(con, table, currency):
-    try:
-        row = con.execute(
-            f"SELECT date, buying, selling FROM {table}"
-            " WHERE UPPER(currency) = ? ORDER BY date DESC LIMIT 1",
-            (currency.upper(),),
-        ).fetchone()
-        return dict(row) if row else None
-    except Exception:
-        return None
-
-
 # ═════════════════════════════════════════════════════════════════════════════
 # ENTRY POINT
 # ═════════════════════════════════════════════════════════════════════════════
 
 def render_fx_dashboard():
-    st.markdown("## FX Rates Terminal")
-
-    con = get_connection()
-    if con is None:
-        st.error("Database connection not available")
+    if not api_client.render_api_status_banner_if_down():
         return
+
+    st.markdown("## FX Rates Terminal")
 
     tabs = st.tabs(["Overview", "Charts", "Spreads", "Volatility", "Carry", "FX Signals", "Sync"])
 
@@ -120,7 +194,7 @@ def render_fx_dashboard():
     for tab, renderer in zip(tabs, renderers):
         with tab:
             try:
-                renderer(con)
+                renderer()
             except Exception as e:
                 st.error(f"Error: {e}")
 
@@ -131,41 +205,44 @@ def render_fx_dashboard():
 # TAB 1: OVERVIEW
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _render_overview(con):
+def _render_overview():
     # ── USD/PKR headline ──
-    usd_ib = _get_latest_rate(con, "sbp_fx_interbank", "USD")
-    usd_om = _get_latest_rate(con, "sbp_fx_open_market", "USD")
-    usd_kerb = _get_latest_rate(con, "forex_kerb", "USD")
+    usd_ib = _latest_rate("interbank", "USD")
+    usd_om = _latest_rate("open_market", "USD")
+    usd_kerb = _latest_rate("kerb", "USD")
 
-    # Previous day for delta
-    prev_usd = con.execute(
-        "SELECT selling FROM sbp_fx_interbank WHERE UPPER(currency)='USD'"
-        " ORDER BY date DESC LIMIT 1 OFFSET 1"
-    ).fetchone()
+    # Previous-day USD (one offset). Re-use the history endpoint with limit=2.
+    usd_hist = api_client.get_fx_history("USD", source="interbank", limit=2) or []
+    prev_usd = usd_hist[1] if len(usd_hist) >= 2 else None
 
     mc = st.columns(5)
     with mc[0]:
-        val = f"{usd_ib['selling']:.2f}" if usd_ib else "N/A"
-        delta = usd_ib["selling"] - prev_usd["selling"] if usd_ib and prev_usd else None
+        val = f"{usd_ib['selling']:.2f}" if usd_ib and usd_ib.get("selling") is not None else "N/A"
+        delta = (
+            usd_ib["selling"] - prev_usd["selling"]
+            if usd_ib and prev_usd
+            and usd_ib.get("selling") is not None
+            and prev_usd.get("selling") is not None
+            else None
+        )
         _card("USD/PKR Interbank", val, delta, _COLORS["interbank"])
     with mc[1]:
-        val = f"{usd_om['selling']:.2f}" if usd_om else "N/A"
+        val = f"{usd_om['selling']:.2f}" if usd_om and usd_om.get("selling") is not None else "N/A"
         _card("USD/PKR Open Mkt", val, color=_COLORS["open_mkt"])
     with mc[2]:
-        val = f"{usd_kerb['selling']:.2f}" if usd_kerb else "N/A"
+        val = f"{usd_kerb['selling']:.2f}" if usd_kerb and usd_kerb.get("selling") is not None else "N/A"
         _card("USD/PKR Kerb", val, color=_COLORS["kerb"])
     with mc[3]:
-        if usd_ib and usd_kerb and usd_ib["selling"] and usd_kerb["selling"]:
+        if usd_ib and usd_kerb and usd_ib.get("selling") and usd_kerb.get("selling"):
             spread = usd_kerb["selling"] - usd_ib["selling"]
             _card("Kerb Premium", f"{spread:+.2f}", color="#FFD700")
         else:
             _card("Kerb Premium", "N/A")
     with mc[4]:
-        # DXY from commodity_fx_rates
-        dxy = con.execute(
-            "SELECT close FROM commodity_fx_rates WHERE pair='DXY' ORDER BY date DESC LIMIT 1"
-        ).fetchone()
-        _card("DXY Index", f"{dxy['close']:.2f}" if dxy else "N/A", color="#AB47BC")
+        # DXY from commodity_fx_rates (global-history endpoint)
+        dxy_rows = api_client.get_fx_global_history("DXY", limit=1) or []
+        dxy_close = dxy_rows[0].get("close") if dxy_rows else None
+        _card("DXY Index", f"{dxy_close:.2f}" if dxy_close else "N/A", color="#AB47BC")
 
     st.markdown("")
 
@@ -174,10 +251,10 @@ def _render_overview(con):
     for currency in _KEY_CURRENCIES:
         cols = st.columns([1, 2, 2, 2, 1])
         cols[0].markdown(f"**{currency}/PKR**")
-        for i, (src_name, table) in enumerate(_FX_TABLES.items()):
-            rate = _get_latest_rate(con, table, currency)
+        for i, (src_name, src_key) in enumerate(_FX_SOURCES.items()):
+            rate = _latest_rate(src_key, currency)
             with cols[i + 1]:
-                if rate:
+                if rate and rate.get("buying") is not None and rate.get("selling") is not None:
                     st.metric(
                         src_name,
                         f"{rate['buying']:.2f} / {rate['selling']:.2f}",
@@ -185,10 +262,10 @@ def _render_overview(con):
                     )
                 else:
                     st.metric(src_name, "N/A")
-        ib = _get_latest_rate(con, "sbp_fx_interbank", currency)
-        kerb = _get_latest_rate(con, "forex_kerb", currency)
+        ib = _latest_rate("interbank", currency)
+        kerb = _latest_rate("kerb", currency)
         with cols[4]:
-            if ib and kerb and ib["selling"] and kerb["selling"]:
+            if ib and kerb and ib.get("selling") and kerb.get("selling"):
                 spread = kerb["selling"] - ib["selling"]
                 st.metric("Spread", f"{spread:+.2f}")
             else:
@@ -196,23 +273,15 @@ def _render_overview(con):
 
     # ── All currencies table ──
     st.markdown("### All Currency Rates")
-    for src_name, table in _FX_TABLES.items():
+    for src_name, src_key in _FX_SOURCES.items():
         try:
-            df = pd.read_sql_query(
-                f"""SELECT t.currency, t.date, t.buying, t.selling,
-                           ROUND(t.selling - t.buying, 4) as spread
-                    FROM {table} t
-                    INNER JOIN (SELECT currency, MAX(date) as max_date FROM {table} GROUP BY currency)
-                         mx ON t.currency=mx.currency AND t.date=mx.max_date
-                    ORDER BY t.currency""",
-                con,
-            )
+            df = _load_all_currency_rates(src_key)
             if not df.empty:
                 st.markdown(f"**{src_name}** ({df['date'].iloc[0]})")
                 st.dataframe(df.rename(columns={
                     "currency": "Currency", "date": "Date",
                     "buying": "Buying", "selling": "Selling", "spread": "Spread",
-                }), use_container_width=True, hide_index=True)
+                }), width='stretch', hide_index=True)
         except Exception:
             pass
 
@@ -221,7 +290,7 @@ def _render_overview(con):
 # TAB 2: CHARTS
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _render_charts(con):
+def _render_charts():
     st.markdown("### Rate History")
 
     c1, c2, c3 = st.columns([2, 1, 1])
@@ -236,12 +305,8 @@ def _render_charts(con):
 
     if chart_mode == "Overlay":
         fig = _styled_fig(height=450)
-        for src_name, table in _FX_TABLES.items():
-            df = pd.read_sql_query(
-                f"SELECT date, buying, selling FROM {table}"
-                " WHERE UPPER(currency)=? ORDER BY date DESC LIMIT ?",
-                con, params=(currency.upper(), limit),
-            )
+        for src_name, src_key in _FX_SOURCES.items():
+            df = _load_fx_history(src_key, currency, limit)
             if not df.empty:
                 df = df.sort_values("date")
                 fig.add_trace(go.Scatter(
@@ -260,15 +325,11 @@ def _render_charts(con):
             yaxis_title=f"{currency}/PKR",
             legend=dict(orientation="h", y=-0.12, bgcolor="rgba(0,0,0,0)"),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     else:
         # Candlestick from fx_ohlcv
         pair = f"{currency}/PKR"
-        df = pd.read_sql_query(
-            "SELECT date, open, high, low, close FROM fx_ohlcv"
-            " WHERE pair=? ORDER BY date DESC LIMIT ?",
-            con, params=(pair, limit),
-        )
+        df = _load_fx_ohlcv(pair, limit)
         if df.empty:
             st.info(f"No OHLCV data for {pair}. Use FX microservice sync.")
         else:
@@ -285,24 +346,17 @@ def _render_charts(con):
                 xaxis_rangeslider_visible=False,
                 yaxis_title="PKR",
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
     # ── DXY + major pairs ──
     st.markdown("### Global FX (yfinance)")
-    global_pairs = con.execute(
-        "SELECT DISTINCT pair FROM commodity_fx_rates ORDER BY pair"
-    ).fetchall()
-    pair_list = [r["pair"] for r in global_pairs]
+    pair_list = _load_global_pairs()
     if pair_list:
         sel_pairs = st.multiselect("Pairs", pair_list, default=["DXY", "USD_PKR"][:len(pair_list)], key="fx_global_pairs")
         if sel_pairs:
             fig = _styled_fig(height=380)
             for pair in sel_pairs:
-                df = pd.read_sql_query(
-                    "SELECT date, close FROM commodity_fx_rates"
-                    " WHERE pair=? ORDER BY date DESC LIMIT ?",
-                    con, params=(pair, limit),
-                )
+                df = _load_global_fx_history(pair, limit)
                 if not df.empty:
                     df = df.sort_values("date")
                     fig.add_trace(go.Scatter(
@@ -314,21 +368,21 @@ def _render_charts(con):
                 yaxis_title="Rate",
                 legend=dict(orientation="h", y=-0.12, bgcolor="rgba(0,0,0,0)"),
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 3: SPREADS
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _render_spreads(con):
+def _render_spreads():
     # ── Bar chart: spread per currency ──
     st.markdown("### Interbank vs Kerb Spread")
     spreads = []
     for ccy in _KEY_CURRENCIES:
-        ib = _get_latest_rate(con, "sbp_fx_interbank", ccy)
-        kerb = _get_latest_rate(con, "forex_kerb", ccy)
-        if ib and kerb and ib["selling"] and kerb["selling"]:
+        ib = _latest_rate("interbank", ccy)
+        kerb = _latest_rate("kerb", ccy)
+        if ib and kerb and ib.get("selling") and kerb.get("selling"):
             spreads.append({
                 "Currency": ccy,
                 "Interbank": ib["selling"],
@@ -350,7 +404,7 @@ def _render_spreads(con):
             barmode="group", yaxis_title="PKR (Selling)",
             legend=dict(orientation="h", y=-0.12, bgcolor="rgba(0,0,0,0)"),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
         # Spread bar
         fig2 = _styled_fig(height=220)
@@ -362,20 +416,13 @@ def _render_spreads(con):
             textposition="outside",
         ))
         fig2.update_layout(yaxis_title="Kerb Premium (PKR)", showlegend=False)
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width='stretch')
     else:
         st.info("No spread data — sync both interbank and kerb rates first")
 
     # ── Spread heatmap over time ──
     st.markdown("### Spread Heatmap (History)")
-    df = pd.read_sql_query(
-        """SELECT i.currency, i.date, ROUND(k.selling - i.selling, 2) as spread
-           FROM sbp_fx_interbank i
-           INNER JOIN forex_kerb k ON i.currency=k.currency AND i.date=k.date
-           WHERE i.currency IN ('USD','EUR','GBP','SAR','AED')
-           ORDER BY i.date DESC LIMIT 150""",
-        con,
-    )
+    df = _load_spread_heatmap()
     if not df.empty:
         pivot = df.pivot_table(index="date", columns="currency", values="spread").sort_index()
         if not pivot.empty:
@@ -387,17 +434,17 @@ def _render_spreads(con):
             ))
             fig.update_layout(**_CHART_LAYOUT, height=400, yaxis=dict(autorange="reversed", gridcolor=_COLORS["grid"]))
             fig.update_xaxes(**_AXIS_STYLE)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
     else:
         st.info("Need overlapping interbank + kerb dates for heatmap")
 
     # ── Buy-sell spread by source ──
     st.markdown("### Buy/Sell Spread by Source")
     spread_data = []
-    for src_name, table in _FX_TABLES.items():
+    for src_name, src_key in _FX_SOURCES.items():
         for ccy in _KEY_CURRENCIES:
-            rate = _get_latest_rate(con, table, ccy)
-            if rate and rate["buying"] and rate["selling"]:
+            rate = _latest_rate(src_key, ccy)
+            if rate and rate.get("buying") and rate.get("selling"):
                 spread_data.append({
                     "Source": src_name, "Currency": ccy,
                     "Spread": round(rate["selling"] - rate["buying"], 4),
@@ -415,27 +462,17 @@ def _render_spreads(con):
             barmode="group", yaxis_title="Buy/Sell Spread (PKR)",
             legend=dict(orientation="h", y=-0.12, bgcolor="rgba(0,0,0,0)"),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 4: VOLATILITY
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _render_volatility(con):
+def _render_volatility():
     st.markdown("### USD/PKR Volatility Analysis")
 
-    # Try fx_ohlcv first, then sbp_fx_interbank
-    df = pd.read_sql_query(
-        "SELECT date, close FROM fx_ohlcv WHERE pair='USD/PKR' ORDER BY date", con,
-    )
-    source_label = "FX OHLCV"
-    if len(df) < 10:
-        df = pd.read_sql_query(
-            "SELECT date, selling as close FROM sbp_fx_interbank"
-            " WHERE UPPER(currency)='USD' ORDER BY date", con,
-        )
-        source_label = "SBP Interbank"
+    df, source_label = _load_volatility_data()
 
     if len(df) < 10:
         st.info("Need at least 10 data points for volatility analysis")
@@ -472,7 +509,7 @@ def _render_volatility(con):
     fig.update_xaxes(**_AXIS_STYLE)
     fig.update_yaxes(title_text="USD/PKR", row=1, col=1, **_AXIS_STYLE)
     fig.update_yaxes(title_text="Ann. Vol %", row=2, col=1, **_AXIS_STYLE)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
     st.caption(f"Source: {source_label} | {len(df)} data points")
 
     # ── Vol metrics ──
@@ -506,7 +543,7 @@ def _render_volatility(con):
             xaxis_title="Daily Return %", yaxis_title="Frequency",
             showlegend=False,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
         rc1, rc2, rc3 = st.columns(3)
         with rc1:
@@ -521,48 +558,49 @@ def _render_volatility(con):
 # TAB 5: CARRY
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _render_carry(con):
+def _render_carry():
     st.markdown("### Carry Trade Analysis")
 
-    # KIBOR as PKR rate
-    kibor = con.execute(
-        "SELECT date, offer FROM kibor_daily WHERE tenor='3M' ORDER BY date DESC LIMIT 1"
-    ).fetchone()
+    # Rates strip already exposes KIBOR 3M + policy + tbill in one call.
+    strip = api_client.get_rates_strip() or {}
+    kibor_3m_offer = strip.get("kibor_3m_offer")
+    kibor_3m_date = strip.get("kibor_3m_date")
+    policy_rate = strip.get("sbp_policy_rate")
 
-    policy = con.execute(
-        "SELECT policy_rate, rate_date FROM sbp_policy_rates ORDER BY rate_date DESC LIMIT 1"
-    ).fetchone()
+    # KONIA via the new /v1/rates/konia endpoint.
+    konia_rows = api_client.get_konia(limit=1) or []
+    konia_rate = konia_rows[0].get("rate_pct") if konia_rows else None
 
     kc1, kc2, kc3 = st.columns(3)
     with kc1:
-        val = f"{policy['policy_rate']:.1f}%" if policy else "N/A"
+        val = f"{policy_rate:.1f}%" if policy_rate else "N/A"
         _card("SBP Policy Rate", val, color=_COLORS["policy"])
     with kc2:
-        val = f"{kibor['offer']:.2f}%" if kibor else "N/A"
-        _card("KIBOR 3M (Offer)", val, color=_COLORS["kibor"])
+        if kibor_3m_offer:
+            val = f"{kibor_3m_offer:.2f}%"
+            lbl = f"KIBOR 3M ({kibor_3m_date})"
+        else:
+            val = "N/A"
+            lbl = "KIBOR 3M (Offer)"
+        _card(lbl, val, color=_COLORS["kibor"])
     with kc3:
-        konia = con.execute("SELECT rate_pct FROM konia_daily ORDER BY date DESC LIMIT 1").fetchone()
-        _card("KONIA (O/N)", f"{konia['rate_pct']:.2f}%" if konia else "N/A")
+        # NB: konia_daily table is pre-existing data-corrupted; the
+        # endpoint correctly returns whatever's there. Renders "N/A"
+        # if the latest row isn't a valid percentage.
+        if isinstance(konia_rate, (int, float)) and 0 < konia_rate < 50:
+            _card("KONIA (O/N)", f"{konia_rate:.2f}%")
+        else:
+            _card("KONIA (O/N)", "N/A")
 
-    if not kibor:
-        st.info("No KIBOR data for carry calculation")
+    if not kibor_3m_offer:
+        st.info("No KIBOR offer data for carry calculation")
         return
 
-    pkr_rate = kibor["offer"]
+    pkr_rate = kibor_3m_offer
 
-    # Global reference rates
-    global_rates = {}
-    try:
-        rows = con.execute(
-            "SELECT rate_name, rate FROM global_reference_rates"
-            " WHERE rate_name IN ('SOFR','SONIA','EUSTR','TONA')"
-            " ORDER BY date DESC"
-        ).fetchall()
-        for r in rows:
-            if r["rate_name"] not in global_rates:
-                global_rates[r["rate_name"]] = r["rate"]
-    except Exception:
-        pass
+    # Global reference rates (SOFR / SONIA / EUSTR / TONA).
+    global_rows = api_client.get_global_reference_rates("SOFR,SONIA,EUSTR,TONA") or []
+    global_rates = {r["rate_name"]: r.get("rate") for r in global_rows if r.get("rate") is not None}
 
     rate_map = {
         "USD (SOFR)": global_rates.get("SOFR", 4.30),
@@ -592,31 +630,25 @@ def _render_carry(con):
     ))
     fig.add_hline(y=0, line_dash="dash", line_color=_COLORS["text_dim"])
     fig.update_layout(yaxis_title="Carry Spread (%)", showlegend=False)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     st.dataframe(
         cdf.rename(columns={
             "Foreign Rate": "Foreign (%)", "PKR Rate": "PKR (%)", "Carry": "Carry (%)",
         }),
-        use_container_width=True, hide_index=True,
+        width='stretch', hide_index=True,
     )
 
     # ── NPC Certificate Rates ──
-    npc = pd.read_sql_query(
-        "SELECT * FROM npc_rates ORDER BY date DESC, tenor", con,
-    )
+    npc = _load_npc_rates()
     if not npc.empty:
         st.markdown("### NPC Certificate Rates")
         st.caption("National Prize Certificate / PKR deposit alternatives for NRPs")
-        st.dataframe(npc, use_container_width=True, hide_index=True)
+        st.dataframe(npc, width='stretch', hide_index=True)
 
     # ── KIBOR History chart ──
     st.markdown("### KIBOR Term Structure History")
-    kdf = pd.read_sql_query(
-        "SELECT date, tenor, offer FROM kibor_daily"
-        " WHERE tenor IN ('1M','3M','6M','1Y') AND offer IS NOT NULL ORDER BY date",
-        con,
-    )
+    kdf = _load_kibor_history()
     if not kdf.empty:
         fig = _styled_fig(height=350)
         kibor_colors = {"1M": "#FF6B35", "3M": "#4ECDC4", "6M": "#45B7D1", "1Y": "#96CEB4"}
@@ -632,19 +664,117 @@ def _render_carry(con):
             yaxis_title="Offer Rate (%)",
             legend=dict(orientation="h", y=-0.12, bgcolor="rgba(0,0,0,0)"),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 6: FX SIGNALS (microservice)
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _render_fx_signals(con):
+FX_SERVICE_DIR = "/mnt/e/projects/fx-trading-module"
+FX_SERVICE_PORT = 8100
+
+
+def _render_service_controls():
+    """Start / Stop / Kill controls for the FX microservice."""
+    import subprocess
+
+    is_running = _fx.is_healthy()
+    status_text = "RUNNING" if is_running else "STOPPED"
+
+    st.markdown(f"""
+    <div style="background:#141820;padding:12px 16px;border-radius:8px;border-left:4px solid {'#22C55E' if is_running else '#EF4444'};margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
+        <div>
+            <span style="color:#6B7280;font-size:0.75em;text-transform:uppercase;">FX Microservice</span><br/>
+            <span style="color:{'#22C55E' if is_running else '#EF4444'};font-weight:700;">{status_text}</span>
+            <span style="color:#6B7280;font-size:0.8em;"> — port {FX_SERVICE_PORT}</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        if st.button("Start Service", type="primary", key="fx_svc_start", disabled=is_running):
+            import socket
+            # Find available port starting from FX_SERVICE_PORT
+            port = FX_SERVICE_PORT
+            for p in range(FX_SERVICE_PORT, FX_SERVICE_PORT + 10):
+                try:
+                    s = socket.socket()
+                    s.bind(("127.0.0.1", p))
+                    s.close()
+                    port = p
+                    break
+                except OSError:
+                    continue
+            try:
+                log_path = f"/tmp/fx_service_{port}.log"
+                log_file = open(log_path, "w")
+                import sys
+                proc = subprocess.Popen(
+                    [sys.executable, "-m", "uvicorn", "api.service:app", "--port", str(port), "--host", "0.0.0.0"],
+                    cwd=FX_SERVICE_DIR,
+                    stdout=log_file, stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+                st.success(f"Started PID {proc.pid} on port {port} — log: {log_path}")
+                import time; time.sleep(2)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to start: {e}")
+    with c2:
+        if st.button("Stop Service", key="fx_svc_stop", disabled=not is_running):
+            _stop_fx_service(graceful=True)
+            _fx._health_cache = None
+            st.success("Service stopped (SIGTERM — graceful shutdown)")
+            import time; time.sleep(2)
+            st.rerun()
+    with c3:
+        if st.button("Force Kill", key="fx_svc_kill"):
+            _stop_fx_service(graceful=False)
+            _fx._health_cache = None
+            st.success("Service force-killed (SIGKILL)")
+            import time; time.sleep(1)
+            st.rerun()
+
+
+def _stop_fx_service(graceful: bool = True):
+    """Stop FX service. Graceful sends SIGTERM (like Ctrl+C), force sends SIGKILL."""
+    import os
+    import signal as sig
+    kill_sig = sig.SIGTERM if graceful else sig.SIGKILL
+    killed = []
+    for pid_dir in os.listdir("/proc"):
+        if not pid_dir.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid_dir}/cmdline") as f:
+                cmd = f.read().replace("\x00", " ")
+            if ("uvicorn" in cmd and (str(FX_SERVICE_PORT) in cmd or "api.service" in cmd or "fx-trading" in cmd)):
+                os.kill(int(pid_dir), kill_sig)
+                killed.append(int(pid_dir))
+        except (PermissionError, FileNotFoundError, ProcessLookupError, ValueError):
+            pass
+    # Also stop child workers
+    for pid_dir in os.listdir("/proc"):
+        if not pid_dir.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid_dir}/stat") as f:
+                stat = f.read().split()
+            ppid = int(stat[3])
+            if ppid in killed:
+                os.kill(int(pid_dir), kill_sig)
+        except (PermissionError, FileNotFoundError, ProcessLookupError, ValueError, IndexError):
+            pass
+
+
+def _render_fx_signals():
+    # ── Service control panel ──
+    _render_service_controls()
+
     if not _fx.is_healthy():
-        st.info(
-            "FX microservice not running — showing DB-sourced rates only. "
-            "Start it: `uvicorn api.service:app --port 8100`"
-        )
+        st.warning("FX microservice not running — showing DB-sourced rates only.")
         return
 
     st.markdown("### FX Trading Signals")
@@ -659,7 +789,7 @@ def _render_fx_signals(con):
                       "Offer": r.get("offer"), "Mid": r.get("mid")}
                     for r in rates if isinstance(r, dict)]
             if rows:
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
     # Regime
     regime_data = _fx.get_regime()
@@ -695,7 +825,7 @@ def _render_fx_signals(con):
                              "Signal": s.get("signal")}
                             for s in signals if isinstance(s, dict)]
                     if rows:
-                        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                        st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
         with sc2:
             prem = report.get("premium_spread", report.get("premium", {}))
@@ -713,7 +843,7 @@ def _render_fx_signals(con):
                              "Gap %": p.get("gap_pct", p.get("premium_pct"))}
                             for p in pairs if isinstance(p, dict)]
                     if rows:
-                        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                        st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
     # Intervention
     intv_data = _fx.get_intervention()
@@ -731,72 +861,116 @@ def _render_fx_signals(con):
 
     # AI Commentary
     st.divider()
-    render_ai_commentary(con, "FX")
+    # AI Commentary still takes a connection (legacy helper) — pass None to keep it offline.
+    # When the helper migrates, this will pass through; for now skip on null.
+    try:
+        render_ai_commentary(None, "FX")
+    except Exception:
+        pass
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 7: SYNC
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _render_sync(con):
+def _render_sync():
     st.markdown("### Sync FX Data")
 
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("Sync SBP Interbank", type="primary", key="fx_sync_interbank"):
-            with st.spinner("Syncing SBP interbank rates..."):
+        if st.button("Sync SBP EasyData (FX + KIBOR + Policy)", type="primary", key="fx_sync_interbank"):
+            with st.spinner("Syncing from SBP EasyData CSVs..."):
+                from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
                 try:
-                    result = SBPFXScraper().sync_interbank(con)
-                    st.success(f"Interbank: {result.get('ok', 0)} rates synced")
+                    from pakfindata.sources.sbp_easydata import sync_all_to_db
+                    with safe_writer() as wcon:
+                        result = sync_all_to_db(wcon)
+                        update_catalog_from_table(wcon, "kibor", source="sbp_easydata")
+                        update_catalog_from_table(wcon, "sbp_fx_monthly_avg", source="sbp_easydata")
+                        update_catalog_from_table(wcon, "sbp_fx_daily_avg", source="sbp_easydata")
+                        update_catalog_from_table(wcon, "sbp_policy_rates", source="sbp_easydata")
+                    st.cache_data.clear()
+                    st.success(
+                        f"EasyData: {result.get('fx_rows', 0)} FX, "
+                        f"{result.get('kibor_rows', 0)} KIBOR, "
+                        f"{result.get('policy_rows', 0)} policy rate rows synced"
+                    )
                     st.rerun()
+                except SafeWriterBusyError:
+                    st.error("Another sync is running. Wait a moment and retry.")
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
+                    for ds in ("kibor", "sbp_fx_monthly_avg", "sbp_fx_daily_avg", "sbp_policy_rates"):
+                        record_catalog_failure(ds, source="sbp_easydata", error=e)
     with col2:
         if st.button("Sync Kerb (forex.pk)", key="fx_sync_kerb"):
             with st.spinner("Syncing kerb rates from forex.pk..."):
+                from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
                 try:
-                    result = ForexPKScraper().sync_kerb(con)
+                    scraper = ForexPKScraper()  # HTTP init outside lock
+                    with safe_writer() as wcon:
+                        result = scraper.sync_kerb(wcon)
+                        update_catalog_from_table(wcon, "fx_kerb", source="forex_pk")
+                    st.cache_data.clear()
                     st.success(f"Kerb: {result.get('ok', 0)} rates synced")
                     st.rerun()
+                except SafeWriterBusyError:
+                    st.error("Another sync is running. Wait a moment and retry.")
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
+                    record_catalog_failure("fx_kerb", source="forex_pk", error=e)
 
     if _fx.is_healthy():
         col3, col4 = st.columns(2)
         with col3:
             if st.button("Sync from FX Microservice", key="fx_sync_micro"):
                 with st.spinner("Syncing rates from FX microservice..."):
+                    from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                    from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
                     try:
                         from pakfindata.sources.fx_sync import sync_fx_rates
-                        result = sync_fx_rates(con)
+                        with safe_writer() as wcon:
+                            result = sync_fx_rates(wcon)
+                            update_catalog_from_table(wcon, "fx_interbank", source="fx_microservice")
+                            update_catalog_from_table(wcon, "kibor", source="fx_microservice")
+                        st.cache_data.clear()
                         st.success(
                             f"FX micro: {result.get('rates_stored', 0)} rates, "
                             f"{result.get('kibor_stored', 0)} KIBOR tenors"
                         )
                         st.rerun()
+                    except SafeWriterBusyError:
+                        st.error("Another sync is running. Wait a moment and retry.")
                     except Exception as e:
                         st.error(f"FX micro sync failed: {e}")
+                        for ds in ("fx_interbank", "kibor"):
+                            record_catalog_failure(ds, source="fx_microservice", error=e)
         with col4:
             if st.button("Backfill FX History", key="fx_backfill"):
                 with st.spinner("Backfilling FX history from microservice..."):
+                    from pakfindata.db.safe_writer import safe_writer, SafeWriterBusyError
+                    from pakfindata.db.catalog import update_catalog_from_table, record_catalog_failure
                     try:
                         from pakfindata.sources.fx_sync import backfill_fx_history
-                        result = backfill_fx_history(con)
+                        with safe_writer() as wcon:
+                            result = backfill_fx_history(wcon)
+                            update_catalog_from_table(wcon, "fx_interbank", source="fx_microservice")
+                        st.cache_data.clear()
                         st.success(
                             f"Backfill: {result.get('inserted', 0)} inserted, "
                             f"{result.get('skipped', 0)} skipped"
                         )
                         st.rerun()
+                    except SafeWriterBusyError:
+                        st.error("Another sync is running. Wait a moment and retry.")
                     except Exception as e:
                         st.error(f"Backfill failed: {e}")
+                        record_catalog_failure("fx_interbank", source="fx_microservice", error=e)
 
     # Sync runs table
-    try:
-        runs = pd.read_sql_query(
-            "SELECT * FROM fx_sync_runs ORDER BY started_at DESC LIMIT 10", con,
-        )
-        if not runs.empty:
-            st.markdown("#### Recent Sync Runs")
-            st.dataframe(runs, use_container_width=True, hide_index=True)
-    except Exception:
-        pass
+    runs = _load_fx_sync_runs()
+    if not runs.empty:
+        st.markdown("#### Recent Sync Runs")
+        st.dataframe(runs, width='stretch', hide_index=True)

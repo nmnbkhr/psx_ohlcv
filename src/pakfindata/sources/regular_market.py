@@ -337,10 +337,16 @@ def fetch_regular_market() -> pd.DataFrame:
 def init_regular_market_schema(con: sqlite3.Connection) -> None:
     """Create regular market tables if they don't exist.
 
+    Caller commits via pakfindata.db.safe_writer.
+
+    Uses individual con.execute() calls rather than con.executescript() —
+    executescript() implicitly commits any pending transaction first, which
+    would end a safe_writer BEGIN IMMEDIATE transaction prematurely.
+
     Args:
         con: SQLite connection.
     """
-    con.executescript("""
+    con.execute("""
         CREATE TABLE IF NOT EXISTS regular_market_current (
             symbol TEXT PRIMARY KEY,
             ts TEXT NOT NULL,
@@ -357,8 +363,9 @@ def init_regular_market_schema(con: sqlite3.Connection) -> None:
             volume REAL,
             row_hash TEXT NOT NULL,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-
+        )
+    """)
+    con.execute("""
         CREATE TABLE IF NOT EXISTS regular_market_snapshots (
             ts TEXT NOT NULL,
             symbol TEXT NOT NULL,
@@ -376,14 +383,16 @@ def init_regular_market_schema(con: sqlite3.Connection) -> None:
             row_hash TEXT NOT NULL,
             ingested_at TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (ts, symbol)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_rm_snapshots_symbol
-            ON regular_market_snapshots(symbol);
-        CREATE INDEX IF NOT EXISTS idx_rm_snapshots_ts
-            ON regular_market_snapshots(ts);
+        )
     """)
-    con.commit()
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rm_snapshots_symbol "
+        "ON regular_market_snapshots(symbol)"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rm_snapshots_ts "
+        "ON regular_market_snapshots(ts)"
+    )
 
 
 def get_current_hash(con: sqlite3.Connection, symbol: str) -> str | None:
@@ -419,6 +428,8 @@ def get_all_current_hashes(con: sqlite3.Connection) -> dict[str, str]:
 
 def upsert_current(con: sqlite3.Connection, df: pd.DataFrame) -> int:
     """Upsert data into regular_market_current table.
+
+    Caller commits via pakfindata.db.safe_writer.
 
     Args:
         con: SQLite connection.
@@ -471,7 +482,13 @@ def upsert_current(con: sqlite3.Connection, df: pd.DataFrame) -> int:
         ))
         count += 1
 
-    con.commit()
+    # Update SCD2 symbol status history after market data refresh
+    try:
+        from ..db.repositories.symbols import refresh_symbol_status
+        refresh_symbol_status(con)
+    except Exception:
+        pass  # non-critical — don't break market data flow
+
     return count
 
 
@@ -482,6 +499,8 @@ def insert_snapshots(
     prev_hashes: dict[str, str] | None = None,
 ) -> int:
     """Insert snapshot rows into regular_market_snapshots.
+
+    Caller commits via pakfindata.db.safe_writer.
 
     IMPORTANT: For correct change detection, pass prev_hashes loaded BEFORE
     upserting to regular_market_current. If prev_hashes is None, the function
@@ -544,7 +563,6 @@ def insert_snapshots(
             # Duplicate (ts, symbol) - skip
             pass
 
-    con.commit()
     return count
 
 

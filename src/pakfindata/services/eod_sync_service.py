@@ -282,6 +282,18 @@ def run_eod_sync(
             status.progress_message = f"Completed with {summary.symbols_failed} failures"
             status.error_message = f"{summary.symbols_failed} symbols failed to sync"
 
+        # Update the sync_state.json file so dashboard reads the new date fast
+        try:
+            from pakfindata.services.sync_state import set_last_eod_date
+            import sqlite3
+            _c = sqlite3.connect(str(get_db_path()), timeout=10)
+            _r = _c.execute("SELECT MAX(date) FROM eod_ohlcv").fetchone()
+            if _r and _r[0]:
+                set_last_eod_date(str(_r[0])[:10])
+            _c.close()
+        except Exception as _e:
+            logger.warning("Could not update sync_state.json: %s", _e)
+
         logger.info(
             "EOD sync complete: %d OK, %d failed, %d skipped, %d rows",
             summary.symbols_ok,

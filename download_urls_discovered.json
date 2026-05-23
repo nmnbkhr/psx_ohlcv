@@ -1,0 +1,282 @@
+{
+  "daily": {
+    "mkt_summary": {
+      "url": "/download/mkt_summary/{date}.Z",
+      "ext": "Z",
+      "skip": true,
+      "reason": "already in market_summary.py"
+    },
+    "closing_rates": {
+      "url": "/download/closing_rates/{date}.pdf",
+      "ext": "pdf",
+      "skip": true,
+      "reason": "already in closing_rates_pdf.py"
+    },
+    "post_close": {
+      "url": "/download/post_close/{date}.Z",
+      "ext": "Z",
+      "skip": true,
+      "reason": "already in market_summary.py"
+    },
+    "symbol_price": {
+      "url": "/download/symbol_price/{date}.zip",
+      "ext": "zip",
+      "skip": false,
+      "priority": 1,
+      "desc": "Circuit breaker upper/lower limits"
+    },
+    "symbol_name": {
+      "url": "/download/symbol_name/{date}.zip",
+      "ext": "zip",
+      "skip": false,
+      "priority": 2,
+      "desc": "Symbol short/long names"
+    },
+    "reval_rates_gis": {
+      "url": "/download/reval_rates_gis/{date}.csv",
+      "ext": "csv",
+      "skip": false,
+      "priority": 2,
+      "desc": "GIS revaluation rates"
+    },
+    "dvf_trade": {
+      "url": "/download/dvf_trade/{date}.csv",
+      "ext": "csv",
+      "skip": false,
+      "priority": 2,
+      "desc": "Bai Muajjal volume"
+    },
+    "omts": {
+      "url": "/download/omts/{date}.csv",
+      "ext": "csv",
+      "skip": false,
+      "priority": 1,
+      "desc": "Off-market transaction summary"
+    },
+    "fut_opn_int": {
+      "url": "/download/fut_opn_int/{date}.xls",
+      "ext": "xls",
+      "skip": false,
+      "priority": 1,
+      "desc": "Futures open interest (DFC)"
+    },
+    "csf_opn_int": {
+      "url": "/download/csf_opn_int/{date}.xls",
+      "ext": "xls",
+      "skip": false,
+      "priority": 1,
+      "desc": "Futures open interest (CSF)"
+    },
+    "sif_opn_int": {
+      "url": "/download/sif_opn_int/{date}.csv",
+      "ext": "csv",
+      "skip": false,
+      "priority": 1,
+      "desc": "SIF open interest"
+    },
+    "dfc_nbs": {
+      "url": "/download/dfc_nbs/{date}.csv",
+      "ext": "csv",
+      "skip": false,
+      "priority": 2,
+      "desc": "DFC net blank sale position"
+    },
+    "var_margin": {
+      "url": "/download/var_margin/{date}.zip",
+      "ext": "zip",
+      "skip": false,
+      "priority": 1,
+      "desc": "VAR margins per symbol"
+    },
+    "pos_limit_fut": {
+      "url": "/download/pos_limit_fut/{date}.xls",
+      "ext": "xls",
+      "skip": false,
+      "priority": 2,
+      "desc": "Position limits"
+    },
+    "indhist": {
+      "url": "/download/indhist/{date}.xls",
+      "ext": "xls",
+      "skip": false,
+      "priority": 1,
+      "desc": "Constituent data (PSX indices)"
+    },
+    "nd_accepted": {
+      "url": "/download/nd_accepted/{date}.pdf",
+      "ext": "pdf",
+      "skip": true,
+      "reason": "PDF, not machine-readable"
+    },
+    "nd_rejected": {
+      "url": "/download/nd_rejected/{date}.pdf",
+      "ext": "pdf",
+      "skip": true,
+      "reason": "PDF"
+    },
+    "nd_threshold": {
+      "url": "/download/nd_threshold/{date}.pdf",
+      "ext": "pdf",
+      "skip": true,
+      "reason": "PDF"
+    },
+    "omtpdf": {
+      "url": "/download/omtpdf/{date}.pdf",
+      "ext": "pdf",
+      "skip": true,
+      "reason": "PDF dupe of omts CSV"
+    },
+    "fut_opn_int_pdf": {
+      "url": "/download/fut_opn_int/{date}.pdf",
+      "ext": "pdf",
+      "skip": true,
+      "reason": "PDF dupe of XLS"
+    },
+    "csf_opn_int_pdf": {
+      "url": "/download/csf_opn_int/{date}.pdf",
+      "ext": "pdf",
+      "skip": true,
+      "reason": "PDF dupe of XLS"
+    },
+    "sif_fair_val": {
+      "url": "/download/sif_fair_val/{date}.pdf",
+      "ext": "pdf",
+      "skip": true,
+      "reason": "PDF"
+    },
+    "short_sell_vol": {
+      "url": "/download/short_sell_vol/{date}.pdf",
+      "ext": "pdf",
+      "skip": true,
+      "reason": "PDF"
+    },
+    "announce": {
+      "url": "/download/announce/{date}.pdf",
+      "ext": "pdf",
+      "skip": true,
+      "reason": "PDF"
+    },
+    "quote": {
+      "url": "/download/quote/{date}.pdf",
+      "ext": "pdf",
+      "skip": true,
+      "reason": "PDF"
+    },
+    "itsubs": {
+      "url": "/download/itsubs/{date}.pdf",
+      "ext": "pdf",
+      "skip": true,
+      "reason": "PDF"
+    },
+    "reval_rates_gis_pdf": {
+      "url": "/download/reval_rates_gis/{date}.pdf",
+      "ext": "pdf",
+      "skip": true,
+      "reason": "PDF dupe of CSV"
+    }
+  },
+  "other": {
+    "kse_index": {
+      "url": "/download/text/kse_index.lis.Z",
+      "ext": "Z",
+      "skip": false,
+      "desc": "Index fluctuation"
+    },
+    "allshr_new": {
+      "url": "/download/text/allshr_new.lis.Z",
+      "ext": "Z",
+      "skip": false,
+      "desc": "All Share Index & Mkt Cap"
+    },
+    "kse100": {
+      "url": "/download/text/kse100.lis.Z",
+      "ext": "Z",
+      "skip": false,
+      "desc": "KSE 100 index companies"
+    },
+    "lot_size": {
+      "url": "/download/lot_size/Symbol_LotSize.zip",
+      "ext": "zip",
+      "skip": false,
+      "desc": "Symbol lot sizes"
+    },
+    "header": {
+      "url": "/download/text/header.zip",
+      "ext": "zip",
+      "skip": false,
+      "desc": "PSX header (master symbol list)"
+    },
+    "header2": {
+      "url": "/download/text/header2.zip",
+      "ext": "zip",
+      "skip": false,
+      "desc": "PSX header (tradable indices)"
+    },
+    "listed_cmp": {
+      "url": "/download/text/listed_cmp.lst.Z",
+      "ext": "Z",
+      "skip": true,
+      "reason": "already in listed_companies.py"
+    },
+    "announce_lis": {
+      "url": "/download/text/announce.lis.Z",
+      "ext": "Z",
+      "skip": false,
+      "desc": "Companies announcements"
+    },
+    "announceWithSymbol": {
+      "url": "/download/text/announceWithSymbol.lis.Z",
+      "ext": "Z",
+      "skip": false,
+      "desc": "Announcements with symbols"
+    },
+    "top30dec": {
+      "url": "/download/text/top30dec11.lis.Z",
+      "ext": "Z",
+      "skip": false,
+      "desc": "Top symbols by % decreased"
+    },
+    "top30inc": {
+      "url": "/download/text/top30inc11.lis.Z",
+      "ext": "Z",
+      "skip": false,
+      "desc": "Top symbols by % increased"
+    },
+    "top30vol": {
+      "url": "/download/text/top30vol11.lis.Z",
+      "ext": "Z",
+      "skip": false,
+      "desc": "Top symbols by volume"
+    },
+    "zerovolume": {
+      "url": "/download/text/zerovolume.lis.Z",
+      "ext": "Z",
+      "skip": false,
+      "desc": "Zero volume securities"
+    },
+    "readme": {
+      "url": "/download/text/readme.zip",
+      "ext": "zip",
+      "skip": false,
+      "desc": "Market data download format docs"
+    },
+    "HBLTTI": {
+      "url": "/download/historical/HBLTTI.csv",
+      "ext": "csv",
+      "skip": false,
+      "desc": "HBLTT Index values"
+    },
+    "dailystockmkt": {
+      "url": "/download/market_report/dailystockmkt.pdf",
+      "ext": "pdf",
+      "skip": true,
+      "reason": "PDF"
+    },
+    "short_sell_limit": {
+      "url": "/download/short_sell_vol_lim/ready_short_sell_limit.pdf",
+      "ext": "pdf",
+      "skip": true,
+      "reason": "PDF"
+    }
+  }
+}

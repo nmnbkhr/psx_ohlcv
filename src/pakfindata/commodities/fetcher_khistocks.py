@@ -15,6 +15,7 @@ Feeds:
 
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import requests
@@ -179,20 +180,27 @@ def fetch_pmex_commodity(pmex_id: int, symbol: str) -> list[dict]:
 
 
 def fetch_all_pmex(commodity_ids: list[int] | None = None) -> dict[str, list[dict]]:
-    """Fetch PMEX data for multiple commodities.
+    """Fetch PMEX data for multiple commodities (parallel).
 
     Returns dict: symbol -> list of price rows.
     """
     targets = commodity_ids or list(PMEX_COMMODITIES.keys())
     results = {}
-    for pmex_id in targets:
+
+    def _fetch(pmex_id):
         info = PMEX_COMMODITIES.get(pmex_id)
         if not info:
-            continue
+            return None, None, 0
         rows = fetch_pmex_commodity(pmex_id, info["symbol"])
-        if rows:
-            results[info["symbol"]] = rows
-            logger.info("PMEX %s: %d rows", info["name"], len(rows))
+        return info["symbol"], rows, len(rows)
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = {pool.submit(_fetch, pid): pid for pid in targets}
+        for fut in as_completed(futures):
+            symbol, rows, count = fut.result()
+            if symbol and rows:
+                results[symbol] = rows
+                logger.info("PMEX %s: %d rows", symbol, count)
     return results
 
 
@@ -223,13 +231,20 @@ def fetch_karachi_bullion(instrument_id: int = 1) -> list[dict]:
 
 
 def fetch_all_bullion() -> dict[str, list[dict]]:
-    """Fetch all Sarafa Bazaar bullion rates."""
+    """Fetch all Sarafa Bazaar bullion rates (parallel)."""
     results = {}
-    for inst_id, info in BULLION_INSTRUMENTS.items():
+
+    def _fetch(inst_id, info):
         rows = fetch_karachi_bullion(inst_id)
-        if rows:
-            results[info["symbol"]] = rows
-            logger.info("Sarafa %s: %d rows", info["instrument"], len(rows))
+        return info["symbol"], info["instrument"], rows
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(_fetch, iid, inf) for iid, inf in BULLION_INSTRUMENTS.items()]
+        for fut in as_completed(futures):
+            symbol, name, rows = fut.result()
+            if rows:
+                results[symbol] = rows
+                logger.info("Sarafa %s: %d rows", name, len(rows))
     return results
 
 
@@ -265,13 +280,20 @@ def fetch_intl_bullion(instrument_id: int = 1) -> list[dict]:
 
 
 def fetch_all_intl_bullion() -> dict[str, list[dict]]:
-    """Fetch all international bullion OHLC data."""
+    """Fetch all international bullion OHLC data (parallel)."""
     results = {}
-    for inst_id, info in INTL_BULLION.items():
+
+    def _fetch(inst_id, info):
         rows = fetch_intl_bullion(inst_id)
-        if rows:
-            results[info["symbol"]] = rows
-            logger.info("Intl Bullion %s: %d rows", info["instrument"], len(rows))
+        return info["symbol"], info["instrument"], rows
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(_fetch, iid, inf) for iid, inf in INTL_BULLION.items()]
+        for fut in as_completed(futures):
+            symbol, name, rows = fut.result()
+            if rows:
+                results[symbol] = rows
+                logger.info("Intl Bullion %s: %d rows", name, len(rows))
     return results
 
 
@@ -299,20 +321,27 @@ def fetch_mandi_commodity(com_id: int, symbol: str) -> list[dict]:
 
 
 def fetch_all_mandi(com_ids: list[int] | None = None) -> dict[str, list[dict]]:
-    """Fetch Akbari Mandi data for multiple commodities.
+    """Fetch Akbari Mandi data for multiple commodities (parallel).
 
     Returns dict: symbol -> list of price rows.
     """
     targets = com_ids or list(MANDI_COMMODITIES.keys())
     results = {}
-    for com_id in targets:
+
+    def _fetch(com_id):
         info = MANDI_COMMODITIES.get(com_id)
         if not info:
-            continue
+            return None, None, 0
         rows = fetch_mandi_commodity(com_id, info["symbol"])
-        if rows:
-            results[info["symbol"]] = rows
-            logger.info("Mandi %s: %d rows", info["com_name"], len(rows))
+        return info["symbol"], rows, len(rows)
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = {pool.submit(_fetch, cid): cid for cid in targets}
+        for fut in as_completed(futures):
+            symbol, rows, count = fut.result()
+            if symbol and rows:
+                results[symbol] = rows
+                logger.info("Mandi %s: %d rows", symbol, count)
     return results
 
 
@@ -342,13 +371,20 @@ def fetch_lme_metal(metal_id: int, symbol: str) -> list[dict]:
 
 
 def fetch_all_lme() -> dict[str, list[dict]]:
-    """Fetch all LME metal prices."""
+    """Fetch all LME metal prices (parallel)."""
     results = {}
-    for metal_id, info in LME_METALS.items():
+
+    def _fetch(metal_id, info):
         rows = fetch_lme_metal(metal_id, info["symbol"])
-        if rows:
-            results[info["symbol"]] = rows
-            logger.info("LME %s: %d rows", info["metal_name"], len(rows))
+        return info["symbol"], info["metal_name"], rows
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(_fetch, mid, inf) for mid, inf in LME_METALS.items()]
+        for fut in as_completed(futures):
+            symbol, name, rows = fut.result()
+            if rows:
+                results[symbol] = rows
+                logger.info("LME %s: %d rows", name, len(rows))
     return results
 
 
@@ -357,7 +393,7 @@ def fetch_all_lme() -> dict[str, list[dict]]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def fetch_all_khistocks() -> dict[str, dict[str, list[dict]]]:
-    """Fetch data from ALL khistocks feeds.
+    """Fetch data from ALL khistocks feeds (parallel).
 
     Returns nested dict:
       { "pmex": {symbol: [rows]}, "sarafa": {symbol: [rows]},
@@ -366,18 +402,27 @@ def fetch_all_khistocks() -> dict[str, dict[str, list[dict]]]:
     """
     logger.info("=== khistocks.com: fetching all feeds ===")
 
+    key_pmex = [6, 5, 3, 2, 1, 23, 24, 10, 8, 11, 7, 9]
+
+    feed_tasks = {
+        "pmex": lambda: fetch_all_pmex(key_pmex),
+        "sarafa": fetch_all_bullion,
+        "intl_bullion": fetch_all_intl_bullion,
+        "mandi": fetch_all_mandi,
+        "lme": fetch_all_lme,
+    }
+
     results = {}
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = {pool.submit(fn): name for name, fn in feed_tasks.items()}
+        for fut in as_completed(futures):
+            name = futures[fut]
+            try:
+                results[name] = fut.result()
+            except Exception as e:
+                logger.warning("khistocks %s failed: %s", name, e)
+                results[name] = {}
 
-    # Key PMEX commodities (PKR-denominated ones are most valuable)
-    key_pmex = [6, 5, 3, 2, 1, 23, 24, 10, 8, 11, 7, 9]  # TOLAGOLD, MTOLAGOLD, GOLD, etc.
-    results["pmex"] = fetch_all_pmex(key_pmex)
-
-    results["sarafa"] = fetch_all_bullion()
-    results["intl_bullion"] = fetch_all_intl_bullion()
-    results["mandi"] = fetch_all_mandi()
-    results["lme"] = fetch_all_lme()
-
-    # Summary
     total_symbols = sum(len(v) for v in results.values())
     total_rows = sum(len(rows) for feed in results.values() for rows in feed.values())
     logger.info("khistocks.com: %d symbols, %d total rows across %d feeds",

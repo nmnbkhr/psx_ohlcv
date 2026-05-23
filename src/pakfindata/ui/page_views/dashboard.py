@@ -1,4 +1,10 @@
-"""Dashboard page — market overview with KPIs and charts."""
+"""Dashboard page -- quant-worthy market overview.
+
+Phase 1.3 migration: market-data reads go through the API client
+wrapper at ``pakfindata.ui.api.client`` (HTTP-only, no SQLite touched
+on the read path). The sync expander block still uses safe_writer for
+admin writes (Phase 1.5+ moves those to worker jobs).
+"""
 
 import pandas as pd
 import streamlit as st
@@ -10,33 +16,32 @@ except ImportError:
     HAS_AUTOREFRESH = False
     st_autorefresh = None
 
-from pakfindata.api_client import get_client
 from pakfindata.config import get_db_path
-from pakfindata.sources.fx_client import FXClient
-
-_fx = FXClient()
+from pakfindata.db.repositories.market_summary import (
+    get_latest_full_trading_day,
+    refresh_eod_summary,
+    summary_coverage,
+)
 from pakfindata.services import (
     is_service_running,
-    read_status as read_service_status,
-    # EOD sync service
     is_eod_sync_running,
     read_eod_status,
     start_eod_sync_background,
     stop_eod_sync,
-    # Announcements service
     is_announcements_service_running,
     read_announcements_status,
     start_announcements_service,
     stop_announcements_service,
 )
+from pakfindata.ui.api import client as api_client
 from pakfindata.ui.charts import (
     make_market_breadth_chart,
     make_top_movers_chart,
 )
 from pakfindata.ui.components.helpers import (
-    check_data_staleness,
     DATA_QUALITY_NOTICE,
     format_volume,
+    get_connection,
     get_freshness_badge,
     render_data_info,
     render_data_warning,
@@ -46,1094 +51,528 @@ from pakfindata.ui.components.helpers import (
 )
 
 
-def _sync_market_data(con):
-    """Fetch market-watch, update current, recompute analytics."""
-    from pakfindata.sources.regular_market import (
-        fetch_regular_market,
-        get_all_current_hashes,
-        init_regular_market_schema,
-        insert_snapshots,
-        upsert_current,
-    )
-    from pakfindata.analytics import compute_all_analytics
-    from datetime import datetime
-
-    init_regular_market_schema(con)
-    df = fetch_regular_market()
-    prev_hashes = get_all_current_hashes(con)
-    insert_snapshots(con, df, prev_hashes=prev_hashes)
-    n = upsert_current(con, df)
-    ts = df["ts"].iloc[0] if not df.empty else datetime.now().isoformat()
-    compute_all_analytics(con, ts)
-    return n
+# ── Sync helpers (write paths — use safe_writer internally) ───────────────
 
 
-def _sync_indices(con):
-    """Fetch all PSX indices and save to psx_indices."""
-    from pakfindata.sources.indices import fetch_indices_data, save_index_data
+def _sync_market_data():
+    # Phase 1.6.6: delegate to the shared ETL function. Caller uses the
+    # rows_upserted count for status reporting.
+    from pakfindata.etl.regular_market import sync_snapshot
 
-    indices_data = fetch_indices_data()
-    synced = sum(1 for d in indices_data if save_index_data(con, d))
-    return synced
-
-
-def _sync_rates(con):
-    """Sync SBP rates (KIBOR/KONIA/PKRV) + treasury (T-Bill/PIB)."""
-    from pakfindata.sources.sbp_rates import SBPRatesScraper
-    from pakfindata.sources.sbp_treasury import SBPTreasuryScraper
-
-    rates = SBPRatesScraper().sync_rates(con)
-    treas = SBPTreasuryScraper().sync_treasury(con)
-    return rates, treas
+    result = sync_snapshot()
+    return result["rows_upserted"]
 
 
-def _render_blueprint_panels(con):
-    """Render blueprint panels: Fixed Income + Funds + FX + Data Freshness."""
-    from datetime import date
+def _sync_indices():
+    # Phase 1.6.14: delegate to shared ETL (same code path as worker handler).
+    from pakfindata.etl.indices import sync as _sync
 
-    panel_col1, panel_col2 = st.columns(2)
+    return _sync()["indices_count"]
 
-    # ── Fixed Income Snapshot ────────────────────────────────────
-    with panel_col1:
-        st.markdown("**Fixed Income**")
-        try:
-            # Latest T-Bill auction cutoff
-            tb = con.execute(
-                "SELECT tenor, cutoff_yield, auction_date FROM tbill_auctions "
-                "WHERE tenor = '3M' ORDER BY auction_date DESC LIMIT 1"
-            ).fetchone()
-            if tb:
-                st.metric("T-Bill 3M Cutoff", f"{tb[1]:.2f}%", help=f"Auction {tb[2]}")
 
-            # OTC Volume from SMTV
-            try:
-                smtv = con.execute(
-                    """SELECT SUM(total_face_amount) as vol, date
-                       FROM sbp_bond_trading_summary
-                       WHERE date = (SELECT MAX(date) FROM sbp_bond_trading_summary)
-                       GROUP BY date"""
-                ).fetchone()
-                if smtv and smtv[0]:
-                    vol = smtv[0]
-                    vol_str = f"PKR {vol / 1e9:.0f}B" if vol >= 1e9 else f"PKR {vol / 1e6:.0f}M"
-                    st.metric("OTC Volume", vol_str, help=f"SMTV {smtv[1]}")
-            except Exception:
-                pass
+def _sync_rates():
+    # Phase 1.6.14: delegate to shared ETL (same code path as worker handler).
+    from pakfindata.etl.rates import sync_bundle
 
-            # PKRV 10Y
-            try:
-                pv = con.execute(
-                    "SELECT yield_pct FROM pkrv_daily "
-                    "WHERE tenor_months = 120 ORDER BY date DESC LIMIT 1"
-                ).fetchone()
-                if pv:
-                    st.metric("PKRV 10Y", f"{pv[0]:.2f}%")
-            except Exception:
-                pass
-        except Exception:
-            st.info("Fixed income data not yet available.")
+    return sync_bundle()
 
-    # ── Funds Snapshot ───────────────────────────────────────────
-    with panel_col2:
-        st.markdown("**Funds**")
-        try:
-            # Best fund today by return
-            best = con.execute(
-                """SELECT fp.fund_name, fp.return_ytd, fp.category
-                   FROM fund_performance fp
-                   WHERE fp.validity_date = (SELECT MAX(validity_date) FROM fund_performance)
-                   AND fp.return_ytd IS NOT NULL
-                   ORDER BY fp.return_ytd DESC LIMIT 1"""
-            ).fetchone()
-            if best:
-                st.metric(
-                    f"Best Fund ({best[2]})" if best[2] else "Best Fund",
-                    best[0][:30],
-                    delta=f"{best[1]:+.1f}% YTD" if best[1] else None,
-                )
 
-            # Category averages
-            cats = con.execute(
-                """SELECT
-                     CASE
-                       WHEN category LIKE '%Equity%' THEN 'Equity'
-                       WHEN category LIKE '%Income%' OR category LIKE '%Bond%' THEN 'Income'
-                       WHEN category LIKE '%Money%' THEN 'Money Mkt'
-                       ELSE 'Other'
-                     END as cat_group,
-                     ROUND(AVG(return_ytd), 1) as avg_ytd
-                   FROM fund_performance
-                   WHERE validity_date = (SELECT MAX(validity_date) FROM fund_performance)
-                   AND return_ytd IS NOT NULL
-                   GROUP BY cat_group
-                   ORDER BY avg_ytd DESC"""
-            ).fetchall()
-            if cats:
-                for row in cats[:3]:
-                    st.caption(f"{row[0]}: **{row[1]:+.1f}%** YTD")
-        except Exception:
-            st.info("Fund data not yet available.")
+# ── HTML building blocks ──────────────────────────────────────────────────
 
-    st.markdown("---")
 
-    # ── FX Rates Panel (DB-sourced fallback) ─────────────────────
-    try:
-        fx_currencies = ["USD", "EUR", "GBP", "AED", "SAR"]
-        fx_data = []
-        for curr in fx_currencies:
-            row = con.execute(
-                """SELECT date, selling FROM sbp_fx_interbank
-                   WHERE UPPER(currency) = ? ORDER BY date DESC LIMIT 1""",
-                (curr,),
-            ).fetchone()
-            if row:
-                fx_data.append((curr, row[1], row[0]))
+def _kse100_hero(kse: dict, breadth: dict | None) -> str:
+    """KSE-100 hero banner HTML.
 
-        if not fx_data:
-            # Try kerb as fallback
-            for curr in fx_currencies:
-                row = con.execute(
-                    """SELECT date, selling FROM forex_kerb
-                       WHERE UPPER(currency) = ? ORDER BY date DESC LIMIT 1""",
-                    (curr,),
-                ).fetchone()
-                if row:
-                    fx_data.append((curr, row[1], row[0]))
+    ``kse`` is the /v1/market/kse100 payload (denormalized hero):
+    value/change/change_pct/ytd_change_pct/week_52_*/advancers/decliners.
+    ``breadth`` is /v1/eod/breadth (date/gainers/losers/unchanged/total).
+    """
+    value = kse.get("value", 0)
+    change = kse.get("change", 0) or 0
+    change_pct = kse.get("change_pct", 0) or 0
+    ytd_pct = kse.get("ytd_change_pct", 0) or 0
+    w52_high = kse.get("week_52_high")
+    w52_low = kse.get("week_52_low")
+    as_of = kse.get("as_of", "")
 
-        if fx_data:
-            st.markdown("**FX Rates**")
-            fx_cols = st.columns(len(fx_data))
-            for col, (curr, rate, dt) in zip(fx_cols, fx_data):
-                col.metric(f"{curr}/PKR", f"{rate:.2f}", help=f"As of {dt}")
-            st.markdown("---")
-    except Exception:
-        pass
+    if change > 0:
+        color, arrow, sign = "#00C853", "&#9650;", "+"
+    elif change < 0:
+        color, arrow, sign = "#FF5252", "&#9660;", ""
+    else:
+        color, arrow, sign = "#6B7280", "&#9679;", ""
 
-    # ── Data Freshness Bar ───────────────────────────────────────
-    st.markdown("**Data Freshness**")
-    sources = [
-        ("EOD", "SELECT MAX(date) FROM eod_ohlcv"),
-        ("NAV", "SELECT MAX(nav_date) FROM mutual_fund_nav"),
-        ("KIBOR", "SELECT MAX(date) FROM kibor_daily"),
-        ("PKRV", "SELECT MAX(date) FROM pkrv_daily"),
-        ("FX", "SELECT MAX(date) FROM sbp_fx_interbank"),
-        ("SMTV", "SELECT MAX(date) FROM sbp_bond_trading_daily"),
-    ]
-    today = date.today().isoformat()
-    fresh_cols = st.columns(len(sources))
-    for col, (name, query) in zip(fresh_cols, sources):
-        try:
-            latest = con.execute(query).fetchone()[0]
-            if latest and str(latest) >= today:
-                col.markdown(f"**{name}**: :green[Today]")
-            elif latest:
-                from datetime import datetime
-                days = (date.today() - date.fromisoformat(str(latest)[:10])).days
-                if days <= 2:
-                    col.markdown(f"**{name}**: :orange[{days}d ago]")
-                else:
-                    col.markdown(f"**{name}**: :red[{days}d ago]")
-            else:
-                col.markdown(f"**{name}**: :red[empty]")
-        except Exception:
-            col.markdown(f"**{name}**: :red[N/A]")
+    ytd_color = "#00C853" if ytd_pct > 0 else "#FF5252" if ytd_pct < 0 else "#6B7280"
+    w52h_str = f"{w52_high:,.2f}" if w52_high else "---"
+    w52l_str = f"{w52_low:,.2f}" if w52_low else "---"
 
-    st.markdown("---")
+    g = (breadth or {}).get("gainers") or 0
+    l = (breadth or {}).get("losers") or 0
+    total = g + l or 1
+    g_pct = g / total * 100
+    l_pct = l / total * 100
+
+    return f"""
+    <div style="background:#12161C;border:1px solid #1E2329;border-radius:4px;padding:16px 20px;margin-bottom:8px;">
+      <div style="display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;">
+        <span style="font-size:13px;color:#6B7280;font-weight:600;letter-spacing:0.05em;">KSE-100</span>
+        <span style="font-size:28px;font-weight:700;font-family:ui-monospace,monospace;color:#EAECEF;">
+          {value:,.2f}
+        </span>
+        <span style="font-size:16px;font-weight:600;color:{color};font-family:ui-monospace,monospace;">
+          {arrow} {sign}{change:,.2f} ({sign}{change_pct:.2f}%)
+        </span>
+        <span style="font-size:12px;color:#6B7280;margin-left:auto;">
+          {as_of}
+        </span>
+      </div>
+      <div style="display:flex;gap:24px;margin-top:10px;font-size:12px;font-family:ui-monospace,monospace;color:#9AA4B2;">
+        <span>52W H <span style="color:#EAECEF">{w52h_str}</span></span>
+        <span>52W L <span style="color:#EAECEF">{w52l_str}</span></span>
+        <span>YTD <span style="color:{ytd_color}">{ytd_pct:+.2f}%</span></span>
+        <span style="margin-left:auto;">
+          <span style="color:#00C853">{g}</span> /
+          <span style="color:#FF5252">{l}</span> A/D
+        </span>
+      </div>
+      <div style="display:flex;height:3px;margin-top:8px;border-radius:2px;overflow:hidden;">
+        <div style="width:{g_pct:.0f}%;background:#00C853;"></div>
+        <div style="width:{l_pct:.0f}%;background:#FF5252;"></div>
+      </div>
+    </div>"""
+
+
+def _kse100_proxy_hero(breadth: dict) -> str:
+    """Fallback hero when no index data — show breadth only."""
+    if not breadth or not breadth.get("total"):
+        return ""
+    g = breadth.get("gainers") or 0
+    l = breadth.get("losers") or 0
+    avg = breadth.get("avg_change") or 0
+    total = g + l or 1
+    g_pct = g / total * 100
+    l_pct = l / total * 100
+
+    color = "#00C853" if avg > 0 else "#FF5252" if avg < 0 else "#6B7280"
+    arrow = "&#9650;" if avg > 0 else "&#9660;" if avg < 0 else "&#9679;"
+    sign = "+" if avg > 0 else ""
+    vol = breadth.get("total_volume") or 0
+    vol_str = f"{vol/1e6:.0f}M" if vol >= 1e6 else f"{vol:,}" if vol else "---"
+
+    return f"""
+    <div style="background:#12161C;border:1px solid #1E2329;border-radius:4px;padding:16px 20px;margin-bottom:8px;">
+      <div style="display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;">
+        <span style="font-size:13px;color:#6B7280;font-weight:600;letter-spacing:0.05em;">KSE-100 (PROXY)</span>
+        <span style="font-size:24px;font-weight:700;font-family:ui-monospace,monospace;color:{color};">
+          {arrow} {sign}{avg:.2f}%
+        </span>
+        <span style="font-size:12px;color:#6B7280;">
+          Avg across {breadth.get('total', 0)} stocks
+        </span>
+      </div>
+      <div style="display:flex;gap:24px;margin-top:10px;font-size:12px;font-family:ui-monospace,monospace;color:#9AA4B2;">
+        <span>Vol <span style="color:#EAECEF">{vol_str}</span></span>
+        <span style="margin-left:auto;">
+          <span style="color:#00C853">{g}</span> /
+          <span style="color:#FF5252">{l}</span> A/D
+        </span>
+      </div>
+      <div style="display:flex;height:3px;margin-top:8px;border-radius:2px;overflow:hidden;">
+        <div style="width:{g_pct:.0f}%;background:#00C853;"></div>
+        <div style="width:{l_pct:.0f}%;background:#FF5252;"></div>
+      </div>
+    </div>"""
+
+
+def _rates_strip_html(rates: dict) -> str:
+    """Compact rates strip from /v1/rates/strip — flat fields + FX list.
+
+    ``rates`` shape (post-1.3 API):
+      sbp_policy_rate, kibor_3m_bid, kibor_3m_offer, tbill_3m_cutoff,
+      pkrv_10y_yield, fx=[{currency, selling, as_of}, …]
+    """
+    if not rates:
+        return ""
+    items: list[str] = []
+
+    # Policy
+    if rates.get("sbp_policy_rate") is not None:
+        items.append(
+            f'<span class="rs-label">SBP</span>'
+            f'<span class="rs-val">{rates["sbp_policy_rate"]:.1f}%</span>'
+        )
+
+    # KIBOR 3M — expose bid+offer if both present, else whichever leg is.
+    bid = rates.get("kibor_3m_bid")
+    offer = rates.get("kibor_3m_offer")
+    if bid is not None and offer is not None:
+        items.append(
+            f'<span class="rs-label">KIBOR 3M</span>'
+            f'<span class="rs-val">{bid:.2f}/{offer:.2f}%</span>'
+        )
+    elif bid is not None or offer is not None:
+        leg = bid if bid is not None else offer
+        items.append(
+            f'<span class="rs-label">KIBOR 3M</span>'
+            f'<span class="rs-val">{leg:.2f}%</span>'
+        )
+
+    # T-Bill 3M
+    if rates.get("tbill_3m_cutoff") is not None:
+        items.append(
+            f'<span class="rs-label">T-Bill 3M</span>'
+            f'<span class="rs-val">{rates["tbill_3m_cutoff"]:.2f}%</span>'
+        )
+
+    # PKRV 10Y
+    if rates.get("pkrv_10y_yield") is not None:
+        items.append(
+            f'<span class="rs-label">PKRV 10Y</span>'
+            f'<span class="rs-val">{rates["pkrv_10y_yield"]:.2f}%</span>'
+        )
+
+    fx_list = rates.get("fx") or []
+    if items and fx_list:
+        items.append('<span class="rs-sep">|</span>')
+
+    for row in fx_list[:3]:
+        if row.get("selling") is None:
+            continue
+        items.append(
+            f'<span class="rs-label">{row["currency"]}</span>'
+            f'<span class="rs-val">{row["selling"]:,.2f}</span>'
+        )
+
+    cells = "".join(items)
+    return f"""
+    <style>
+    .rates-strip {{
+        display:flex; align-items:center; gap:12px; padding:6px 12px;
+        background:#0B0E11; border:1px solid #1E2329; border-radius:2px;
+        font-family:ui-monospace,monospace; font-size:12px; margin-bottom:10px;
+        overflow-x:auto; white-space:nowrap;
+    }}
+    .rs-label {{ color:#6B7280; margin-right:4px; }}
+    .rs-val {{ color:#EAECEF; font-weight:600; margin-right:12px; }}
+    .rs-sep {{ color:#1E2329; font-size:16px; }}
+    </style>
+    <div class="rates-strip">{cells}</div>"""
+
+
+def _volume_leaders_html(rows: list[dict]) -> str:
+    """Volume leaders list from /v1/market/volume-leaders."""
+    if not rows:
+        return ""
+    body: list[str] = []
+    for r in rows:
+        vol = r.get("volume") or 0
+        vol_str = f"{vol/1e6:.1f}M" if vol >= 1e6 else f"{vol:,.0f}"
+        chg = r.get("change_pct") or 0
+        c = "#00C853" if chg > 0 else "#FF5252" if chg < 0 else "#6B7280"
+        body.append(
+            f'<tr><td style="color:#EAECEF;font-weight:600">{r["symbol"]}</td>'
+            f'<td style="text-align:right">{vol_str}</td>'
+            f'<td style="text-align:right;color:{c}">{chg:+.2f}%</td></tr>'
+        )
+    tbody = "".join(body)
+    return f"""
+    <div style="font-size:12px;font-family:ui-monospace,monospace;">
+      <div style="color:#6B7280;font-size:11px;font-weight:600;letter-spacing:0.05em;margin-bottom:6px;">
+        VOLUME LEADERS
+      </div>
+      <table style="width:100%;border-collapse:collapse;color:#9AA4B2;">
+        {tbody}
+      </table>
+    </div>"""
+
+
+def _52w_html(extremes: dict | None) -> str:
+    """52-week range extremes from /v1/market/52w-extremes.
+
+    ``extremes`` shape: ``{near_high: [{symbol, pos_pct}, …], near_low: [...]}``.
+    """
+    if not extremes:
+        return ""
+    high = extremes.get("near_high") or []
+    low = extremes.get("near_low") or []
+    parts: list[str] = []
+    if high:
+        parts.append(
+            '<div style="color:#6B7280;font-size:10px;margin-bottom:2px;">NEAR 52W HIGH</div>'
+        )
+        for r in high:
+            pos = r.get("pos_pct") or 0
+            parts.append(
+                f'<div><span style="color:#00C853;font-weight:600">{r["symbol"]}</span>'
+                f' <span style="color:#6B7280">{pos:.0f}%</span></div>'
+            )
+    if low:
+        parts.append(
+            '<div style="color:#6B7280;font-size:10px;margin-top:6px;margin-bottom:2px;">NEAR 52W LOW</div>'
+        )
+        for r in low:
+            pos = r.get("pos_pct") or 0
+            parts.append(
+                f'<div><span style="color:#FF5252;font-weight:600">{r["symbol"]}</span>'
+                f' <span style="color:#6B7280">{pos:.0f}%</span></div>'
+            )
+    if not parts:
+        return ""
+    return f"""
+    <div style="font-size:12px;font-family:ui-monospace,monospace;">
+      <div style="color:#6B7280;font-size:11px;font-weight:600;letter-spacing:0.05em;margin-bottom:6px;">
+        52-WEEK RANGE
+      </div>
+      {"".join(parts)}
+    </div>"""
+
+
+# ── Main render ───────────────────────────────────────────────────────────
 
 
 def render_dashboard():
-    """Main dashboard with KPIs, market breadth, and top movers."""
+    """Quant-worthy market dashboard — reads via the v1 API."""
 
-    # =================================================================
-    # AUTO-REFRESH WHEN SERVICE IS RUNNING
-    # =================================================================
+    # Auto-refresh when sync service is running
     service_running, _ = is_service_running()
     if service_running and HAS_AUTOREFRESH and st_autorefresh:
-        # Refresh every 60 seconds (60000 ms)
         st_autorefresh(interval=60000, limit=None, key="dashboard_autorefresh")
 
-    try:
-        client = get_client()
-        con = client.connection  # For raw SQL pass-through
+    # API-down banner — if the service is unreachable, render the banner
+    # and bail out before any data fetches.
+    if not api_client.render_api_status_banner_if_down():
+        render_footer()
+        return
 
-        # =================================================================
-        # HEADER: Title + Refresh All + Market Status + Data Freshness
-        # =================================================================
-        header_col1, header_col2, header_col3, header_col4 = st.columns([2, 0.8, 0.8, 1])
+    # ══════════════════════════════════════════════════════════════
+    # ROW 0: HEADER — Title + Status + Refresh
+    # ══════════════════════════════════════════════════════════════
+    h1, h2, h3 = st.columns([3, 1, 0.5])
+    with h1:
+        st.markdown("### Market Dashboard")
+    with h2:
+        render_market_status_badge()
+        days_old, latest_date = api_client.get_data_freshness_tuple("equity_eod")
+        _, badge_text = get_freshness_badge(days_old)
+        sync_dot = "ON" if service_running else "OFF"
+        if latest_date:
+            st.caption(f"Data: {badge_text} | Sync: {sync_dot}")
+    with h3:
+        refresh_all = st.button(
+            "Refresh", type="primary", key="dash_refresh", width="stretch"
+        )
 
-        with header_col1:
-            st.markdown("## \U0001f4ca Market Dashboard")
-            st.caption("Pakistan Stock Exchange \u2022 Real-time Analytics")
+    # ══════════════════════════════════════════════════════════════
+    # ROW 1: KSE-100 HERO
+    # ══════════════════════════════════════════════════════════════
+    breadth = api_client.get_breadth() or {}
+    kse100 = api_client.get_kse100_hero()
 
-        with header_col2:
-            st.markdown("")  # spacing
-            refresh_all = st.button("\U0001f504 Refresh All", type="primary",
-                                    key="dash_refresh_all", use_container_width=True)
+    if kse100:
+        st.markdown(_kse100_hero(kse100, breadth), unsafe_allow_html=True)
+    elif breadth and breadth.get("total"):
+        st.markdown(_kse100_proxy_hero(breadth), unsafe_allow_html=True)
 
-        with header_col3:
-            # Market Status Badge
-            render_market_status_badge()
+    # ══════════════════════════════════════════════════════════════
+    # ROW 2: RATES STRIP
+    # ══════════════════════════════════════════════════════════════
+    rates_strip = api_client.get_rates_strip()
+    if rates_strip:
+        st.markdown(_rates_strip_html(rates_strip), unsafe_allow_html=True)
 
-        with header_col4:
-            # Data Freshness + Service Status
-            days_old, latest_date = client.get_data_freshness()
-            badge_color, badge_text = get_freshness_badge(days_old)
-            service_status = read_service_status()
-            if latest_date:
-                freshness_color = "#00C853" if badge_color == "green" else "#FFC107" if badge_color == "orange" else "#FF1744"
-                sync_indicator = "\U0001f7e2" if service_running else "\U0001f534"
-                st.markdown(
-                    f'<div style="text-align: right; font-size: 12px;">'
-                    f'<span style="color: {freshness_color};">\u25cf</span> Data: {badge_text}<br>'
-                    f'<span style="color: #888;">As of {latest_date}</span><br>'
-                    f'{sync_indicator} Auto-Sync: {"ON" if service_running else "OFF"}</div>',
-                    unsafe_allow_html=True
+    # Stale data warning — derived from the freshness payload we already loaded.
+    if days_old is not None and days_old > 3:
+        render_data_warning(
+            f"Equity EOD is {days_old} days old (latest: {latest_date}). "
+            "Hit Refresh to update."
+        )
+
+    # ══════════════════════════════════════════════════════════════
+    # REFRESH ALL HANDLER — Phase 1.6.14 (composite, Approach A)
+    # Worker mode: submit 4 sequential jobs, toast, return immediately.
+    # Inline mode: keep the existing chained safe_writer flow.
+    # ══════════════════════════════════════════════════════════════
+    if refresh_all:
+        if api_client.use_worker_sync():
+            # Approach A: submit 4 jobs in order. Worker processes them
+            # one at a time (single-threaded). sync_regular_market /
+            # sync_indices / sync_rates_bundle don't write to
+            # eod_ohlcv, so rebuild_eod_summary_today can safely run
+            # after them — they touch independent base tables.
+            _composite = [
+                ("sync_regular_market", "PSX market-watch snapshot"),
+                ("sync_indices", "PSX indices"),
+                ("sync_rates_bundle", "KIBOR + Treasury + Policy"),
+                ("rebuild_eod_summary_today", "EOD summary rebuild"),
+            ]
+            _submitted: list[tuple[int, str]] = []
+            _failed_labels: list[str] = []
+            for _jt, _label in _composite:
+                _sub = api_client.submit_job(
+                    _jt, notes=f"Refresh All — {_label}"
                 )
-
-        # ── Data Freshness Bar ──────────────────────────────────────
-        render_domain_freshness_bar(con)
-
-        # ── Refresh All logic ────────────────────────────────────────
-        if refresh_all:
-            with st.status("Refreshing dashboard data...", expanded=True) as status:
-                errors = []
-                # Step 1: Market Data (~3s)
-                status.update(label="Fetching market data...")
-                try:
-                    n = _sync_market_data(con)
-                    st.write(f"Market: {n} symbols synced, analytics recomputed")
-                except Exception as e:
-                    errors.append(str(e))
-                    st.write(f"Market: FAILED - {e}")
-                # Step 2: Indices (~5s, parallel)
-                status.update(label="Fetching indices...")
-                try:
-                    synced = _sync_indices(con)
-                    st.write(f"Indices: {synced} synced")
-                except Exception as e:
-                    errors.append(str(e))
-                    st.write(f"Indices: FAILED - {e}")
-                # Step 3: SBP Rates + Treasury (~2s)
-                status.update(label="Fetching SBP rates & treasury...")
-                try:
-                    rates, treas = _sync_rates(con)
-                    st.write(f"Rates: KIBOR {rates.get('kibor_ok', 0)}, "
-                             f"T-Bill {treas.get('tbills_ok', 0)}, PIB {treas.get('pibs_ok', 0)}")
-                except Exception as e:
-                    errors.append(str(e))
-                    st.write(f"Rates: FAILED - {e}")
-
-                if errors:
-                    status.update(label=f"Refresh done with {len(errors)} error(s)", state="error")
+                if _sub is None:
+                    _failed_labels.append(_label)
                 else:
-                    status.update(label="All data refreshed!", state="complete")
+                    _submitted.append((_sub["job_id"], _label))
+            if _failed_labels:
+                st.error(
+                    "Could not enqueue: "
+                    + ", ".join(_failed_labels)
+                    + " — API unreachable or auth misconfigured."
+                )
+            if _submitted:
+                _ids = ", ".join(f"#{jid}" for jid, _ in _submitted)
+                st.toast(
+                    f"Refresh All — {len(_submitted)} jobs enqueued ({_ids}). "
+                    "See Jobs Monitor for progress."
+                )
+            # No cache_data.clear() / rerun() here — the jobs are still
+            # pending. User can hit Refresh again once Jobs Monitor
+            # shows them all ok.
+        else:
+            with st.status("Refreshing...", expanded=True) as status:
+                errors = []
+                for label, fn in [
+                    ("Market data", _sync_market_data),
+                    ("Indices", _sync_indices),
+                    ("Rates & Treasury", _sync_rates),
+                ]:
+                    status.update(label=f"Fetching {label}...")
+                    try:
+                        fn()
+                        st.write(f"{label}: OK")
+                    except Exception as e:
+                        errors.append(str(e))
+                        st.write(f"{label}: FAILED - {e}")
+                # Rebuild EOD summary for the latest trading day so the
+                # next page render sees fresh breadth/movers immediately.
+                try:
+                    from pakfindata.etl.eod_summary import rebuild_today
+                    status.update(label="Building EOD summary…")
+                    r = rebuild_today()
+                    if r.get("date"):
+                        st.write(f"EOD summary ({r['date']}): OK")
+                    else:
+                        st.write("EOD summary: skipped (no eod_ohlcv)")
+                except Exception as e:
+                    errors.append(str(e))
+                    st.write(f"EOD summary: FAILED - {e}")
+                if errors:
+                    status.update(label=f"Done with {len(errors)} error(s)", state="error")
+                else:
+                    status.update(label="All data refreshed", state="complete")
+            st.cache_data.clear()
             st.rerun()
 
-        st.markdown("---")
+    # ══════════════════════════════════════════════════════════════
+    # ROW 4: MARKET VIZ — Breadth | Gainers | Losers
+    # ══════════════════════════════════════════════════════════════
+    try:
+        market_analytics = api_client.get_market_analytics()
+        if market_analytics:
+            gainers = market_analytics.get("gainers_count", 0)
+            losers = market_analytics.get("losers_count", 0)
+            unchanged = market_analytics.get("unchanged_count", 0)
 
-        # =================================================================
-        # DATA STALENESS WARNING
-        # =================================================================
-        is_stale, stale_msg = check_data_staleness(con)
-        if is_stale:
-            render_data_warning(
-                f"{stale_msg}. Use Refresh All above to update.",
-                icon="\U0001f4c5"
-            )
+            col1, col2, col3 = st.columns([1, 1, 1])
 
-        # =================================================================
-        # MACRO RATES CONTEXT — Policy Rate, KIBOR, T-Bill, PIB
-        # =================================================================
-        try:
-            rate_cols = st.columns([1, 1, 1, 1, 0.4])
-            # Policy rate
-            pr_row = con.execute(
-                "SELECT policy_rate, rate_date FROM sbp_policy_rates ORDER BY rate_date DESC LIMIT 1"
-            ).fetchone()
-            with rate_cols[0]:
-                if pr_row:
-                    st.metric("SBP Policy Rate", f"{pr_row[0]:.1f}%", help=f"Since {pr_row[1]}")
-                else:
-                    st.metric("SBP Policy Rate", "—")
-            # KIBOR 3M
-            kb_row = con.execute(
-                "SELECT bid, offer, date FROM kibor_daily WHERE tenor='3M' ORDER BY date DESC LIMIT 1"
-            ).fetchone()
-            with rate_cols[1]:
-                if kb_row:
-                    mid = (kb_row[0] + kb_row[1]) / 2 if kb_row[0] and kb_row[1] else kb_row[0] or kb_row[1]
-                    st.metric("KIBOR 3M", f"{mid:.2f}%" if mid else "—", help=f"As of {kb_row[2]}")
-                else:
-                    st.metric("KIBOR 3M", "—")
-            # T-Bill 3M cutoff
-            tb_row = con.execute(
-                "SELECT cutoff_yield, auction_date FROM tbill_auctions WHERE tenor='3M' ORDER BY auction_date DESC LIMIT 1"
-            ).fetchone()
-            with rate_cols[2]:
-                if tb_row:
-                    st.metric("T-Bill 3M", f"{tb_row[0]:.2f}%", help=f"Auction {tb_row[1]}")
-                else:
-                    st.metric("T-Bill 3M", "—")
-            # PKRV 10Y
-            pv_row = con.execute(
-                "SELECT yield_pct, date FROM pkrv_daily WHERE tenor_months=120 ORDER BY date DESC LIMIT 1"
-            ).fetchone()
-            with rate_cols[3]:
-                if pv_row:
-                    st.metric("PKRV 10Y", f"{pv_row[0]:.2f}%", help=f"As of {pv_row[1]}")
-                else:
-                    st.metric("PKRV 10Y", "—")
-            # Sync Rates button
-            with rate_cols[4]:
-                st.markdown("")  # vertical spacing
-                if st.button("\U0001f504", key="dash_sync_rates",
-                             help="Sync SBP rates & treasury"):
-                    with st.spinner(""):
-                        _sync_rates(con)
-                    st.toast("Rates & treasury synced")
-                    st.rerun()
-        except Exception:
-            pass  # Tables may not exist yet
-
-        # =================================================================
-        # FX SNAPSHOT — Live rates from FX microservice
-        # =================================================================
-        try:
-            if _fx.is_healthy():
-                snap = _fx.get_snapshot()
-                if snap:
-                    rates = snap.get("rates", {})
-                    kibor = snap.get("kibor", {})
-                    fx_cols = st.columns(5)
-                    pairs = [("USD/PKR", 0), ("EUR/PKR", 1), ("GBP/PKR", 2), ("AED/PKR", 3)]
-                    for pair, idx in pairs:
-                        r = rates.get(pair, {})
-                        mid = r.get("mid")
-                        with fx_cols[idx]:
-                            if mid:
-                                st.metric(pair, f"{mid:,.2f}", help=f"{r.get('source', '')} {r.get('date', '')}")
-                            else:
-                                st.metric(pair, "—")
-                    with fx_cols[4]:
-                        k_mid = kibor.get("mid")
-                        if k_mid:
-                            st.metric(f"KIBOR {kibor.get('tenor', '6M')}", f"{k_mid:.2f}%",
-                                      help=f"As of {kibor.get('date', '')}")
-                        else:
-                            st.metric("KIBOR 6M", "—")
-
-                    # Assessment caption
-                    assessment = snap.get("signals", {}).get("assessment")
-                    if assessment:
-                        st.caption(f"FX: {assessment}")
-        except Exception:
-            pass  # FX service down — silent
-
-        # =================================================================
-        # KSE-100 INDEX DISPLAY - Primary Market Benchmark
-        # =================================================================
-        idx_hdr1, idx_hdr2 = st.columns([5, 1])
-        with idx_hdr2:
-            if st.button("\U0001f504 Indices", key="dash_sync_indices",
-                         help="Fetch latest KSE-100 and other indices"):
-                with st.spinner(""):
-                    synced = _sync_indices(con)
-                st.toast(f"{synced} indices synced")
-                st.rerun()
-        try:
-            # Try to get real KSE-100 index data first
-            kse100_data = client.get_latest_kse100()
-
-            # Get market breadth data - use eod_ohlcv for reliable data
-            market_perf = con.execute("""
-                WITH best_date AS (
-                    SELECT date
-                    FROM eod_ohlcv
-                    GROUP BY date
-                    HAVING COUNT(DISTINCT symbol) >= 100
-                    ORDER BY date DESC
-                    LIMIT 1
-                ),
-                today AS (
-                    SELECT symbol, close, volume
-                    FROM eod_ohlcv
-                    WHERE date = (SELECT date FROM best_date)
-                ),
-                prev AS (
-                    SELECT symbol, close as prev_close
-                    FROM eod_ohlcv
-                    WHERE date = (SELECT MAX(date) FROM eod_ohlcv WHERE date < (SELECT date FROM best_date))
-                ),
-                changes AS (
-                    SELECT
-                        t.symbol,
-                        t.volume,
-                        CASE
-                            WHEN p.prev_close > 0 THEN ((t.close - p.prev_close) / p.prev_close) * 100
-                            ELSE 0
-                        END as change_percent
-                    FROM today t
-                    LEFT JOIN prev p ON t.symbol = p.symbol
+            with col1:
+                fig = make_market_breadth_chart(
+                    gainers=gainers,
+                    losers=losers,
+                    unchanged=unchanged,
+                    height=280,
                 )
-                SELECT
-                    COUNT(*) as total_stocks,
-                    SUM(CASE WHEN change_percent > 0.01 THEN 1 ELSE 0 END) as gainers,
-                    SUM(CASE WHEN change_percent < -0.01 THEN 1 ELSE 0 END) as losers,
-                    SUM(CASE WHEN change_percent BETWEEN -0.01 AND 0.01 THEN 1 ELSE 0 END) as unchanged,
-                    ROUND(AVG(change_percent), 2) as avg_change,
-                    SUM(volume) as total_volume,
-                    NULL as total_turnover
-                FROM changes
-            """).fetchone()
+                st.plotly_chart(fig, width="stretch")
 
-            if kse100_data:
-                # ===== REAL KSE-100 DATA =====
-                idx_col1, idx_col2, idx_col3 = st.columns([2, 1, 1])
+            with col2:
+                top_g = api_client.get_top_gainers(5) or []
+                if top_g:
+                    df_g = pd.DataFrame(top_g)[["symbol", "change_pct"]]
+                    fig = make_top_movers_chart(
+                        df_g, title="Top Gainers", chart_type="gainers", height=280
+                    )
+                    st.plotly_chart(fig, width="stretch")
 
-                with idx_col1:
-                    value = kse100_data.get("value", 0)
-                    change = kse100_data.get("change", 0) or 0
-                    change_pct = kse100_data.get("change_pct", 0) or 0
+            with col3:
+                top_l = api_client.get_top_losers(5) or []
+                if top_l:
+                    df_l = pd.DataFrame(top_l)[["symbol", "change_pct"]]
+                    fig = make_top_movers_chart(
+                        df_l, title="Top Losers", chart_type="losers", height=280
+                    )
+                    st.plotly_chart(fig, width="stretch")
+    except Exception:
+        pass
 
-                    # Color based on change
-                    if change > 0:
-                        idx_color = "#00C853"
-                        arrow = "\u25b2"
-                        change_sign = "+"
-                    elif change < 0:
-                        idx_color = "#FF1744"
-                        arrow = "\u25bc"
-                        change_sign = ""
-                    else:
-                        idx_color = "#78909C"
-                        arrow = "\u25cf"
-                        change_sign = ""
+    # ══════════════════════════════════════════════════════════════
+    # ROW 5: DATA GRID — Volume Leaders | 52W Range | Sector
+    # ══════════════════════════════════════════════════════════════
+    c1, c2, c3 = st.columns([1, 1, 2])
 
-                    st.markdown(f"""
-                    <div style="background: linear-gradient(135deg, rgba(33,150,243,0.15) 0%, rgba(33,150,243,0.05) 100%);
-                                border: 1px solid rgba(33,150,243,0.3); border-radius: 12px; padding: 20px;">
-                        <div style="font-size: 12px; color: #888; margin-bottom: 4px;">
-                            \U0001f4ca KSE-100 Index
-                        </div>
-                        <div style="display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;">
-                            <span style="font-size: 32px; font-weight: 700; font-family: monospace;">
-                                {value:,.2f}
-                            </span>
-                            <span style="font-size: 18px; font-weight: 600; color: {idx_color}; font-family: monospace;">
-                                {arrow} {change_sign}{change:,.2f} ({change_sign}{change_pct:.2f}%)
-                            </span>
-                        </div>
-                        <div style="font-size: 11px; color: #666; margin-top: 8px;">
-                            Date: {kse100_data.get("index_date", "N/A")}
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
+    with c1:
+        vol_rows = api_client.get_volume_leaders(5) or []
+        st.markdown(_volume_leaders_html(vol_rows), unsafe_allow_html=True)
 
-                with idx_col2:
-                    # Index Details - High/Low/Volume
-                    high = kse100_data.get("high")
-                    low = kse100_data.get("low")
-                    volume = kse100_data.get("volume")
-                    vol_str = f"{volume/1e6:.0f}M" if volume and volume >= 1e6 else (f"{volume:,}" if volume else "N/A")
+    with c2:
+        extremes = api_client.get_52w_extremes(3)
+        st.markdown(_52w_html(extremes), unsafe_allow_html=True)
 
-                    st.markdown(f"""
-                    <div style="background: rgba(255,255,255,0.02); border-radius: 8px; padding: 16px;
-                                border: 1px solid rgba(255,255,255,0.1);">
-                        <div style="font-size: 12px; color: #888; margin-bottom: 8px;">Today's Range</div>
-                        <div style="font-family: monospace; font-size: 14px;">
-                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-                                <span style="color: #888;">High:</span>
-                                <span style="color: #00C853;">{high:,.2f if high else 'N/A'}</span>
-                            </div>
-                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-                                <span style="color: #888;">Low:</span>
-                                <span style="color: #FF1744;">{low:,.2f if low else 'N/A'}</span>
-                            </div>
-                            <div style="display: flex; justify-content: space-between;">
-                                <span style="color: #888;">Volume:</span>
-                                <span>{vol_str}</span>
-                            </div>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                with idx_col3:
-                    # 52-Week Range and YTD
-                    week_52_low = kse100_data.get("week_52_low")
-                    week_52_high = kse100_data.get("week_52_high")
-                    ytd_pct = kse100_data.get("ytd_change_pct")
-                    one_year_pct = kse100_data.get("one_year_change_pct")
-
-                    ytd_color = "#00C853" if ytd_pct and ytd_pct > 0 else "#FF1744" if ytd_pct and ytd_pct < 0 else "#888"
-                    yr_color = "#00C853" if one_year_pct and one_year_pct > 0 else "#FF1744" if one_year_pct and one_year_pct < 0 else "#888"
-
-                    st.markdown(f"""
-                    <div style="background: rgba(255,255,255,0.02); border-radius: 8px; padding: 16px;
-                                border: 1px solid rgba(255,255,255,0.1);">
-                        <div style="font-size: 12px; color: #888; margin-bottom: 8px;">Performance</div>
-                        <div style="font-family: monospace; font-size: 14px;">
-                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-                                <span style="color: #888;">YTD:</span>
-                                <span style="color: {ytd_color};">{ytd_pct:+.2f}%</span>
-                            </div>
-                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-                                <span style="color: #888;">1-Year:</span>
-                                <span style="color: {yr_color};">{one_year_pct:+.2f}%</span>
-                            </div>
-                            <div style="font-size: 11px; color: #666; margin-top: 6px;">
-                                52W: {week_52_low:,.0f if week_52_low else 'N/A'} - {week_52_high:,.0f if week_52_high else 'N/A'}
-                            </div>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                # Show market breadth below if available
-                if market_perf and market_perf["total_stocks"] > 0:
-                    gainers = market_perf["gainers"] or 0
-                    losers = market_perf["losers"] or 0
-                    turnover = market_perf["total_turnover"] or 0
-                    turnover_str = f"Rs.{turnover/1e9:.2f}B" if turnover >= 1e9 else f"Rs.{turnover/1e6:.0f}M" if turnover >= 1e6 else f"Rs.{turnover:,.0f}"
-
-                    st.markdown(f"""
-                    <div style="display: flex; gap: 24px; margin-top: 12px; font-size: 13px;">
-                        <span style="color: #888;">Market Breadth:</span>
-                        <span style="color: #00C853;">{gainers} Gainers</span>
-                        <span style="color: #FF1744;">{losers} Losers</span>
-                        <span style="color: #888; margin-left: auto;">Turnover: {turnover_str}</span>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-            elif market_perf and market_perf["total_stocks"] > 0:
-                # ===== FALLBACK: PROXY DATA =====
-                idx_col1, idx_col2, idx_col3 = st.columns([2, 1, 1])
-
-                with idx_col1:
-                    avg_change = market_perf["avg_change"] or 0
-                    gainers = market_perf["gainers"] or 0
-                    losers = market_perf["losers"] or 0
-
-                    # Color based on market direction
-                    if avg_change > 0:
-                        idx_color = "#00C853"
-                        arrow = "\u25b2"
-                    elif avg_change < 0:
-                        idx_color = "#FF1744"
-                        arrow = "\u25bc"
-                    else:
-                        idx_color = "#78909C"
-                        arrow = "\u25cf"
-
-                    st.markdown(f"""
-                    <div style="background: linear-gradient(135deg, rgba(33,150,243,0.1) 0%, rgba(33,150,243,0.05) 100%);
-                                border: 1px solid rgba(33,150,243,0.2); border-radius: 12px; padding: 20px;">
-                        <div style="font-size: 12px; color: #888; margin-bottom: 4px;">
-                            \U0001f4ca KSE-100 Index Proxy (Market Average)
-                        </div>
-                        <div style="display: flex; align-items: baseline; gap: 12px;">
-                            <span style="font-size: 28px; font-weight: 700; color: {idx_color}; font-family: monospace;">
-                                {arrow} {avg_change:+.2f}%
-                            </span>
-                            <span style="font-size: 14px; color: #888;">
-                                Avg change across {market_perf["total_stocks"]} stocks
-                            </span>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                with idx_col2:
-                    # Market Breadth
-                    st.markdown(f"""
-                    <div style="background: rgba(255,255,255,0.02); border-radius: 8px; padding: 16px;
-                                border: 1px solid rgba(255,255,255,0.1);">
-                        <div style="font-size: 12px; color: #888; margin-bottom: 8px;">Market Breadth</div>
-                        <div style="display: flex; gap: 16px;">
-                            <div>
-                                <span style="color: #00C853; font-size: 20px; font-weight: 600;">{gainers}</span>
-                                <span style="font-size: 11px; color: #888;"> Gainers</span>
-                            </div>
-                            <div>
-                                <span style="color: #FF1744; font-size: 20px; font-weight: 600;">{losers}</span>
-                                <span style="font-size: 11px; color: #888;"> Losers</span>
-                            </div>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                with idx_col3:
-                    # Turnover
-                    turnover = market_perf["total_turnover"] or 0
-                    if turnover >= 1e9:
-                        turnover_str = f"Rs.{turnover/1e9:.2f}B"
-                    elif turnover >= 1e6:
-                        turnover_str = f"Rs.{turnover/1e6:.0f}M"
-                    else:
-                        turnover_str = f"Rs.{turnover:,.0f}"
-
-                    st.markdown(f"""
-                    <div style="background: rgba(255,255,255,0.02); border-radius: 8px; padding: 16px;
-                                border: 1px solid rgba(255,255,255,0.1);">
-                        <div style="font-size: 12px; color: #888; margin-bottom: 8px;">Total Turnover</div>
-                        <div style="font-size: 20px; font-weight: 600; font-family: monospace;">
-                            {turnover_str}
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                st.markdown("")
-        except Exception as e:
-            # Show user-friendly error instead of silent failure
-            render_data_info(
-                "Index data temporarily unavailable. Showing available market data.",
-                icon="\U0001f4ca"
-            )
-
-        # =================================================================
-        # PRIMARY KPIs ROW - Key metrics traders care about
-        # =================================================================
-        kpi_col1, kpi_col2, kpi_col3, kpi_col4, kpi_col5 = st.columns(5)
-
-        # Get deep data stats
-        deep_stats = con.execute("""
-            SELECT
-                COUNT(DISTINCT symbol) as deep_symbols,
-                MAX(snapshot_date) as latest_snapshot
-            FROM company_snapshots
-        """).fetchone()
-        deep_count = deep_stats["deep_symbols"] if deep_stats else 0
-
-        # Get trading session stats - use date with meaningful data (at least 100 symbols)
-        session_stats = con.execute("""
-            WITH best_date AS (
-                SELECT session_date
-                FROM trading_sessions
-                WHERE market_type = 'REG'
-                GROUP BY session_date
-                HAVING COUNT(DISTINCT symbol) >= 100
-                ORDER BY session_date DESC
-                LIMIT 1
-            )
-            SELECT
-                SUM(volume) as total_volume,
-                SUM(turnover) as total_turnover,
-                COUNT(DISTINCT symbol) as active_symbols,
-                (SELECT session_date FROM best_date) as data_date
-            FROM trading_sessions
-            WHERE session_date = (SELECT session_date FROM best_date)
-            AND market_type = 'REG'
-        """).fetchone()
-
-        # Fallback to eod_ohlcv if trading_sessions has no good data
-        if not session_stats or not session_stats["active_symbols"] or session_stats["active_symbols"] < 10:
-            session_stats = con.execute("""
-                WITH best_date AS (
-                    SELECT date
-                    FROM eod_ohlcv
-                    GROUP BY date
-                    HAVING COUNT(DISTINCT symbol) >= 100
-                    ORDER BY date DESC
-                    LIMIT 1
-                )
-                SELECT
-                    SUM(volume) as total_volume,
-                    NULL as total_turnover,
-                    COUNT(DISTINCT symbol) as active_symbols,
-                    (SELECT date FROM best_date) as data_date
-                FROM eod_ohlcv
-                WHERE date = (SELECT date FROM best_date)
-            """).fetchone()
-
-        total_vol = session_stats["total_volume"] if session_stats else 0
-        active_count = session_stats["active_symbols"] if session_stats else 0
-
-        with kpi_col1:
-            st.metric(
-                "\U0001f3e2 Companies",
-                f"{deep_count:,}",
-                help="Companies with deep data profiles"
-            )
-
-        with kpi_col2:
-            st.metric(
-                "\U0001f4c8 Active Today",
-                f"{active_count:,}",
-                help="Symbols traded today"
-            )
-
-        with kpi_col3:
-            vol_str = format_volume(total_vol) if total_vol else "N/A"
-            st.metric(
-                "\U0001f4ca Total Volume",
-                vol_str,
-                help="Combined volume across all symbols"
-            )
-
-        with kpi_col4:
-            # EOD data coverage
-            eod_count = con.execute("SELECT COUNT(*) FROM eod_ohlcv").fetchone()[0]
-            st.metric(
-                "\U0001f4c5 Historical Days",
-                f"{eod_count:,}",
-                help="Total OHLCV records in database"
-            )
-
-        with kpi_col5:
-            # Announcements today
-            ann_count = con.execute("""
-                SELECT COUNT(*) FROM corporate_announcements
-                WHERE announcement_date = date('now')
-            """).fetchone()[0]
-            st.metric(
-                "\U0001f4e3 Announcements",
-                f"{ann_count}",
-                help="Corporate announcements today"
-            )
-
-        st.markdown("")  # Spacing
-
-        # =====================================================================
-        # PSX-Style Trading Segments Summary
-        # =====================================================================
+    with c3:
         try:
-            # Get trading segments data - use date with meaningful data
-            segments_query = """
-                WITH best_date AS (
-                    SELECT session_date
-                    FROM trading_sessions
-                    WHERE market_type = 'REG'
-                    GROUP BY session_date
-                    HAVING COUNT(DISTINCT symbol) >= 50
-                    ORDER BY session_date DESC
-                    LIMIT 1
+            sector_rows = api_client.get_sector_leaderboard() or []
+            if sector_rows:
+                st.markdown(
+                    '<div style="color:#6B7280;font-size:11px;font-weight:600;'
+                    'letter-spacing:0.05em;margin-bottom:4px;">SECTOR PERFORMANCE</div>',
+                    unsafe_allow_html=True,
                 )
-                SELECT
-                    market_type,
-                    COUNT(*) as symbols,
-                    SUM(volume) as total_volume,
-                    AVG(volume) as avg_volume
-                FROM trading_sessions
-                WHERE session_date = (SELECT session_date FROM best_date)
-                GROUP BY market_type
-                ORDER BY total_volume DESC
-            """
-            segments_df = pd.read_sql_query(segments_query, con)
-
-            if not segments_df.empty:
-                st.subheader("\U0001f4ca Trading Segments")
-
-                market_labels = {
-                    "REG": "Regular Market",
-                    "FUT": "Deliverable Futures",
-                    "CSF": "Cash Settled Futures",
-                    "ODL": "Odd Lot"
-                }
-
-                seg_cols = st.columns(len(segments_df))
-                for i, row in segments_df.iterrows():
-                    with seg_cols[i]:
-                        market = row["market_type"]
-                        label = market_labels.get(market, market)
-                        vol = row["total_volume"]
-                        count = row["symbols"]
-
-                        # Format volume
-                        if vol >= 1e9:
-                            vol_str = f"{vol/1e9:.2f}B"
-                        elif vol >= 1e6:
-                            vol_str = f"{vol/1e6:.2f}M"
-                        else:
-                            vol_str = f"{vol:,.0f}"
-
-                        st.metric(
-                            label,
-                            vol_str,
-                            f"{count} symbols",
-                            help=f"Total volume in {label}"
-                        )
-
-                st.markdown("---")
+                sector_df = pd.DataFrame(sector_rows)
+                # Columns shipped by /v1/market/sector-leaderboard:
+                # sector, stocks, avg_chg, total_vol, up, down
+                display_cols = [
+                    c for c in ["sector", "stocks", "avg_chg", "total_vol", "up", "down"]
+                    if c in sector_df.columns
+                ]
+                st.dataframe(
+                    sector_df[display_cols].head(8),
+                    width="stretch",
+                    hide_index=True,
+                    height=260,
+                    column_config={
+                        "sector": st.column_config.TextColumn("Sector", width="medium"),
+                        "stocks": st.column_config.NumberColumn("Stk", format="%d", width="small"),
+                        "avg_chg": st.column_config.NumberColumn("Chg%", format="%.2f", width="small"),
+                        "total_vol": st.column_config.NumberColumn("Volume", format="%,.0f"),
+                        "up": st.column_config.NumberColumn("Up", format="%d", width="small"),
+                        "down": st.column_config.NumberColumn("Dn", format="%d", width="small"),
+                    },
+                )
         except Exception:
-            # Trading segments data not critical, continue gracefully
             pass
 
-        # =====================================================================
-        # Volume Leaders & 52-Week Range Indicators
-        # =====================================================================
-        try:
-            vol_52w_cols = st.columns(2)
+    # ══════════════════════════════════════════════════════════════
+    # ROW 6: SYNC CONTROLS — still direct-DB via safe_writer.
+    # These migrate to worker jobs in Phase 1.5+. Hard Rule 7-8.
+    # ══════════════════════════════════════════════════════════════
+    with st.expander("Sync & Data Management", expanded=False):
+        st.caption(
+            "🕒 Automatic refresh runs nightly at 03:45 PKT via cron "
+            "(weekends + PSX holidays skipped). The buttons below are "
+            "for manual backfill, troubleshooting, or intraday refreshes."
+        )
+        sync_c1, sync_c2, sync_c3 = st.columns(3)
 
-            with vol_52w_cols[0]:
-                # Top Volume Leaders - use eod_ohlcv for more reliable data
-                volume_query = """
-                    WITH best_date AS (
-                        SELECT date
-                        FROM eod_ohlcv
-                        GROUP BY date
-                        HAVING COUNT(DISTINCT symbol) >= 100
-                        ORDER BY date DESC
-                        LIMIT 1
-                    ),
-                    today AS (
-                        SELECT symbol, close, volume
-                        FROM eod_ohlcv
-                        WHERE date = (SELECT date FROM best_date)
-                    ),
-                    prev AS (
-                        SELECT symbol, close as prev_close
-                        FROM eod_ohlcv
-                        WHERE date = (SELECT MAX(date) FROM eod_ohlcv WHERE date < (SELECT date FROM best_date))
-                    )
-                    SELECT
-                        t.symbol,
-                        t.volume,
-                        t.close as price,
-                        p.prev_close as ldcp,
-                        ROUND(((t.close - p.prev_close) / p.prev_close) * 100, 2) as change_percent
-                    FROM today t
-                    LEFT JOIN prev p ON t.symbol = p.symbol
-                    WHERE t.volume > 0
-                    ORDER BY t.volume DESC
-                    LIMIT 5
-                """
-                vol_df = pd.read_sql_query(volume_query, con)
-
-                if not vol_df.empty:
-                    st.markdown("**\U0001f4c8 Volume Leaders**")
-                    for _, row in vol_df.iterrows():
-                        vol = row["volume"]
-                        vol_str = f"{vol/1e6:.2f}M" if vol >= 1e6 else f"{vol:,.0f}"
-                        change = row["change_percent"] or 0
-                        color = "\U0001f7e2" if change > 0 else "\U0001f534" if change < 0 else "\u26aa"
-                        st.caption(f"{color} **{row['symbol']}** - {vol_str} ({change:+.2f}%)")
-
-            with vol_52w_cols[1]:
-                # 52-Week Range Indicators - use date with meaningful data
-                range_query = """
-                    WITH best_date AS (
-                        SELECT session_date
-                        FROM trading_sessions
-                        WHERE market_type = 'REG'
-                        AND week_52_high > 0 AND week_52_low > 0
-                        GROUP BY session_date
-                        HAVING COUNT(DISTINCT symbol) >= 100
-                        ORDER BY session_date DESC
-                        LIMIT 1
-                    )
-                    SELECT
-                        ts.symbol,
-                        COALESCE(ts.close, ts.high, ts.ldcp) as price,
-                        ts.week_52_low,
-                        ts.week_52_high,
-                        CASE WHEN (ts.week_52_high - ts.week_52_low) > 0
-                            THEN ROUND((COALESCE(ts.close, ts.high, ts.ldcp) - ts.week_52_low) / (ts.week_52_high - ts.week_52_low) * 100, 1)
-                            ELSE 50
-                        END as position_pct
-                    FROM trading_sessions ts
-                    WHERE ts.session_date = (SELECT session_date FROM best_date)
-                    AND ts.market_type = 'REG'
-                    AND ts.week_52_high > 0
-                    AND ts.week_52_low > 0
-                    AND COALESCE(ts.close, ts.high, ts.ldcp) > 0
-                    ORDER BY position_pct DESC
-                    LIMIT 3
-                """
-                high_df = pd.read_sql_query(range_query, con)
-
-                low_query = """
-                    WITH best_date AS (
-                        SELECT session_date
-                        FROM trading_sessions
-                        WHERE market_type = 'REG'
-                        AND week_52_high > 0 AND week_52_low > 0
-                        GROUP BY session_date
-                        HAVING COUNT(DISTINCT symbol) >= 100
-                        ORDER BY session_date DESC
-                        LIMIT 1
-                    )
-                    SELECT
-                        ts.symbol,
-                        COALESCE(ts.close, ts.high, ts.ldcp) as price,
-                        ts.week_52_low,
-                        ts.week_52_high,
-                        CASE WHEN (ts.week_52_high - ts.week_52_low) > 0
-                            THEN ROUND((COALESCE(ts.close, ts.high, ts.ldcp) - ts.week_52_low) / (ts.week_52_high - ts.week_52_low) * 100, 1)
-                            ELSE 50
-                        END as position_pct
-                    FROM trading_sessions ts
-                    WHERE ts.session_date = (SELECT session_date FROM best_date)
-                    AND ts.market_type = 'REG'
-                    AND ts.week_52_high > 0
-                    AND ts.week_52_low > 0
-                    AND COALESCE(ts.close, ts.high, ts.ldcp) > 0
-                    ORDER BY position_pct ASC
-                    LIMIT 3
-                """
-                low_df = pd.read_sql_query(low_query, con)
-
-                st.markdown("**\U0001f4ca 52-Week Range**")
-                if not high_df.empty:
-                    st.caption("Near 52W High:")
-                    for _, row in high_df.iterrows():
-                        st.caption(f"  \U0001f53a **{row['symbol']}** ({row['position_pct']:.0f}% of range)")
-
-                if not low_df.empty:
-                    st.caption("Near 52W Low:")
-                    for _, row in low_df.iterrows():
-                        st.caption(f"  \U0001f53b **{row['symbol']}** ({row['position_pct']:.0f}% of range)")
-
-            st.markdown("---")
-        except Exception:
-            # Volume leaders/52-week range not critical, continue gracefully
-            pass
-
-        # Market Breadth and Top Movers (from analytics tables)
-        try:
-            from pakfindata.sources.regular_market import init_regular_market_schema
-            if con:
-                init_regular_market_schema(con)
-            client.init_analytics()
-
-            # Sync Market button
-            mkt_hdr1, mkt_hdr2 = st.columns([5, 1])
-            with mkt_hdr2:
-                if st.button("\U0001f504 Market", key="dash_sync_market",
-                             help="Fetch live market data & recompute analytics"):
-                    with st.spinner(""):
-                        n = _sync_market_data(con)
-                    st.toast(f"{n} symbols synced, analytics recomputed")
-                    st.rerun()
-
-            # Get analytics from pre-computed tables
-            market_analytics = client.get_latest_market_analytics()
-
-            if market_analytics:
-                with mkt_hdr1:
-                    st.subheader("\U0001f4c8 Market Overview")
-
-                # Use pre-computed analytics
-                gainers = market_analytics.get("gainers_count", 0)
-                losers = market_analytics.get("losers_count", 0)
-                unchanged = market_analytics.get("unchanged_count", 0)
-                ts = market_analytics.get("ts", "N/A")
-
-                st.caption(f"As of: {ts[:19] if ts and ts != 'N/A' else 'N/A'}")
-
-                col1, col2, col3 = st.columns([1, 1, 1])
-
-                with col1:
-                    # Market breadth donut chart
-                    breadth_fig = make_market_breadth_chart(
-                        gainers=gainers,
-                        losers=losers,
-                        unchanged=unchanged,
-                        height=300,
-                    )
-                    st.plotly_chart(breadth_fig, use_container_width=True)
-
-                with col2:
-                    # Top 5 Gainers from analytics table
-                    top_gainers_df = client.get_top_list("gainers", limit=5)
-                    if not top_gainers_df.empty:
-                        gainers_fig = make_top_movers_chart(
-                            top_gainers_df[["symbol", "change_pct"]],
-                            title="Top 5 Gainers",
-                            chart_type="gainers",
-                            height=300,
-                        )
-                        st.plotly_chart(gainers_fig, use_container_width=True)
-                        # Quick links to company analytics
-                        gainer_symbols = top_gainers_df["symbol"].tolist()[:3]
-                        gcols = st.columns(len(gainer_symbols))
-                        for i, sym in enumerate(gainer_symbols):
-                            with gcols[i]:
-                                if st.button(f"\U0001f4c8 {sym}", key=f"dash_gainer_{sym}"):
-                                    st.session_state.company_symbol = sym
-                                    st.session_state.nav_to = "\U0001f3e2 Company Analytics"
-                                    st.rerun()
-
-                with col3:
-                    # Top 5 Losers from analytics table
-                    top_losers_df = client.get_top_list("losers", limit=5)
-                    if not top_losers_df.empty:
-                        losers_fig = make_top_movers_chart(
-                            top_losers_df[["symbol", "change_pct"]],
-                            title="Top 5 Losers",
-                            chart_type="losers",
-                            height=300,
-                        )
-                        st.plotly_chart(losers_fig, use_container_width=True)
-                        # Quick links to company analytics
-                        loser_symbols = top_losers_df["symbol"].tolist()[:3]
-                        lcols = st.columns(len(loser_symbols))
-                        for i, sym in enumerate(loser_symbols):
-                            with lcols[i]:
-                                if st.button(f"\U0001f4c9 {sym}", key=f"dash_loser_{sym}"):
-                                    st.session_state.company_symbol = sym
-                                    st.session_state.nav_to = "\U0001f3e2 Company Analytics"
-                                    st.rerun()
-
-                st.markdown("---")
-
-                # Sector Leaderboard
-                st.subheader("\U0001f4ca Sector Performance")
-                sector_df = client.get_sector_leaderboard()
-                if not sector_df.empty:
-                    # Display sector table
-                    display_cols = [
-                        "sector_name", "symbols_count", "avg_change_pct",
-                        "sum_volume", "top_symbol"
-                    ]
-                    display_cols = [c for c in display_cols if c in sector_df.columns]
-                    st.dataframe(
-                        sector_df[display_cols].head(10),
-                        use_container_width=True,
-                        hide_index=True,
-                        column_config={
-                            "sector_name": st.column_config.TextColumn(
-                                "Sector", width="medium"
-                            ),
-                            "symbols_count": st.column_config.NumberColumn(
-                                "Symbols", format="%d"
-                            ),
-                            "avg_change_pct": st.column_config.NumberColumn(
-                                "Avg Change %", format="%.2f"
-                            ),
-                            "sum_volume": st.column_config.NumberColumn(
-                                "Total Volume", format="%,.0f"
-                            ),
-                            "top_symbol": st.column_config.TextColumn(
-                                "Top Performer", width="small"
-                            ),
-                        }
-                    )
-                else:
-                    st.info("No sector data available yet.")
-
-                st.markdown("---")
-
-        except Exception:
-            pass  # Analytics data not available
-
-        # =================================================================
-        # BLUEPRINT PANELS — Fixed Income + Funds + FX + Data Freshness
-        # =================================================================
-        _render_blueprint_panels(con)
-
-        # =================================================================
-        # SYNC & DATA MANAGEMENT
-        # =================================================================
-        st.subheader("\U0001f504 Sync & Data Management")
-
-        sync_col1, sync_col2 = st.columns(2)
-
-        with sync_col1:
-            st.markdown("**EOD OHLCV Sync**")
-            eod_running, eod_pid = is_eod_sync_running()
+        with sync_c1:
+            st.markdown("**EOD Sync**")
+            eod_running, _ = is_eod_sync_running()
             if eod_running:
                 eod_st = read_eod_status()
                 pct = getattr(eod_st, "progress", 0) or 0
-                msg = getattr(eod_st, "progress_message", "") or "Syncing EOD..."
+                msg = getattr(eod_st, "progress_message", "") or "Syncing..."
                 st.progress(min(pct / 100.0, 1.0), text=msg)
-                if st.button("\U0001f6d1 Stop EOD Sync", key="dash_stop_eod"):
+                if st.button("Stop EOD", key="dash_stop_eod"):
                     stop_eod_sync()
                     st.rerun()
             else:
@@ -1141,69 +580,252 @@ def render_dashboard():
                 last = getattr(eod_st, "completed_at", None) or getattr(eod_st, "ended_at", None)
                 if last:
                     ok = getattr(eod_st, "symbols_ok", "?")
-                    st.caption(f"Last: {ok} symbols OK ({last})")
-                if st.button("\u25b6\ufe0f Sync EOD Data", key="dash_sync_eod",
-                             help="Background EOD sync (~2-5 min)"):
+                    st.caption(f"Last: {ok} symbols ({last})")
+                if st.button("Sync EOD", key="dash_sync_eod", help="Background EOD sync"):
                     success, msg = start_eod_sync_background(incremental=True)
                     st.toast(msg)
                     st.rerun()
 
-        with sync_col2:
-            st.markdown("**Announcements Sync**")
+        with sync_c2:
+            st.markdown("**Announcements**")
             ann_running, ann_pid = is_announcements_service_running()
             if ann_running:
-                ann_st = read_announcements_status()
                 st.info(f"Running (PID: {ann_pid})")
-                if st.button("\U0001f6d1 Stop Announcements", key="dash_stop_ann"):
+                if st.button("Stop Ann", key="dash_stop_ann"):
                     stop_announcements_service()
                     st.rerun()
             else:
                 ann_st = read_announcements_status()
                 last = getattr(ann_st, "last_run_at", None)
                 if last:
-                    st.caption(f"Last sync: {last}")
-                if st.button("\u25b6\ufe0f Sync Announcements", key="dash_sync_ann",
-                             help="Fetch latest announcements (~30-60s)"):
+                    st.caption(f"Last: {last}")
+                if st.button("Sync Announcements", key="dash_sync_ann"):
                     success, msg = start_announcements_service()
                     st.toast(msg)
                     st.rerun()
 
-        st.markdown("---")
+        with sync_c3:
+            st.markdown("**Rates & Indices**")
+            rc1, rc2 = st.columns(2)
+            with rc1:
+                if st.button("Sync Rates", key="dash_sync_rates2"):
+                    # Phase 1.6.1: sidebar feature flag picks the path.
+                    # Both routes converge on etl.rates.sync_bundle().
+                    if api_client.use_worker_sync():
+                        api_client.run_job_with_progress(
+                            "sync_rates_bundle",
+                            spinner_text="syncing rates bundle (KIBOR + treasury + policy)",
+                        )
+                    else:
+                        with st.spinner("Syncing rates..."):
+                            from pakfindata.db.safe_writer import SafeWriterBusyError
+                            from pakfindata.etl.rates import sync_bundle
 
-        # Recent sync runs table
-        st.markdown("**Recent Sync Runs**")
-        runs_df = client.get_sync_runs(limit=10)
+                            try:
+                                result = sync_bundle()
+                                st.cache_data.clear()
+                                st.toast(
+                                    f"Rates synced: KIBOR {result['kibor_rows']} rows, "
+                                    f"T-Bills {result['tbills_ok']}, "
+                                    f"PIBs {result['pibs_ok']}"
+                                )
+                            except SafeWriterBusyError:
+                                st.error("Another sync is running. Wait a moment and retry.")
+                            except Exception as e:
+                                # sync_bundle() already recorded the catalog failures.
+                                st.error(f"Rates sync failed: {e}")
+                    st.rerun()
+            with rc2:
+                if st.button("Sync Indices", key="dash_sync_idx2"):
+                    # Phase 1.5: sidebar feature flag picks the path.
+                    # ON (default): enqueue a worker job and poll until
+                    #               terminal — progress shows inline.
+                    # OFF (fallback): run inline via the shared
+                    #               etl.indices.sync() function.
+                    # Both paths converge on the same ETL code; only the
+                    # execution context (Streamlit thread vs worker
+                    # process) differs.
+                    if api_client.use_worker_sync():
+                        api_client.run_job_with_progress(
+                            "sync_indices",
+                            spinner_text="syncing 18 PSX indices",
+                        )
+                    else:
+                        with st.spinner("Syncing indices..."):
+                            from pakfindata.db.safe_writer import SafeWriterBusyError
+                            from pakfindata.etl.indices import sync as sync_indices
 
-        if runs_df.empty:
-            st.info("No sync runs yet. Use Refresh All or Sync EOD above.")
-        else:
-            runs_df.columns = [
-                "Run ID", "Started", "Ended", "Mode",
-                "Total", "OK", "Failed", "Rows"
-            ]
-            st.dataframe(runs_df, use_container_width=True, hide_index=True)
+                            try:
+                                result = sync_indices()
+                                st.cache_data.clear()
+                                st.toast(
+                                    f"Synced {result['indices_count']} indices "
+                                    f"(latest: {result.get('latest_date') or '—'})"
+                                )
+                            except SafeWriterBusyError:
+                                st.error("Another sync is running. Wait a moment and retry.")
+                            except Exception as e:
+                                # sync() already recorded the catalog failure.
+                                st.error(f"Sync failed: {e}")
+                    st.rerun()
 
-        # Data quality indicator
-        st.markdown("---")
-        with st.expander("\u2139\ufe0f Data Quality Information", expanded=False):
-            st.markdown(DATA_QUALITY_NOTICE)
-            st.markdown("""
-**Data Sources:**
-- EOD Time Series: `dps.psx.com.pk/timeseries/eod/{symbol}`
-- Market Watch: `dps.psx.com.pk/market-watch`
+        # ── EOD summary tables (admin read of catalog coverage) ──
+        st.markdown("**EOD Summary Tables**")
+        # Admin read — uses the read-side connection helper; not part of
+        # the migrated market-data path. summary_coverage and
+        # get_latest_full_trading_day take a con argument.
+        try:
+            admin_con = get_connection()
+            cov = summary_coverage(admin_con)
+            latest_for_sum = get_latest_full_trading_day(admin_con, min_symbols=1)
+        except Exception:
+            cov, latest_for_sum = {}, None
+        mkt = cov.get("eod_market_summary", {})
+        raw = cov.get("eod_ohlcv", {})
+        built = mkt.get("rows") or 0
+        total_dates = raw.get("dates") or 0
+        missing = max(total_dates - built, 0)
+        st.caption(
+            f"**Source data** (`eod_ohlcv`): {total_dates:,} dates "
+            f"({raw.get('min_date') or '—'} → {raw.get('max_date') or '—'})"
+        )
+        st.caption(
+            f"**Summary built**: {built:,} dates "
+            f"({mkt.get('min_date') or '—'} → {mkt.get('max_date') or '—'})"
+            f"  •  {missing:,} dates not yet built"
+        )
+        if latest_for_sum:
+            st.caption(f"**Rebuild Today** → `{latest_for_sum}` (latest date in source)")
 
-**Fields Provided by PSX API:**
-| Field | Source |
-|-------|--------|
-| Open | Direct from API |
-| Close | Direct from API |
-| Volume | Direct from API |
-| High | Derived: max(open, close) |
-| Low | Derived: min(open, close) |
-""")
+        s1, s2, s3 = st.columns(3)
+        with s1:
+            if st.button("Rebuild Today", key="dash_sum_today",
+                         help="Refresh summaries for the latest trading day only."):
+                # Phase 1.6.8: sidebar feature flag picks the path.
+                if api_client.use_worker_sync():
+                    api_client.run_job_with_progress(
+                        "rebuild_eod_summary_today",
+                        spinner_text="rebuilding latest-day EOD summary",
+                    )
+                    st.rerun()
+                else:
+                    with st.spinner("Rebuilding today's summary…"):
+                        from pakfindata.db.safe_writer import SafeWriterBusyError
+                        from pakfindata.etl.eod_summary import rebuild_today
+                        try:
+                            result = rebuild_today()
+                            if result.get("date"):
+                                st.cache_data.clear()
+                                st.toast(
+                                    f"Rebuilt {result['date']}: "
+                                    f"{result['rows_written']} symbol rows"
+                                )
+                            else:
+                                st.warning("No EOD data found.")
+                        except SafeWriterBusyError:
+                            st.error("Another sync is running. Wait a moment and retry.")
+                        except Exception as e:
+                            # rebuild_today() already recorded the catalog failures.
+                            st.error(f"Rebuild failed: {e}")
+                        st.rerun()
+        with s2:
+            if st.button("Rebuild Missing", key="dash_sum_missing",
+                         help="Populate summaries only for dates not yet built."):
+                # Phase 1.6.9: sidebar feature flag picks the path.
+                if api_client.use_worker_sync():
+                    api_client.run_job_with_progress(
+                        "rebuild_eod_summary_missing",
+                        spinner_text="rebuilding missing EOD summary dates",
+                        timeout_s=600.0,  # bulk job — can take minutes
+                    )
+                    st.rerun()
+                else:
+                    with st.spinner("Populating missing dates…"):
+                        from pakfindata.etl.eod_summary import rebuild_missing
+                        try:
+                            r = rebuild_missing(batch_size=50)
+                            st.cache_data.clear()
+                            st.toast(
+                                f"Processed {r['dates_processed']}/{r['dates_considered']} "
+                                f"dates in {r['batches']} batches, {r['rows_written']:,} rows"
+                            )
+                        except Exception as e:
+                            # rebuild_missing() already recorded the catalog failures.
+                            st.error(f"Rebuild failed: {e}")
+                        st.rerun()
+        with s3:
+            if st.button("Rebuild All", key="dash_sum_all",
+                         help="Full rebuild of every date in eod_ohlcv. Slow."):
+                # Phase 1.6.10: 30-60 min job. Worker mode is fire-and-forget
+                # — submit and return; user watches progress in Jobs Monitor.
+                if api_client.use_worker_sync():
+                    sub = api_client.submit_job(
+                        "rebuild_eod_summary_all",
+                        params={"batch_size": 50},
+                        notes="Dashboard 'Rebuild All' (full eod_*_summary rebuild)",
+                    )
+                    if sub is None:
+                        st.error(
+                            "Could not enqueue job — API unreachable or auth misconfigured."
+                        )
+                    else:
+                        st.toast(
+                            f"Job #{sub['job_id']} (rebuild_eod_summary_all) enqueued — "
+                            "see Jobs Monitor for progress (this takes 30-60 min)."
+                        )
+                    st.rerun()
+                else:
+                    with st.spinner("Rebuilding all summaries…"):
+                        from pakfindata.etl.eod_summary import rebuild_all
+                        try:
+                            r = rebuild_all(batch_size=50)
+                            st.cache_data.clear()
+                            st.toast(
+                                f"Rebuilt {r['dates_processed']} dates in "
+                                f"{r['batches']} batches, {r['rows_written']:,} rows"
+                            )
+                        except Exception as e:
+                            # rebuild_all() already recorded the catalog failures.
+                            st.error(f"Rebuild failed: {e}")
+                        st.rerun()
 
-    except Exception as e:
-        st.error(f"Database error: {e}")
-        st.info(f"Expected database at: {get_db_path()}")
+        # Recent sync runs — now via /v1/sync/runs
+        runs = api_client.get_sync_runs(5) or []
+        if runs:
+            runs_df = pd.DataFrame(runs)
+            runs_df = runs_df.rename(
+                columns={
+                    "run_id": "ID",
+                    "started_at": "Started",
+                    "ended_at": "Ended",
+                    "mode": "Mode",
+                    "symbols_total": "Total",
+                    "symbols_ok": "OK",
+                    "symbols_failed": "Failed",
+                    "rows_upserted": "Rows",
+                }
+            )
+            st.dataframe(runs_df, width="stretch", hide_index=True, height=180)
+
+    with st.expander("Database Health (Advanced)", expanded=False):
+        st.caption(
+            "Use before sleep / shutdown / backup to flush WAL into the main DB "
+            "file. Prevents the May 9 2026 corruption pattern (long-lived WAL "
+            "across overnight idle)."
+        )
+        if st.button("Force WAL Checkpoint", key="dash_wal_checkpoint"):
+            from pakfindata.db.safe_writer import checkpoint_wal
+            try:
+                busy, log_frames, ckpt = checkpoint_wal()
+                if busy == 0:
+                    st.success(
+                        f"WAL fully checkpointed ({ckpt}/{log_frames} frames flushed)."
+                    )
+                else:
+                    st.warning(
+                        f"Partial checkpoint — {busy} pending. Another writer active."
+                    )
+            except Exception as e:
+                st.error(f"Checkpoint failed: {e}")
 
     render_footer()

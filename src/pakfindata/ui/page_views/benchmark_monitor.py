@@ -4,7 +4,35 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from pakfindata.ui.components.helpers import get_connection, render_footer
+from pakfindata.ui.api import client as api_client
+from pakfindata.ui.components.helpers import render_footer
+
+_CACHE_TTL = 86400
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_benchmark_snapshot():
+    """Flatten ``/v1/benchmark/snapshot`` to the legacy shape.
+
+    The /v1 endpoint returns ``{date, metrics: {...}}``; the existing
+    render code uses ``snap.pop('_date')`` + ``snap.get('policy_rate')``,
+    so we mirror that. Matches the pattern in rates_overview.py.
+    """
+    payload = api_client.get_benchmark_snapshot() or {}
+    metrics = dict(payload.get("metrics") or {})
+    metrics["_date"] = payload.get("date")
+    return metrics
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_bond_market_status():
+    return api_client.get_bond_market_status() or {}
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_benchmark_metric_history(metric: str):
+    rows = api_client.get_benchmark_history(metric) or []
+    return pd.DataFrame(rows)
 
 
 def render_benchmark_monitor():
@@ -12,21 +40,11 @@ def render_benchmark_monitor():
     st.markdown("## Benchmark Monitor")
     st.caption("SBP benchmark rate snapshot history and trends")
 
-    con = get_connection()
-    if con is None:
-        st.error("Database connection not available")
-        return
-
-    from pakfindata.db.repositories.bond_market import (
-        init_bond_market_schema,
-        get_benchmark_snapshot,
-        get_bond_market_status,
-    )
-    init_bond_market_schema(con)
+    api_client.render_api_status_banner_if_down()
 
     # ── Latest Snapshot ──────────────────────────────────────────
-    snap = get_benchmark_snapshot(con)
-    if not snap:
+    snap = _load_benchmark_snapshot()
+    if not snap or all(v is None for k, v in snap.items() if k != "_date"):
         st.info("No benchmark data. Click sync below to populate.")
     else:
         snap_date = snap.pop("_date", None)
@@ -44,12 +62,12 @@ def render_benchmark_monitor():
     st.divider()
 
     # ── Historical Trend Chart ───────────────────────────────────
-    _render_benchmark_history(con)
+    _render_benchmark_history()
 
     st.divider()
 
     # ── Data Status ──────────────────────────────────────────────
-    status = get_bond_market_status(con)
+    status = _load_bond_market_status()
     st.subheader("Data Coverage")
     c1, c2, c3 = st.columns(3)
     c1.metric("Benchmark Days", status.get("benchmark_days", 0))
@@ -61,21 +79,35 @@ def render_benchmark_monitor():
     st.divider()
     with st.expander("Sync Benchmark Data"):
         if st.button("Scrape Latest Benchmark", key="bm_sync"):
-            with st.spinner("Fetching from SBP..."):
-                try:
-                    from pakfindata.sources.sbp_bond_market import SBPBondMarketScraper
-                    result = SBPBondMarketScraper().sync_benchmark(con)
-                    if result["status"] == "ok":
-                        st.success(f"Stored {result['metrics_stored']} metrics for {result['date']}")
-                    else:
-                        st.error(result.get("error", "Unknown error"))
-                except Exception as e:
-                    st.error(f"Failed: {e}")
+            # Phase 1.6.4: sidebar feature flag picks the path.
+            if api_client.use_worker_sync():
+                api_client.run_job_with_progress(
+                    "sync_benchmark",
+                    spinner_text="scraping SBP benchmark snapshot",
+                )
+            else:
+                with st.spinner("Fetching from SBP..."):
+                    from pakfindata.db.safe_writer import SafeWriterBusyError
+                    from pakfindata.etl.benchmark import sync as sync_benchmark
+                    try:
+                        result = sync_benchmark()
+                        st.cache_data.clear()
+                        if result["status"] == "ok":
+                            st.success(
+                                f"Stored {result['metrics_stored']} metrics for {result['date']}"
+                            )
+                        else:
+                            st.error("Scrape returned a non-ok status")
+                    except SafeWriterBusyError:
+                        st.error("Another sync is running. Wait a moment and retry.")
+                    except Exception as e:
+                        # sync_benchmark() already recorded the catalog failure.
+                        st.error(f"Failed: {e}")
 
     render_footer()
 
 
-def _render_benchmark_history(con):
+def _render_benchmark_history():
     """Historical trend for selected benchmark metrics."""
     st.subheader("Benchmark History")
 
@@ -112,20 +144,13 @@ def _render_benchmark_history(con):
     fig = go.Figure()
     for label in selected:
         metric = metric_options[label]
-        try:
-            df = pd.read_sql_query(
-                "SELECT date, value FROM sbp_benchmark_snapshot "
-                "WHERE metric = ? ORDER BY date",
-                con, params=(metric,),
-            )
-            if not df.empty:
-                fig.add_trace(go.Scatter(
-                    x=df["date"], y=df["value"],
-                    mode="lines", name=label,
-                    line=dict(width=2),
-                ))
-        except Exception:
-            pass
+        df = _load_benchmark_metric_history(metric)
+        if not df.empty:
+            fig.add_trace(go.Scatter(
+                x=df["date"], y=df["value"],
+                mode="lines", name=label,
+                line=dict(width=2),
+            ))
 
     if fig.data:
         fig.update_layout(
@@ -134,6 +159,6 @@ def _render_benchmark_history(con):
             yaxis_title="Value",
             legend=dict(orientation="h", y=-0.2),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     else:
         st.info("No historical data. Sync daily to build history.")

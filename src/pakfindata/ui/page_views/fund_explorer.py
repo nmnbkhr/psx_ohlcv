@@ -1,20 +1,64 @@
-"""Mutual Fund + ETF Explorer — fund directory, NAV charts, rankings."""
+"""Mutual Fund + ETF Explorer — fund directory, NAV charts, rankings, quant analytics."""
 
+import math
+
+import numpy as np
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 
+from pakfindata.ui.api import client as api_client
 from pakfindata.ui.components.helpers import get_connection, render_ai_commentary, render_footer
-from pakfindata.sync_mufap import (
-    seed_mutual_funds,
-    sync_daily_nav,
-    sync_fund_nav,
-    sync_mutual_funds,
-    sync_mutual_funds_parallel,
-    sync_performance,
-    sync_expense_ratios,
-)
-from pakfindata.sources.etf_scraper import ETFScraper
+from pakfindata.ui.themes import get_plotly_layout, get_theme
+
+# ── Bloomberg palette ────────────────────────────────────────────────────────
+_T = get_theme("bloomberg")
+C_UP = _T.color_positive
+C_DN = _T.color_negative
+C_NEU = _T.color_neutral
+C_BG = _T.bg_card
+C_BG_DARK = _T.bg_main
+C_BORDER = _T.border_primary
+C_TEXT = _T.text_primary
+C_MUTED = _T.text_muted
+C_SEC = _T.text_secondary
+C_ACCENT = _T.color_accent
+C_WARN = _T.color_warning
+C_INFO = _T.color_info
+MONO = _T.font_mono
+
+
+def _pct_color(v) -> str:
+    """Return green/red/neutral color for a percentage value."""
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return C_NEU
+    return C_UP if v > 0 else C_DN if v < 0 else C_NEU
+
+
+def _pct_html(v, decimals: int = 1) -> str:
+    """Render a percentage as colored HTML span."""
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return f'<span style="color:{C_NEU}">---</span>'
+    c = _pct_color(v)
+    sign = "+" if v > 0 else ""
+    return f'<span style="color:{c};font-weight:600">{sign}{v:.{decimals}f}%</span>'
+
+
+def _section_label(text: str) -> str:
+    """Bloomberg-style section header HTML."""
+    return (
+        f'<div style="color:{C_MUTED};font-size:11px;font-weight:600;'
+        f'letter-spacing:0.08em;margin:16px 0 6px 0;text-transform:uppercase;">'
+        f'{text}</div>'
+    )
+
+
+def _plotly_base() -> dict:
+    """Get plotly layout with common conflicting keys removed."""
+    layout = get_plotly_layout()
+    for k in ("margin", "title", "xaxis", "yaxis", "legend"):
+        layout.pop(k, None)
+    return layout
 
 
 def render_fund_explorer():
@@ -33,53 +77,39 @@ def render_fund_explorer():
     except Exception:
         pass
 
-    tab_mf, tab_etf, tab_vps, tab_top, tab_compare, tab_risk, tab_sync = st.tabs([
+    TAB_NAMES = [
         "Mutual Funds", "ETFs", "VPS Pension", "Top Performers",
-        "Compare Funds", "Risk Metrics", "Sync & Tools",
-    ])
+        "Compare Funds", "Risk Analytics", "Factor Analysis", "LLM Analysis",
+        "Sync & Tools",
+    ]
+    TAB_RENDERERS = [
+        lambda c: (_render_category_summary(c), _render_fund_directory(c)),
+        _render_etf_section,
+        _render_vps_section,
+        _render_top_performers,
+        _render_fund_comparison,
+        _render_risk_analytics,
+        _render_factor_analysis,
+        _render_llm_analysis,
+        _render_sync_tools,
+    ]
 
-    with tab_mf:
-        try:
-            _render_category_summary(con)
-            _render_fund_directory(con)
-        except Exception as e:
-            st.error(f"Error loading mutual funds: {e}")
+    # Use selectbox for true lazy tab selection — only selected tab renders
+    if "fexp_tab" not in st.session_state:
+        st.session_state.fexp_tab = "Mutual Funds"
 
-    with tab_etf:
-        try:
-            _render_etf_section(con)
-        except Exception as e:
-            st.error(f"Error loading ETFs: {e}")
+    selected = st.radio(
+        "Section", TAB_NAMES, horizontal=True, label_visibility="collapsed",
+        index=TAB_NAMES.index(st.session_state.fexp_tab),
+        key="fexp_tab_radio",
+    )
+    st.session_state.fexp_tab = selected
 
-    with tab_vps:
-        try:
-            _render_vps_section(con)
-        except Exception as e:
-            st.error(f"Error loading VPS data: {e}")
-
-    with tab_top:
-        try:
-            _render_top_performers(con)
-        except Exception as e:
-            st.error(f"Error loading top performers: {e}")
-
-    with tab_compare:
-        try:
-            _render_fund_comparison(con)
-        except Exception as e:
-            st.error(f"Error loading comparison: {e}")
-
-    with tab_risk:
-        try:
-            _render_risk_metrics(con)
-        except Exception as e:
-            st.error(f"Error loading risk metrics: {e}")
-
-    with tab_sync:
-        try:
-            _render_sync_tools(con)
-        except Exception as e:
-            st.error(f"Error loading sync tools: {e}")
+    idx = TAB_NAMES.index(selected)
+    try:
+        TAB_RENDERERS[idx](con)
+    except Exception as e:
+        st.error(f"Error loading {selected}: {e}")
 
     # AI Commentary (after sync buttons so buttons always render)
     try:
@@ -98,13 +128,14 @@ def render_fund_explorer():
 
 def _render_sync_tools(con):
     """Render sync buttons and scraper tools inside the Sync & Tools tab."""
-    st.markdown("### Sync Fund Data")
+    st.markdown(_section_label("SYNC FUND DATA"), unsafe_allow_html=True)
 
     # Show latest NAV date so user knows how fresh the data is
     try:
-        latest_nav = con.execute(
-            "SELECT MAX(date) FROM fund_nav_latest"
-        ).fetchone()[0]
+        _nav_lp = api_client.get_admin_table_latest_date(
+            "fund_nav_latest", col="date"
+        )
+        latest_nav = _nav_lp.get("latest_date") if _nav_lp else None
         if latest_nav:
             st.caption(f"Latest NAV date in DB: **{latest_nav}**")
     except Exception:
@@ -116,12 +147,12 @@ def _render_sync_tools(con):
         if st.button("Seed Funds", type="primary", key="fexp_seed_funds"):
             with st.spinner("Seeding mutual funds from MUFAP..."):
                 try:
+                    from pakfindata.sync_mufap import seed_mutual_funds
                     result = seed_mutual_funds()
                     st.success(
                         f"Seeded {result.get('inserted', 0)} funds "
                         f"(Failed: {result.get('failed', 0)})"
                     )
-                    st.rerun()
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
 
@@ -129,6 +160,7 @@ def _render_sync_tools(con):
         if st.button("Daily NAV", type="primary", key="fexp_daily_nav"):
             with st.spinner("Fetching today's NAV for all funds (single request)..."):
                 try:
+                    from pakfindata.sync_mufap import sync_daily_nav
                     summary = sync_daily_nav()
                     from pakfindata.db.repositories.fixed_income import refresh_fund_nav_latest
                     refresh_fund_nav_latest(con)
@@ -138,7 +170,6 @@ def _render_sync_tools(con):
                         f"{summary.rows_upserted} NAV rows "
                         f"({summary.no_data} unmatched)"
                     )
-                    st.rerun()
                 except Exception as e:
                     st.error(f"Daily sync failed: {e}")
 
@@ -149,6 +180,7 @@ def _render_sync_tools(con):
                 def _nav_progress(current, total, fund_id):
                     pct = current / total if total else 0
                     progress_bar.progress(pct, text=f"Synced {current}/{total}: {fund_id}")
+                from pakfindata.sync_mufap import sync_mutual_funds_parallel
                 summary = sync_mutual_funds_parallel(
                     source="AUTO", max_workers=10,
                     progress_callback=_nav_progress,
@@ -163,7 +195,6 @@ def _render_sync_tools(con):
                     f"{summary.rows_upserted} NAV records "
                     f"(skipped {summary.no_data} up-to-date)"
                 )
-                st.rerun()
             except Exception as e:
                 st.error(f"Sync failed: {e}")
 
@@ -171,6 +202,7 @@ def _render_sync_tools(con):
         if st.button("Sync Performance", key="fexp_sync_perf"):
             with st.spinner("Fetching MUFAP performance data (tab=1)..."):
                 try:
+                    from pakfindata.sync_mufap import sync_performance
                     result = sync_performance()
                     if result.get("status") == "ok":
                         from pakfindata.db.repositories.fixed_income import refresh_fund_performance_latest
@@ -182,7 +214,6 @@ def _render_sync_tools(con):
                         )
                     else:
                         st.error(result.get("error", "Unknown error"))
-                    st.rerun()
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
 
@@ -190,12 +221,12 @@ def _render_sync_tools(con):
         if st.button("Sync Expense", key="fexp_sync_expense"):
             with st.spinner("Fetching expense ratios (tab=5)..."):
                 try:
+                    from pakfindata.sync_mufap import sync_expense_ratios
                     result = sync_expense_ratios()
                     if result.get("status") == "ok":
                         st.success(f"Updated {result['updated']} funds")
                     else:
                         st.error(result.get("error", "Unknown error"))
-                    st.rerun()
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
 
@@ -203,14 +234,48 @@ def _render_sync_tools(con):
         if st.button("Sync ETFs", key="fexp_sync_etfs"):
             with st.spinner("Syncing ETF data..."):
                 try:
+                    from pakfindata.sources.etf_scraper import ETFScraper
                     result = ETFScraper().sync_all_etfs(con)
                     st.success(
                         f"ETFs: {result.get('ok', 0)} synced, "
                         f"{result.get('failed', 0)} failed"
                     )
-                    st.rerun()
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
+
+    # ── Recompute Risk Metrics ──
+    st.markdown("---")
+    st.markdown(_section_label("RISK METRICS ENGINE"), unsafe_allow_html=True)
+    rm_c1, rm_c2 = st.columns([1, 3])
+    with rm_c1:
+        if st.button("Recompute Risk Metrics", type="primary", key="fexp_recompute_risk"):
+            with st.spinner("Computing risk metrics (parallel CPU)..."):
+                try:
+                    from pakfindata.engine.compute_risk_batch import run_batch
+                    result = run_batch()
+                    st.success(
+                        f"Risk metrics recomputed: {result['computed']} funds "
+                        f"in {result['elapsed']:.0f}s ({result['errors']} errors)"
+                    )
+                except Exception as e:
+                    st.error(f"Risk batch failed: {e}")
+    with rm_c2:
+        try:
+            _tables = api_client.get_admin_tables(include_counts=True) or []
+            rm_n = next(
+                (t["row_count"] for t in _tables if t["name"] == "fund_risk_metrics"),
+                0,
+            ) or 0
+            _ts_p = api_client.get_admin_table_latest_date(
+                "fund_risk_metrics", col="computed_at"
+            )
+            rm_ts = _ts_p.get("latest_date") if _ts_p else None
+            if rm_n and rm_ts:
+                st.caption(f"**{rm_n}** funds computed — last run: **{rm_ts[:16]}**")
+            else:
+                st.caption("No pre-computed risk metrics yet. Click to compute.")
+        except Exception:
+            pass
 
     # NAV CSV Export via browser (Highcharts scraper)
     st.markdown("---")
@@ -315,12 +380,19 @@ def _render_sync_tools(con):
 
 
 def _render_category_summary(con):
-    """Top-level category group metrics from fund_performance."""
+    """Bloomberg-style category group cards from fund_performance."""
     try:
-        perf = pd.read_sql_query(
-            "SELECT sector, category, return_ytd FROM fund_performance_latest",
-            con,
-        )
+        # /v1/funds/performance/leaders returns full perf rows; loading a
+        # large limit gives us the full table (1,120 rows).
+        _rows = api_client.get_fund_performance_leaders(
+            metric="return_ytd", limit=2000
+        ) or []
+        perf = pd.DataFrame(_rows)
+        if perf.empty:
+            return
+        # Keep only the columns the cards use
+        keep = [c for c in ["sector", "category", "return_ytd", "return_30d"] if c in perf.columns]
+        perf = perf[keep]
     except Exception:
         return
 
@@ -338,19 +410,39 @@ def _render_category_summary(con):
     vps_mask = cat_lower.str.contains("vps", na=False)
 
     groups = [
-        ("Equity Funds", equity_mask),
-        ("Income/MM", income_mask),
-        ("Islamic Funds", islamic_mask),
-        ("VPS Pension", vps_mask),
+        ("EQUITY", equity_mask),
+        ("INCOME / MM", income_mask),
+        ("ISLAMIC", islamic_mask),
+        ("VPS PENSION", vps_mask),
     ]
 
-    cols = st.columns(len(groups))
-    for i, (label, mask) in enumerate(groups):
-        sub = perf.loc[mask, "return_ytd"].dropna()
-        count = len(sub)
-        avg = sub.mean() if count > 0 else 0
-        with cols[i]:
-            st.metric(label, f"{count} funds", f"Avg YTD: {avg:.1f}%")
+    cards_html = []
+    for label, mask in groups:
+        sub_ytd = perf.loc[mask, "return_ytd"].dropna()
+        sub_1m = perf.loc[mask, "return_30d"].dropna()
+        count = len(sub_ytd) or mask.sum()
+        avg_ytd = sub_ytd.mean() if len(sub_ytd) > 0 else 0
+        avg_1m = sub_1m.mean() if len(sub_1m) > 0 else 0
+        ytd_c = C_UP if avg_ytd > 0 else C_DN if avg_ytd < 0 else C_NEU
+        m1_c = C_UP if avg_1m > 0 else C_DN if avg_1m < 0 else C_NEU
+
+        cards_html.append(f"""
+        <div style="background:{C_BG};border:1px solid {C_BORDER};border-radius:2px;
+                    padding:12px 16px;flex:1;min-width:160px;">
+          <div style="font-size:10px;color:{C_MUTED};font-weight:600;letter-spacing:0.08em;">{label}</div>
+          <div style="font-size:22px;font-weight:700;font-family:{MONO};color:{C_TEXT};margin:4px 0 2px;">
+            {count}
+          </div>
+          <div style="font-size:11px;font-family:{MONO};display:flex;gap:12px;">
+            <span>YTD <span style="color:{ytd_c};font-weight:600">{avg_ytd:+.1f}%</span></span>
+            <span>1M <span style="color:{m1_c};font-weight:600">{avg_1m:+.1f}%</span></span>
+          </div>
+        </div>""")
+
+    st.markdown(
+        f'<div style="display:flex;gap:8px;margin-bottom:12px;">{"".join(cards_html)}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -360,42 +452,56 @@ def _render_category_summary(con):
 
 @st.cache_data(ttl=300, show_spinner="Loading fund data...")
 def _load_fund_directory(_con) -> pd.DataFrame:
-    """Load all funds with latest NAV and performance from summary tables."""
-    import sqlite3 as _sqlite3
+    """Compose fund directory via /v1/funds + /v1/funds/nav-latest + leaders.
 
-    db_path = _con.execute("PRAGMA database_list").fetchone()[2]
-    con = _sqlite3.connect(db_path)
-    con.row_factory = _sqlite3.Row
+    Replaces a 3-way LEFT JOIN of mutual_funds + fund_nav_latest +
+    fund_performance_latest. The leaders endpoint returns the full
+    performance row; we slice the columns we need client-side.
+    """
+    funds = api_client.get_funds(active_only=False, limit=5000) or []
+    nav_latest = api_client.get_funds_nav_latest(limit=5000) or []
+    perf = api_client.get_fund_performance_leaders(
+        metric="return_ytd", limit=2000
+    ) or []
 
-    df = pd.read_sql_query(
-        """SELECT f.fund_id, f.symbol, f.fund_name, f.category, f.amc_name,
-                  f.is_shariah, f.fund_type, f.expense_ratio,
-                  nl.nav AS latest_nav, nl.date AS nav_date,
-                  pl.return_30d, pl.return_90d, pl.return_ytd,
-                  pl.return_365d, pl.rating
-           FROM mutual_funds f
-           LEFT JOIN fund_nav_latest nl ON nl.fund_id = f.fund_id
-           LEFT JOIN fund_performance_latest pl ON pl.fund_name = f.fund_name
-           ORDER BY f.fund_name""",
-        con,
-    )
-    con.close()
-    return df
+    if not funds:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(funds)[
+        ["fund_id", "symbol", "fund_name", "category", "amc_name",
+         "is_shariah", "fund_type", "expense_ratio"]
+    ]
+
+    if nav_latest:
+        nl = pd.DataFrame(nav_latest).rename(
+            columns={"nav": "latest_nav", "date": "nav_date"}
+        )[["fund_id", "latest_nav", "nav_date"]]
+        df = df.merge(nl, on="fund_id", how="left")
+    else:
+        df["latest_nav"] = None
+        df["nav_date"] = None
+
+    if perf:
+        pdf = pd.DataFrame(perf)
+        keep = [c for c in [
+            "fund_name", "return_30d", "return_90d",
+            "return_ytd", "return_365d", "rating"
+        ] if c in pdf.columns]
+        df = df.merge(pdf[keep], on="fund_name", how="left")
+
+    return df.sort_values("fund_name").reset_index(drop=True)
 
 
 def _render_fund_directory(con):
-    """Fund listing with filters, performance columns, and detail view."""
+    """Bloomberg-style fund listing with color-coded returns."""
     col1, col2, col3, col4, col5 = st.columns(5)
 
-    categories = con.execute(
-        "SELECT DISTINCT category FROM mutual_funds ORDER BY category"
-    ).fetchall()
-    cat_list = ["All"] + [r["category"] for r in categories]
+    cat_list = ["All"] + (api_client.get_fund_categories() or [])
 
-    amcs = con.execute(
-        "SELECT DISTINCT amc_name FROM mutual_funds WHERE amc_name IS NOT NULL ORDER BY amc_name"
-    ).fetchall()
-    amc_list = ["All"] + [r["amc_name"] for r in amcs]
+    _amcs = api_client.get_fund_amcs() or []
+    amc_list = ["All"] + sorted(
+        {a["amc_name"] for a in _amcs if a.get("amc_name")}
+    )
 
     with col1:
         sel_category = st.selectbox("Category", cat_list, key="fund_cat")
@@ -408,10 +514,8 @@ def _render_fund_directory(con):
     with col5:
         search_term = st.text_input("Search", key="fund_search", placeholder="Fund name...")
 
-    # Load full fund data (cached — heavy queries run once, reused for 5 min)
     df = _load_fund_directory(con)
 
-    # Apply filters in-memory (fast)
     if sel_category != "All":
         df = df[df["category"] == sel_category]
     if sel_amc != "All":
@@ -429,18 +533,35 @@ def _render_fund_directory(con):
         st.info("No funds match filters")
         return
 
-    st.caption(f"{len(df)} funds found")
+    st.markdown(
+        f'<span style="font-size:11px;color:{C_MUTED};font-family:{MONO};">'
+        f'{len(df)} FUNDS</span>',
+        unsafe_allow_html=True,
+    )
 
-    # Display table with performance columns
-    display_cols = ["symbol", "fund_name", "category", "amc_name", "latest_nav", "return_30d", "return_90d", "return_ytd", "return_365d", "rating"]
-    display_df = df[[c for c in display_cols if c in df.columns]].rename(columns={
-        "symbol": "Symbol", "fund_name": "Fund Name", "category": "Category",
-        "amc_name": "AMC", "latest_nav": "NAV",
+    display_cols = ["symbol", "fund_name", "category", "latest_nav",
+                    "return_30d", "return_90d", "return_ytd", "return_365d"]
+    display_df = df[[c for c in display_cols if c in df.columns]].copy()
+    display_df = display_df.rename(columns={
+        "symbol": "Symbol", "fund_name": "Fund", "category": "Category",
+        "latest_nav": "NAV",
         "return_30d": "1M %", "return_90d": "3M %",
-        "return_ytd": "YTD %", "return_365d": "1Y %", "rating": "Rating",
+        "return_ytd": "YTD %", "return_365d": "1Y %",
     })
 
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    # Color-code return columns
+    ret_cols = [c for c in ["1M %", "3M %", "YTD %", "1Y %"] if c in display_df.columns]
+
+    def _color_ret(val):
+        if pd.isna(val):
+            return ""
+        return f"color: {C_UP}" if val > 0 else f"color: {C_DN}" if val < 0 else ""
+
+    styled = display_df.style.map(_color_ret, subset=ret_cols).format(
+        {c: "{:+.1f}" for c in ret_cols}, na_rep="---",
+    ).format({"NAV": "{:.4f}"}, na_rep="---")
+
+    st.dataframe(styled, width='stretch', hide_index=True, height=480)
 
     # Fund detail selector
     fund_options = {
@@ -459,51 +580,76 @@ def _render_fund_directory(con):
 
 
 def _render_fund_detail(con, fund_id):
-    """NAV history chart + performance returns for a selected fund."""
-    fund = con.execute(
-        "SELECT * FROM mutual_funds WHERE fund_id = ?", (fund_id,)
-    ).fetchone()
-    if not fund:
+    """Bloomberg-style fund detail: header cards, returns bar, NAV chart."""
+    fund_d = api_client.get_fund(fund_id) or {}
+    if not fund_d:
         return
 
-    st.markdown(f"### {fund['fund_name']}")
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Category", fund["category"])
-    c2.metric("AMC", fund["amc_name"] or "N/A")
-    c3.metric("Shariah", "Yes" if fund["is_shariah"] else "No")
-    try:
-        c4.metric("Expense Ratio", f"{fund['expense_ratio']:.2f}%" if fund["expense_ratio"] else "N/A")
-    except (KeyError, IndexError):
-        c4.metric("Expense Ratio", "N/A")
+    # ── Fund header ──
+    shariah_badge = (
+        f'<span style="background:{C_UP};color:#000;padding:1px 6px;border-radius:2px;'
+        f'font-size:10px;font-weight:700;margin-left:8px;">SHARIAH</span>'
+        if fund_d.get("is_shariah") else ""
+    )
+    st.markdown(
+        f'<div style="font-family:{MONO};font-size:18px;font-weight:700;'
+        f'color:{C_TEXT};margin-bottom:4px;">'
+        f'{fund_d.get("fund_name", "")}{shariah_badge}</div>',
+        unsafe_allow_html=True,
+    )
 
-    # Sync full history button
-    try:
-        mufap_int_id = fund["mufap_int_id"]
-    except (KeyError, IndexError):
-        mufap_int_id = None
-    with c5:
-        if mufap_int_id and st.button("Sync Full History", key=f"sync_hist_{fund_id}"):
-            with st.spinner("Fetching full NAV history from MUFAP..."):
-                try:
-                    rows, error = sync_fund_nav(fund_id, incremental=False)
-                    if error:
-                        st.error(error)
-                    else:
-                        st.success(f"Synced {rows} NAV records")
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"Sync failed: {e}")
+    er_val = fund_d.get("expense_ratio")
+    er = f"{er_val:.2f}%" if er_val else "---"
 
-    # Performance returns bar chart (from fund_performance)
+    cards = [
+        ("CATEGORY", fund_d.get("category") or "---"),
+        ("AMC", (fund_d.get("amc_name") or "---")[:30]),
+        ("TYPE", fund_d.get("fund_type") or "---"),
+        ("EXPENSE RATIO", er),
+    ]
+    card_html = '<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">'
+    for label, val in cards:
+        card_html += (
+            f'<div style="background:{C_BG};border:1px solid {C_BORDER};border-radius:3px;'
+            f'padding:6px 12px;min-width:120px;flex:1;">'
+            f'<div style="color:{C_MUTED};font-size:9px;font-weight:600;'
+            f'letter-spacing:0.06em;text-transform:uppercase;">{label}</div>'
+            f'<div style="color:{C_TEXT};font-family:{MONO};font-size:13px;'
+            f'font-weight:600;margin-top:2px;">{val}</div>'
+            f'</div>'
+        )
+    card_html += '</div>'
+    st.markdown(card_html, unsafe_allow_html=True)
+
+    # ── Sync full history button ──
+    mufap_int_id = fund_d.get("mufap_int_id")
+    if mufap_int_id and st.button("SYNC FULL HISTORY", key=f"sync_hist_{fund_id}"):
+        with st.spinner("Fetching full NAV history from MUFAP..."):
+            try:
+                from pakfindata.sync_mufap import sync_fund_nav
+                rows, error = sync_fund_nav(fund_id, incremental=False)
+                if error:
+                    st.error(error)
+                else:
+                    st.success(f"Synced {rows} NAV records")
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Sync failed: {e}")
+
+    # ── Performance returns bar chart ──
     try:
-        perf = con.execute(
-            """SELECT return_ytd, return_mtd, return_1d, return_15d, return_30d,
-                      return_90d, return_180d, return_270d, return_365d, return_2y, return_3y
-               FROM fund_performance_latest
-               WHERE fund_name = ?""",
-            (fund["fund_name"],),
-        ).fetchone()
+        # fund_performance_latest is keyed by fund_name (not fund_id), so we
+        # need to filter the leaders payload client-side. Cached on the API
+        # client.
+        _all_perf = api_client.get_fund_performance_leaders(
+            metric="return_ytd", limit=2000
+        ) or []
+        perf = next(
+            (p for p in _all_perf if p.get("fund_name") == fund_d.get("fund_name")),
+            None,
+        )
         if perf:
+            st.markdown(_section_label("RETURNS BY PERIOD"), unsafe_allow_html=True)
             labels = ["1D", "15D", "1M", "3M", "6M", "9M", "YTD", "1Y", "2Y", "3Y"]
             vals = [perf["return_1d"], perf["return_15d"], perf["return_30d"],
                     perf["return_90d"], perf["return_180d"], perf["return_270d"],
@@ -511,50 +657,77 @@ def _render_fund_detail(con, fund_id):
             valid = [(l, v) for l, v in zip(labels, vals) if v is not None]
             if valid:
                 bar_labels, bar_vals = zip(*valid)
-                colors = ["#4ECDC4" if v >= 0 else "#FF6B35" for v in bar_vals]
+                colors = [C_UP if v >= 0 else C_DN for v in bar_vals]
+                layout = _plotly_base()
                 fig = go.Figure(go.Bar(
                     x=list(bar_labels), y=list(bar_vals),
                     marker_color=colors,
-                    text=[f"{v:.1f}%" for v in bar_vals],
+                    text=[f"{v:+.1f}%" for v in bar_vals],
                     textposition="outside",
+                    textfont=dict(family=MONO, size=10),
                 ))
+                fig.add_hline(y=0, line_color=C_NEU, line_width=0.5, opacity=0.4)
                 fig.update_layout(
-                    title="Returns by Period", yaxis_title="Return %",
-                    height=300, margin=dict(l=20, r=20, t=40, b=20),
+                    **layout, height=260,
+                    margin=dict(l=10, r=10, t=10, b=30),
+                    yaxis=dict(title=dict(text="RETURN %"), showgrid=True,
+                               gridcolor=C_BORDER, zeroline=False),
+                    xaxis=dict(tickfont=dict(family=MONO, size=10)),
+                    bargap=0.3,
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
     except Exception:
         pass
 
-    # NAV history chart
-    df = pd.read_sql_query(
-        "SELECT date, nav FROM mutual_fund_nav WHERE fund_id = ? ORDER BY date",
-        con, params=(fund_id,),
-    )
+    # ── NAV history chart ──
+    _nav_rows = api_client.get_fund_nav(fund_id=fund_id, limit=5000) or []
+    df = pd.DataFrame(_nav_rows)
+    if not df.empty:
+        df = df[["date", "nav"]].sort_values("date").reset_index(drop=True)
     if df.empty:
-        st.info("No NAV history available. Click 'Sync Full History' to fetch.")
+        st.info("No NAV history available. Click 'SYNC FULL HISTORY' to fetch.")
         return
 
     nav_count = len(df)
     date_range = f"{df.iloc[0]['date']} to {df.iloc[-1]['date']}" if nav_count > 1 else df.iloc[0]["date"]
-    st.caption(f"{nav_count} NAV records | {date_range}")
+    latest_nav = df.iloc[-1]["nav"]
 
+    st.markdown(_section_label("NAV HISTORY"), unsafe_allow_html=True)
+    # NAV summary strip
+    nav_strip = (
+        f'<div style="display:flex;gap:16px;font-family:{MONO};font-size:12px;'
+        f'color:{C_SEC};margin-bottom:6px;">'
+        f'<span>LAST NAV: <b style="color:{C_TEXT}">Rs. {latest_nav:,.4f}</b></span>'
+        f'<span>RECORDS: <b style="color:{C_TEXT}">{nav_count:,}</b></span>'
+        f'<span>RANGE: <b style="color:{C_TEXT}">{date_range}</b></span>'
+        f'</div>'
+    )
+    st.markdown(nav_strip, unsafe_allow_html=True)
+
+    layout = _plotly_base()
     fig = go.Figure()
     nav_min = df["nav"].min()
     nav_max = df["nav"].max()
     pad = max((nav_max - nav_min) * 0.1, nav_min * 0.01)
+
+    # Area fill for NAV line
     fig.add_trace(go.Scatter(
         x=df["date"], y=df["nav"],
         mode="lines", name="NAV",
-        line=dict(width=2, color="#FF6B35"),
-        hovertemplate="Date: %{x}<br>NAV: Rs. %{y:.4f}<extra></extra>",
+        line=dict(width=1.5, color=C_ACCENT),
+        fill="tozeroy",
+        fillcolor=f"rgba(0,122,255,0.08)",
+        hovertemplate="<b>%{x}</b><br>NAV: Rs. %{y:,.4f}<extra></extra>",
     ))
     fig.update_layout(
-        xaxis_title="Date", yaxis_title="NAV (PKR)",
-        height=350, margin=dict(l=20, r=20, t=30, b=20),
-        yaxis=dict(range=[nav_min - pad, nav_max + pad]),
+        **layout, height=350,
+        margin=dict(l=10, r=10, t=10, b=30),
+        yaxis=dict(title=dict(text="NAV (PKR)"), side="right",
+                   range=[nav_min - pad, nav_max + pad],
+                   showgrid=True, gridcolor=C_BORDER),
+        xaxis=dict(showgrid=False),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -563,24 +736,23 @@ def _render_fund_detail(con, fund_id):
 
 
 def _render_fund_comparison(con):
-    """Compare up to 5 funds with normalized NAV overlay and benchmark."""
-    st.markdown("### Fund Comparison Tool")
-    st.caption("Select 2-5 funds to compare NAV performance (normalized to 100)")
+    """Bloomberg-style fund comparison: NAV overlay, metrics table, correlation heatmap."""
+    st.markdown(_section_label("FUND COMPARISON"), unsafe_allow_html=True)
 
-    funds = con.execute(
-        """SELECT fund_id, symbol, fund_name FROM mutual_funds
-           WHERE fund_id IN (SELECT DISTINCT fund_id FROM mutual_fund_nav)
-           ORDER BY fund_name"""
-    ).fetchall()
+    # Funds with NAV: intersect /v1/funds with /v1/funds/nav-latest.
+    _all_funds = api_client.get_funds(active_only=False, limit=5000) or []
+    _nav_latest = api_client.get_funds_nav_latest(limit=5000) or []
+    _fund_ids_with_nav = {n["fund_id"] for n in _nav_latest}
+    funds = [f for f in _all_funds if f["fund_id"] in _fund_ids_with_nav]
 
     if not funds:
         st.info("No funds with NAV history. Sync NAV data first.")
         return
 
-    fund_options = {r["fund_id"]: f"{r['symbol']} \u2014 {r['fund_name']}" for r in funds}
+    fund_options = {r["fund_id"]: f"{r['symbol']} -- {r['fund_name']}" for r in funds}
 
     selected = st.multiselect(
-        "Select funds to compare",
+        "Select funds to compare (2-5)",
         options=list(fund_options.keys()),
         format_func=lambda x: fund_options.get(x, x),
         max_selections=5,
@@ -593,55 +765,131 @@ def _render_fund_comparison(con):
         st.info("Select at least 2 funds to compare")
         return
 
+    # ── Normalized NAV chart ──
+    layout = _plotly_base()
     fig = go.Figure()
-    colors = ["#FF6B35", "#4ECDC4", "#45B7D1", "#96CEB4", "#9B59B6"]
+    colors = [C_ACCENT, C_UP, C_WARN, C_INFO, "#9B59B6"]
+    nav_frames = {}
 
     for i, fund_id in enumerate(selected):
-        df = pd.read_sql_query(
-            "SELECT date, nav FROM mutual_fund_nav WHERE fund_id = ? ORDER BY date",
-            con, params=(fund_id,),
-        )
+        _rows = api_client.get_fund_nav(fund_id=fund_id, limit=5000) or []
+        df = pd.DataFrame(_rows)
         if df.empty:
             continue
-
+        df = df[["date", "nav"]].sort_values("date").reset_index(drop=True)
+        df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
+        df = df.dropna(subset=["nav"])
+        df = df[df["nav"] > 0]
+        if df.empty:
+            continue
         base = df.iloc[0]["nav"]
         if not base or base <= 0:
             continue
         df["normalized"] = (df["nav"] / base) * 100
 
         label = fund_options.get(fund_id, str(fund_id))
-        if len(label) > 40:
-            label = label[:37] + "..."
+        short = label[:35] + "..." if len(label) > 35 else label
 
         fig.add_trace(go.Scatter(
             x=df["date"], y=df["normalized"],
-            mode="lines", name=label,
-            line=dict(width=2, color=colors[i % len(colors)]),
-            hovertemplate=f"{label}<br>Date: %{{x}}<br>NAV (indexed): %{{y:.1f}}<extra></extra>",
+            mode="lines", name=short,
+            line=dict(width=1.5, color=colors[i % len(colors)]),
+            hovertemplate=f"{short}<br>%{{x}}<br>NAV (idx): %{{y:.1f}}<extra></extra>",
         ))
 
-    if show_benchmark:
-        idx_df = pd.read_sql_query(
-            "SELECT index_date as date, value FROM psx_indices WHERE index_code = 'KSE100' ORDER BY index_date",
-            con,
-        )
-        if not idx_df.empty:
-            base = idx_df.iloc[0]["value"]
-            if base and base > 0:
-                idx_df["normalized"] = (idx_df["value"] / base) * 100
-                fig.add_trace(go.Scatter(
-                    x=idx_df["date"], y=idx_df["normalized"],
-                    mode="lines", name="KSE-100",
-                    line=dict(width=2, color="#888888", dash="dash"),
-                ))
+        df["date"] = pd.to_datetime(df["date"])
+        nav_frames[fund_id] = df.set_index("date")["nav"]
 
-    fig.add_hline(y=100, line_dash="dot", line_color="gray", opacity=0.5)
+    if show_benchmark:
+        try:
+            _idx_rows = api_client.get_index_history(code="KSE100") or []
+            idx_df = pd.DataFrame(_idx_rows)
+            if not idx_df.empty and "close" in idx_df.columns:
+                idx_df = idx_df.rename(columns={"close": "value"})
+                idx_df = idx_df[idx_df["value"] > 0].sort_values("date").reset_index(drop=True)
+            if not idx_df.empty:
+                base = idx_df.iloc[0]["value"]
+                if base and base > 0:
+                    idx_df["normalized"] = (idx_df["value"] / base) * 100
+                    fig.add_trace(go.Scatter(
+                        x=idx_df["date"], y=idx_df["normalized"],
+                        mode="lines", name="KSE-100",
+                        line=dict(width=1.5, color=C_NEU, dash="dash"),
+                    ))
+        except Exception:
+            pass
+
+    fig.add_hline(y=100, line_dash="dot", line_color=C_NEU, opacity=0.3)
     fig.update_layout(
-        yaxis_title="Indexed Performance (Base = 100)",
-        height=450, margin=dict(l=20, r=20, t=30, b=20),
-        legend=dict(orientation="h", y=-0.2),
+        **layout, height=400,
+        margin=dict(l=10, r=10, t=10, b=40),
+        yaxis=dict(title=dict(text="Indexed (Base=100)"), side="right"),
+        legend=dict(orientation="h", y=-0.12, font=dict(size=10)),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
+
+    # ── Side-by-side metrics table ──
+    if nav_frames:
+        st.markdown(_section_label("SIDE-BY-SIDE METRICS"), unsafe_allow_html=True)
+        metrics_rows = []
+        for fid in selected:
+            nav = nav_frames.get(fid)
+            if nav is None or len(nav) < 10:
+                continue
+            rets = nav.pct_change().dropna()
+            total_ret = (nav.iloc[-1] / nav.iloc[0] - 1) * 100
+            ret_1m = (nav.iloc[-1] / nav.iloc[-min(21, len(nav))] - 1) * 100 if len(nav) > 21 else None
+            vol = rets.std() * (252 ** 0.5) * 100 if len(rets) > 20 else None
+            dd = ((nav / nav.cummax()) - 1).min() * 100
+            metrics_rows.append({
+                "Fund": fund_options.get(fid, fid)[:40],
+                "NAV": round(float(nav.iloc[-1]), 4),
+                "Total Ret%": round(total_ret, 1),
+                "1M Ret%": round(ret_1m, 1) if ret_1m else None,
+                "Vol% (ann)": round(vol, 1) if vol else None,
+                "Max DD%": round(dd, 1),
+            })
+
+        if metrics_rows:
+            mdf = pd.DataFrame(metrics_rows)
+            ret_cols = [c for c in ["Total Ret%", "1M Ret%", "Max DD%"] if c in mdf.columns]
+            styled = mdf.style.map(
+                lambda v: f"color:{C_UP}" if isinstance(v, (int, float)) and v > 0
+                else f"color:{C_DN}" if isinstance(v, (int, float)) and v < 0 else "",
+                subset=ret_cols,
+            ).format(na_rep="---")
+            st.dataframe(styled, width='stretch', hide_index=True)
+
+    # ── Correlation heatmap ──
+    if len(nav_frames) >= 2:
+        st.markdown(_section_label("RETURN CORRELATION MATRIX"), unsafe_allow_html=True)
+
+        # Align returns on common dates
+        all_rets = pd.DataFrame({
+            fund_options.get(fid, fid)[:20]: nav_frames[fid].pct_change().dropna()
+            for fid in selected if fid in nav_frames
+        }).dropna()
+
+        if len(all_rets) > 10 and len(all_rets.columns) >= 2:
+            corr = all_rets.corr()
+            hm_layout = _plotly_base()
+            fig_hm = go.Figure(go.Heatmap(
+                z=corr.values,
+                x=corr.columns.tolist(),
+                y=corr.index.tolist(),
+                colorscale=[[0, C_DN], [0.5, C_BG_DARK], [1, C_UP]],
+                zmin=-1, zmax=1,
+                text=np.round(corr.values, 2),
+                texttemplate="%{text}",
+                textfont=dict(size=11, color=C_TEXT),
+                hovertemplate="(%{x}, %{y}): %{z:.3f}<extra></extra>",
+            ))
+            fig_hm.update_layout(
+                **hm_layout, height=300,
+                margin=dict(l=10, r=10, t=10, b=10),
+                xaxis=dict(tickangle=-30),
+            )
+            st.plotly_chart(fig_hm, width='stretch')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -650,11 +898,9 @@ def _render_fund_comparison(con):
 
 
 def _render_risk_metrics(con):
-    """Risk-adjusted performance metrics for funds with sufficient NAV history."""
-    st.markdown("### Risk Metrics")
+    """Bloomberg-style risk metrics: styled table + risk-return scatter."""
+    st.markdown(_section_label("RISK METRICS"), unsafe_allow_html=True)
     st.caption("Sharpe ratio, max drawdown, and volatility for funds with 90+ NAV records")
-
-    import numpy as np
 
     funds = con.execute(
         """SELECT f.fund_id, f.symbol, f.fund_name, f.category,
@@ -702,11 +948,10 @@ def _render_risk_metrics(con):
 
         rf = 12.0
         try:
-            kb = con.execute(
-                "SELECT offer FROM kibor_daily WHERE tenor='3M' ORDER BY date DESC LIMIT 1"
-            ).fetchone()
-            if kb:
-                rf = kb["offer"]
+            _kb_latest = api_client.get_kibor_latest_per_tenor() or []
+            _kb_3m = next((r for r in _kb_latest if r.get("tenor") == "3M"), None)
+            if _kb_3m and _kb_3m.get("offer") is not None:
+                rf = _kb_3m["offer"]
         except Exception:
             pass
         sharpe = (ann_return - rf) / vol if vol > 0 else 0
@@ -718,11 +963,11 @@ def _render_risk_metrics(con):
         risk_data.append({
             "Fund": fund["fund_name"][:50],
             "Category": fund["category"],
-            "NAV Count": fund["nav_count"],
-            "Ann. Return (%)": round(ann_return, 2),
-            "Volatility (%)": round(vol, 2),
-            "Sharpe Ratio": round(sharpe, 2),
-            "Max Drawdown (%)": round(max_dd, 2),
+            "NAVs": fund["nav_count"],
+            "Ann. Ret %": round(ann_return, 2),
+            "Vol %": round(vol, 2),
+            "Sharpe": round(sharpe, 2),
+            "Max DD %": round(max_dd, 2),
         })
 
     if not risk_data:
@@ -730,38 +975,66 @@ def _render_risk_metrics(con):
         return
 
     df = pd.DataFrame(risk_data)
-    st.caption(f"{len(df)} funds analyzed")
+    df = df.sort_values("Sharpe", ascending=False)
 
-    df = df.sort_values("Sharpe Ratio", ascending=False)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.markdown(
+        f'<div style="color:{C_SEC};font-family:{MONO};font-size:11px;margin-bottom:4px;">'
+        f'{len(df)} FUNDS ANALYZED</div>',
+        unsafe_allow_html=True,
+    )
 
+    # Color-coded styled table
+    def _color_ret(v):
+        if isinstance(v, (int, float)):
+            return f"color: {C_UP}" if v > 0 else f"color: {C_DN}" if v < 0 else ""
+        return ""
+
+    def _color_sharpe(v):
+        if isinstance(v, (int, float)):
+            if v >= 1.0:
+                return f"color: {C_UP}; font-weight: 600"
+            elif v < 0:
+                return f"color: {C_DN}"
+        return ""
+
+    styled = (
+        df.style
+        .map(_color_ret, subset=["Ann. Ret %", "Max DD %"])
+        .map(_color_sharpe, subset=["Sharpe"])
+        .format({"Ann. Ret %": "{:+.2f}", "Vol %": "{:.2f}", "Sharpe": "{:.2f}", "Max DD %": "{:.2f}"})
+    )
+    st.dataframe(styled, width='stretch', hide_index=True, height=420)
+
+    # ── Risk-return scatter ──
+    st.markdown(_section_label("RISK-RETURN SCATTER"), unsafe_allow_html=True)
+    layout = _plotly_base()
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=df["Volatility (%)"], y=df["Ann. Return (%)"],
-        mode="markers+text",
-        text=df["Fund"].str[:15],
-        textposition="top center",
-        textfont=dict(size=8),
+        x=df["Vol %"], y=df["Ann. Ret %"],
+        mode="markers",
+        text=df["Fund"].str[:20],
         marker=dict(
-            size=10,
-            color=df["Sharpe Ratio"],
-            colorscale="RdYlGn",
-            colorbar=dict(title="Sharpe"),
+            size=8,
+            color=df["Sharpe"],
+            colorscale=[[0, C_DN], [0.5, C_NEU], [1, C_UP]],
+            colorbar=dict(title=dict(text="SHARPE"), thickness=12, len=0.6),
             showscale=True,
+            line=dict(width=0.5, color=C_BORDER),
         ),
         hovertemplate=(
             "<b>%{text}</b><br>"
-            "Return: %{y:.1f}%<br>"
+            "Return: %{y:+.1f}%<br>"
             "Vol: %{x:.1f}%<br>"
             "Sharpe: %{marker.color:.2f}<extra></extra>"
         ),
     ))
     fig.update_layout(
-        xaxis_title="Volatility (%)", yaxis_title="Annualized Return (%)",
-        title="Risk-Return Scatter (color = Sharpe)",
-        height=450, margin=dict(l=20, r=20, t=50, b=20),
+        **layout, height=420,
+        margin=dict(l=10, r=10, t=10, b=40),
+        xaxis=dict(title=dict(text="VOLATILITY %"), showgrid=True, gridcolor=C_BORDER),
+        yaxis=dict(title=dict(text="ANN. RETURN %"), showgrid=True, gridcolor=C_BORDER, side="right"),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -770,49 +1043,199 @@ def _render_risk_metrics(con):
 
 
 def _render_etf_section(con):
-    """ETF listing with NAV vs market price."""
-    st.markdown("### Listed ETFs")
+    """ETF listing with NAV vs market price, premium/discount, and history charts."""
+    st.markdown(_section_label("LISTED ETFS"), unsafe_allow_html=True)
 
-    df = pd.read_sql_query(
-        """SELECT m.symbol, m.name, m.amc, m.benchmark_index,
-                  m.shariah_compliant,
-                  n.date, n.nav, n.market_price, n.premium_discount, n.aum_millions
-           FROM etf_master m
-           LEFT JOIN etf_nav n ON m.symbol = n.symbol
-             AND n.date = (SELECT MAX(date) FROM etf_nav WHERE symbol = m.symbol)
-           ORDER BY m.symbol""",
-        con,
-    )
-
-    if df.empty:
+    # Compose from /v1/etfs (master) + per-symbol /v1/etfs/{symbol}/nav (latest row).
+    etfs_master = api_client.get_etfs() or []
+    if not etfs_master:
         st.info("No ETF data. Run `pfsync etf sync` to fetch.")
         return
+    rows = []
+    for m in etfs_master:
+        nav_hist = api_client.get_etf_nav(symbol=m["symbol"], limit=1) or []
+        latest = nav_hist[0] if nav_hist else {}
+        rows.append({
+            "symbol": m["symbol"],
+            "name": m.get("name"),
+            "amc": m.get("amc"),
+            "benchmark_index": m.get("benchmark_index"),
+            "shariah_compliant": m.get("shariah_compliant"),
+            "date": latest.get("date"),
+            "nav": latest.get("nav"),
+            "market_price": latest.get("market_price"),
+            "premium_discount": latest.get("premium_discount"),
+            "aum_millions": latest.get("aum_millions"),
+        })
+    df = pd.DataFrame(rows)
 
-    st.dataframe(
-        df.rename(columns={
-            "symbol": "Symbol", "name": "Name", "amc": "AMC",
-            "nav": "NAV", "market_price": "Market Price",
-            "premium_discount": "Prem/Disc %", "aum_millions": "AUM (M)",
-            "date": "Date", "shariah_compliant": "Shariah",
-        }),
-        use_container_width=True, hide_index=True,
-    )
+    # ── Summary cards ──
+    cols = st.columns(len(df))
+    for i, (_, row) in enumerate(df.iterrows()):
+        sym = row["symbol"]
+        nav_val = row.get("nav")
+        mkt = row.get("market_price")
+        pd_val = row.get("premium_discount")
 
+        # Color: green if discount (buying below NAV), red if premium
+        if pd_val is not None:
+            color = C_UP if pd_val < 0 else C_DN if pd_val > 0 else C_NEU
+            pd_text = f'<span style="color:{color};font-weight:700">{pd_val:+.2f}%</span>'
+        else:
+            pd_text = f'<span style="color:{C_NEU}">---</span>'
+
+        nav_text = f"{nav_val:.4f}" if nav_val else "---"
+        mkt_text = f"{mkt:.2f}" if mkt else "---"
+        shariah = " ☪" if row.get("shariah_compliant") else ""
+
+        cols[i].markdown(
+            f'<div style="background:{C_BG};border:1px solid {C_BORDER};'
+            f'border-radius:6px;padding:10px;text-align:center">'
+            f'<div style="color:{C_ACCENT};font-weight:700;font-size:14px;font-family:{MONO}">'
+            f'{sym}{shariah}</div>'
+            f'<div style="color:{C_MUTED};font-size:10px;margin:2px 0">{(row["name"] or "")[:30]}</div>'
+            f'<div style="margin:6px 0">'
+            f'<span style="color:{C_MUTED};font-size:10px">MKT</span> '
+            f'<span style="font-weight:600;font-size:16px">{mkt_text}</span></div>'
+            f'<div><span style="color:{C_MUTED};font-size:10px">NAV</span> '
+            f'<span style="font-size:13px">{nav_text}</span></div>'
+            f'<div style="margin-top:4px;font-size:12px">P/D: {pd_text}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── Premium/Discount bar chart ──
     etfs_with_pd = df.dropna(subset=["premium_discount"])
     if not etfs_with_pd.empty:
+        st.markdown(_section_label("PREMIUM / DISCOUNT"), unsafe_allow_html=True)
+        layout = _plotly_base()
         fig = go.Figure()
-        colors = ["#4ECDC4" if v >= 0 else "#FF6B35" for v in etfs_with_pd["premium_discount"]]
+        # green=discount (buying below NAV, good), red=premium
+        colors = [C_UP if v < 0 else C_DN for v in etfs_with_pd["premium_discount"]]
         fig.add_trace(go.Bar(
             x=etfs_with_pd["symbol"], y=etfs_with_pd["premium_discount"],
-            marker_color=colors, text=[f"{v:.1f}%" for v in etfs_with_pd["premium_discount"]],
+            marker_color=colors,
+            text=[f"{v:+.1f}%" for v in etfs_with_pd["premium_discount"]],
             textposition="outside",
+            textfont=dict(family=MONO, size=10),
         ))
+        fig.add_hline(y=0, line_dash="dot", line_color=C_NEU, opacity=0.4)
         fig.update_layout(
-            yaxis_title="Premium / Discount (%)", height=300,
-            margin=dict(l=20, r=20, t=30, b=20),
+            **layout, height=280,
+            margin=dict(l=10, r=10, t=10, b=30),
+            yaxis=dict(title=dict(text="PREMIUM / DISCOUNT %"), showgrid=True, gridcolor=C_BORDER),
+            xaxis=dict(tickfont=dict(family=MONO, size=10)),
         )
-        fig.add_hline(y=0, line_dash="dash", line_color="gray")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
+
+    # ── Per-ETF detail section ──
+    st.markdown(_section_label("ETF DETAIL"), unsafe_allow_html=True)
+    etf_options = {row["symbol"]: f"{row['symbol']} — {row['name']}" for _, row in df.iterrows()}
+    sel_etf = st.selectbox("Select ETF", options=list(etf_options.keys()),
+                           format_func=lambda x: etf_options.get(x, x), key="etf_detail_select")
+
+    if sel_etf:
+        # Load full NAV history from etf_nav via /v1/etfs/{symbol}/nav
+        _etf_rows = api_client.get_etf_nav(symbol=sel_etf, limit=5000) or []
+        hist = pd.DataFrame(_etf_rows)
+        if not hist.empty:
+            hist = hist[
+                ["date", "nav", "market_price", "premium_discount"]
+            ].sort_values("date").reset_index(drop=True)
+
+        # Also load MUFAP NAV history (richer — 700-2100 days) via /v1/funds
+        from pakfindata.sources.etf_scraper import ETF_PSX_TO_MUFAP
+        mufap_sym = ETF_PSX_TO_MUFAP.get(sel_etf)
+        mufap_nav = pd.DataFrame()
+        if mufap_sym:
+            # Resolve mufap symbol -> fund_id by scanning the funds list.
+            _all_funds = api_client.get_funds(active_only=False, limit=5000) or []
+            _mufap_fund = next(
+                (f for f in _all_funds if f.get("symbol") == mufap_sym), None
+            )
+            if _mufap_fund:
+                _mufap_rows = api_client.get_fund_nav(
+                    fund_id=_mufap_fund["fund_id"], limit=5000
+                ) or []
+                mufap_nav = pd.DataFrame(_mufap_rows)
+                if not mufap_nav.empty:
+                    mufap_nav = mufap_nav[["date", "nav"]]
+                    mufap_nav = mufap_nav[mufap_nav["nav"] > 0].sort_values(
+                        "date"
+                    ).reset_index(drop=True)
+
+        c1, c2 = st.columns(2)
+
+        # NAV History chart
+        with c1:
+            if not mufap_nav.empty:
+                layout = _plotly_base()
+                mufap_nav["date"] = pd.to_datetime(mufap_nav["date"])
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=mufap_nav["date"], y=mufap_nav["nav"],
+                    line=dict(color=C_ACCENT, width=1.5), name="NAV",
+                    hovertemplate="Date: %{x}<br>NAV: %{y:.4f}<extra></extra>",
+                ))
+                if not hist.empty and "market_price" in hist.columns:
+                    hist_mp = hist.dropna(subset=["market_price"])
+                    if not hist_mp.empty:
+                        fig.add_trace(go.Scatter(
+                            x=pd.to_datetime(hist_mp["date"]), y=hist_mp["market_price"],
+                            line=dict(color=C_UP, width=1, dash="dot"), name="Market Price",
+                        ))
+                fig.update_layout(
+                    **layout, height=320,
+                    title=dict(text=f"{sel_etf} — NAV History ({len(mufap_nav)} days)", font=dict(size=12)),
+                    margin=dict(l=10, r=10, t=40, b=30),
+                    showlegend=True, legend=dict(x=0, y=1, font=dict(size=10)),
+                )
+                st.plotly_chart(fig, width='stretch')
+            elif not hist.empty:
+                st.metric("NAV Data Points", len(hist))
+
+        # Premium/Discount history chart
+        with c2:
+            pd_hist = hist.dropna(subset=["premium_discount"]) if not hist.empty else pd.DataFrame()
+            if not pd_hist.empty and len(pd_hist) > 1:
+                layout = _plotly_base()
+                pd_hist["date"] = pd.to_datetime(pd_hist["date"])
+                fig = go.Figure()
+                pos = pd_hist["premium_discount"].copy()
+                neg = pd_hist["premium_discount"].copy()
+                pos[pos < 0] = 0
+                neg[neg > 0] = 0
+                fig.add_trace(go.Scatter(
+                    x=pd_hist["date"], y=pos, fill="tozeroy",
+                    fillcolor="rgba(255,82,82,0.15)", line=dict(color=C_DN, width=1),
+                    name="Premium", hovertemplate="%{y:+.2f}%<extra></extra>",
+                ))
+                fig.add_trace(go.Scatter(
+                    x=pd_hist["date"], y=neg, fill="tozeroy",
+                    fillcolor="rgba(0,200,83,0.15)", line=dict(color=C_UP, width=1),
+                    name="Discount", hovertemplate="%{y:+.2f}%<extra></extra>",
+                ))
+                fig.add_hline(y=0, line_dash="dot", line_color=C_NEU, opacity=0.4)
+                fig.update_layout(
+                    **layout, height=320,
+                    title=dict(text=f"{sel_etf} — Premium/Discount History", font=dict(size=12)),
+                    margin=dict(l=10, r=10, t=40, b=30),
+                    showlegend=False, yaxis=dict(ticksuffix="%"),
+                )
+                st.plotly_chart(fig, width='stretch')
+            else:
+                st.info("Not enough premium/discount history for chart")
+
+        # Data table
+        if not hist.empty:
+            with st.expander(f"Raw Data ({len(hist)} rows)"):
+                st.dataframe(
+                    hist.rename(columns={
+                        "date": "Date", "nav": "NAV", "market_price": "Market Price",
+                        "premium_discount": "Prem/Disc %",
+                    }),
+                    width='stretch', hide_index=True,
+                )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -822,30 +1245,40 @@ def _render_etf_section(con):
 
 def _render_vps_section(con):
     """VPS pension fund comparison."""
-    st.markdown("### VPS Pension Funds")
+    st.markdown(_section_label("VPS PENSION FUNDS"), unsafe_allow_html=True)
     st.caption("Compare pension fund performance across AMCs and sub-fund categories")
 
-    try:
-        df = pd.read_sql_query(
-            """SELECT fund_name, category, nav, rating,
-                      return_ytd, return_30d, return_90d,
-                      return_365d, return_2y, return_3y
-               FROM fund_performance_latest
-               WHERE (sector LIKE '%VPS%' OR category LIKE 'VPS%')
-               ORDER BY category, return_ytd DESC""",
-            con,
-        )
-    except Exception:
-        df = pd.DataFrame()
+    # VPS subset is filtered client-side from the leaders payload — the
+    # /v1/funds/performance/leaders endpoint doesn't expose a `sector LIKE`
+    # filter, but the page-side filter is cheap on 1,120 rows.
+    _all_perf = api_client.get_fund_performance_leaders(
+        metric="return_ytd", limit=2000
+    ) or []
+    df = pd.DataFrame(_all_perf)
+    if not df.empty:
+        keep = [c for c in [
+            "fund_name", "category", "sector", "nav", "rating",
+            "return_ytd", "return_30d", "return_90d", "return_365d",
+            "return_2y", "return_3y", "validity_date",
+        ] if c in df.columns]
+        df = df[keep]
+        mask = pd.Series(False, index=df.index)
+        if "sector" in df.columns:
+            mask = mask | df["sector"].fillna("").str.contains("VPS", case=False, na=False)
+        if "category" in df.columns:
+            mask = mask | df["category"].fillna("").str.startswith("VPS")
+        df = df[mask].sort_values(
+            ["category", "return_ytd"], ascending=[True, False]
+        ).reset_index(drop=True)
 
     if df.empty:
         st.info("No VPS performance data. Click **Sync Performance** to fetch from MUFAP.")
         return
 
-    validity = con.execute(
-        "SELECT MAX(validity_date) FROM fund_performance_latest WHERE sector LIKE '%VPS%' OR category LIKE 'VPS%'"
-    ).fetchone()[0]
-    st.caption(f"Data as of: **{validity}** | {len(df)} VPS funds")
+    validity = (
+        df["validity_date"].dropna().max() if "validity_date" in df.columns else None
+    )
+    st.caption(f"Data as of: **{validity or '—'}** | {len(df)} VPS funds")
 
     # AMC filter
     # Extract AMC name from fund name (first word typically)
@@ -869,32 +1302,40 @@ def _render_vps_section(con):
                 "category": "Sub-Fund Type", "funds": "Funds",
                 "avg_ytd": "Avg YTD %", "best_ytd": "Best YTD %", "worst_ytd": "Worst YTD %",
             }),
-            use_container_width=True, hide_index=True,
+            width='stretch', hide_index=True,
         )
 
-    # Full fund table
-    st.dataframe(
-        df.rename(columns={
-            "fund_name": "Fund", "category": "Category", "nav": "NAV",
-            "rating": "Rating", "return_ytd": "YTD %", "return_30d": "1M %",
-            "return_90d": "3M %", "return_365d": "1Y %",
-            "return_2y": "2Y %", "return_3y": "3Y %",
-        }),
-        use_container_width=True, hide_index=True,
+    # Full fund table with color-coded returns
+    vps_disp = df.rename(columns={
+        "fund_name": "Fund", "category": "Category", "nav": "NAV",
+        "rating": "Rating", "return_ytd": "YTD %", "return_30d": "1M %",
+        "return_90d": "3M %", "return_365d": "1Y %",
+        "return_2y": "2Y %", "return_3y": "3Y %",
+    })
+    ret_cols = [c for c in vps_disp.columns if "%" in c]
+    styled_vps = vps_disp.style.map(
+        lambda v: f"color: {C_UP}" if isinstance(v, (int, float)) and v > 0
+        else f"color: {C_DN}" if isinstance(v, (int, float)) and v < 0 else "",
+        subset=ret_cols,
     )
+    st.dataframe(styled_vps, width='stretch', hide_index=True, height=420)
 
     # Gold/Commodity sub-funds highlight
     gold_mask = df["category"].str.contains("Commodit|Gold", case=False, na=False)
     gold_df = df[gold_mask]
     if not gold_df.empty:
-        st.markdown("#### Gold / Commodity Sub-Funds")
-        st.dataframe(
-            gold_df[["fund_name", "category", "nav", "return_ytd", "return_365d"]].rename(columns={
-                "fund_name": "Fund", "category": "Category", "nav": "NAV",
-                "return_ytd": "YTD %", "return_365d": "1Y %",
-            }),
-            use_container_width=True, hide_index=True,
+        st.markdown(_section_label("GOLD / COMMODITY SUB-FUNDS"), unsafe_allow_html=True)
+        gold_disp = gold_df[["fund_name", "category", "nav", "return_ytd", "return_365d"]].rename(columns={
+            "fund_name": "Fund", "category": "Category", "nav": "NAV",
+            "return_ytd": "YTD %", "return_365d": "1Y %",
+        })
+        gold_ret_cols = [c for c in gold_disp.columns if "%" in c]
+        styled_gold = gold_disp.style.map(
+            lambda v: f"color: {C_UP}" if isinstance(v, (int, float)) and v > 0
+            else f"color: {C_DN}" if isinstance(v, (int, float)) and v < 0 else "",
+            subset=gold_ret_cols,
         )
+        st.dataframe(styled_gold, width='stretch', hide_index=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -903,17 +1344,20 @@ def _render_vps_section(con):
 
 
 def _render_top_performers(con):
-    """Top performing funds using MUFAP official returns from fund_performance."""
-    st.markdown("### Top Performers")
+    """Bloomberg-style top performers with bar chart + color-coded table."""
+    st.markdown(_section_label("TOP PERFORMERS"), unsafe_allow_html=True)
 
-    # Check if fund_performance has data
     try:
-        perf_count = con.execute("SELECT COUNT(*) FROM fund_performance_latest").fetchone()[0]
+        _tables = api_client.get_admin_tables(include_counts=True) or []
+        perf_count = next(
+            (t["row_count"] for t in _tables
+             if t["name"] == "fund_performance_latest"),
+            0,
+        ) or 0
     except Exception:
         perf_count = 0
 
     if perf_count == 0:
-        # Fallback to NAV-computed returns
         _render_top_performers_fallback(con)
         return
 
@@ -932,76 +1376,133 @@ def _render_top_performers(con):
     with c1:
         sel_period = st.radio("Period", list(period_map.keys()), horizontal=True, key="top_perf_period")
     with c2:
-        # Category filter from fund_performance
-        try:
-            cats = pd.read_sql_query(
-                "SELECT DISTINCT category FROM fund_performance_latest ORDER BY category", con
-            )["category"].tolist()
-        except Exception:
-            cats = []
-        sel_cat = st.selectbox("Category", ["All"] + cats, key="top_perf_cat")
+        # Distinct categories from the leaders payload (cached).
+        _all_perf_for_cats = api_client.get_fund_performance_leaders(
+            metric="return_ytd", limit=2000
+        ) or []
+        cats = sorted({
+            p.get("category") for p in _all_perf_for_cats if p.get("category")
+        })
+        sel_cat = st.selectbox("Category", ["All"] + list(cats), key="top_perf_cat")
     with c3:
         top_n = st.number_input("Top N", min_value=5, max_value=50, value=20, key="top_n")
 
     period_col = period_map[sel_period]
 
-    query = f"""
-        SELECT fund_name, category, sector, nav, rating,
-               {period_col} as return_pct
-        FROM fund_performance_latest
-        WHERE {period_col} IS NOT NULL
-    """
-    params: list = []
-    if sel_cat != "All":
-        query += " AND category = ?"
-        params.append(sel_cat)
-    query += f" ORDER BY {period_col} DESC LIMIT ?"
-    params.append(top_n)
-
-    df = pd.read_sql_query(query, con, params=params)
+    _leader_rows = api_client.get_fund_performance_leaders(
+        metric=period_col,
+        category=sel_cat if sel_cat != "All" else None,
+        limit=int(top_n),
+    ) or []
+    df = pd.DataFrame(_leader_rows)
+    if not df.empty:
+        keep = [c for c in
+            ["fund_name", "category", "sector", "nav", "rating", period_col]
+            if c in df.columns]
+        df = df[keep].rename(columns={period_col: "return_pct"})
 
     if df.empty:
         st.info("No performance data for selected filters")
         return
 
-    validity = con.execute(
-        "SELECT MAX(validity_date) FROM fund_performance_latest"
-    ).fetchone()[0]
-    st.caption(f"MUFAP official returns as of **{validity}**")
-
-    st.dataframe(
-        df.rename(columns={
-            "fund_name": "Fund", "category": "Category", "sector": "Sector",
-            "nav": "NAV", "rating": "Rating",
-            "return_pct": f"Return ({sel_period}) %",
-        }),
-        use_container_width=True, hide_index=True,
+    _v_payload = api_client.get_admin_table_latest_date(
+        "fund_performance_latest", col="validity_date"
+    )
+    validity = _v_payload.get("latest_date") if _v_payload else None
+    st.markdown(
+        f'<span style="font-size:11px;color:{C_MUTED};font-family:{MONO};">'
+        f'MUFAP OFFICIAL RETURNS AS OF {validity}</span>',
+        unsafe_allow_html=True,
     )
 
-    # Rate benchmarks for comparison
+    # ── Horizontal bar chart ──
+    chart_df = df.head(15).copy()
+    chart_df["short_name"] = chart_df["fund_name"].str[:30]
+    chart_df = chart_df.sort_values("return_pct", ascending=True)
+    bar_colors = [C_UP if v >= 0 else C_DN for v in chart_df["return_pct"]]
+
+    layout = _plotly_base()
+    fig = go.Figure(go.Bar(
+        x=chart_df["return_pct"],
+        y=chart_df["short_name"],
+        orientation="h",
+        marker=dict(color=bar_colors),
+        text=[f"{v:+.1f}%" for v in chart_df["return_pct"]],
+        textposition="outside",
+        textfont=dict(size=10, color=C_TEXT),
+        hovertemplate="%{y}<br>Return: %{x:.2f}%<extra></extra>",
+    ))
+    fig.update_layout(
+        **layout, height=max(280, len(chart_df) * 22),
+        margin=dict(l=10, r=40, t=10, b=10),
+        xaxis=dict(title=dict(text=f"Return ({sel_period}) %"), zeroline=True,
+                   zerolinecolor=C_NEU, zerolinewidth=1),
+        yaxis=dict(tickfont=dict(size=10)),
+    )
+    st.plotly_chart(fig, width='stretch')
+
+    # ── Styled table ──
+    tbl = df.rename(columns={
+        "fund_name": "Fund", "category": "Category",
+        "nav": "NAV", "rating": "Rating",
+        "return_pct": f"Ret ({sel_period})%",
+    })
+    ret_col = f"Ret ({sel_period})%"
+    styled = tbl[["Fund", "Category", "NAV", ret_col]].style.map(
+        lambda v: f"color:{C_UP}" if isinstance(v, (int, float)) and v > 0
+        else f"color:{C_DN}" if isinstance(v, (int, float)) and v < 0 else "",
+        subset=[ret_col],
+    ).format({ret_col: "{:+.2f}", "NAV": "{:.4f}"}, na_rep="---")
+    st.dataframe(styled, width='stretch', hide_index=True)
+
+    # Rate benchmarks — all via /v1/rates + /v1/treasury
     try:
         bm_cols = st.columns(4)
-        pr = con.execute("SELECT policy_rate FROM sbp_policy_rates ORDER BY rate_date DESC LIMIT 1").fetchone()
-        kb = con.execute("SELECT bid, offer FROM kibor_daily WHERE tenor='3M' ORDER BY date DESC LIMIT 1").fetchone()
-        tb = con.execute("SELECT cutoff_yield FROM tbill_auctions WHERE tenor='3M' ORDER BY auction_date DESC LIMIT 1").fetchone()
-        tb6 = con.execute("SELECT cutoff_yield FROM tbill_auctions WHERE tenor='6M' ORDER BY auction_date DESC LIMIT 1").fetchone()
+        _pol_hist = api_client.get_policy_rate_history(limit=1) or []
+        pr_val = _pol_hist[0].get("policy_rate") if _pol_hist else None
+
+        _kb_latest = api_client.get_kibor_latest_per_tenor() or []
+        _kb_3m = next((r for r in _kb_latest if r.get("tenor") == "3M"), None)
+
+        _tb_latest = api_client.get_tbill_latest_per_tenor() or []
+        _tb_3m = next((r for r in _tb_latest if r.get("tenor") == "3M"), None)
+        _tb_6m = next((r for r in _tb_latest if r.get("tenor") == "6M"), None)
+
         with bm_cols[0]:
-            st.metric("Policy Rate", f"{pr[0]:.1f}%" if pr else "—", help="SBP benchmark")
+            st.metric(
+                "Policy Rate",
+                f"{pr_val:.1f}%" if pr_val is not None else "—",
+                help="SBP benchmark",
+            )
         with bm_cols[1]:
-            if kb and kb[0] and kb[1]:
-                st.metric("KIBOR 3M", f"{(kb[0]+kb[1])/2:.2f}%", help="Money market benchmark")
+            if _kb_3m and _kb_3m.get("bid") is not None and _kb_3m.get("offer") is not None:
+                mid = (_kb_3m["bid"] + _kb_3m["offer"]) / 2
+                st.metric("KIBOR 3M", f"{mid:.2f}%", help="Money market benchmark")
             else:
                 st.metric("KIBOR 3M", "—")
         with bm_cols[2]:
-            st.metric("T-Bill 3M", f"{tb[0]:.2f}%" if tb else "—", help="Risk-free 3M")
+            yld = _tb_3m.get("cutoff_yield") if _tb_3m else None
+            st.metric("T-Bill 3M", f"{yld:.2f}%" if yld is not None else "—",
+                      help="Risk-free 3M")
         with bm_cols[3]:
-            st.metric("T-Bill 6M", f"{tb6[0]:.2f}%" if tb6 else "—", help="Risk-free 6M")
+            yld6 = _tb_6m.get("cutoff_yield") if _tb_6m else None
+            st.metric("T-Bill 6M", f"{yld6:.2f}%" if yld6 is not None else "—",
+                      help="Risk-free 6M")
     except Exception:
         pass
 
 
 def _render_top_performers_fallback(con):
-    """Fallback: NAV-computed returns when fund_performance table is empty."""
+    """Fallback: NAV-computed returns when fund_performance table is empty.
+
+    This path retains a direct DB read — the original query is a complex
+    correlated subquery that finds, for each fund, the latest NAV and the
+    earliest NAV within the lookback window. Composing this from /v1
+    would require N per-fund history fetches (one round-trip per fund;
+    1,270+ funds = unacceptable latency). The whole fallback runs only
+    when fund_performance_latest is empty, which should never happen in
+    normal operation.
+    """
     st.caption("Performance data not synced — showing NAV-computed returns. Click Sync Performance for MUFAP official returns.")
 
     period = st.radio("Period", ["30 days", "90 days", "365 days"], horizontal=True, key="fund_perf_period_fb")
@@ -1036,13 +1537,501 @@ def _render_top_performers_fallback(con):
             "amc_name": "AMC", "latest_nav": "NAV",
             "return_pct": f"Return ({period})",
         }),
-        use_container_width=True, hide_index=True,
+        width='stretch', hide_index=True,
     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Standalone page render functions (called from app.py for individual pages)
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Risk Analytics Tab (Quant Upgrade)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _get_fund_nav_series(con, fund_id: str) -> pd.Series:
+    """Load fund NAV as a pd.Series with DatetimeIndex via /v1/funds/{id}/nav."""
+    rows = api_client.get_fund_nav(fund_id=fund_id, limit=10000) or []
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return pd.Series(dtype=float)
+    df = df[["date", "nav"]].sort_values("date").reset_index(drop=True)
+    df["date"] = pd.to_datetime(df["date"])
+    df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
+    df = df.dropna(subset=["nav"])
+    df = df[df["nav"] > 0]
+    return df.set_index("date")["nav"]
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _get_fund_list_with_nav_count(_con, min_navs: int = 90):
+    """Get funds with sufficient NAV history (cached — heavy GROUP BY on 1.9M rows)."""
+    import sqlite3 as _sq
+    db_path = _con.execute("PRAGMA database_list").fetchone()[2]
+    c2 = _sq.connect(db_path)
+    c2.row_factory = _sq.Row
+    rows = c2.execute(
+        """SELECT f.fund_id, f.symbol, f.fund_name, f.category,
+                  COUNT(n.date) as nav_count
+           FROM mutual_funds f
+           INNER JOIN mutual_fund_nav n ON f.fund_id = n.fund_id
+           GROUP BY f.fund_id
+           HAVING nav_count >= ?
+           ORDER BY f.fund_name""",
+        (min_navs,),
+    ).fetchall()
+    result = [dict(r) for r in rows]
+    c2.close()
+    return result
+
+
+def _try_precomputed(con, fund_id: str) -> dict | None:
+    """Try to load pre-computed risk metrics; return None if stale (>7d) or missing."""
+    try:
+        d = api_client.get_fund_risk(fund_id)
+        if not d:
+            return None
+        # Check staleness
+        computed = d.get("computed_at", "")
+        if computed:
+            from datetime import datetime, timedelta
+            try:
+                ts = datetime.fromisoformat(computed)
+                if datetime.now() - ts > timedelta(days=7):
+                    return None  # stale
+            except Exception:
+                pass
+        return d
+    except Exception:
+        return None
+
+
+def _render_risk_analytics(con):
+    """Comprehensive risk analytics dashboard using the quant engine."""
+    from pakfindata.engine.fund_risk import (
+        generate_fund_analytics,
+        rolling_sharpe,
+        maximum_drawdown,
+    )
+    from pakfindata.engine.benchmark import get_benchmark_nav
+
+    st.markdown(_section_label("RISK ANALYTICS"), unsafe_allow_html=True)
+
+    funds = _get_fund_list_with_nav_count(con, 90)
+    if not funds:
+        st.info("Need funds with at least 90 NAV records. Sync more NAV history.")
+        return
+
+    fund_options = {r["fund_id"]: f"{r['symbol']} -- {r['fund_name']}" for r in funds}
+
+    sel_fund = st.selectbox(
+        "Select Fund",
+        options=list(fund_options.keys()),
+        format_func=lambda x: fund_options.get(x, x),
+        key="risk_fund_select",
+    )
+
+    nav = _get_fund_nav_series(con, sel_fund)
+    if nav.empty or len(nav) < 30:
+        st.warning("Insufficient NAV data for this fund.")
+        return
+
+    # ── Try pre-computed metrics first ──
+    pre = _try_precomputed(con, sel_fund)
+    use_precomputed = pre is not None
+
+    if use_precomputed:
+        risk = pre
+        rel = pre
+        st.caption(f"Pre-computed metrics (last run: {pre.get('computed_at', '?')[:16]})")
+    else:
+        benchmark = get_benchmark_nav(con, "KSE-100")
+        bm = benchmark if not benchmark.empty else None
+        with st.spinner("Computing analytics (no pre-computed data)..."):
+            analytics = generate_fund_analytics(
+                fund_options.get(sel_fund, sel_fund), nav, bm,
+            )
+        if "error" in analytics:
+            st.warning(f"Analysis error: {analytics['error']}")
+            return
+        risk = analytics.get("risk", {})
+        rel = analytics.get("relative", {})
+
+    # ── KPI Cards ──
+    c1, c2, c3, c4, c5 = st.columns(5)
+    if use_precomputed:
+        c1.metric("Sharpe (1Y)", f"{pre['sharpe_ratio']:.2f}" if pre.get("sharpe_ratio") else "---")
+        c2.metric("Sortino (1Y)", f"{pre['sortino_ratio']:.2f}" if pre.get("sortino_ratio") else "---")
+        c3.metric("Max Drawdown", f"{pre['max_drawdown']*100:.1f}%" if pre.get("max_drawdown") else "---")
+        c4.metric("VaR 95%", f"{pre['var_95']*100:.2f}%" if pre.get("var_95") else "---")
+        c5.metric("Beta", f"{pre['beta']:.2f}" if pre.get("beta") else "---")
+
+        c6, c7, c8, c9, c10, c11 = st.columns(6)
+        c6.metric("Treynor", f"{pre['treynor_ratio']:.2f}" if pre.get("treynor_ratio") else "---")
+        c7.metric("Volatility (1Y)", f"{pre['volatility_1y']*100:.1f}%" if pre.get("volatility_1y") else "---")
+        c8.metric("Alpha", f"{pre['alpha']*100:.2f}%" if pre.get("alpha") else "---")
+        c9.metric("Info Ratio", f"{pre['information_ratio']:.2f}" if pre.get("information_ratio") else "---")
+        c10.metric("Up Capture", f"{pre['up_capture']:.0f}%" if pre.get("up_capture") else "---")
+        c11.metric("Down Capture", f"{pre['down_capture']:.0f}%" if pre.get("down_capture") else "---")
+
+        # ── Returns row ──
+        st.markdown(_section_label("RETURNS"), unsafe_allow_html=True)
+        rc1, rc2, rc3, rc4, rc5, rc6 = st.columns(6)
+        rc1.metric("1M", f"{pre['return_1m']*100:.1f}%" if pre.get("return_1m") else "---")
+        rc2.metric("3M", f"{pre['return_3m']*100:.1f}%" if pre.get("return_3m") else "---")
+        rc3.metric("6M", f"{pre['return_6m']*100:.1f}%" if pre.get("return_6m") else "---")
+        rc4.metric("1Y", f"{pre['return_1y']*100:.1f}%" if pre.get("return_1y") else "---")
+        rc5.metric("YTD", f"{pre['return_ytd']*100:.1f}%" if pre.get("return_ytd") else "---")
+        rc6.metric("Since Inception", f"{pre['return_since_inception']*100:.1f}%" if pre.get("return_since_inception") else "---")
+    else:
+        c1.metric("Sharpe (1Y)", f"{risk.get('sharpe_1y', 0):.2f}" if risk.get("sharpe_1y") else "---")
+        c2.metric("Sortino (1Y)", f"{risk.get('sortino_1y', 0):.2f}" if risk.get("sortino_1y") else "---")
+        c3.metric("Max Drawdown", f"{risk.get('max_drawdown', 0)*100:.1f}%" if risk.get("max_drawdown") else "---")
+        c4.metric("VaR 95%", f"{risk.get('var_95_daily', 0)*100:.2f}%" if risk.get("var_95_daily") else "---")
+        c5.metric("Beta", f"{rel.get('beta', 0):.2f}" if rel.get("beta") else "---")
+
+        c6, c7, c8, c9, c10, c11 = st.columns(6)
+        c6.metric("Treynor", f"{rel.get('treynor_ratio', 0):.2f}" if rel.get("treynor_ratio") else "---")
+        c7.metric("Volatility (1Y)", f"{risk.get('volatility_1y_ann', 0)*100:.1f}%" if risk.get("volatility_1y_ann") else "---")
+        c8.metric("Alpha", f"{rel.get('alpha', 0)*100:.2f}%" if rel.get("alpha") else "---")
+        c9.metric("Info Ratio", f"{rel.get('information_ratio', 0):.2f}" if rel.get("information_ratio") else "---")
+        c10.metric("Up Capture", f"{rel.get('up_capture', 0):.0f}%" if rel.get("up_capture") else "---")
+        c11.metric("Down Capture", f"{rel.get('down_capture', 0):.0f}%" if rel.get("down_capture") else "---")
+
+    # ── Rolling Sharpe Chart ──
+    sharpe_s = rolling_sharpe(nav, window=63)
+    if not sharpe_s.empty:
+        layout = _plotly_base()
+
+        fig = go.Figure()
+        pos = sharpe_s.copy()
+        neg = sharpe_s.copy()
+        pos[pos < 0] = 0
+        neg[neg > 0] = 0
+
+        fig.add_trace(go.Scatter(
+            x=pos.index, y=pos.values, fill="tozeroy",
+            fillcolor="rgba(0,200,83,0.15)", line=dict(color="#00C853", width=1),
+            name="Sharpe > 0",
+        ))
+        fig.add_trace(go.Scatter(
+            x=neg.index, y=neg.values, fill="tozeroy",
+            fillcolor="rgba(255,82,82,0.15)", line=dict(color="#FF5252", width=1),
+            name="Sharpe < 0",
+        ))
+        fig.add_hline(y=0, line_dash="dot", line_color="#6B7280")
+        fig.update_layout(
+            **layout,
+            title=dict(text="Rolling Sharpe Ratio (63-day)", font=dict(size=12)),
+            height=280, margin=dict(l=10, r=10, t=40, b=30),
+            showlegend=False,
+        )
+        st.plotly_chart(fig, width='stretch')
+
+    # ── Drawdown Chart ──
+    dd = maximum_drawdown(nav)
+    dd_series = dd.get("drawdown_series")
+    if dd_series is not None and not dd_series.empty:
+        layout = _plotly_base()
+
+        fig = go.Figure(go.Scatter(
+            x=dd_series.index, y=dd_series.values * 100,
+            fill="tozeroy", fillcolor="rgba(255,82,82,0.2)",
+            line=dict(color="#FF5252", width=1),
+            hovertemplate="Date: %{x}<br>Drawdown: %{y:.2f}%<extra></extra>",
+        ))
+        fig.update_layout(
+            **layout,
+            title=dict(text="Underwater Chart (Drawdown %)", font=dict(size=12)),
+            height=250, margin=dict(l=10, r=10, t=40, b=30),
+            yaxis=dict(ticksuffix="%"),
+        )
+        st.plotly_chart(fig, width='stretch')
+
+    # ── Rolling 1Y Return Chart ──
+    from pakfindata.engine.fund_risk import compute_rolling_returns
+    rolling_1y = compute_rolling_returns(nav, window=252)
+    rolling_1y = rolling_1y.dropna()
+    if not rolling_1y.empty:
+        layout = _plotly_base()
+        fig = go.Figure()
+        pos = rolling_1y.copy()
+        neg = rolling_1y.copy()
+        pos[pos < 0] = 0
+        neg[neg > 0] = 0
+        fig.add_trace(go.Scatter(
+            x=pos.index, y=pos.values * 100, fill="tozeroy",
+            fillcolor="rgba(0,200,83,0.15)", line=dict(color="#00C853", width=1),
+            name="Positive",
+        ))
+        fig.add_trace(go.Scatter(
+            x=neg.index, y=neg.values * 100, fill="tozeroy",
+            fillcolor="rgba(255,82,82,0.15)", line=dict(color="#FF5252", width=1),
+            name="Negative",
+        ))
+        fig.add_hline(y=0, line_dash="dot", line_color="#6B7280")
+        fig.update_layout(
+            **layout,
+            title=dict(text="Rolling 1-Year Return (%)", font=dict(size=12)),
+            height=280, margin=dict(l=10, r=10, t=40, b=30),
+            showlegend=False, yaxis=dict(ticksuffix="%"),
+        )
+        st.plotly_chart(fig, width='stretch')
+
+    # ── Calendar Year Returns ──
+    from pakfindata.engine.fund_risk import compute_calendar_year_returns
+    cal_returns = compute_calendar_year_returns(nav)
+    if cal_returns:
+        st.markdown(_section_label("CALENDAR YEAR RETURNS"), unsafe_allow_html=True)
+        years = sorted(cal_returns.keys())
+        cols = st.columns(min(len(years), 10))
+        for i, yr in enumerate(years[-10:]):  # last 10 years
+            ret = cal_returns[yr]
+            color = C_UP if ret > 0 else C_DN
+            cols[i % len(cols)].markdown(
+                f'<div style="text-align:center;padding:4px">'
+                f'<div style="color:{C_MUTED};font-size:11px">{yr}</div>'
+                f'<div style="color:{color};font-weight:700;font-size:16px">'
+                f'{"+" if ret > 0 else ""}{ret:.1f}%</div></div>',
+                unsafe_allow_html=True,
+            )
+
+    # ── Risk Scatter (all funds in category) ──
+    with st.expander("Category Risk-Return Scatter"):
+        _render_risk_metrics(con)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Factor Analysis Tab (Quant Upgrade)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _render_factor_analysis(con):
+    """Factor analysis: regression, MA signals, volatility regime."""
+    from pakfindata.engine.fund_factors import (
+        single_factor_regression,
+        nav_ma_signals,
+        rolling_volatility,
+        volatility_regime,
+    )
+    from pakfindata.engine.benchmark import get_benchmark_nav
+
+    st.markdown(_section_label("FACTOR ANALYSIS"), unsafe_allow_html=True)
+
+    funds = _get_fund_list_with_nav_count(con, 90)
+    if not funds:
+        st.info("Need funds with at least 90 NAV records.")
+        return
+
+    fund_options = {r["fund_id"]: f"{r['symbol']} -- {r['fund_name']}" for r in funds}
+    sel_fund = st.selectbox(
+        "Select Fund",
+        options=list(fund_options.keys()),
+        format_func=lambda x: fund_options.get(x, x),
+        key="factor_fund_select",
+    )
+
+    nav = _get_fund_nav_series(con, sel_fund)
+    if nav.empty or len(nav) < 50:
+        st.warning("Insufficient NAV data.")
+        return
+
+    benchmark = get_benchmark_nav(con, "KSE-100")
+
+    # ── CAPM Regression ──
+    if not benchmark.empty:
+        st.markdown(_section_label("CAPM SINGLE-FACTOR REGRESSION"), unsafe_allow_html=True)
+        reg = single_factor_regression(nav, benchmark)
+        r1, r2, r3 = st.columns(3)
+        r1.metric("Alpha (ann.)", f"{reg['alpha']*100:.2f}%" if reg.get("alpha") else "---")
+        r2.metric("Beta", f"{reg['beta']:.3f}" if reg.get("beta") else "---")
+        r3.metric("R-squared", f"{reg['r_squared']:.3f}" if reg.get("r_squared") else "---")
+
+        p1, p2, p3 = st.columns(3)
+        p1.metric("Alpha p-value", f"{reg['alpha_pvalue']:.4f}" if reg.get("alpha_pvalue") else "---")
+        p2.metric("Beta p-value", f"{reg['beta_pvalue']:.6f}" if reg.get("beta_pvalue") else "---")
+        p3.metric("Residual Std", f"{reg['residual_std']:.6f}" if reg.get("residual_std") else "---")
+
+        sig_alpha = reg.get("alpha_pvalue", 1) < 0.05 if reg.get("alpha_pvalue") else False
+        if sig_alpha and reg.get("alpha", 0) > 0:
+            st.success("Statistically significant positive alpha -- fund generates excess returns")
+        elif sig_alpha and reg.get("alpha", 0) < 0:
+            st.warning("Statistically significant negative alpha -- fund underperforms benchmark")
+    else:
+        st.info("KSE-100 benchmark data not available for regression analysis.")
+
+    st.markdown("---")
+
+    # ── MA Crossover Chart ──
+    st.markdown(_section_label("MOVING AVERAGE CROSSOVER (20/50)"), unsafe_allow_html=True)
+    ma = nav_ma_signals(nav, fast=20, slow=50)
+    if not ma.empty:
+        layout = _plotly_base()
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=ma.index, y=ma["nav"], mode="lines", name="NAV", line=dict(color="#EAECEF", width=1.5)))
+        fig.add_trace(go.Scatter(x=ma.index, y=ma["ma_fast"], mode="lines", name="MA 20", line=dict(color="#FFB300", width=1)))
+        fig.add_trace(go.Scatter(x=ma.index, y=ma["ma_slow"], mode="lines", name="MA 50", line=dict(color="#00B8D4", width=1)))
+
+        # Mark crossover points
+        crosses = ma[ma["signal"] != 0]
+        for _, row in crosses.iterrows():
+            color = "#00C853" if row["signal"] > 0 else "#FF5252"
+            fig.add_vline(x=row.name, line_dash="dot", line_color=color, opacity=0.5)
+
+        fig.update_layout(
+            **layout, height=350,
+            margin=dict(l=10, r=10, t=30, b=30),
+            legend=dict(orientation="h", y=-0.15),
+        )
+        st.plotly_chart(fig, width='stretch')
+
+        # Current signal
+        last_pos = int(ma["position"].iloc[-1])
+        days = ma["days_since_cross"].iloc[-1]
+        signal_text = "BULLISH (Golden Cross)" if last_pos == 1 else "BEARISH (Death Cross)"
+        signal_color = "#00C853" if last_pos == 1 else "#FF5252"
+        days_str = f"{int(days)} days ago" if not pd.isna(days) else "---"
+        st.markdown(
+            f'<div style="padding:8px 14px;background:rgba({"0,200,83" if last_pos==1 else "255,82,82"},0.1);'
+            f'border-left:3px solid {signal_color};border-radius:2px;font-family:ui-monospace,monospace;">'
+            f'<span style="color:{signal_color};font-weight:700;">{signal_text}</span> '
+            f'<span style="color:#9AA4B2;font-size:12px;">Last crossover: {days_str}</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("---")
+
+    # ── Volatility ──
+    st.markdown(_section_label("ROLLING VOLATILITY"), unsafe_allow_html=True)
+    vol = rolling_volatility(nav, windows=[21, 63, 252])
+    if not vol.empty:
+        layout = _plotly_base()
+
+        fig = go.Figure()
+        if "vol_21d" in vol.columns:
+            fig.add_trace(go.Scatter(x=vol.index, y=vol["vol_21d"]*100, name="21-day", line=dict(color="#FFB300", width=1)))
+        if "vol_63d" in vol.columns:
+            fig.add_trace(go.Scatter(x=vol.index, y=vol["vol_63d"]*100, name="63-day", line=dict(color="#00B8D4", width=1)))
+        if "vol_252d" in vol.columns:
+            fig.add_trace(go.Scatter(x=vol.index, y=vol["vol_252d"]*100, name="252-day", line=dict(color="#2F81F7", width=1)))
+        fig.update_layout(
+            **layout, height=280,
+            margin=dict(l=10, r=10, t=30, b=30),
+            yaxis=dict(ticksuffix="%", title=dict(text="Ann. Volatility")),
+            legend=dict(orientation="h", y=-0.15),
+        )
+        st.plotly_chart(fig, width='stretch')
+
+    # Volatility regime
+    regime = volatility_regime(nav)
+    regime_colors = {"LOW": "#00C853", "NORMAL": "#2F81F7", "HIGH": "#FFB300", "EXTREME": "#FF5252"}
+    rc = regime_colors.get(regime, "#6B7280")
+    st.markdown(
+        f'<span style="color:{rc};font-weight:700;font-family:ui-monospace,monospace;">'
+        f'Volatility Regime: {regime}</span>',
+        unsafe_allow_html=True,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LLM Analysis Tab (Quant Upgrade)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _render_llm_analysis(con):
+    """LLM-ready structured output for fund analysis."""
+    import json
+    from pakfindata.engine.fund_risk import generate_fund_analytics
+    from pakfindata.engine.fund_llm import fund_summary_for_llm, generate_market_context
+    from pakfindata.engine.benchmark import get_benchmark_nav
+
+    st.markdown(_section_label("LLM ANALYSIS"), unsafe_allow_html=True)
+    st.caption("Generate structured JSON for AI/LLM consumption")
+
+    mode = st.radio("Mode", ["Single Fund", "Market Context"], horizontal=True, key="llm_mode")
+
+    if mode == "Single Fund":
+        funds = _get_fund_list_with_nav_count(con, 90)
+        if not funds:
+            st.info("No funds with sufficient NAV history.")
+            return
+
+        fund_options = {r["fund_id"]: f"{r['symbol']} -- {r['fund_name']}" for r in funds}
+        sel_fund = st.selectbox(
+            "Select Fund",
+            options=list(fund_options.keys()),
+            format_func=lambda x: fund_options.get(x, x),
+            key="llm_fund_select",
+        )
+
+        if st.button("Generate Analysis", key="llm_generate"):
+            nav = _get_fund_nav_series(con, sel_fund)
+            if nav.empty:
+                st.warning("No NAV data.")
+                return
+
+            benchmark = get_benchmark_nav(con, "KSE-100")
+            bm = benchmark if not benchmark.empty else None
+
+            with st.spinner("Computing full analytics..."):
+                analytics = generate_fund_analytics(
+                    fund_options.get(sel_fund, sel_fund), nav, bm,
+                )
+
+                # Get fund metadata via /v1/funds/{fund_id}
+                fund_d = api_client.get_fund(sel_fund) or {}
+                metadata = {
+                    k: fund_d.get(k) for k in (
+                        "fund_name", "amc_name", "category", "fund_type",
+                        "benchmark", "launch_date", "expense_ratio", "is_shariah",
+                    )
+                } if fund_d else {}
+
+                summary = fund_summary_for_llm(
+                    fund_name=metadata.get("fund_name", sel_fund),
+                    analytics=analytics,
+                    nav_history=nav,
+                    metadata=metadata,
+                )
+
+            # Display hints as bullet points
+            hints = summary.get("llm_narrative_hints", [])
+            if hints:
+                st.markdown(_section_label("KEY INSIGHTS"), unsafe_allow_html=True)
+                for h in hints:
+                    st.markdown(f"- {h}")
+
+            # Display JSON
+            st.markdown(_section_label("STRUCTURED OUTPUT"), unsafe_allow_html=True)
+            st.code(json.dumps(summary, indent=2, default=str), language="json")
+
+    else:
+        # Market Context
+        cat_filter = st.text_input("Category filter (optional)", key="llm_cat_filter")
+        top_n = st.slider("Top/Bottom N", 5, 30, 10, key="llm_top_n")
+
+        if st.button("Generate Market Context", key="llm_mkt_generate"):
+            with st.spinner("Generating market context..."):
+                ctx = generate_market_context(
+                    con,
+                    top_n=top_n,
+                    category=cat_filter if cat_filter else None,
+                )
+
+            if "error" in ctx:
+                st.error(f"Error: {ctx['error']}")
+            else:
+                summary = ctx.get("market_summary", {})
+                st.metric("Total Active Funds", summary.get("total_active_funds", "---"))
+                if summary.get("avg_return_1m"):
+                    st.metric("Avg 1M Return", f"{summary['avg_return_1m']:.2f}%")
+
+                st.markdown(_section_label("FULL CONTEXT JSON"), unsafe_allow_html=True)
+                st.code(json.dumps(ctx, indent=2, default=str), language="json")
 
 
 def render_vps_standalone():

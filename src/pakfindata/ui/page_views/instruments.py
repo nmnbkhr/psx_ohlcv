@@ -19,6 +19,32 @@ from pakfindata.ui.components.helpers import (
     render_market_status_badge,
 )
 
+_CACHE_TTL = 3600
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_instruments(instrument_type: str = None, active_only: bool = True):
+    con = get_connection()
+    return get_instruments(con, instrument_type=instrument_type, active_only=active_only)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_instrument_metrics(instrument_id: int):
+    con = get_connection()
+    return compute_all_metrics(con, instrument_id)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_eod_ohlcv(symbol: str, limit: int = 90):
+    con = get_connection()
+    return get_eod_ohlcv(con, symbol=symbol, limit=limit)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _load_ohlcv_instrument(instrument_id: int, limit: int = 90):
+    con = get_connection()
+    return get_ohlcv_instrument(con, instrument_id, limit=limit)
+
 
 def render_instruments():
     """Browse and explore ETFs, REITs, and Indexes."""
@@ -49,7 +75,7 @@ def render_instruments():
 
     # Get instruments
     type_filter = None if inst_type == "ALL" else inst_type
-    instruments = get_instruments(con, instrument_type=type_filter, active_only=active_only)
+    instruments = _load_instruments(instrument_type=type_filter, active_only=active_only)
 
     if not instruments:
         st.warning("No instruments found. Run `pfsync universe seed-phase1` to seed the instrument universe.")
@@ -83,7 +109,7 @@ def render_instruments():
         display_df = df[display_cols].copy()
         display_df.columns = ["Symbol", "Name", "Type", "Source", "Active"]
         display_df["Active"] = display_df["Active"].apply(lambda x: "✓" if x else "✗")
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        st.dataframe(display_df, width='stretch', hide_index=True)
 
     st.markdown("---")
 
@@ -109,7 +135,7 @@ def render_instruments():
                 # Compute metrics if available
                 instrument_id = selected_inst.get("instrument_id")
                 if instrument_id:
-                    metrics = compute_all_metrics(con, instrument_id)
+                    metrics = _load_instrument_metrics(instrument_id)
                     if "error" not in metrics:
                         st.markdown("**Performance Metrics:**")
                         if metrics.get("return_1m"):
@@ -130,11 +156,11 @@ def render_instruments():
                 ohlcv_df = None
                 # Try eod_ohlcv first (equities, ETFs, REITs via pfsync eod)
                 if symbol:
-                    ohlcv_df = get_eod_ohlcv(con, symbol=symbol, limit=90)
+                    ohlcv_df = _load_eod_ohlcv(symbol, limit=90)
 
                 # Fall back to ohlcv_instruments (indices, legacy sync)
                 if (ohlcv_df is None or ohlcv_df.empty) and instrument_id:
-                    ohlcv_df = get_ohlcv_instrument(con, instrument_id, limit=90)
+                    ohlcv_df = _load_ohlcv_instrument(instrument_id, limit=90)
 
                 if ohlcv_df is not None and not ohlcv_df.empty:
                     ohlcv_df = ohlcv_df.sort_values("date")
@@ -144,7 +170,7 @@ def render_instruments():
                         price_col="close",
                         title=f"{selected_symbol} - Last 90 Days"
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
                 else:
                     st.info(f"No OHLCV data available. Run `pfsync eod {symbol}` to sync data.")
 

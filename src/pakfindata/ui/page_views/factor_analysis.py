@@ -1,17 +1,40 @@
-"""Factor analysis page."""
+"""Factor analysis page.
+
+Reads data through the /v1 API client. Direct SQLite reads moved to
+``/v1/factors/raw-data`` and ``/v1/factors/risk-stats`` plus
+``/v1/market/kse100`` (Phase 1.7.D.4).
+"""
 
 import pandas as pd
 import streamlit as st
 
-from pakfindata.db import get_latest_kse100
 from pakfindata.sources.fx_client import FXClient
+from pakfindata.ui.api import client as api_client
 from pakfindata.ui.session_tracker import track_page_visit
 from pakfindata.ui.components.helpers import (
-    get_connection,
-    get_sector_names,
     render_footer,
     render_market_status_badge,
 )
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_factor_data() -> tuple[pd.DataFrame, int]:
+    """Load raw factor data from /v1/factors/raw-data."""
+    resp = api_client.get_factor_raw_data()
+    if not resp:
+        return pd.DataFrame(), 0
+    rows = resp.get("rows") or []
+    snapshot_count = int(resp.get("snapshot_count") or 0)
+    return pd.DataFrame(rows), snapshot_count
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_risk_data(top_stocks: tuple) -> pd.DataFrame:
+    """Load 90-day risk metrics for given stocks."""
+    rows = api_client.get_factor_risk_stats(list(top_stocks), days=90)
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows)
 
 _fx = FXClient()
 
@@ -45,6 +68,7 @@ SECTOR_FX_SENSITIVITY = {
 
 def render_factor_analysis():
     """Quantitative factor analysis and stock rankings."""
+    api_client.render_api_status_banner_if_down()
     # =================================================================
     # HEADER
     # =================================================================
@@ -55,13 +79,17 @@ def render_factor_analysis():
     with header_col2:
         render_market_status_badge()
 
-    con = get_connection()
-    track_page_visit(con, "Factor Analysis")
+    # Session tracker still needs a live SQLite connection; pass None
+    # and let it fall through quietly. Helper migration is deferred to
+    # 1.8.x along with the smart client retirement.
+    try:
+        track_page_visit(None, "Factor Analysis")
+    except Exception:
+        pass
 
-    # Check data availability
-    snapshot_count = con.execute(
-        "SELECT COUNT(DISTINCT symbol) FROM company_snapshots"
-    ).fetchone()[0]
+    # Load factor data (also surfaces snapshot_count for coverage check)
+    with st.spinner("Calculating factor scores..."):
+        factor_df, snapshot_count = _load_factor_data()
 
     if snapshot_count < 10:
         st.warning(
@@ -113,76 +141,8 @@ def render_factor_analysis():
 
         st.markdown("---")
 
-        # Build factor data
+        # Build factor data (loaded once at top of render)
         try:
-            # Get latest snapshot data for each company
-            # Schema: quote_data, trading_data, equity_data, financials_data, ratios_data (all JSON)
-            factor_query = """
-                WITH latest_snapshots AS (
-                    SELECT
-                        cs.symbol,
-                        cs.snapshot_date,
-                        cs.company_name,
-                        cs.sector_name as sector_code,
-                        -- From quote_data: close price
-                        json_extract(cs.quote_data, '$.close') as price,
-                        -- From trading_data (REG segment): volume, high, low, 52-week, P/E
-                        json_extract(cs.trading_data, '$.REG.ldcp') as ldcp,
-                        json_extract(cs.trading_data, '$.REG.volume') as volume,
-                        json_extract(cs.trading_data, '$.REG.high') as high,
-                        json_extract(cs.trading_data, '$.REG.low') as low,
-                        json_extract(cs.trading_data, '$.REG.week_52_low') as wk52_low,
-                        json_extract(cs.trading_data, '$.REG.week_52_high') as wk52_high,
-                        json_extract(cs.trading_data, '$.REG.pe_ratio_ttm') as pe_ratio,
-                        json_extract(cs.trading_data, '$.REG.ytd_change') as ytd_change,
-                        json_extract(cs.trading_data, '$.REG.year_1_change') as year_1_change,
-                        -- From equity_data: market cap + shares
-                        json_extract(cs.equity_data, '$.market_cap') as market_cap,
-                        json_extract(cs.equity_data, '$.outstanding_shares') as outstanding_shares,
-                        json_extract(cs.equity_data, '$.free_float_percent') as free_float_pct,
-                        -- From financials_data: EPS (latest annual)
-                        json_extract(cs.financials_data, '$.annual[0].eps') as eps,
-                        -- From ratios_data: profit margins
-                        json_extract(cs.ratios_data, '$.annual[0].net_profit_margin') as net_margin,
-                        json_extract(cs.ratios_data, '$.annual[0].eps_growth') as eps_growth
-                    FROM company_snapshots cs
-                    WHERE cs.snapshot_date = (
-                        SELECT MAX(snapshot_date) FROM company_snapshots cs2
-                        WHERE cs2.symbol = cs.symbol
-                    )
-                ),
-                price_history AS (
-                    SELECT
-                        symbol,
-                        (SELECT close FROM eod_ohlcv e2 WHERE e2.symbol = eod_ohlcv.symbol ORDER BY date DESC LIMIT 1) as latest_close,
-                        (SELECT close FROM eod_ohlcv e3 WHERE e3.symbol = eod_ohlcv.symbol ORDER BY date DESC LIMIT 1 OFFSET 20) as close_20d_ago,
-                        (SELECT close FROM eod_ohlcv e4 WHERE e4.symbol = eod_ohlcv.symbol ORDER BY date DESC LIMIT 1 OFFSET 60) as close_60d_ago,
-                        (SELECT AVG(close) FROM (SELECT close FROM eod_ohlcv e5 WHERE e5.symbol = eod_ohlcv.symbol ORDER BY date DESC LIMIT 20)) as sma_20,
-                        (SELECT AVG(close) FROM (SELECT close FROM eod_ohlcv e6 WHERE e6.symbol = eod_ohlcv.symbol ORDER BY date DESC LIMIT 50)) as sma_50
-                    FROM eod_ohlcv
-                    GROUP BY symbol
-                )
-                SELECT
-                    ls.*,
-                    ph.latest_close,
-                    ph.close_20d_ago,
-                    ph.close_60d_ago,
-                    ph.sma_20,
-                    ph.sma_50,
-                    CASE WHEN ph.close_20d_ago > 0
-                        THEN (ph.latest_close - ph.close_20d_ago) / ph.close_20d_ago * 100
-                        ELSE 0 END as return_20d,
-                    CASE WHEN ph.close_60d_ago > 0
-                        THEN (ph.latest_close - ph.close_60d_ago) / ph.close_60d_ago * 100
-                        ELSE 0 END as return_60d
-                FROM latest_snapshots ls
-                LEFT JOIN price_history ph ON ls.symbol = ph.symbol
-                WHERE ls.price > 0
-            """
-
-            with st.spinner("Calculating factor scores..."):
-                factor_df = pd.read_sql_query(factor_query, con)
-
             if factor_df.empty:
                 st.info("No factor data available. Scrape company data first.")
             else:
@@ -279,7 +239,7 @@ def render_factor_analysis():
 
                 st.dataframe(
                     display_df,
-                    use_container_width=True,
+                    width='stretch',
                     hide_index=True,
                     column_config={
                         "Rank": st.column_config.NumberColumn(format="%d"),
@@ -341,7 +301,7 @@ def render_factor_analysis():
                     title="Factor Correlation Matrix"
                 )
                 fig.update_layout(height=400)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
                 st.markdown("""
                 **Interpretation:**
@@ -363,9 +323,9 @@ def render_factor_analysis():
 
         try:
             if 'factor_df' in dir() and not factor_df.empty:
-                # Get sector names
-                sector_map = get_sector_names(con)
-
+                # /v1/factors/raw-data aliases snapshot.sector_name as
+                # sector_code (snapshot.sector_code is empty across the
+                # dataset). Group by it directly; no separate name map.
                 sector_exposure = factor_df.groupby("sector_code").agg({
                     "value_score": "mean",
                     "momentum_score": "mean",
@@ -373,8 +333,7 @@ def render_factor_analysis():
                     "volatility_score": "mean",
                     "symbol": "count"
                 }).reset_index()
-                sector_exposure.columns = ["Sector Code", "Value", "Momentum", "Quality", "LowVol", "Count"]
-                sector_exposure["Sector"] = sector_exposure["Sector Code"].map(sector_map).fillna(sector_exposure["Sector Code"])
+                sector_exposure.columns = ["Sector", "Value", "Momentum", "Quality", "LowVol", "Count"]
                 sector_exposure = sector_exposure.sort_values("Count", ascending=False)
 
                 # ── FX Regime Overlay ──────────────────────────────
@@ -431,7 +390,7 @@ def render_factor_analysis():
 
                 st.dataframe(
                     sector_exposure[display_cols],
-                    use_container_width=True,
+                    width='stretch',
                     hide_index=True,
                     column_config=col_config,
                 )
@@ -453,7 +412,7 @@ def render_factor_analysis():
                     title="Factor Scores by Sector"
                 )
                 fig.update_layout(height=400, xaxis_tickangle=-45)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
             else:
                 st.info("Run Factor Rankings first to see sector exposure.")
         except Exception as e:
@@ -475,21 +434,7 @@ def render_factor_analysis():
                 top_stocks = factor_df.head(20)["symbol"].tolist()
 
                 # Calculate volatility from EOD data
-                risk_query = """
-                    SELECT
-                        symbol,
-                        COUNT(*) as trading_days,
-                        AVG(close) as avg_price,
-                        MIN(close) as min_price,
-                        MAX(close) as max_price,
-                        (MAX(close) - MIN(close)) / AVG(close) * 100 as range_pct
-                    FROM eod_ohlcv
-                    WHERE symbol IN ({})
-                    AND date >= date('now', '-90 days')
-                    GROUP BY symbol
-                """.format(",".join([f"'{s}'" for s in top_stocks]))
-
-                risk_df = pd.read_sql_query(risk_query, con)
+                risk_df = _load_risk_data(tuple(top_stocks))
 
                 if not risk_df.empty:
                     # Merge with factor data
@@ -514,7 +459,7 @@ def render_factor_analysis():
                             "composite_score": "Score",
                             "market_cap_str": "Mkt Cap"
                         }),
-                        use_container_width=True,
+                        width='stretch',
                         hide_index=True,
                         column_config={
                             "Avg Price": st.column_config.NumberColumn(format="Rs.%.2f"),
@@ -553,13 +498,13 @@ def render_factor_analysis():
                     st.markdown("---")
                     st.markdown("#### Benchmark Comparison")
 
-                    kse100 = get_latest_kse100(con)
+                    kse100 = api_client.get_kse100_hero()
                     if kse100:
                         bench_cols = st.columns([2, 1, 1])
                         with bench_cols[0]:
                             kse_value = kse100.get("value", 0)
                             kse_change = kse100.get("change_pct", 0) or 0
-                            kse_color = "#00C853" if kse_change >= 0 else "#FF1744"
+                            kse_color = "#00C853" if kse_change >= 0 else "#FF5252"
 
                             st.markdown(f"""
                             <div style="background: rgba(33,150,243,0.1); border-radius: 8px; padding: 12px;
@@ -574,7 +519,7 @@ def render_factor_analysis():
                         with bench_cols[1]:
                             ytd = kse100.get("ytd_change_pct")
                             if ytd:
-                                ytd_color = "#00C853" if ytd >= 0 else "#FF1744"
+                                ytd_color = "#00C853" if ytd >= 0 else "#FF5252"
                                 st.metric("Index YTD", f"{ytd:+.2f}%", delta_color="off")
                         with bench_cols[2]:
                             one_yr = kse100.get("one_year_change_pct")

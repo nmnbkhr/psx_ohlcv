@@ -70,6 +70,7 @@ class GSPScraper:
             else:
                 counts["failed"] += 1
 
+        con.commit()
         return counts
 
     def get_gis_summary(self, con: sqlite3.Connection) -> dict:

@@ -48,15 +48,16 @@ class FXClient:
     def __init__(
         self,
         base_url: str = "http://localhost:8100",
-        timeout: float = 5.0,
-        retries: int = 2,
+        timeout: float = 2.0,
+        retries: int = 0,
     ):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self._session = self._create_session(retries)
         self._health_cache: Optional[bool] = None
         self._health_cache_time: float = 0
-        self._health_cache_ttl: float = 60.0  # Cache health for 60s
+        self._health_cache_ttl: float = 60.0  # Cache healthy=True for 60s
+        self._health_fail_ttl: float = 300.0  # Cache healthy=False for 5 min
 
     def _create_session(self, retries: int) -> requests.Session:
         """Create a session with retry logic and connection pooling."""
@@ -107,15 +108,22 @@ class FXClient:
 
     def is_healthy(self) -> bool:
         """
-        Check if FX service is alive. Cached for 60 seconds.
+        Check if FX service is alive. Cached for 60s (healthy) / 5min (unhealthy).
         Use this before calling other methods for fast-fail.
         """
         now = time.time()
-        if self._health_cache is not None and (now - self._health_cache_time) < self._health_cache_ttl:
-            return self._health_cache
+        if self._health_cache is not None:
+            ttl = self._health_cache_ttl if self._health_cache else self._health_fail_ttl
+            if (now - self._health_cache_time) < ttl:
+                return self._health_cache
 
-        result = self._get("/health")
-        healthy = result is not None and result.get("status") == "healthy"
+        try:
+            resp = self._session.get(
+                f"{self.base_url}/health", timeout=1.0,
+            )
+            healthy = resp.status_code == 200 and resp.json().get("status") == "healthy"
+        except Exception:
+            healthy = False
         self._health_cache = healthy
         self._health_cache_time = now
         return healthy

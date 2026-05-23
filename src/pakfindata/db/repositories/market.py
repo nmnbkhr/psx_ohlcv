@@ -110,30 +110,80 @@ def get_index_history(
         return []
 
 
+def get_index_history_range(
+    con: sqlite3.Connection,
+    index_code: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    limit: int = 5000,
+) -> list[dict]:
+    """Return one index's daily history within an explicit date range.
+
+    Complements :func:`get_index_history`, which takes ``days=N``; the
+    API contract surfaces ``from``/``to`` so callers can pin a window.
+
+    Args:
+        con: Database connection
+        index_code: Index code (case-sensitive; caller normalizes)
+        start_date: Inclusive lower bound (YYYY-MM-DD); None = unbounded
+        end_date: Inclusive upper bound (YYYY-MM-DD); None = unbounded
+        limit: Safety cap on rows returned
+
+    Returns:
+        List of dicts, newest first; empty list on error or no data.
+    """
+    sql = (
+        "SELECT DISTINCT index_date, value, change, change_pct, "
+        "high, low, volume "
+        "FROM psx_indices WHERE index_code = ?"
+    )
+    params: list = [index_code]
+    if start_date:
+        sql += " AND index_date >= ?"
+        params.append(start_date)
+    if end_date:
+        sql += " AND index_date <= ?"
+        params.append(end_date)
+    sql += " ORDER BY index_date DESC LIMIT ?"
+    params.append(limit)
+    try:
+        cur = con.execute(sql, params)
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
 def get_all_latest_indices(con: sqlite3.Connection) -> list[dict]:
     """
     Get latest data for all indices.
 
     Returns:
-        List of dicts with index data
+        List of dicts with index data, one row per index code.
     """
+    # Window-function "latest per group" — robust to the case where the
+    # day's MAX(index_time) doesn't fall on the index's MAX(index_date).
+    # The previous composite-key IN-clause silently dropped any index
+    # whose latest-time row wasn't on its latest-date.
     try:
         cur = con.execute("""
-            SELECT * FROM psx_indices pi
-            WHERE (index_code, index_date, index_time) IN (
-                SELECT index_code, MAX(index_date), MAX(index_time)
-                FROM psx_indices
-                GROUP BY index_code
-            )
+            SELECT * FROM (
+                SELECT pi.*, ROW_NUMBER() OVER (
+                    PARTITION BY index_code
+                    ORDER BY index_date DESC, index_time DESC
+                ) AS _rn
+                FROM psx_indices pi
+            ) WHERE _rn = 1
             ORDER BY
                 CASE index_code
                     WHEN 'KSE100' THEN 1
                     WHEN 'KSE30' THEN 2
                     WHEN 'KMI30' THEN 3
                     ELSE 4
-                END
+                END,
+                index_code
         """)
-        return [dict(row) for row in cur.fetchall()]
+        return [{k: v for k, v in dict(row).items() if k != "_rn"}
+                for row in cur.fetchall()]
     except Exception:
         return []
 

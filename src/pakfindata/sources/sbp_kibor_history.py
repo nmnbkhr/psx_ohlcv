@@ -58,9 +58,10 @@ TENOR_MAP = {
     "3 - Month": "3M", "3 -Month": "3M", "3-Month": "3M",
     "6 - Month": "6M", "6 -Month": "6M", "6-Month": "6M",
     "9 - Month": "9M", "9 -Month": "9M", "9-Month": "9M",
-    "1 - Year": "1Y", "1 -Year": "1Y", "1-Year": "1Y",
-    "2 - Year": "2Y", "2 -Year": "2Y", "2-Year": "2Y",
-    "3 - Year": "3Y", "3 -Year": "3Y", "3-Year": "3Y", "3- Year": "3Y",
+    "12 - Month": "12M", "12 -Month": "12M", "12-Month": "12M", "12 Month": "12M",
+    "1 - Year": "12M", "1 -Year": "12M", "1-Year": "12M",
+    "2 - Year": "24M", "2 -Year": "24M", "2-Year": "24M",
+    "3 - Year": "36M", "3 -Year": "36M", "3-Year": "36M", "3- Year": "36M",
 }
 
 
@@ -273,12 +274,14 @@ class SBPKiborHistoryScraper:
 
             if i % 10 == 0:
                 _write_progress(progress)
+                con.commit()
 
             time.sleep(REQUEST_DELAY)
 
         progress["status"] = "completed"
         progress["finished_at"] = datetime.now().isoformat()
         _write_progress(progress)
+        con.commit()
         con.close()
 
         log.info(

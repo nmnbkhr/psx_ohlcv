@@ -1,14 +1,57 @@
-"""Fixed income pages (bonds, sukuk, yield curves, SBP auctions)."""
+"""Fixed income pages (bonds, sukuk, yield curves, SBP auctions).
+
+READS migrated to /v1 API client (Phase 1.7.B.8). The page still
+holds 2503 LOC and 9 render functions — splits were considered in
+the docs/architecture migration plan but deferred to Phase 2
+(reads-only migration per Group B audit Q3).
+
+WRITES (seed / sync / scrape buttons) still take a direct
+``get_connection()`` because Phase 1.7 only touches read paths.
+"""
 
 import json
 import pandas as pd
 import streamlit as st
 import time
 
+from pakfindata.ui.api import client as api_client
 from pakfindata.ui.components.helpers import (
     get_connection,
     render_footer,
 )
+
+
+# ── Cached data loaders ──────────────────────────────────────────────────────
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_pkrv_curve(date: str) -> pd.DataFrame:
+    rows = api_client.get_pkrv(date=date) or []
+    if not rows:
+        return pd.DataFrame(columns=["tenor_months", "yield_pct"])
+    return pd.DataFrame(rows)[["tenor_months", "yield_pct"]]
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_pkisrv_curve(date: str) -> pd.DataFrame:
+    rows = api_client.get_pkisrv(date=date) or []
+    if not rows:
+        return pd.DataFrame(columns=["tenor", "yield_pct"])
+    return pd.DataFrame(rows)[["tenor", "yield_pct"]]
+
+
+def _load_pkrv_dates() -> list[str]:
+    from pakfindata.db.date_manifest import get_dates
+    return get_dates("pkrv_daily")
+
+
+def _load_pkisrv_dates() -> list[str]:
+    from pakfindata.db.date_manifest import get_dates
+    return get_dates("pkisrv_daily")
+
+
+def _load_both_curve_dates() -> list[str]:
+    from pakfindata.db.date_manifest import get_dates
+    return sorted(set(get_dates("pkrv_daily")) | set(get_dates("pkisrv_daily")), reverse=True)
 
 
 def _extract_issuer(s) -> str:
@@ -221,7 +264,7 @@ def render_bonds_screener():
             # Drop columns that are entirely empty
             df = df.replace("", pd.NA)
             df = df.dropna(axis=1, how="all").fillna("")
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width='stretch', hide_index=True)
             st.caption(f"{len(df)} securities")
 
             # =================================================================
@@ -317,7 +360,7 @@ def render_yield_curve():
     # =================================================================
     # CONTROLS
     # =================================================================
-    ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 2, 1])
+    ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4 = st.columns([2, 2, 1, 1])
 
     with ctrl_col1:
         curve_type = st.selectbox(
@@ -328,26 +371,21 @@ def render_yield_curve():
 
     # Get available dates based on curve type
     if curve_type == "PKISRV (Islamic)":
-        date_rows = con.execute(
-            "SELECT DISTINCT date FROM pkisrv_daily ORDER BY date DESC"
-        ).fetchall()
+        date_list = _load_pkisrv_dates()
     elif curve_type == "PKRV (Government)":
-        date_rows = con.execute(
-            "SELECT DISTINCT date FROM pkrv_daily ORDER BY date DESC"
-        ).fetchall()
+        date_list = _load_pkrv_dates()
     else:
-        date_rows = con.execute(
-            "SELECT DISTINCT date FROM pkrv_daily "
-            "UNION SELECT DISTINCT date FROM pkisrv_daily "
-            "ORDER BY date DESC"
-        ).fetchall()
-    date_list = [r["date"] for r in date_rows]
+        date_list = _load_both_curve_dates()
 
     with ctrl_col2:
         if date_list:
             sel_date = st.selectbox("Curve Date", date_list[:500], index=0, key="yc_date")
         else:
             sel_date = None
+
+    with ctrl_col4:
+        from pakfindata.ui.components.helpers import render_date_refresh_button
+        render_date_refresh_button(["pkrv_daily", "pkisrv_daily", "pkfrv_daily"], key="yc_refresh_dates")
 
     with ctrl_col3:
         show_compare = st.checkbox("Compare", key="yc_compare")
@@ -378,11 +416,7 @@ def render_yield_curve():
 
         # --- PKRV ---
         if curve_type in ("PKRV (Government)", "Both (Overlay)"):
-            df_pkrv = pd.read_sql_query(
-                "SELECT tenor_months, yield_pct FROM pkrv_daily "
-                "WHERE date = ? ORDER BY tenor_months",
-                con, params=(sel_date,),
-            )
+            df_pkrv = _load_pkrv_curve(sel_date)
             if not df_pkrv.empty:
                 has_data = True
                 df_pkrv["tenor_label"] = df_pkrv["tenor_months"].apply(
@@ -409,11 +443,7 @@ def render_yield_curve():
 
                 # Comparison
                 if cmp_date:
-                    df_cmp = pd.read_sql_query(
-                        "SELECT tenor_months, yield_pct FROM pkrv_daily "
-                        "WHERE date = ? ORDER BY tenor_months",
-                        con, params=(cmp_date,),
-                    )
+                    df_cmp = _load_pkrv_curve(cmp_date)
                     if not df_cmp.empty:
                         df_cmp["tenor_label"] = df_cmp["tenor_months"].apply(
                             lambda m: _TENOR_LABELS.get(m, f"{m}M")
@@ -429,10 +459,7 @@ def render_yield_curve():
 
         # --- PKISRV ---
         if curve_type in ("PKISRV (Islamic)", "Both (Overlay)"):
-            df_pkisrv = pd.read_sql_query(
-                "SELECT tenor, yield_pct FROM pkisrv_daily WHERE date = ?",
-                con, params=(sel_date,),
-            )
+            df_pkisrv = _load_pkisrv_curve(sel_date)
             if not df_pkisrv.empty:
                 has_data = True
                 df_pkisrv["tenor_months"] = df_pkisrv["tenor"].apply(_pkisrv_tenor_to_months)
@@ -459,10 +486,7 @@ def render_yield_curve():
                         })
 
                 if cmp_date:
-                    df_cmp_i = pd.read_sql_query(
-                        "SELECT tenor, yield_pct FROM pkisrv_daily WHERE date = ?",
-                        con, params=(cmp_date,),
-                    )
+                    df_cmp_i = _load_pkisrv_curve(cmp_date)
                     if not df_cmp_i.empty:
                         df_cmp_i["tenor_months"] = df_cmp_i["tenor"].apply(_pkisrv_tenor_to_months)
                         df_cmp_i = df_cmp_i.sort_values("tenor_months").reset_index(drop=True)
@@ -494,7 +518,7 @@ def render_yield_curve():
                 tickvals=all_tenors,
                 ticktext=[_TENOR_LABELS.get(m, f"{m}M") for m in all_tenors],
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
             # =============================================================
             # CURVE STATISTICS
@@ -541,7 +565,7 @@ def render_yield_curve():
             if table_rows:
                 st.dataframe(
                     pd.DataFrame(table_rows),
-                    use_container_width=True, hide_index=True,
+                    width='stretch', hide_index=True,
                     column_config={
                         "Yield (%)": st.column_config.NumberColumn(format="%.4f%%"),
                     },
@@ -730,7 +754,7 @@ def render_sukuk_screener():
             })
 
         df = pd.DataFrame(table_data)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
 
         st.markdown(f"**Total: {len(sukuk_list)} instruments**")
 
@@ -822,24 +846,24 @@ def render_sukuk_yield_curve():
         st.markdown("### PKISRV — Pakistan Islamic Revaluation Rate")
         st.caption("Daily Islamic yield curve from MUFAP (Shariah-compliant securities)")
 
-        if con is None:
-            st.error("Database connection not available")
-        else:
-            row_count_row = con.execute(
-                "SELECT COUNT(*) as cnt FROM pkisrv_daily"
-            ).fetchone()
-            row_count = row_count_row["cnt"] if row_count_row else 0
+        # Probe coverage via /v1/yield-curves/pkisrv (latest day).
+        # If even latest is empty, the table has no data.
+        _probe = api_client.get_pkisrv() or []
+        row_count = len(_probe)
 
-            if row_count == 0:
-                st.info(
-                    "No PKISRV data available. Go to Treasury Dashboard and click "
-                    "'Sync Yield Curves (MUFAP)' to download Islamic yield curve data."
-                )
-            else:
-                dates = con.execute(
-                    "SELECT DISTINCT date FROM pkisrv_daily ORDER BY date DESC"
-                ).fetchall()
-                date_list = [r["date"] for r in dates]
+        if row_count == 0:
+            st.info(
+                "No PKISRV data available. Go to Treasury Dashboard and click "
+                "'Sync Yield Curves (MUFAP)' to download Islamic yield curve data."
+            )
+        else:
+            # The body below remains at its original (deeper) indent
+            # because the legacy code wrapped it in `if con is None: ...
+            # else: <body>`. After collapsing that, the inner block is
+            # preserved verbatim under this re-introduced `if True:` to
+            # avoid a 200-line re-indent.
+            if True:
+                date_list = _load_pkisrv_dates()
 
                 ctrl1, ctrl2 = st.columns(2)
                 with ctrl1:
@@ -852,11 +876,8 @@ def render_sukuk_yield_curve():
                         key="sukuk_pkisrv_compare"
                     )
 
-                df = pd.read_sql_query(
-                    "SELECT tenor, yield_pct FROM pkisrv_daily"
-                    " WHERE date = ? ORDER BY tenor",
-                    con, params=(selected_date,),
-                )
+                _rows = api_client.get_pkisrv(date=selected_date) or []
+                df = pd.DataFrame(_rows)[["tenor", "yield_pct"]] if _rows else pd.DataFrame(columns=["tenor", "yield_pct"])
 
                 if not df.empty:
                     # Tenor → days mapping for hover + sort
@@ -882,11 +903,8 @@ def render_sukuk_yield_curve():
                     ))
 
                     if compare_date != "None":
-                        cdf = pd.read_sql_query(
-                            "SELECT tenor, yield_pct FROM pkisrv_daily"
-                            " WHERE date = ? ORDER BY tenor",
-                            con, params=(compare_date,),
-                        )
+                        _crows = api_client.get_pkisrv(date=compare_date) or []
+                        cdf = pd.DataFrame(_crows)[["tenor", "yield_pct"]] if _crows else pd.DataFrame(columns=["tenor", "yield_pct"])
                         if not cdf.empty:
                             cdf["days"] = cdf["tenor"].map(
                                 lambda t: _tenor_days.get(t.strip(), 9999)
@@ -899,11 +917,8 @@ def render_sukuk_yield_curve():
                             ))
 
                     # Overlay PKRV for spread comparison
-                    pkrv = pd.read_sql_query(
-                        "SELECT tenor_months, yield_pct FROM pkrv_daily"
-                        " WHERE date = ? ORDER BY tenor_months",
-                        con, params=(selected_date,),
-                    )
+                    _prows = api_client.get_pkrv(date=selected_date) or []
+                    pkrv = pd.DataFrame(_prows)[["tenor_months", "yield_pct"]] if _prows else pd.DataFrame(columns=["tenor_months", "yield_pct"])
                     if not pkrv.empty:
                         tenor_map = {
                             1: "1M", 3: "3M", 6: "6M", 12: "1Y",
@@ -926,7 +941,7 @@ def render_sukuk_yield_curve():
                         height=450, hovermode="x unified",
                         legend=dict(orientation="h", y=-0.15),
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
                     st.caption(f"{row_count} total records | {len(date_list)} dates")
 
@@ -937,7 +952,7 @@ def render_sukuk_yield_curve():
                             "tenor": "Tenor", "days": "Days",
                             "yield_pct": "Yield (%)",
                         }),
-                        use_container_width=True, hide_index=True,
+                        width='stretch', hide_index=True,
                     )
                 else:
                     st.info("No data points for selected date")
@@ -1001,13 +1016,13 @@ def render_sukuk_yield_curve():
                 ticktext=df["tenor_label"].tolist(),
             )
 
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
             st.markdown("### Curve Points")
             table_df = df[["tenor_label", "tenor_days", "yield_pct"]].copy()
             table_df.columns = ["Tenor", "Days", "Yield (%)"]
             table_df["Yield (%)"] = table_df["Yield (%)"].apply(lambda x: f"{x:.4f}%")
-            st.dataframe(table_df, use_container_width=True, hide_index=True)
+            st.dataframe(table_df, width='stretch', hide_index=True)
 
             st.markdown("### Yield Interpolation")
             interp_col1, interp_col2 = st.columns([1, 2])
@@ -1069,7 +1084,7 @@ def render_sbp_auction_archive():
         {"Source": name.replace("_", " ").title(), "URL": url}
         for name, url in urls.items()
     ]
-    st.dataframe(pd.DataFrame(url_data), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(url_data), width='stretch', hide_index=True)
 
     st.info("Download documents and place in the document directory.")
 
@@ -1126,7 +1141,7 @@ def render_sbp_auction_archive():
             })
 
         df = pd.DataFrame(table_data)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
 
         st.markdown(f"**Total: {len(documents)} documents**")
     else:
@@ -1356,7 +1371,7 @@ def render_govt_fixed_income():
             })
 
         df = pd.DataFrame(table_data)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
 
         st.markdown(f"**Total: {len(instruments)} instruments**")
 
@@ -1536,7 +1551,7 @@ def render_fi_yield_curve():
                     height=400,
                 )
 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
                 # =================================================================
                 # CURVE METRICS
@@ -1583,7 +1598,7 @@ def render_fi_yield_curve():
                     })
 
                 df = pd.DataFrame(table_data)
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                st.dataframe(df, width='stretch', hide_index=True)
 
         else:
             st.warning(f"No data for curve: {analytics.get('error')}")
@@ -1697,7 +1712,7 @@ def render_sbp_pma_archive():
             })
 
         df = pd.DataFrame(table_data)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
 
         st.markdown(f"**Total: {len(docs)} documents**")
 
@@ -1814,32 +1829,42 @@ def render_psx_debt_market():
             st.metric(cat_name, count)
 
     # =================================================================
-    # KEY RATES FROM DB (real data)
+    # KEY RATES FROM /v1 (real data)
     # =================================================================
-    con = get_connection()
     try:
-        # PKRV 10Y
-        pkrv_row = con.execute(
-            "SELECT yield_pct, date FROM pkrv_daily WHERE tenor_months = 120 ORDER BY date DESC LIMIT 1"
-        ).fetchone()
-        pkrv_prev = con.execute(
-            "SELECT yield_pct FROM pkrv_daily WHERE tenor_months = 120 ORDER BY date DESC LIMIT 1 OFFSET 1"
-        ).fetchone()
+        # PKRV 10Y (current + previous) via tenor-history
+        pkrv_hist = api_client.get_sovereign_tenor_history(
+            tenor="10Y", sources="PKRV", limit=2,
+        ) or []
+        # Fall back to direct yield-curve query if sovereign_curve
+        # doesn't have PKRV rows for the 10Y tenor today.
+        if not pkrv_hist:
+            _pkrv_today = api_client.get_pkrv(days=2) or []
+            pkrv_hist = [
+                {"date": r["date"], "yield_pct": r["yield_pct"]}
+                for r in _pkrv_today
+                if r.get("tenor_months") == 120
+            ]
+        pkrv_row = pkrv_hist[0] if pkrv_hist else None
+        pkrv_prev = pkrv_hist[1] if len(pkrv_hist) >= 2 else None
 
-        # KONIA
-        konia_row = con.execute(
-            "SELECT rate_pct, date FROM konia_daily ORDER BY date DESC LIMIT 1"
-        ).fetchone()
+        # KONIA — defensive (Group C corruption guard at usage site)
+        _konia = api_client.get_konia(limit=1) or []
+        konia_row = _konia[0] if _konia else None
+        if konia_row and not (
+            0 < (konia_row.get("rate_pct") or 0) < 50
+        ):
+            konia_row = None
 
         # KIBOR 3M
-        kibor_row = con.execute(
-            "SELECT offer, date FROM kibor_daily WHERE tenor = '3M' ORDER BY date DESC LIMIT 1"
-        ).fetchone()
+        _kibor_lpt = api_client.get_kibor_latest_per_tenor() or []
+        _kibor_by_tenor = {r.get("tenor"): r for r in _kibor_lpt}
+        kibor_row = _kibor_by_tenor.get("3M")
 
         # Latest T-Bill 3M cutoff
-        tbill_row = con.execute(
-            "SELECT cutoff_yield, auction_date FROM tbill_auctions WHERE tenor = '3M' ORDER BY auction_date DESC LIMIT 1"
-        ).fetchone()
+        _tbill_lpt = api_client.get_tbill_latest_per_tenor() or []
+        _tbill_by_tenor = {r.get("tenor"): r for r in _tbill_lpt}
+        tbill_row = _tbill_by_tenor.get("3M")
 
         st.markdown("### Key Rates")
         rate_cols = st.columns(4)
@@ -1923,7 +1948,7 @@ def render_psx_debt_market():
 
             if table_data:
                 df = pd.DataFrame(table_data)
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                st.dataframe(df, width='stretch', hide_index=True)
                 st.caption(f"Total: {len(table_data)} securities")
 
     # --- Price Chart Tab ---
@@ -1988,7 +2013,7 @@ def render_psx_debt_market():
                         template="plotly_dark",
                         height=400,
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
                     # Volume chart
                     if df["volume"].sum() > 0:
@@ -2006,7 +2031,7 @@ def render_psx_debt_market():
                             template="plotly_dark",
                             height=200,
                         )
-                        st.plotly_chart(vol_fig, use_container_width=True)
+                        st.plotly_chart(vol_fig, width='stretch')
 
                     # Stats
                     stat_cols = st.columns(4)
@@ -2212,7 +2237,7 @@ def render_psx_debt_market():
                                 analytics_data["Description"].append("Second-order price sensitivity")
 
                         df_analytics = pd.DataFrame(analytics_data)
-                        st.dataframe(df_analytics, use_container_width=True, hide_index=True)
+                        st.dataframe(df_analytics, width='stretch', hide_index=True)
 
                 else:
                     st.info("Select a security with available price data to view analytics")
@@ -2260,15 +2285,8 @@ def render_psx_debt_market():
                 key="yield_curve_type",
             )
 
-            # Date picker — get available dates
-            pkrv_dates = pd.read_sql_query(
-                "SELECT DISTINCT date FROM pkrv_daily ORDER BY date DESC", con
-            )["date"].tolist()
-            pkisrv_dates = pd.read_sql_query(
-                "SELECT DISTINCT date FROM pkisrv_daily ORDER BY date DESC", con
-            )["date"].tolist()
-
-            all_dates = sorted(set(pkrv_dates + pkisrv_dates), reverse=True)
+            # Date picker — use manifest for instant lookup
+            all_dates = _load_both_curve_dates()
             if all_dates:
                 sel_date = st.selectbox("Date", all_dates[:500], index=0, key="yc_date")
                 # Comparison date
@@ -2288,10 +2306,8 @@ def render_psx_debt_market():
 
                 # --- PKRV curve ---
                 if curve_type in ("PKRV (Government)", "Both (Overlay)"):
-                    df_pkrv = pd.read_sql_query(
-                        "SELECT tenor_months, yield_pct FROM pkrv_daily WHERE date = ? ORDER BY tenor_months",
-                        con, params=(sel_date,),
-                    )
+                    _rows = api_client.get_pkrv(date=sel_date) or []
+                    df_pkrv = pd.DataFrame(_rows)[["tenor_months", "yield_pct"]] if _rows else pd.DataFrame(columns=["tenor_months", "yield_pct"])
                     if not df_pkrv.empty:
                         has_data = True
                         df_pkrv["years"] = df_pkrv["tenor_months"].map(_MONTHS_YRS).fillna(df_pkrv["tenor_months"] / 12)
@@ -2310,10 +2326,8 @@ def render_psx_debt_market():
 
                         # Comparison
                         if cmp_date:
-                            df_cmp = pd.read_sql_query(
-                                "SELECT tenor_months, yield_pct FROM pkrv_daily WHERE date = ? ORDER BY tenor_months",
-                                con, params=(cmp_date,),
-                            )
+                            _crows = api_client.get_pkrv(date=cmp_date) or []
+                            df_cmp = pd.DataFrame(_crows)[["tenor_months", "yield_pct"]] if _crows else pd.DataFrame(columns=["tenor_months", "yield_pct"])
                             if not df_cmp.empty:
                                 df_cmp["years"] = df_cmp["tenor_months"].map(_MONTHS_YRS).fillna(df_cmp["tenor_months"] / 12)
                                 fig.add_trace(go.Scatter(
@@ -2325,10 +2339,8 @@ def render_psx_debt_market():
 
                 # --- PKISRV curve ---
                 if curve_type in ("PKISRV (Islamic)", "Both (Overlay)"):
-                    df_pkisrv = pd.read_sql_query(
-                        "SELECT tenor, yield_pct FROM pkisrv_daily WHERE date = ? ORDER BY tenor",
-                        con, params=(sel_date,),
-                    )
+                    _rows = api_client.get_pkisrv(date=sel_date) or []
+                    df_pkisrv = pd.DataFrame(_rows)[["tenor", "yield_pct"]] if _rows else pd.DataFrame(columns=["tenor", "yield_pct"])
                     if not df_pkisrv.empty:
                         has_data = True
                         # Tenor is like '3M', '6M', '1Y', '3Y' etc.
@@ -2354,10 +2366,8 @@ def render_psx_debt_market():
                         ))
 
                         if cmp_date:
-                            df_cmp_i = pd.read_sql_query(
-                                "SELECT tenor, yield_pct FROM pkisrv_daily WHERE date = ? ORDER BY tenor",
-                                con, params=(cmp_date,),
-                            )
+                            _crows = api_client.get_pkisrv(date=cmp_date) or []
+                            df_cmp_i = pd.DataFrame(_crows)[["tenor", "yield_pct"]] if _crows else pd.DataFrame(columns=["tenor", "yield_pct"])
                             if not df_cmp_i.empty:
                                 df_cmp_i["years"] = df_cmp_i["tenor"].apply(_tenor_to_years)
                                 df_cmp_i = df_cmp_i.sort_values("years").reset_index(drop=True)
@@ -2377,7 +2387,7 @@ def render_psx_debt_market():
                         height=500,
                         legend=dict(orientation="h", yanchor="bottom", y=1.02),
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
                     # Curve statistics from PKRV
                     if curve_type in ("PKRV (Government)", "Both (Overlay)") and 'df_pkrv' in dir() and not df_pkrv.empty:
@@ -2413,7 +2423,7 @@ def render_psx_debt_market():
                             t.insert(0, "Curve", "PKISRV")
                             tables.append(t)
                         if tables:
-                            st.dataframe(pd.concat(tables, ignore_index=True), use_container_width=True, hide_index=True)
+                            st.dataframe(pd.concat(tables, ignore_index=True), width='stretch', hide_index=True)
                 else:
                     st.warning(f"No yield curve data for {sel_date}. Try a different date or run MUFAP sync.")
 
@@ -2481,7 +2491,7 @@ def _render_fi_odl_trading(con):
         gov_cols = ["symbol", "display_name", "security_type", "tenor_years",
                     "maturity_date", "close", "volume", "change_pct", "date"]
         show = [c for c in gov_cols if c in gov.columns]
-        st.dataframe(gov[show], use_container_width=True, hide_index=True)
+        st.dataframe(gov[show], width='stretch', hide_index=True)
         st.caption(f"{len(gov)} government instruments (latest prices)")
 
     # Corporate bonds
@@ -2490,7 +2500,7 @@ def _render_fi_odl_trading(con):
         corp_cols = ["symbol", "display_name", "security_type",
                      "close", "volume", "change_pct", "company_name", "date"]
         show = [c for c in corp_cols if c in corp.columns]
-        st.dataframe(corp[show], use_container_width=True, hide_index=True)
+        st.dataframe(corp[show], width='stretch', hide_index=True)
         st.caption(f"{len(corp)} corporate instruments (latest prices)")
 
     st.info("For full history and auction yield cross-reference, see **Futures → Odd-Lot Bonds** tab.")

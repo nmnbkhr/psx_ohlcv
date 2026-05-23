@@ -81,4 +81,6 @@ def sync_benchmark():
     con = connect()
     init_bond_market_schema(con)
     scraper = SBPBondMarketScraper()
-    return scraper.sync_benchmark(con)
+    result = scraper.sync_benchmark(con)
+    con.commit()
+    return result

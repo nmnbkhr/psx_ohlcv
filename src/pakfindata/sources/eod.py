@@ -1,11 +1,21 @@
 """EOD (End of Day) OHLCV data fetching and parsing."""
 
+import json
+import logging
+import sqlite3
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+from pathlib import Path
+
 import pandas as pd
 import requests
 
 from ..http import create_session, fetch_url
 
 EOD_URL_TEMPLATE = "https://dps.psx.com.pk/timeseries/eod/{symbol}"
+
+log = logging.getLogger(__name__)
 
 
 def fetch_eod_json(symbol: str, session: requests.Session | None = None) -> dict | list:
@@ -211,6 +221,166 @@ def _empty_eod_df() -> pd.DataFrame:
     return pd.DataFrame(
         columns=["symbol", "date", "open", "high", "low", "close", "volume"]
     )
+
+
+# ═══════════════════════════════════════════════════════
+# Batch Fetch + Store (API → JSON → DB) with parallel shards
+# ═══════════════════════════════════════════════════════
+
+_RATE_LIMIT = 0.05  # seconds between requests per thread
+_WORKERS_PER_SHARD = 10
+
+
+def _get_active_symbols(con: sqlite3.Connection) -> list[str]:
+    """Get all active symbols from the symbols table."""
+    rows = con.execute(
+        "SELECT symbol FROM symbols WHERE is_active = 1 ORDER BY symbol"
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def _get_skip_symbols(con: sqlite3.Connection) -> set[str]:
+    """
+    Get symbols to skip from batch download.
+
+    Skips symbols SUSPENDED or DELISTED more than 30 days ago.
+    Only recently suspended symbols (within last 30 days) are kept.
+    All other symbols (including WU/XD/XB/XR/NC suffixed) are kept.
+    """
+    skip: set[str] = set()
+
+    # SUSPENDED / DELISTED more than 30 days ago (keep recent ones)
+    try:
+        rows = con.execute(
+            """
+            SELECT DISTINCT symbol FROM company_listing_status
+            WHERE status IN ('SUSPENDED', 'DELISTED')
+              AND is_current = 1
+              AND first_seen <= date('now', '-30 days')
+            """
+        ).fetchall()
+        skip.update(r[0] for r in rows)
+    except sqlite3.OperationalError:
+        pass
+
+    return skip
+
+
+def _shard_symbols(symbols: list[str], n: int = 3) -> list[list[str]]:
+    """Split symbol list into n roughly equal shards."""
+    shards: list[list[str]] = [[] for _ in range(n)]
+    for i, sym in enumerate(symbols):
+        shards[i % n].append(sym)
+    return shards
+
+
+def _fetch_and_save_json(
+    symbol: str,
+    json_dir: Path,
+    session: requests.Session,
+) -> dict | None:
+    """Fetch EOD JSON for one symbol, save to disk, return parsed data."""
+    time.sleep(_RATE_LIMIT)
+    url = EOD_URL_TEMPLATE.format(symbol=symbol)
+    try:
+        resp = session.get(url, timeout=30)
+        if resp.status_code != 200:
+            return None
+        payload = resp.json()
+        out = json_dir / f"{symbol}.json"
+        out.write_text(json.dumps(payload), encoding="utf-8")
+        return payload
+    except Exception as exc:
+        log.debug("fetch %s failed: %s", symbol, exc)
+        return None
+
+
+def _run_shard(
+    shard: list[str],
+    json_dir: Path,
+) -> tuple[list[pd.DataFrame], int, int]:
+    """Download + parse one shard of symbols using a thread pool.
+
+    Returns:
+        (frames, ok_count, fail_count)
+    """
+    session = create_session()
+    frames: list[pd.DataFrame] = []
+    ok = 0
+    fail = 0
+
+    def _work(sym: str):
+        payload = _fetch_and_save_json(sym, json_dir, session)
+        if payload is None:
+            return sym, None
+        df = parse_eod_payload(sym, payload)
+        return sym, df
+
+    with ThreadPoolExecutor(max_workers=_WORKERS_PER_SHARD) as pool:
+        futs = {pool.submit(_work, s): s for s in shard}
+        for fut in as_completed(futs):
+            sym, df = fut.result()
+            if df is not None and not df.empty:
+                frames.append(df)
+                ok += 1
+            else:
+                fail += 1
+
+    return frames, ok, fail
+
+
+def prepare_batch_symbols(con: sqlite3.Connection, n_shards: int = 3) -> dict:
+    """Build the filtered symbol list and shards (runs on main thread).
+
+    Returns dict with: symbols, skipped, shards, json_dir
+    """
+    from pakfindata.config import DATA_ROOT
+
+    all_symbols = _get_active_symbols(con)
+    skipped = _get_skip_symbols(con)
+    symbols = [s for s in all_symbols if s not in skipped]
+
+    date_str = datetime.utcnow().strftime("%Y-%m-%d")
+    json_dir = DATA_ROOT / "eod_json" / date_str
+    json_dir.mkdir(parents=True, exist_ok=True)
+
+    shards = _shard_symbols(symbols, n_shards)
+
+    return {
+        "all_count": len(all_symbols),
+        "symbols": symbols,
+        "skipped": skipped,
+        "shards": shards,
+        "json_dir": json_dir,
+    }
+
+
+def run_shard_batch(
+    shard: list[str],
+    json_dir: Path,
+    shard_idx: int = 0,
+) -> tuple[pd.DataFrame | None, int, int]:
+    """Run one shard: fetch JSONs in parallel, save CSVs, return DataFrame.
+
+    Saves per-symbol CSVs to json_dir/../csv/{SYMBOL}.csv
+    and a combined shard CSV to json_dir/../csv/shard_{idx}.csv.
+
+    Returns:
+        (combined_df_or_None, ok_count, fail_count)
+    """
+    frames, ok, fail = _run_shard(shard, json_dir)
+    if frames:
+        combined = pd.concat(frames, ignore_index=True)
+        # Save CSVs
+        csv_dir = json_dir.parent.parent / "eod_csv" / json_dir.name
+        csv_dir.mkdir(parents=True, exist_ok=True)
+        # Per-symbol CSVs
+        for sym, grp in combined.groupby("symbol"):
+            grp.to_csv(csv_dir / f"{sym}.csv", index=False)
+        # Combined shard CSV
+        combined.to_csv(csv_dir / f"shard_{shard_idx}.csv", index=False)
+        return combined, ok, fail
+    return None, ok, fail
 
 
 def filter_incremental(df: pd.DataFrame, max_date: str | None) -> pd.DataFrame:

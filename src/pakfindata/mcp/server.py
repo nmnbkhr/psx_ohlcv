@@ -14,7 +14,7 @@ from mcp.server.stdio import stdio_server
 
 server = Server("psx-ohlcv")
 
-DB_PATH = os.environ.get("PSX_DB_PATH", "/mnt/e/psxdata/psx.sqlite")
+DB_PATH = os.environ.get("PSX_DB_PATH", "/home/smnb/psxdata_rescue/psx.sqlite")
 
 
 def get_db() -> sqlite3.Connection:

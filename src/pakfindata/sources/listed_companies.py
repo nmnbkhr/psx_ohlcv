@@ -359,6 +359,13 @@ def refresh_listed_companies(
 
         result["success"] = True
 
+        # Update instrument registry with new symbols
+        try:
+            from ..db.repositories.instrument_registry import sync_registry_from_symbols
+            sync_registry_from_symbols(con)
+        except Exception:
+            pass  # non-critical
+
     except requests.RequestException as e:
         result["error"] = f"Download error: {e}"
     except RuntimeError as e:

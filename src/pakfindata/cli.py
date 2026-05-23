@@ -557,6 +557,48 @@ def main(argv: list[str] | None = None) -> int:
         help="Quiet mode - minimal output (useful for cron)",
     )
 
+    # intraday ticks-fetch (HTTP → JSON on disk, no DB writes)
+    intraday_ticks_fetch_parser = intraday_sub.add_parser(
+        "ticks-fetch",
+        help="Fetch all active symbols' intraday ticks → JSON on disk",
+    )
+    intraday_ticks_fetch_parser.add_argument(
+        "--date",
+        type=str,
+        required=True,
+        help="Target date (YYYY-MM-DD) for the JSON output folder",
+    )
+    intraday_ticks_fetch_parser.add_argument(
+        "--shards",
+        type=int,
+        default=3,
+        help="Number of parallel shard groups (default: 3)",
+    )
+
+    # intraday ticks-load (disk → intraday_bars + tick_data)
+    intraday_ticks_load_parser = intraday_sub.add_parser(
+        "ticks-load",
+        help="Load tick JSON files from disk → intraday_bars + tick_data",
+    )
+    intraday_ticks_load_parser.add_argument(
+        "--date",
+        type=str,
+        required=True,
+        help="Date folder to load (YYYY-MM-DD)",
+    )
+
+    # intraday summaries-build (base tables → intraday_*_summary)
+    intraday_summaries_build_parser = intraday_sub.add_parser(
+        "summaries-build",
+        help="Build daily/minute/hourly intraday summary tables for one date",
+    )
+    intraday_summaries_build_parser.add_argument(
+        "--date",
+        type=str,
+        required=True,
+        help="Date to build summaries for (YYYY-MM-DD)",
+    )
+
     # regular-market command
     rm_parser = subparsers.add_parser(
         "regular-market",
@@ -836,6 +878,58 @@ def main(argv: list[str] | None = None) -> int:
         type=str,
         required=True,
         help="Path to saved HTML file (page source from browser)",
+    )
+
+    # company check - probe PSX page and show available filings
+    company_check_parser = company_sub.add_parser(
+        "check",
+        help="Check what financial data is available on PSX page vs stored in DB"
+    )
+    company_check_parser.add_argument(
+        "--symbol",
+        type=str,
+        required=True,
+        help="Stock symbol (e.g., OGDC)",
+    )
+    company_check_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="output_json",
+        help="Output raw JSON instead of formatted report",
+    )
+
+    # company import-financials - parse downloaded PDFs and import to DB
+    company_import_fin_parser = company_sub.add_parser(
+        "import-financials",
+        help="Parse downloaded PDF financial statements and import P&L + Balance Sheet to DB"
+    )
+    company_import_fin_parser.add_argument(
+        "--symbol",
+        type=str,
+        help="Single stock symbol (e.g., OGDC)",
+    )
+    company_import_fin_parser.add_argument(
+        "--all",
+        action="store_true",
+        dest="import_all",
+        help="Import from all symbol folders in /mnt/e/psxsymbolfin/",
+    )
+    company_import_fin_parser.add_argument(
+        "--dir",
+        type=str,
+        default="/mnt/e/psxsymbolfin",
+        dest="base_dir",
+        help="Base directory with symbol folders (default: /mnt/e/psxsymbolfin)",
+    )
+    company_import_fin_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Parse PDFs but don't write to database (preview mode)",
+    )
+    company_import_fin_parser.add_argument(
+        "--scan-only",
+        action="store_true",
+        help="Just list available PDFs without parsing",
     )
 
     # company fetch-dividends - fetch dividend announcements from PSX
@@ -1330,6 +1424,46 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=30,
         help="Trading dates per processing chunk (default: 30)",
+    )
+
+    # mufap compute-risk — compute quant risk metrics for funds
+    compute_risk_parser = mufap_sub.add_parser(
+        "compute-risk",
+        help="Compute risk metrics (Sharpe, Sortino, VaR, etc.) and store in fund_risk_metrics"
+    )
+    compute_risk_parser.add_argument(
+        "--fund", type=str, default=None,
+        help="Specific fund name (default: all funds)"
+    )
+    compute_risk_parser.add_argument(
+        "--period", type=str, default=None,
+        help="Specific period (1M,3M,6M,1Y,3Y,5Y,SI). Default: all"
+    )
+
+    # mufap signals — generate MA crossover and volatility signals
+    mufap_sub.add_parser(
+        "signals",
+        help="Generate MA crossover and volatility signals for all funds"
+    )
+
+    # mufap llm-context — generate LLM context JSON
+    llm_context_parser = mufap_sub.add_parser(
+        "llm-context",
+        help="Generate LLM market context JSON (print to stdout)"
+    )
+    llm_context_parser.add_argument(
+        "--category", type=str, default=None,
+        help="Filter by fund category"
+    )
+    llm_context_parser.add_argument(
+        "--top", type=int, default=10,
+        help="Number of top/bottom performers (default: 10)"
+    )
+
+    # mufap screen-amcs — placeholder compliance screening
+    mufap_sub.add_parser(
+        "screen-amcs",
+        help="Run compliance screening on all AMCs (placeholder)"
     )
 
     # =========================================================================
@@ -2434,6 +2568,83 @@ def main(argv: list[str] | None = None) -> int:
         "status", help="Show commodity data status and recent syncs"
     )
 
+    # ─────────────────────────────────────────────────────────────────────
+    # Phase 0.3 cron-parity subparsers
+    # Every UI sync button has a matching CLI subcommand here. All handlers
+    # write to data_freshness inside the same safe_writer transaction.
+    # ─────────────────────────────────────────────────────────────────────
+
+    # indices command
+    indices_parser = subparsers.add_parser(
+        "indices",
+        help="PSX indices (KSE100, ALLSHR, KMI30, …) operations",
+    )
+    indices_sub = indices_parser.add_subparsers(
+        dest="indices_command", required=True
+    )
+    indices_sub.add_parser(
+        "sync",
+        help="Fetch all PSX indices from DPS and upsert into psx_indices",
+    )
+
+    # summary command (EOD breadth / movers / sectors)
+    summary_parser = subparsers.add_parser(
+        "summary",
+        help="EOD summary table operations (symbol/market/sector)",
+    )
+    summary_sub = summary_parser.add_subparsers(
+        dest="summary_command", required=True
+    )
+    summary_today_parser = summary_sub.add_parser(
+        "rebuild-today",
+        help="Rebuild the three EOD summary tables for the latest trading day",
+    )
+    summary_today_parser.add_argument(
+        "--date",
+        type=str,
+        default=None,
+        help="Override the trading-day auto-detect (YYYY-MM-DD)",
+    )
+    summary_missing_parser = summary_sub.add_parser(
+        "rebuild-missing",
+        help="Populate summaries for any dates that have eod_ohlcv but no summary row",
+    )
+    summary_missing_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=50,
+        help="Dates per safe_writer batch (default: 50)",
+    )
+
+    # parquet command (analytics export to /mnt/e/psxdata/parquet/)
+    parquet_parser = subparsers.add_parser(
+        "parquet",
+        help="Parquet store operations (analytics export)",
+    )
+    parquet_sub = parquet_parser.add_subparsers(
+        dest="parquet_command", required=True
+    )
+    parquet_today_parser = parquet_sub.add_parser(
+        "export-today",
+        help="Export today's data for every registered table",
+    )
+    parquet_today_parser.add_argument(
+        "--date",
+        type=str,
+        default=None,
+        help="Override today's date (YYYY-MM-DD)",
+    )
+    parquet_sub.add_parser(
+        "export-all", help="Full re-export — every table, every date"
+    )
+    parquet_sub.add_parser(
+        "sync-missing",
+        help="Export only dates present in date_manifest but missing from parquet",
+    )
+    parquet_sub.add_parser(
+        "status", help="Show parquet store status (files + size + date range)"
+    )
+
     args = parser.parse_args(argv)
 
     try:
@@ -2509,6 +2720,13 @@ def main(argv: list[str] | None = None) -> int:
             return handle_npc(args)
         elif args.command == "commodity":
             return handle_commodity(args)
+        # Phase 0.3 cron-parity commands
+        elif args.command == "indices":
+            return handle_indices(args)
+        elif args.command == "summary":
+            return handle_summary(args)
+        elif args.command == "parquet":
+            return handle_parquet(args)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         return 130
@@ -2936,12 +3154,22 @@ def handle_market_summary_day(args: argparse.Namespace) -> int:
 
     # Import to eod_ohlcv if requested
     if args.import_eod and result["csv_path"] and result["status"] in ("ok", "skipped"):
+        from .db.catalog import record_catalog_failure, update_catalog_from_table
         print(f"\nImporting to eod_ohlcv table...")
         # Set source based on whether PDF fallback was used
         source = "closing_rates_pdf" if pdf_used else "market_summary"
-        ingest_result = ingest_market_summary_csv(
-            con, result["csv_path"], skip_existing=not args.force, source=source
-        )
+        try:
+            ingest_result = ingest_market_summary_csv(
+                con, result["csv_path"], skip_existing=not args.force, source=source
+            )
+            update_catalog_from_table(con, "equity_eod", source=source)
+            con.commit()
+        except Exception as e:  # noqa: BLE001
+            con.rollback()
+            record_catalog_failure("equity_eod", source=source, error=e)
+            print(f"Import error: {e}", file=sys.stderr)
+            con.close()
+            return EXIT_ERROR
         print(f"  Import Status:  {ingest_result['status']}")
         print(f"  Rows Inserted:  {ingest_result['rows_inserted']}")
         print(f"  Source:         {source}")
@@ -3323,6 +3551,12 @@ def handle_intraday(args: argparse.Namespace) -> int:
         return handle_intraday_show(args)
     elif args.intraday_command == "sync-all":
         return handle_intraday_sync_all(args)
+    elif args.intraday_command == "ticks-fetch":
+        return handle_intraday_ticks_fetch(args)
+    elif args.intraday_command == "ticks-load":
+        return handle_intraday_ticks_load(args)
+    elif args.intraday_command == "summaries-build":
+        return handle_intraday_summaries_build(args)
     return EXIT_ERROR
 
 
@@ -3489,83 +3723,59 @@ def handle_regular_market(args: argparse.Namespace) -> int:
 
 
 def handle_regular_market_snapshot(args: argparse.Namespace) -> int:
-    """Handle regular-market snapshot command."""
+    """Handle regular-market snapshot command.
+
+    Phase 1.6.6: delegates the DB write to
+    :func:`pakfindata.etl.regular_market.sync_snapshot` (which runs
+    under ``safe_writer``). The CSV side-effect is preserved here as
+    CLI-only behavior.
+    """
     import requests
+
+    from .etl.regular_market import sync_snapshot
 
     print("Fetching regular market data...")
 
     try:
-        df = fetch_regular_market()
+        result = sync_snapshot(save_unchanged=args.save_unchanged)
     except requests.RequestException as e:
         print(f"Failed to fetch data: {e}", file=sys.stderr)
         return EXIT_ERROR
+    except Exception as e:  # noqa: BLE001
+        print(f"Error: {e}", file=sys.stderr)
+        return EXIT_ERROR
 
-    if df.empty:
+    if result["symbols"] == 0:
         print("No data found in REGULAR MARKET table.", file=sys.stderr)
         return EXIT_ERROR
 
-    # Save to database
-    con = connect(args.db)
-    init_schema(con)
-    init_regular_market_schema(con)
-    init_analytics_schema(con)
-
-    # CRITICAL: Load previous hashes BEFORE upsert to detect changes correctly
-    prev_hashes = get_all_current_hashes(con)
-
-    # Insert snapshots first (using pre-loaded hashes for comparison)
-    inserted = insert_snapshots(
-        con, df, save_unchanged=args.save_unchanged, prev_hashes=prev_hashes
-    )
-
-    # Then upsert current data
-    upserted = upsert_current(con, df)
-
-    # Compute analytics for this timestamp
-    ts = df["ts"].iloc[0] if not df.empty else None
-    analytics_result = None
-    if ts:
-        analytics_result = compute_all_analytics(con, ts)
-
-    # Save CSV with joined sector/company names
+    # CSV side-effect — CLI-only convenience for downstream tooling.
     csv_path = args.csv
     if csv_path is None:
         csv_path = DATA_ROOT / "regular_market" / "current.csv"
-
     csv_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Get data with sector names joined from symbols table
-    df_with_sectors = get_current_market_with_sectors(con)
+    rcon = connect(args.db)
+    try:
+        df_with_sectors = get_current_market_with_sectors(rcon)
+    finally:
+        rcon.close()
     if not df_with_sectors.empty:
         df_with_sectors.to_csv(csv_path, index=False)
-    else:
-        df.to_csv(csv_path, index=False)
 
-    con.close()
-
-    # Print summary
     print("\nRegular Market Snapshot")
     print("=" * 50)
-    print(f"  Timestamp:         {ts}")
-    print(f"  Symbols found:     {len(df)}")
-    print(f"  Rows upserted:     {upserted}")
-    print(f"  Snapshots saved:   {inserted}")
+    print(f"  Timestamp:         {result['snapshot_ts']}")
+    print(f"  Symbols found:     {result['symbols']}")
+    print(f"  Rows upserted:     {result['rows_upserted']}")
+    print(f"  Snapshots saved:   {result['snapshots_saved']}")
     print(f"  CSV saved to:      {csv_path}")
 
-    # Print analytics summary
-    if analytics_result:
-        ma = analytics_result["market_analytics"]
-        print("\nMarket Analytics")
-        print("-" * 50)
-        print(f"  Gainers:           {ma['gainers_count']}")
-        print(f"  Losers:            {ma['losers_count']}")
-        print(f"  Unchanged:         {ma['unchanged_count']}")
-        print(f"  Total Volume:      {ma['total_volume']:,.0f}")
-        if ma["top_gainer_symbol"]:
-            print(f"  Top Gainer:        {ma['top_gainer_symbol']}")
-        if ma["top_loser_symbol"]:
-            print(f"  Top Loser:         {ma['top_loser_symbol']}")
-        print(f"  Sector rollups:    {analytics_result['sectors_count']}")
+    print("\nMarket Analytics")
+    print("-" * 50)
+    print(f"  Gainers:           {result['gainers']}")
+    print(f"  Losers:            {result['losers']}")
+    print(f"  Unchanged:         {result['unchanged']}")
+    print(f"  Duration:          {result['duration_ms']} ms")
 
     return EXIT_SUCCESS
 
@@ -3620,6 +3830,8 @@ def handle_regular_market_listen(args: argparse.Namespace) -> int:
                     if ts_full:
                         analytics_result = compute_all_analytics(con, ts_full)
 
+                    con.commit()
+
                     # Save current.csv with sector names
                     current_csv = csv_dir / "current.csv"
                     df_with_sectors = get_current_market_with_sectors(con)
@@ -3671,6 +3883,7 @@ def handle_regular_market_show(args: argparse.Namespace) -> int:
     init_schema(con)
     init_regular_market_schema(con)
     init_analytics_schema(con)
+    con.commit()
 
     # Get data with sector names joined
     df = get_current_market_with_sectors(con)
@@ -3921,6 +4134,10 @@ def handle_company(args: argparse.Namespace) -> int:
         return handle_company_show(args)
     elif args.company_command == "sync-sectors":
         return handle_company_sync_sectors(args)
+    elif args.company_command == "check":
+        return handle_company_check(args)
+    elif args.company_command == "import-financials":
+        return handle_company_import_financials(args)
     elif args.company_command == "deep-scrape":
         return handle_company_deep_scrape(args)
     elif args.company_command == "import-payouts":
@@ -4104,6 +4321,244 @@ def handle_company_sync_sectors(args: argparse.Namespace) -> int:
     con.close()
 
     print(f"Updated {count} symbol(s) with sector names.")
+    return EXIT_SUCCESS
+
+
+def handle_company_import_financials(args: argparse.Namespace) -> int:
+    """Import financial data from downloaded PDF files into the database."""
+    from pathlib import Path
+
+    from .sources.fin_downloader import (
+        import_all_pdfs,
+        import_symbol_pdfs,
+        scan_symbol_pdfs,
+    )
+
+    base_dir = Path(args.base_dir)
+    if not base_dir.is_dir():
+        print(f"Error: directory not found: {base_dir}", file=sys.stderr)
+        return EXIT_ERROR
+
+    # --- Scan-only mode: just list PDFs ---
+    if getattr(args, "scan_only", False):
+        if args.symbol:
+            sym_dir = base_dir / args.symbol.upper()
+            pdfs = scan_symbol_pdfs(sym_dir)
+            if not pdfs:
+                print(f"No financial PDFs found in {sym_dir}")
+                return EXIT_SUCCESS
+            print(f"\n{args.symbol.upper()} — {len(pdfs)} financial PDF(s) in {sym_dir}")
+            print(f"{'─' * 70}")
+            for p in pdfs:
+                print(f"  [{p['report_type']:>10}] {p['year_hint'] or '????'}  {p['size_kb']:>8.1f} KB  {p['filename']}")
+        else:
+            # Scan all
+            total = 0
+            for sym_dir in sorted(d for d in base_dir.iterdir() if d.is_dir()):
+                pdfs = scan_symbol_pdfs(sym_dir)
+                if pdfs:
+                    total += len(pdfs)
+                    print(f"\n{sym_dir.name} — {len(pdfs)} PDF(s)")
+                    for p in pdfs:
+                        print(f"  [{p['report_type']:>10}] {p['year_hint'] or '????'}  {p['size_kb']:>8.1f} KB  {p['filename']}")
+            print(f"\n{'=' * 70}")
+            print(f"Total: {total} financial PDFs across {sum(1 for d in base_dir.iterdir() if d.is_dir())} symbol folders")
+        return EXIT_SUCCESS
+
+    # --- Parse + import mode ---
+    symbol = getattr(args, "symbol", None)
+    import_all = getattr(args, "import_all", False)
+    dry_run = getattr(args, "dry_run", False)
+
+    if not symbol and not import_all:
+        print("Error: --symbol or --all required", file=sys.stderr)
+        return EXIT_ERROR
+
+    con = connect(args.db)
+    init_schema(con)
+
+    if dry_run:
+        print("DRY RUN — parsing PDFs but NOT writing to database\n")
+
+    if symbol:
+        symbol = symbol.upper()
+        print(f"Importing financials for {symbol} from {base_dir / symbol}/")
+        print(f"{'─' * 70}")
+
+        def _cb(fname, status, detail):
+            icon = "✓" if status == "ok" else "⊘" if status == "skip" else "✗"
+            print(f"  {icon} {fname}: {detail}")
+
+        result = import_symbol_pdfs(con, symbol, base_dir=base_dir, dry_run=dry_run, progress_callback=_cb)
+        con.close()
+
+        print(f"\n{'=' * 70}")
+        print(f"  {symbol}: {result['parsed']} parsed, {result['upserted']} rows upserted, "
+              f"{result['skipped']} skipped, {len(result.get('errors', []))} errors")
+        if result.get("is_bank"):
+            print(f"  Detected as BANK — markup earned/expensed extraction enabled")
+
+    else:
+        # --all
+        symbols_filter = None
+        print(f"Importing financials from ALL symbols in {base_dir}/")
+        print(f"{'─' * 70}")
+
+        def _cb_all(sym, fname, status, detail):
+            icon = "✓" if status == "ok" else "⊘" if status == "skip" else "✗"
+            print(f"  [{sym}] {icon} {fname}: {detail}")
+
+        result = import_all_pdfs(con, base_dir=base_dir, symbols=symbols_filter, dry_run=dry_run, progress_callback=_cb_all)
+        con.close()
+
+        print(f"\n{'=' * 70}")
+        print(f"  Symbols: {result['symbols_processed']}/{result['symbols_found']}")
+        print(f"  PDFs parsed:    {result['total_parsed']}")
+        print(f"  Rows upserted:  {result['total_upserted']}")
+        print(f"  Errors:         {result['total_errors']}")
+
+        if result.get("per_symbol"):
+            print(f"\n  Per symbol:")
+            for sr in result["per_symbol"]:
+                if sr.get("parsed", 0) > 0 or sr.get("errors"):
+                    e = len(sr.get("errors", []))
+                    print(f"    {sr['symbol']:>8}: {sr['parsed']} parsed, {sr['upserted']} upserted"
+                          f"{f', {e} errors' if e else ''}")
+
+    return EXIT_SUCCESS
+
+
+def handle_company_check(args: argparse.Namespace) -> int:
+    """Check what financial data is on PSX page vs what's in the DB."""
+    import json as _json
+
+    from .sources.deep_scraper import check_symbol_filings
+
+    symbol = args.symbol.upper()
+    print(f"Checking {symbol} — fetching https://dps.psx.com.pk/company/{symbol} ...")
+
+    con = connect(args.db)
+    init_schema(con)
+
+    report = check_symbol_filings(symbol, con=con)
+    con.close()
+
+    if not report["success"]:
+        print(f"Error: {report['error']}", file=sys.stderr)
+        return EXIT_ERROR
+
+    # Raw JSON output
+    if getattr(args, "output_json", False):
+        print(_json.dumps(report, indent=2, default=str))
+        return EXIT_SUCCESS
+
+    # Formatted report
+    pg = report["page"]
+    db = report["db"]
+
+    print()
+    print(f"{'=' * 64}")
+    print(f"  {pg.get('company_name', symbol)}  |  {pg.get('sector', '')}")
+    print(f"  Price: {pg.get('price', 'N/A')}  Change: {pg.get('change_pct', 'N/A')}%")
+    print(f"  Markets: {', '.join(pg.get('market_types', [])) or 'none'}")
+    print(f"{'=' * 64}")
+
+    # Equity
+    eq = pg.get("equity", {})
+    print(f"\n  EQUITY STRUCTURE {'✓' if eq.get('available') else '✗'}")
+    if eq.get("available"):
+        mcap = eq.get("market_cap")
+        mcap_str = f"PKR {mcap / 1e9:.2f}B" if mcap else "N/A"
+        print(f"    Market Cap:       {mcap_str}")
+        print(f"    Outstanding:      {eq.get('outstanding_shares', 'N/A'):,}" if eq.get("outstanding_shares") else "    Outstanding:      N/A")
+        print(f"    Free Float:       {eq.get('free_float_pct', 'N/A')}%")
+    db_eq = db.get("equity_snapshots", 0)
+    print(f"    DB snapshots:     {db_eq}")
+
+    # Profile
+    pr = pg.get("profile", {})
+    print(f"\n  COMPANY PROFILE {'✓' if pr.get('available') else '✗'}")
+    print(f"    Description:      {'yes' if pr.get('has_description') else 'no'}")
+    print(f"    Key People:       {pr.get('key_people_count', 0)}")
+    print(f"    DB stored:        {'yes' if db.get('profile_exists') else 'no'}")
+
+    # Financials
+    fi = pg.get("financials", {})
+    print(f"\n  FINANCIAL STATEMENTS {'✓' if fi.get('available') else '✗'}")
+    if fi.get("available"):
+        ann_p = fi.get("annual_periods", [])
+        qtr_p = fi.get("quarterly_periods", [])
+        print(f"    Annual periods:   {', '.join(ann_p) if ann_p else 'none'}")
+        print(f"    Quarterly:        {', '.join(qtr_p) if qtr_p else 'none'}")
+        print(f"    Metrics found:    {', '.join(fi.get('metrics', []))}")
+    db_fp = db.get("financials_periods", [])
+    print(f"    DB rows:          {db.get('financials_rows', 0)}  periods: {', '.join(db_fp) if db_fp else 'none'}")
+    # Gap analysis
+    if fi.get("available") and db_fp:
+        page_all = set(fi.get("annual_periods", []) + fi.get("quarterly_periods", []))
+        db_all = set(db_fp)
+        missing = sorted(page_all - db_all)
+        if missing:
+            print(f"    MISSING in DB:    {', '.join(missing)}")
+        else:
+            print(f"    Gap:              all page periods are in DB ✓")
+
+    # Ratios
+    ra = pg.get("ratios", {})
+    print(f"\n  FINANCIAL RATIOS {'✓' if ra.get('available') else '✗'}")
+    if ra.get("available"):
+        ann_r = ra.get("annual_periods", [])
+        qtr_r = ra.get("quarterly_periods", [])
+        print(f"    Annual periods:   {', '.join(ann_r) if ann_r else 'none'}")
+        print(f"    Quarterly:        {', '.join(qtr_r) if qtr_r else 'none'}")
+        print(f"    Metrics found:    {', '.join(ra.get('metrics', []))}")
+    db_rp = db.get("ratios_periods", [])
+    print(f"    DB rows:          {db.get('ratios_rows', 0)}  periods: {', '.join(db_rp) if db_rp else 'none'}")
+    if ra.get("available") and db_rp:
+        page_all = set(ra.get("annual_periods", []) + ra.get("quarterly_periods", []))
+        db_all = set(db_rp)
+        missing = sorted(page_all - db_all)
+        if missing:
+            print(f"    MISSING in DB:    {', '.join(missing)}")
+        else:
+            print(f"    Gap:              all page periods are in DB ✓")
+
+    # Announcements
+    an = pg.get("announcements", {})
+    print(f"\n  ANNOUNCEMENTS {'✓' if an.get('available') else '✗'}")
+    if an.get("available"):
+        print(f"    Total on page:    {an.get('total', 0)}")
+        for atype, cnt in an.get("by_type", {}).items():
+            print(f"      {atype}: {cnt}")
+    print(f"    DB rows:          {db.get('announcements_rows', 0)}")
+
+    # Payouts
+    pa = pg.get("payouts", {})
+    print(f"\n  PAYOUTS / DIVIDENDS {'✓' if pa.get('available') else '✗'}")
+    if pa.get("available"):
+        print(f"    Total on page:    {pa.get('total', 0)}")
+        for ptype, cnt in pa.get("by_type", {}).items():
+            print(f"      {ptype}: {cnt}")
+        fy = pa.get("fiscal_years", [])
+        if fy:
+            print(f"    Fiscal years:     {', '.join(fy)}")
+    print(f"    DB rows:          {db.get('payouts_rows', 0)}")
+
+    # Summary
+    print(f"\n{'=' * 64}")
+    sections_available = sum([
+        bool(fi.get("available")),
+        bool(ra.get("available")),
+        bool(an.get("available")),
+        bool(pa.get("available")),
+        bool(pr.get("available")),
+        bool(eq.get("available")),
+    ])
+    print(f"  {sections_available}/6 data sections available on page")
+    if sections_available > 0 and db.get("financials_rows", 0) == 0:
+        print(f"  → Run: pfsync company deep-scrape --symbol {symbol}")
+    print()
+
     return EXIT_SUCCESS
 
 
@@ -4426,6 +4881,20 @@ def handle_announcements_sync(args: argparse.Namespace) -> int:
                 except Exception:
                     pass  # Skip failed symbols silently
             print(f"  Dividend payouts: {stats['dividends']} saved from {stats['symbols_processed']} symbols")
+
+        # Catalog updates inside the same transaction as the announcement
+        # writes. Per-domain calls so a single failed domain doesn't poison
+        # the others.
+        from .db.catalog import record_catalog_failure, update_catalog_from_table
+        for ds in ("announcements", "corporate_events", "dividend_payouts"):
+            try:
+                update_catalog_from_table(con, ds, source="psx_dps")
+            except Exception as e:  # noqa: BLE001
+                record_catalog_failure(ds, source="psx_dps", error=e)
+
+        # Commit all writes (save_* leaves had their commits stripped for
+        # safe_writer migration; this CLI owns its own con).
+        con.commit()
 
     finally:
         con.close()
@@ -5084,6 +5553,14 @@ def handle_mufap(args: argparse.Namespace) -> int:
         return handle_mufap_resync_categories(args)
     elif args.mufap_command == "backfill-returns":
         return handle_mufap_backfill_returns(args)
+    elif args.mufap_command == "compute-risk":
+        return handle_mufap_compute_risk(args)
+    elif args.mufap_command == "signals":
+        return handle_mufap_signals(args)
+    elif args.mufap_command == "llm-context":
+        return handle_mufap_llm_context(args)
+    elif args.mufap_command == "screen-amcs":
+        return handle_mufap_screen_amcs(args)
     return EXIT_ERROR
 
 
@@ -5516,6 +5993,248 @@ def handle_mufap_backfill_returns(args: argparse.Namespace) -> int:
 
 
 # =============================================================================
+# Phase 2.5: Quant Engine CLI Handlers
+# =============================================================================
+
+
+def handle_mufap_compute_risk(args: argparse.Namespace) -> int:
+    """Compute risk metrics for all (or one) fund and store in fund_risk_metrics."""
+    import sqlite3
+    import time
+    import pandas as pd
+    from .engine.fund_risk import generate_fund_analytics
+    from .engine.benchmark import get_benchmark_nav
+    from .config import get_db_path
+
+    db_path = getattr(args, "db", None) or get_db_path()
+    con = sqlite3.connect(str(db_path))
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=WAL")
+
+    # Ensure schema
+    con.execute("""CREATE TABLE IF NOT EXISTS fund_risk_metrics (
+        fund_name TEXT NOT NULL, as_of_date TEXT NOT NULL, period TEXT NOT NULL,
+        sharpe_ratio REAL, sortino_ratio REAL, max_drawdown REAL,
+        volatility_ann REAL, beta REAL, alpha REAL, information_ratio REAL,
+        var_95 REAL, cvar_95 REAL, up_capture REAL, down_capture REAL,
+        tracking_error REAL, r_squared REAL,
+        computed_at TEXT DEFAULT (datetime('now')),
+        PRIMARY KEY (fund_name, as_of_date, period))""")
+
+    fund_filter = getattr(args, "fund", None)
+    period_filter = getattr(args, "period", None)
+
+    # Load benchmark
+    benchmark = get_benchmark_nav(con, "KSE-100")
+    bm = benchmark if not benchmark.empty else None
+
+    # Get funds
+    if fund_filter:
+        funds = con.execute(
+            """SELECT f.fund_id, f.fund_name, COUNT(n.date) as cnt
+               FROM mutual_funds f INNER JOIN mutual_fund_nav n ON f.fund_id = n.fund_id
+               WHERE f.fund_name LIKE ? GROUP BY f.fund_id HAVING cnt >= 90""",
+            (f"%{fund_filter}%",),
+        ).fetchall()
+    else:
+        funds = con.execute(
+            """SELECT f.fund_id, f.fund_name, COUNT(n.date) as cnt
+               FROM mutual_funds f INNER JOIN mutual_fund_nav n ON f.fund_id = n.fund_id
+               WHERE f.is_active = 1 GROUP BY f.fund_id HAVING cnt >= 90"""
+        ).fetchall()
+
+    print(f"Computing risk metrics for {len(funds)} funds...")
+    t0 = time.time()
+    computed = 0
+    from datetime import date
+    today = date.today().isoformat()
+
+    for i, fund in enumerate(funds):
+        fund_id = fund["fund_id"]
+        fund_name = fund["fund_name"]
+
+        df = pd.read_sql_query(
+            "SELECT date, nav FROM mutual_fund_nav WHERE fund_id = ? AND nav > 0 ORDER BY date",
+            con, params=(fund_id,),
+        )
+        if len(df) < 90:
+            continue
+
+        df["date"] = pd.to_datetime(df["date"])
+        df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
+        df = df.dropna(subset=["nav"])
+        nav = df.set_index("date")["nav"]
+
+        analytics = generate_fund_analytics(fund_name, nav, bm)
+        if "error" in analytics:
+            continue
+
+        risk = analytics.get("risk", {})
+        rel = analytics.get("relative", {})
+        perf = analytics.get("performance", {})
+
+        periods = [period_filter] if period_filter else list(perf.keys())
+        for p in periods:
+            p_data = perf.get(p, {})
+            if not isinstance(p_data, dict):
+                continue
+            con.execute(
+                """INSERT OR REPLACE INTO fund_risk_metrics
+                   (fund_name, as_of_date, period, sharpe_ratio, sortino_ratio,
+                    max_drawdown, volatility_ann, beta, alpha, information_ratio,
+                    var_95, cvar_95, up_capture, down_capture, tracking_error, r_squared)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (fund_name, today, p,
+                 risk.get("sharpe_1y"), risk.get("sortino_1y"),
+                 risk.get("max_drawdown"), risk.get("volatility_1y_ann"),
+                 rel.get("beta"), rel.get("alpha"), rel.get("information_ratio"),
+                 risk.get("var_95_daily"), risk.get("cvar_95"),
+                 rel.get("up_capture"), rel.get("down_capture"),
+                 rel.get("tracking_error"), None),
+            )
+        con.commit()
+        computed += 1
+
+        if (i + 1) % 50 == 0:
+            elapsed = time.time() - t0
+            print(f"  [{i+1}/{len(funds)}] {elapsed:.1f}s")
+
+    elapsed = time.time() - t0
+    print(f"\nDone. {computed} funds computed in {elapsed:.1f}s")
+    con.close()
+    return EXIT_SUCCESS
+
+
+def handle_mufap_signals(args: argparse.Namespace) -> int:
+    """Generate MA crossover and volatility signals for all funds."""
+    import json
+    import sqlite3
+    import time
+    import pandas as pd
+    from .engine.fund_factors import nav_ma_signals, volatility_regime
+    from .config import get_db_path
+
+    db_path = getattr(args, "db", None) or get_db_path()
+    con = sqlite3.connect(str(db_path))
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=WAL")
+
+    con.execute("""CREATE TABLE IF NOT EXISTS fund_signals (
+        fund_name TEXT NOT NULL, signal_date TEXT NOT NULL, signal_type TEXT NOT NULL,
+        signal_value TEXT NOT NULL, details TEXT,
+        PRIMARY KEY (fund_name, signal_date, signal_type))""")
+
+    funds = con.execute(
+        """SELECT f.fund_id, f.fund_name, COUNT(n.date) as cnt
+           FROM mutual_funds f INNER JOIN mutual_fund_nav n ON f.fund_id = n.fund_id
+           WHERE f.is_active = 1 GROUP BY f.fund_id HAVING cnt >= 50"""
+    ).fetchall()
+
+    print(f"Generating signals for {len(funds)} funds...")
+    t0 = time.time()
+    from datetime import date
+    today = date.today().isoformat()
+    generated = 0
+
+    for i, fund in enumerate(funds):
+        df = pd.read_sql_query(
+            "SELECT date, nav FROM mutual_fund_nav WHERE fund_id = ? AND nav > 0 ORDER BY date",
+            con, params=(fund["fund_id"],),
+        )
+        if len(df) < 50:
+            continue
+
+        df["date"] = pd.to_datetime(df["date"])
+        df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
+        df = df.dropna(subset=["nav"])
+        nav = df.set_index("date")["nav"]
+
+        # MA crossover
+        ma = nav_ma_signals(nav)
+        if not ma.empty:
+            pos = int(ma["position"].iloc[-1])
+            signal = "BULLISH" if pos == 1 else "BEARISH"
+            days = ma["days_since_cross"].iloc[-1]
+            details = json.dumps({"days_since_cross": int(days) if not pd.isna(days) else None})
+            con.execute(
+                "INSERT OR REPLACE INTO fund_signals VALUES (?,?,?,?,?)",
+                (fund["fund_name"], today, "MA_CROSS", signal, details),
+            )
+
+        # Volatility regime
+        regime = volatility_regime(nav)
+        if regime != "INSUFFICIENT_DATA":
+            con.execute(
+                "INSERT OR REPLACE INTO fund_signals VALUES (?,?,?,?,?)",
+                (fund["fund_name"], today, "VOL_REGIME", regime, None),
+            )
+
+        generated += 1
+        if (i + 1) % 100 == 0:
+            con.commit()
+            print(f"  [{i+1}/{len(funds)}]")
+
+    con.commit()
+    elapsed = time.time() - t0
+    print(f"\nDone. {generated} funds signaled in {elapsed:.1f}s")
+    con.close()
+    return EXIT_SUCCESS
+
+
+def handle_mufap_llm_context(args: argparse.Namespace) -> int:
+    """Generate LLM market context JSON to stdout."""
+    import json
+    import sqlite3
+    from .engine.fund_llm import generate_market_context
+    from .config import get_db_path
+
+    db_path = getattr(args, "db", None) or get_db_path()
+    con = sqlite3.connect(str(db_path))
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=WAL")
+
+    category = getattr(args, "category", None)
+    top_n = getattr(args, "top", 10)
+
+    ctx = generate_market_context(con, top_n=top_n, category=category)
+    print(json.dumps(ctx, indent=2, default=str))
+
+    con.close()
+    return EXIT_SUCCESS
+
+
+def handle_mufap_screen_amcs(args: argparse.Namespace) -> int:
+    """Run placeholder compliance screening on all AMCs."""
+    import json
+    import sqlite3
+    from .compliance.fund_compliance import AMCComplianceHook
+    from .config import get_db_path
+
+    db_path = getattr(args, "db", None) or get_db_path()
+    con = sqlite3.connect(str(db_path))
+    con.row_factory = sqlite3.Row
+
+    hook = AMCComplianceHook()  # No screener = placeholder
+
+    amcs = con.execute(
+        "SELECT DISTINCT amc_name FROM mutual_funds WHERE amc_name IS NOT NULL ORDER BY amc_name"
+    ).fetchall()
+
+    print(f"Screening {len(amcs)} AMCs (placeholder mode)...")
+    results = []
+    for amc in amcs:
+        name = amc["amc_name"]
+        result = hook.screen_amc(name)
+        results.append(result)
+        print(f"  {name}: {result['status']}")
+
+    print(f"\nDone. {len(results)} AMCs screened.")
+    print("Note: No compliance screener configured. Plug in WatchGuard PK for actual screening.")
+    con.close()
+    return EXIT_SUCCESS
+
+
+# =============================================================================
 # Phase 3: Bonds/Sukuk Handlers
 # =============================================================================
 
@@ -5885,6 +6604,7 @@ def handle_bonds_benchmark_sync(args: argparse.Namespace) -> int:
     print("Scraping SBP benchmark rates (MSM sidebar)...")
     scraper = SBPBondMarketScraper()
     result = scraper.sync_benchmark(con)
+    con.commit()
 
     if result["status"] == "ok":
         print(f"  Date:    {result['date']}")
@@ -5917,6 +6637,7 @@ def handle_bonds_smtv_sync(args: argparse.Namespace) -> int:
     print("Attempting SBP SMTV PDF download...")
     scraper = SBPBondMarketScraper()
     result = scraper.sync_smtv(con)
+    con.commit()
 
     if result["status"] == "ok":
         print(f"  Date:              {result.get('date')}")
@@ -6809,9 +7530,17 @@ def handle_treasury(args: argparse.Namespace) -> int:
     init_treasury_schema(con)
 
     if args.treasury_command == "sync":
+        # Phase 1.6.2: delegate to the shared ETL function. Body now
+        # runs under safe_writer (was bare con.commit). Catalog
+        # failure-recording is inside sync_auctions(); CLI just prints
+        # and translates exit code.
+        from .etl.treasury import sync_auctions
         print("Scraping latest T-Bill + PIB rates from SBP PMA page...")
-        scraper = SBPTreasuryScraper()
-        result = scraper.sync_treasury(con)
+        try:
+            result = sync_auctions()
+        except Exception as e:  # noqa: BLE001
+            print(f"Error: {e}", file=sys.stderr)
+            return EXIT_ERROR
         print(
             f"Done: {result['tbills_ok']} T-Bills, {result['pibs_ok']} PIBs saved, "
             f"{result['failed']} failed"
@@ -6861,10 +7590,19 @@ def handle_treasury(args: argparse.Namespace) -> int:
         return 0
 
     elif args.treasury_command == "gis-sync":
+        from .db.catalog import record_catalog_failure, update_catalog_from_table
         from .sources.sbp_gsp import GSPScraper
         print("Scraping GIS (Ijara Sukuk) auction data...")
         gsp = GSPScraper()
-        result = gsp.sync_gis(con)
+        try:
+            result = gsp.sync_gis(con)
+            # gsp.sync_gis already committed; do a tiny follow-up txn for catalog.
+            update_catalog_from_table(con, "gis_auctions", source="sbp")
+            con.commit()
+        except Exception as e:  # noqa: BLE001
+            record_catalog_failure("gis_auctions", source="sbp", error=e)
+            print(f"Error: {e}", file=sys.stderr)
+            return EXIT_ERROR
         print(
             f"Done: {result['ok']}/{result['total']} GIS records saved, "
             f"{result['failed']} failed (source: {result['source']})"
@@ -6914,9 +7652,17 @@ def handle_rates(args: argparse.Namespace) -> int:
     init_yield_curve_schema(con)
 
     if args.rates_command == "sync":
+        # Phase 1.6.5: delegate to the shared ETL function. Body now
+        # runs under safe_writer (was bare con.commit). Catalog
+        # failure-recording is inside sync_sbp_curve(); CLI just prints
+        # and translates exit code.
+        from .etl.rates import sync_sbp_curve
         print("Scraping KONIA + KIBOR + yield curve from SBP PMA page...")
-        scraper = SBPRatesScraper()
-        result = scraper.sync_rates(con)
+        try:
+            result = sync_sbp_curve()
+        except Exception as e:  # noqa: BLE001
+            print(f"Error: {e}", file=sys.stderr)
+            return EXIT_ERROR
         print(
             f"Done: KONIA={'OK' if result['konia_ok'] else 'N/A'}, "
             f"{result['kibor_ok']} KIBOR rates, "
@@ -7001,28 +7747,56 @@ def handle_fx_rates(args: argparse.Namespace) -> int:
     init_fx_extended_schema(con)
 
     if args.fxe_command == "sbp-sync":
+        from .db.catalog import record_catalog_failure, update_catalog_from_table
         print("Scraping SBP interbank USD/PKR rates...")
         scraper = SBPFXScraper()
-        result = scraper.sync_interbank(con)
+        try:
+            result = scraper.sync_interbank(con)
+            update_catalog_from_table(con, "fx_interbank", source="sbp")
+            con.commit()
+        except Exception as e:  # noqa: BLE001
+            con.rollback()
+            record_catalog_failure("fx_interbank", source="sbp", error=e)
+            print(f"Error: {e}", file=sys.stderr)
+            return EXIT_ERROR
         print(f"Done: {result['ok']} OK, {result['failed']} failed (total {result['total']})")
         return 0
 
     elif args.fxe_command == "kerb-sync":
+        from .db.catalog import record_catalog_failure, update_catalog_from_table
         print("Scraping kerb rates from forex.pk...")
         scraper = ForexPKScraper()
-        result = scraper.sync_kerb(con)
+        try:
+            result = scraper.sync_kerb(con)
+            update_catalog_from_table(con, "fx_kerb", source="forex_pk")
+            con.commit()
+        except Exception as e:  # noqa: BLE001
+            con.rollback()
+            record_catalog_failure("fx_kerb", source="forex_pk", error=e)
+            print(f"Error: {e}", file=sys.stderr)
+            return EXIT_ERROR
         print(f"Done: {result['ok']} OK, {result['failed']} failed (total {result['total']})")
         return 0
 
     elif args.fxe_command == "sync-all":
+        from .db.catalog import record_catalog_failure, update_catalog_from_table
         print("Syncing SBP interbank + kerb rates...")
-        sbp = SBPFXScraper()
-        r1 = sbp.sync_interbank(con)
-        print(f"  SBP interbank: {r1['ok']} OK")
-
-        kerb = ForexPKScraper()
-        r2 = kerb.sync_kerb(con)
-        print(f"  Kerb (forex.pk): {r2['ok']} OK")
+        try:
+            sbp = SBPFXScraper()
+            r1 = sbp.sync_interbank(con)
+            print(f"  SBP interbank: {r1['ok']} OK")
+            kerb = ForexPKScraper()
+            r2 = kerb.sync_kerb(con)
+            print(f"  Kerb (forex.pk): {r2['ok']} OK")
+            update_catalog_from_table(con, "fx_interbank", source="sbp")
+            update_catalog_from_table(con, "fx_kerb", source="forex_pk")
+            con.commit()
+        except Exception as e:  # noqa: BLE001
+            con.rollback()
+            for ds, src in (("fx_interbank", "sbp"), ("fx_kerb", "forex_pk")):
+                record_catalog_failure(ds, source=src, error=e)
+            print(f"Error: {e}", file=sys.stderr)
+            return EXIT_ERROR
         print(f"Done: {r1['ok'] + r2['ok']} total rates synced")
         return 0
 
@@ -7403,6 +8177,7 @@ def handle_sync_all(args: argparse.Namespace) -> int:
         print(f"  [{i}/{len(steps)}] {name}...", end=" ", flush=True)
         try:
             result = fn()
+            con.commit()
             print(f"OK {result}")
             ok_count += 1
         except Exception as e:
@@ -7569,6 +8344,7 @@ def handle_backfill_rates(args: argparse.Namespace) -> int:
             counts = scraper.sync_kibor_history(
                 con, start_year=start_year, incremental=True,
             )
+            con.commit()
             print(f"  [KIBOR] OK: {counts['dates_processed']} dates, "
                   f"{counts['records_inserted']} records, "
                   f"skipped={counts['skipped']}, failed={counts['failed']}")
@@ -8377,6 +9153,447 @@ def _handle_pmex_margins(args) -> int:
         return 0
 
     return 0
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Phase 0.3 cron-parity handlers
+#
+# Every handler in this block:
+#   - Uses safe_writer for any DB write
+#   - Writes data_freshness inside the SAME transaction (catalog parity)
+#   - Records status='failed' on exception via record_catalog_failure
+#   - Prints ONE structured line to stdout: STEP=… STATUS=… ROWS=… LATEST=…
+#     DURATION_MS=… — parsed by scripts/daily_sync.sh log post-processing
+#   - Returns EXIT_SUCCESS / EXIT_ERROR
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _emit_step(
+    step: str,
+    status: str,
+    *,
+    rows: int | None = None,
+    latest: str | None = None,
+    duration_ms: int | None = None,
+    error: str | None = None,
+) -> None:
+    """Emit one structured KEY=value line for daily_sync.sh log parsing."""
+    parts = [f"STEP={step}", f"STATUS={status}"]
+    if rows is not None:
+        parts.append(f"ROWS={rows}")
+    if latest:
+        parts.append(f"LATEST={latest}")
+    if duration_ms is not None:
+        parts.append(f"DURATION_MS={duration_ms}")
+    if error:
+        parts.append(f"ERROR={error!r}")
+    print(" ".join(parts))
+
+
+# ── indices ──────────────────────────────────────────────────────────────
+
+
+def handle_indices(args: argparse.Namespace) -> int:
+    """Dispatch for `pfsync indices …`."""
+    if args.indices_command == "sync":
+        return handle_indices_sync(args)
+    return EXIT_ERROR
+
+
+def handle_indices_sync(args: argparse.Namespace) -> int:
+    """Fetch + persist all 18 PSX indices from DPS; update data_freshness.
+
+    Body delegates to :func:`pakfindata.etl.indices.sync` — the shared
+    entrypoint used by both this CLI handler and the worker handler
+    registered in Phase 1.5. CLI's responsibility shrinks to exit-code
+    translation + ``_emit_step`` log emission for ``daily_sync.sh``
+    parsing. Catalog failure is recorded inside ``sync()`` itself.
+    """
+    import time as _time
+
+    from .etl.indices import sync as sync_indices
+
+    setup_logging()
+    t0 = _time.time()
+    try:
+        result = sync_indices()
+        _emit_step(
+            "indices_sync",
+            "ok",
+            rows=result["indices_count"],
+            latest=result.get("latest_date"),
+            duration_ms=int((_time.time() - t0) * 1000),
+        )
+        return EXIT_SUCCESS
+    except Exception as e:  # noqa: BLE001 — cron must record failure path
+        # sync() already wrote record_catalog_failure; just emit the
+        # log line + non-zero exit for cron.
+        _emit_step(
+            "indices_sync",
+            "failed",
+            duration_ms=int((_time.time() - t0) * 1000),
+            error=str(e),
+        )
+        return EXIT_ERROR
+
+
+# ── summary ──────────────────────────────────────────────────────────────
+
+
+def handle_summary(args: argparse.Namespace) -> int:
+    """Dispatch for `pfsync summary …`."""
+    if args.summary_command == "rebuild-today":
+        return handle_summary_rebuild_today(args)
+    elif args.summary_command == "rebuild-missing":
+        return handle_summary_rebuild_missing(args)
+    return EXIT_ERROR
+
+
+def _get_latest_full_trading_day(con) -> str | None:
+    """Find the most recent date in eod_ohlcv. Returns None if empty."""
+    row = con.execute(
+        "SELECT MAX(date) FROM eod_ohlcv WHERE prev_close > 0"
+    ).fetchone()
+    return row[0] if row and row[0] else None
+
+
+def handle_summary_rebuild_today(args: argparse.Namespace) -> int:
+    """Rebuild eod_{symbol,market,sector}_summary for latest trading day.
+
+    Phase 1.6.8: delegates to :func:`pakfindata.etl.eod_summary.rebuild_today`.
+    Cron-parseable ``_emit_step`` output preserved.
+    """
+    import time as _time
+
+    from .etl.eod_summary import rebuild_today
+
+    setup_logging()
+    t0 = _time.time()
+    try:
+        result = rebuild_today(date=args.date)
+    except Exception as e:  # noqa: BLE001
+        _emit_step(
+            "summary_rebuild_today",
+            "failed",
+            duration_ms=int((_time.time() - t0) * 1000),
+            error=str(e),
+        )
+        return EXIT_ERROR
+
+    if result.get("skipped_reason"):
+        _emit_step(
+            "summary_rebuild_today",
+            "skipped",
+            duration_ms=result["duration_ms"],
+            error=result["skipped_reason"],
+        )
+        return EXIT_SUCCESS
+
+    _emit_step(
+        "summary_rebuild_today",
+        "ok",
+        rows=result["rows_written"],
+        latest=result["date"],
+        duration_ms=result["duration_ms"],
+    )
+    return EXIT_SUCCESS
+
+
+def handle_summary_rebuild_missing(args: argparse.Namespace) -> int:
+    """Populate eod_*_summary for any dates that have eod_ohlcv but no summary.
+
+    Phase 1.6.9: delegates to :func:`pakfindata.etl.eod_summary.rebuild_missing`.
+    """
+    import time as _time
+
+    from .etl.eod_summary import rebuild_missing
+
+    setup_logging()
+    t0 = _time.time()
+    try:
+        result = rebuild_missing(batch_size=args.batch_size)
+    except Exception as e:  # noqa: BLE001
+        _emit_step(
+            "summary_rebuild_missing",
+            "failed",
+            duration_ms=int((_time.time() - t0) * 1000),
+            error=str(e),
+        )
+        return EXIT_ERROR
+
+    _emit_step(
+        "summary_rebuild_missing",
+        "ok",
+        rows=result["rows_written"],
+        duration_ms=result["duration_ms"],
+    )
+    print(
+        f"  processed {result['dates_processed']}/{result['dates_considered']} "
+        f"dates in {result['batches']} batches"
+    )
+    return EXIT_SUCCESS
+
+
+# ── intraday tick-disk pipeline ─────────────────────────────────────────
+
+
+def handle_intraday_ticks_fetch(args: argparse.Namespace) -> int:
+    """HTTP fetch every active symbol's intraday ticks → JSON on disk."""
+    import time as _time
+
+    from .db.connections import sqlite_con
+    from .sync_timeseries import fetch_ticks_to_disk_parallel
+
+    setup_logging()
+    t0 = _time.time()
+    try:
+        # The fetch function needs a connection to read the active-symbols
+        # list and the skip filter. It does not write to the DB.
+        con = sqlite_con()
+        try:
+            result = fetch_ticks_to_disk_parallel(
+                con, target_date=args.date, n_shards=args.shards
+            )
+        finally:
+            con.close()
+        _emit_step(
+            "intraday_ticks_fetch",
+            "ok",
+            rows=result.get("ticks", 0),
+            latest=args.date,
+            duration_ms=int((_time.time() - t0) * 1000),
+        )
+        print(
+            f"  symbols={result.get('symbols_total', 0)} "
+            f"ok={result.get('ok', 0)} fail={result.get('fail', 0)} "
+            f"json_dir={result.get('json_dir', '?')}"
+        )
+        return EXIT_SUCCESS
+    except Exception as e:  # noqa: BLE001
+        _emit_step(
+            "intraday_ticks_fetch",
+            "failed",
+            latest=args.date,
+            duration_ms=int((_time.time() - t0) * 1000),
+            error=str(e),
+        )
+        return EXIT_ERROR
+
+
+def handle_intraday_ticks_load(args: argparse.Namespace) -> int:
+    """Load tick JSON files from disk → intraday_bars + tick_data; update catalog."""
+    import time as _time
+
+    from .db.catalog import record_catalog_failure, update_catalog_from_table
+    from .db.safe_writer import safe_writer
+    from .sync_timeseries import load_ticks_from_disk
+
+    setup_logging()
+    t0 = _time.time()
+    try:
+        with safe_writer() as wcon:
+            result = load_ticks_from_disk(wcon, target_date=args.date)
+            if result.get("rows_total", 0) > 0:
+                update_catalog_from_table(wcon, "intraday", source="psx_api")
+                update_catalog_from_table(wcon, "tick_data", source="psx_api")
+        _emit_step(
+            "intraday_ticks_load",
+            "ok",
+            rows=result.get("rows_total", 0),
+            latest=args.date,
+            duration_ms=int((_time.time() - t0) * 1000),
+        )
+        print(
+            f"  files={result.get('total_files', 0)} "
+            f"ok={result.get('ok', 0)} fail={result.get('fail', 0)}"
+        )
+        if result.get("error"):
+            print(f"  note: {result['error']}")
+        return EXIT_SUCCESS
+    except Exception as e:  # noqa: BLE001
+        for ds in ("intraday", "tick_data"):
+            record_catalog_failure(ds, source="psx_api", error=e)
+        _emit_step(
+            "intraday_ticks_load",
+            "failed",
+            latest=args.date,
+            duration_ms=int((_time.time() - t0) * 1000),
+            error=str(e),
+        )
+        return EXIT_ERROR
+
+
+def handle_intraday_summaries_build(args: argparse.Namespace) -> int:
+    """Build daily/minute/hourly intraday summary tables for one date."""
+    import time as _time
+
+    from .db.catalog import record_catalog_failure, update_catalog_from_table
+    from .db.repositories.intraday_summary import compute_all
+    from .db.safe_writer import safe_writer
+
+    setup_logging()
+    t0 = _time.time()
+    try:
+        with safe_writer() as wcon:
+            result = compute_all(wcon, args.date)
+            update_catalog_from_table(
+                wcon, "intraday_daily_summary", source="computed"
+            )
+            update_catalog_from_table(
+                wcon, "intraday_minute_breadth", source="computed"
+            )
+            update_catalog_from_table(
+                wcon, "intraday_hourly_summary", source="computed"
+            )
+        total_rows = sum(v for v in result.values() if isinstance(v, int))
+        _emit_step(
+            "intraday_summaries_build",
+            "ok",
+            rows=total_rows,
+            latest=args.date,
+            duration_ms=int((_time.time() - t0) * 1000),
+        )
+        print(f"  {result}")
+        return EXIT_SUCCESS
+    except Exception as e:  # noqa: BLE001
+        for ds in (
+            "intraday_daily_summary",
+            "intraday_minute_breadth",
+            "intraday_hourly_summary",
+        ):
+            record_catalog_failure(ds, source="computed", error=e)
+        _emit_step(
+            "intraday_summaries_build",
+            "failed",
+            latest=args.date,
+            duration_ms=int((_time.time() - t0) * 1000),
+            error=str(e),
+        )
+        return EXIT_ERROR
+
+
+# ── parquet store ────────────────────────────────────────────────────────
+
+
+def handle_parquet(args: argparse.Namespace) -> int:
+    """Dispatch for `pfsync parquet …`."""
+    if args.parquet_command == "export-today":
+        return handle_parquet_export_today(args)
+    elif args.parquet_command == "export-all":
+        return handle_parquet_export_all(args)
+    elif args.parquet_command == "sync-missing":
+        return handle_parquet_sync_missing(args)
+    elif args.parquet_command == "status":
+        return handle_parquet_status(args)
+    return EXIT_ERROR
+
+
+def handle_parquet_export_today(args: argparse.Namespace) -> int:
+    """Export today's data (or --date) for every registered parquet table."""
+    import time as _time
+
+    from .db.parquet_store import export_today
+
+    setup_logging()
+    t0 = _time.time()
+    try:
+        result = export_today(date_str=args.date)
+        total = sum(v for v in result.values() if isinstance(v, int))
+        _emit_step(
+            "parquet_export_today",
+            "ok",
+            rows=total,
+            latest=args.date or "today",
+            duration_ms=int((_time.time() - t0) * 1000),
+        )
+        return EXIT_SUCCESS
+    except Exception as e:  # noqa: BLE001
+        _emit_step(
+            "parquet_export_today",
+            "failed",
+            duration_ms=int((_time.time() - t0) * 1000),
+            error=str(e),
+        )
+        return EXIT_ERROR
+
+
+def handle_parquet_export_all(args: argparse.Namespace) -> int:
+    """Full re-export of every table for every date. Heavy — use sparingly."""
+    import time as _time
+
+    from .db.parquet_store import export_all
+
+    setup_logging()
+    t0 = _time.time()
+    try:
+        result = export_all()
+        total = sum(v for v in result.values() if isinstance(v, int))
+        _emit_step(
+            "parquet_export_all",
+            "ok",
+            rows=total,
+            duration_ms=int((_time.time() - t0) * 1000),
+        )
+        return EXIT_SUCCESS
+    except Exception as e:  # noqa: BLE001
+        _emit_step(
+            "parquet_export_all",
+            "failed",
+            duration_ms=int((_time.time() - t0) * 1000),
+            error=str(e),
+        )
+        return EXIT_ERROR
+
+
+def handle_parquet_sync_missing(args: argparse.Namespace) -> int:
+    """Export only dates present in date_manifest but missing on disk."""
+    import time as _time
+
+    from .db.parquet_store import sync_missing
+
+    setup_logging()
+    t0 = _time.time()
+    try:
+        result = sync_missing()
+        exported = sum(
+            v.get("exported", 0) for v in result.values() if isinstance(v, dict)
+        )
+        missing = sum(
+            v.get("missing", 0) for v in result.values() if isinstance(v, dict)
+        )
+        _emit_step(
+            "parquet_sync_missing",
+            "ok",
+            rows=exported,
+            duration_ms=int((_time.time() - t0) * 1000),
+        )
+        print(f"  missing={missing} exported={exported}")
+        return EXIT_SUCCESS
+    except Exception as e:  # noqa: BLE001
+        _emit_step(
+            "parquet_sync_missing",
+            "failed",
+            duration_ms=int((_time.time() - t0) * 1000),
+            error=str(e),
+        )
+        return EXIT_ERROR
+
+
+def handle_parquet_status(args: argparse.Namespace) -> int:
+    """Print parquet store file count / size / date range per table."""
+    from .db.parquet_store import status
+
+    setup_logging()
+    info = status()
+    print(f"{'table':<32}{'files':>8}{'size_mb':>10}  date range")
+    print("-" * 72)
+    for table, d in sorted(info.items()):
+        files = d.get("files", 0)
+        size = d.get("size_mb", 0)
+        dmin = d.get("oldest") or "—"
+        dmax = d.get("newest") or "—"
+        print(f"{table:<32}{files:>8}{size:>10.1f}  {dmin} → {dmax}")
+    return EXIT_SUCCESS
 
 
 if __name__ == "__main__":

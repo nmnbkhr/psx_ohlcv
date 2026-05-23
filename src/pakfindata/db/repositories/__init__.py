@@ -83,3 +83,9 @@ from .post_close import *  # noqa: F401, F403
 
 # 24. bond_market  (9 functions)
 from .bond_market import *  # noqa: F401, F403
+
+# 25. market_summary  (EOD breadth, movers, leaders, 52w, distribution, sector, announcements)
+from .market_summary import *  # noqa: F401, F403
+
+# 26. rates_strip  (dashboard macro-rates + FX strip)
+from .rates_strip import *  # noqa: F401, F403

@@ -6,6 +6,7 @@ import streamlit as st
 import time
 
 from pakfindata.config import get_db_path
+from pakfindata.ui.api import client as api_client
 from pakfindata.ui.session_tracker import track_page_visit
 from pakfindata.ui.components.helpers import (
     get_connection,
@@ -207,22 +208,16 @@ LIMIT 30;
     with tab4:
         st.subheader("Database Statistics")
 
-        # Get all tables and their row counts
+        # Get all tables and their row counts via /v1/admin/tables
         try:
-            tables_query = """
-                SELECT name FROM sqlite_master
-                WHERE type='table'
-                ORDER BY name
-            """
-            tables = [row[0] for row in con.execute(tables_query).fetchall()]
-
-            stats = []
-            for table in tables:
-                try:
-                    count = con.execute(f"SELECT COUNT(*) FROM [{table}]").fetchone()[0]
-                    stats.append({"Table": table, "Rows": count})
-                except Exception:
-                    stats.append({"Table": table, "Rows": "Error"})
+            rows = api_client.get_admin_tables(include_counts=True) or []
+            stats = [
+                {
+                    "Table": r["name"],
+                    "Rows": r["row_count"] if r["row_count"] is not None else "Error",
+                }
+                for r in rows
+            ]
 
             if stats:
                 import pandas as pd
@@ -231,7 +226,7 @@ LIMIT 30;
 
                 col1, col2 = st.columns([2, 1])
                 with col1:
-                    st.dataframe(df, use_container_width=True, hide_index=True)
+                    st.dataframe(df, width='stretch', hide_index=True)
                 with col2:
                     total_rows = sum(s["Rows"] for s in stats if isinstance(s["Rows"], int))
                     st.metric("Total Tables", len(stats))
@@ -250,5 +245,6 @@ LIMIT 30;
         st.markdown("---")
         st.markdown("#### Connection Info")
         from pakfindata.config import get_db_path
+        import sqlite3 as _sqlite3
         st.code(f"Database Path: {get_db_path()}")
-        st.code(f"SQLite Version: {con.execute('SELECT sqlite_version()').fetchone()[0]}")
+        st.code(f"SQLite Version: {_sqlite3.sqlite_version}")

@@ -11,6 +11,40 @@ from pakfindata.ui.components.helpers import (
 )
 
 
+# ── Cached data loaders ──────────────────────────────────────────────────────
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _load_tracking_stats() -> dict:
+    """Load market summary tracking stats (cached)."""
+    from pakfindata.sources.market_summary import get_tracking_stats
+    con = get_connection()
+    return get_tracking_stats(con)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _load_failed_dates() -> list:
+    """Load failed download dates (cached)."""
+    from pakfindata.sources.market_summary import get_failed_dates
+    con = get_connection()
+    return get_failed_dates(con)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _load_missing_dates() -> list:
+    """Load missing download dates (cached)."""
+    from pakfindata.sources.market_summary import get_missing_dates
+    con = get_connection()
+    return get_missing_dates(con)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _load_tracking_records(limit: int = 500) -> list:
+    """Load all tracking records (cached)."""
+    from pakfindata.sources.market_summary import get_all_tracking_records
+    con = get_connection()
+    return get_all_tracking_records(con, limit=limit)
+
+
 def render_market_summary():
     """Download and manage market summary history files."""
     from datetime import date as date_type
@@ -58,7 +92,7 @@ def render_market_summary():
         st.session_state.ms_download_results = []
 
     # Get stats
-    stats = get_tracking_stats(con)
+    stats = _load_tracking_stats()
 
     # Stats row
     st.subheader("Download Statistics")
@@ -133,6 +167,8 @@ def render_market_summary():
                             single_date,
                             force=single_force,
                             keep_raw=single_keep_raw,
+                            retry_failed=True,
+                            retry_missing=True,
                         )
                     if result["status"] == "ok":
                         st.success(
@@ -205,6 +241,84 @@ def render_market_summary():
                     )
                 else:
                     st.error(f"Failed: {result.get('message', '')}")
+
+        st.markdown("---")
+        st.subheader("Fetch & Store (API → DB)")
+        st.caption(
+            "Fetch per-symbol EOD JSON from DPS API and write directly to "
+            "`eod_ohlcv`. Symbols split into **3 parallel shards** "
+            "(10 workers each = 30 concurrent requests). "
+            "SUSPENDED/DELISTED (>30 days) skipped. "
+            "Raw JSON saved to `~/data/eod_json/{date}/`."
+        )
+
+        if st.button(
+            "Fetch All Symbols → DB",
+            key="ms_api_fetch_store",
+            type="primary",
+        ):
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            from pakfindata.db.repositories.eod import upsert_eod
+            from pakfindata.sources.eod import (
+                prepare_batch_symbols,
+                run_shard_batch,
+            )
+
+            try:
+                info = prepare_batch_symbols(con, n_shards=3)
+                total_syms = len(info["symbols"])
+                st.info(
+                    f"**{total_syms}** active symbols "
+                    f"({len(info['skipped'])} suspended/delisted skipped) → "
+                    f"3 shards of ~{total_syms // 3} each"
+                )
+
+                progress_bar = st.progress(0)
+                shard_status = st.empty()
+
+                # Launch 3 shards in parallel threads
+                total_ok = 0
+                total_fail = 0
+                rows_inserted = 0
+                shards_done = 0
+
+                with ThreadPoolExecutor(max_workers=3) as pool:
+                    futs = {
+                        pool.submit(
+                            run_shard_batch, shard, info["json_dir"], i
+                        ): i
+                        for i, shard in enumerate(info["shards"])
+                    }
+                    for fut in as_completed(futs):
+                        shard_idx = futs[fut]
+                        df, ok, fail = fut.result()
+                        shards_done += 1
+                        total_ok += ok
+                        total_fail += fail
+
+                        progress_bar.progress(shards_done / 3)
+                        shard_status.text(
+                            f"Shard {shard_idx + 1} done "
+                            f"({ok} OK, {fail} fail) — "
+                            f"{shards_done}/3 shards complete"
+                        )
+
+                        # Upsert this shard's data immediately
+                        if df is not None and not df.empty:
+                            rows_inserted += upsert_eod(
+                                con, df, source="per_symbol_api"
+                            )
+
+                progress_bar.progress(1.0)
+                st.success(
+                    f"Done! **{total_ok}** symbols fetched, "
+                    f"**{rows_inserted:,}** rows upserted, "
+                    f"{len(info['skipped'])} skipped. "
+                    f"JSON → `{info['json_dir']}`"
+                )
+            except Exception as e:
+                st.error(f"Error: {e}")
 
     # =========================================================================
     # Tab 2: Date Range Download
@@ -386,8 +500,8 @@ def render_market_summary():
     with tab_retry:
         st.subheader("Retry Failed Downloads")
 
-        failed_dates = get_failed_dates(con)
-        missing_dates = get_missing_dates(con)
+        failed_dates = _load_failed_dates()
+        missing_dates = _load_missing_dates()
 
         col1, col2 = st.columns(2)
         with col1:
@@ -478,7 +592,7 @@ def render_market_summary():
             key="ms_history_filter",
         )
 
-        records = get_all_tracking_records(con, limit=500)
+        records = _load_tracking_records(limit=500)
 
         if status_filter:
             records = [r for r in records if r["status"] in status_filter]
@@ -502,7 +616,7 @@ def render_market_summary():
                 return ""
 
             styled_df = df_display.style.map(style_status, subset=["Status"])
-            st.dataframe(styled_df, use_container_width=True, height=400)
+            st.dataframe(styled_df, width='stretch', height=400)
 
             st.caption(f"Showing {len(records)} records")
         else:

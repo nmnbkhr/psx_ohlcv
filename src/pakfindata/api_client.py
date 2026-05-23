@@ -411,6 +411,7 @@ class PSXClient:
             self._con = self._get_db_connection()
         from pakfindata.analytics import init_analytics_schema
         init_analytics_schema(self._con)
+        self._con.commit()
 
     # =========================================================================
     # SYNC / TASKS

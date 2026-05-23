@@ -13,16 +13,20 @@ Data is stored in a flexible JSON document format for quant analysis.
 """
 
 import hashlib
+import json
 import re
 import sqlite3
+import threading
 import time
 from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import requests
 from lxml import html
 
+from ..config import DATA_ROOT
 from ..models import now_iso
 
 # PSX company page URL template
@@ -151,6 +155,20 @@ def parse_quote_data(tree: html.HtmlElement) -> dict[str, Any]:
     if change_pct:
         pct_str = change_pct[0].strip().replace("(", "").replace(")", "")
         data["change_percent"] = _parse_numeric(pct_str)
+
+    # Company listing status tags (SUSPENDED, WINDING-UP, DEFAULTER, etc.)
+    # These are inside the quote__name div, separate from trading statuses (XD/XB/XR)
+    listing_tags = tree.xpath(
+        '//div[contains(@class, "quote__name")]//div[contains(@class, "tag")]/text()'
+    )
+    # Filter out per-day trading statuses — keep only company-level statuses
+    trading_statuses = {"XD", "XB", "XR", "NC", "XA", "XI", "XW"}
+    company_statuses = [
+        t.strip() for t in listing_tags
+        if t.strip() and t.strip() not in trading_statuses
+    ]
+    if company_statuses:
+        data["listing_status"] = ",".join(company_statuses)
 
     # As-of date
     date_elem = tree.xpath('//div[contains(@class, "quote__date")]//text()')
@@ -409,6 +427,16 @@ def parse_financials_data(tree: html.HtmlElement) -> dict[str, Any]:
                 key = "gross_profit"  # Non-banks: sales minus COGS
             elif "OPERATING" in metric and "MARGIN" not in metric:
                 key = "operating_profit"
+            elif "TOTAL ASSETS" in metric or "TOTAL ASSET" in metric:
+                key = "total_assets"
+            elif "TOTAL LIABILIT" in metric:
+                key = "total_liabilities"
+            elif ("TOTAL EQUITY" in metric or "SHAREHOLDERS" in metric
+                  or ("EQUITY" in metric and "RETURN" not in metric
+                      and "DEBT" not in metric)):
+                key = "total_equity"
+            elif "BOOK VALUE" in metric or "NAV PER" in metric:
+                key = "book_value_per_share"
 
             if key:
                 for idx, period, ptype in period_cols:
@@ -484,6 +512,18 @@ def parse_ratios_data(tree: html.HtmlElement) -> dict[str, Any]:
                 key = "eps_growth"
             elif "PEG" in metric:
                 key = "peg_ratio"
+            elif ("P/E" in metric or "PRICE" in metric and "EARNING" in metric
+                  or "PE RATIO" in metric or "PRICE/EARNINGS" in metric):
+                key = "pe_ratio"
+            elif ("P/B" in metric or "PRICE" in metric and "BOOK" in metric
+                  or "PB RATIO" in metric or "PRICE/BOOK" in metric):
+                key = "pb_ratio"
+            elif "DIVIDEND YIELD" in metric:
+                key = "dividend_yield"
+            elif "CURRENT RATIO" in metric:
+                key = "current_ratio"
+            elif "DEBT" in metric and "EQUITY" in metric:
+                key = "debt_to_equity"
 
             if key:
                 for idx, period, ptype in period_cols:
@@ -649,6 +689,190 @@ def parse_payouts_data(tree: html.HtmlElement) -> list[dict]:
     return payouts
 
 
+def check_symbol_filings(
+    symbol: str,
+    con: "sqlite3.Connection | None" = None,
+) -> dict[str, Any]:
+    """
+    Probe a PSX company page and report what financial data is available
+    for scraping, plus what's already stored in the DB.
+
+    Returns a dict with sections: quote, profile, financials, ratios,
+    announcements, payouts, equity — each with availability & counts.
+    """
+    symbol = symbol.upper()
+    report: dict[str, Any] = {
+        "symbol": symbol,
+        "url": DPS_COMPANY_URL.format(symbol=symbol),
+        "success": False,
+        "error": None,
+        "page": {},   # what's on the PSX page
+        "db": {},     # what's already in our DB
+    }
+
+    # --- Probe the PSX page ---
+    try:
+        html_content = fetch_company_html(symbol)
+        tree = html.fromstring(html_content)
+    except Exception as e:
+        report["error"] = str(e)
+        return report
+
+    # Quote / header
+    quote = parse_quote_data(tree)
+    report["page"]["company_name"] = quote.get("company_name", "N/A")
+    report["page"]["sector"] = quote.get("sector_name", "N/A")
+    report["page"]["price"] = quote.get("close")
+    report["page"]["change_pct"] = quote.get("change_percent")
+
+    # Trading stats (market types)
+    stats = parse_stats_section(tree)
+    report["page"]["market_types"] = list(stats.keys()) if stats else []
+
+    # Equity
+    equity = parse_equity_data(tree)
+    report["page"]["equity"] = {
+        "available": bool(equity),
+        "market_cap": equity.get("market_cap"),
+        "outstanding_shares": equity.get("outstanding_shares"),
+        "free_float_pct": equity.get("free_float_percent"),
+    }
+
+    # Profile
+    profile = parse_profile_data(tree)
+    report["page"]["profile"] = {
+        "available": bool(profile),
+        "has_description": bool(profile.get("business_description")),
+        "key_people_count": len(profile.get("key_people", [])),
+    }
+
+    # Financials
+    fins = parse_financials_data(tree)
+    ann_fins = fins.get("annual", [])
+    qtr_fins = fins.get("quarterly", [])
+    fin_metrics = set()
+    for row in ann_fins + qtr_fins:
+        fin_metrics.update(k for k in row if k not in ("period_end", "period_type"))
+    report["page"]["financials"] = {
+        "available": bool(ann_fins or qtr_fins),
+        "annual_periods": sorted([r["period_end"] for r in ann_fins]),
+        "quarterly_periods": sorted([r["period_end"] for r in qtr_fins]),
+        "metrics": sorted(fin_metrics),
+    }
+
+    # Ratios
+    rats = parse_ratios_data(tree)
+    ann_rats = rats.get("annual", [])
+    qtr_rats = rats.get("quarterly", [])
+    rat_metrics = set()
+    for row in ann_rats + qtr_rats:
+        rat_metrics.update(k for k in row if k not in ("period_end", "period_type"))
+    report["page"]["ratios"] = {
+        "available": bool(ann_rats or qtr_rats),
+        "annual_periods": sorted([r["period_end"] for r in ann_rats]),
+        "quarterly_periods": sorted([r["period_end"] for r in qtr_rats]),
+        "metrics": sorted(rat_metrics),
+    }
+
+    # Announcements
+    anns = parse_announcements_data(tree)
+    ann_types: dict[str, int] = {}
+    for a in anns:
+        t = a.get("type", "other")
+        ann_types[t] = ann_types.get(t, 0) + 1
+    report["page"]["announcements"] = {
+        "available": bool(anns),
+        "total": len(anns),
+        "by_type": ann_types,
+    }
+
+    # Payouts
+    pays = parse_payouts_data(tree)
+    pay_types: dict[str, int] = {}
+    for p in pays:
+        t = p.get("payout_type", "unknown")
+        pay_types[t] = pay_types.get(t, 0) + 1
+    report["page"]["payouts"] = {
+        "available": bool(pays),
+        "total": len(pays),
+        "by_type": pay_types,
+        "fiscal_years": sorted({p.get("fiscal_year", "?") for p in pays if p.get("fiscal_year")}),
+    }
+
+    report["success"] = True
+
+    # --- Check what's already in the DB ---
+    if con is not None:
+        try:
+            row = con.execute(
+                "SELECT COUNT(*) as cnt FROM company_financials WHERE symbol = ?",
+                (symbol,),
+            ).fetchone()
+            db_fins = row["cnt"] if row else 0
+
+            row = con.execute(
+                "SELECT COUNT(*) as cnt FROM company_ratios WHERE symbol = ?",
+                (symbol,),
+            ).fetchone()
+            db_rats = row["cnt"] if row else 0
+
+            row = con.execute(
+                "SELECT COUNT(*) as cnt FROM company_payouts WHERE symbol = ?",
+                (symbol,),
+            ).fetchone()
+            db_pays = row["cnt"] if row else 0
+
+            row = con.execute(
+                "SELECT COUNT(*) as cnt FROM corporate_announcements WHERE symbol = ?",
+                (symbol,),
+            ).fetchone()
+            db_anns = row["cnt"] if row else 0
+
+            row = con.execute(
+                "SELECT COUNT(*) as cnt FROM company_profile WHERE symbol = ?",
+                (symbol,),
+            ).fetchone()
+            db_profile = row["cnt"] if row else 0
+
+            row = con.execute(
+                "SELECT COUNT(*) as cnt FROM equity_structure WHERE symbol = ?",
+                (symbol,),
+            ).fetchone()
+            db_equity = row["cnt"] if row else 0
+
+            # Financial periods already stored
+            db_fin_periods = [
+                r["period_end"]
+                for r in con.execute(
+                    "SELECT DISTINCT period_end FROM company_financials WHERE symbol = ? ORDER BY period_end",
+                    (symbol,),
+                ).fetchall()
+            ]
+
+            db_rat_periods = [
+                r["period_end"]
+                for r in con.execute(
+                    "SELECT DISTINCT period_end FROM company_ratios WHERE symbol = ? ORDER BY period_end",
+                    (symbol,),
+                ).fetchall()
+            ]
+
+            report["db"] = {
+                "financials_rows": db_fins,
+                "financials_periods": db_fin_periods,
+                "ratios_rows": db_rats,
+                "ratios_periods": db_rat_periods,
+                "payouts_rows": db_pays,
+                "announcements_rows": db_anns,
+                "profile_exists": db_profile > 0,
+                "equity_snapshots": db_equity,
+            }
+        except Exception:
+            report["db"] = {"error": "could not query DB"}
+
+    return report
+
+
 def scrape_company_deep(
     symbol: str,
     html_content: str | None = None,
@@ -774,6 +998,10 @@ def save_company_snapshot(
     )
     result["snapshot_saved"] = snapshot_result.get("status") == "ok"
 
+    # Save company listing status (SUSPENDED, WINDING-UP, DEFAULTER, etc.)
+    listing_status = data.get("quote_data", {}).get("listing_status")
+    _save_listing_status(con, symbol, listing_status, snapshot_date)
+
     # Save quote snapshot (for charts)
     quote_data = data.get("quote_data", {})
     trading_data = data.get("trading_data", {})
@@ -850,7 +1078,398 @@ def save_company_snapshot(
         ratios_saved = upsert_company_ratios(con, symbol, all_ratios)
         result["ratios_saved"] = ratios_saved
 
+    # Compute derived ratios (PE, PB) from price + EPS + equity
+    try:
+        price = quote_data.get("close")
+        if price and all_financials:
+            # Find most recent annual EPS
+            annual_fin = sorted(
+                [f for f in all_financials if f.get("period_type") == "annual" and f.get("eps")],
+                key=lambda x: x.get("period_end", ""),
+                reverse=True,
+            )
+            if annual_fin:
+                eps = annual_fin[0]["eps"]
+                period = annual_fin[0]["period_end"]
+                if eps and eps != 0:
+                    pe = round(price / eps, 2)
+                    # Find or create matching ratio period
+                    matched = False
+                    for r in all_ratios:
+                        if r.get("period_end") == period:
+                            r["pe_ratio"] = pe
+                            matched = True
+                            break
+                    if not matched:
+                        all_ratios.append({"period_end": period, "period_type": "annual", "pe_ratio": pe})
+
+                # Compute PB from book value or equity/shares
+                bvps = annual_fin[0].get("book_value_per_share")
+                if not bvps:
+                    total_eq = annual_fin[0].get("total_equity")
+                    shares = equity_data.get("outstanding_shares")
+                    if total_eq and shares and shares > 0:
+                        bvps = total_eq / shares
+                if bvps and bvps != 0:
+                    pb = round(price / bvps, 2)
+                    for r in all_ratios:
+                        if r.get("period_end") == period:
+                            r["pb_ratio"] = pb
+                            break
+
+            # Re-save ratios with computed PE/PB
+            if all_ratios:
+                upsert_company_ratios(con, symbol, all_ratios)
+    except Exception:
+        pass
+
+    # Save fundamentals (combined quote + profile + equity data)
+    try:
+        from ..db import upsert_company_fundamentals
+
+        profile_data = data.get("profile_data", {})
+        fundamentals = {
+            "company_name": profile_data.get("company_name"),
+            "sector_name": profile_data.get("sector"),
+            "price": quote_data.get("close"),
+            "change": quote_data.get("change"),
+            "change_pct": quote_data.get("change_pct"),
+            "open": reg_data.get("open"),
+            "high": reg_data.get("high"),
+            "low": reg_data.get("low"),
+            "volume": reg_data.get("volume"),
+            "ldcp": quote_data.get("ldcp"),
+            "pe_ratio": quote_data.get("pe_ratio_ttm"),
+            "market_cap": quote_data.get("market_cap"),
+            "total_shares": equity_data.get("total_shares"),
+            "free_float_shares": equity_data.get("free_float_shares"),
+            "free_float_pct": equity_data.get("free_float_pct"),
+            "wk52_low": quote_data.get("week52_low"),
+            "wk52_high": quote_data.get("week52_high"),
+            "business_description": profile_data.get("description"),
+            "address": profile_data.get("address"),
+            "website": profile_data.get("website"),
+            "registrar": profile_data.get("registrar"),
+            "auditor": profile_data.get("auditor"),
+            "fiscal_year_end": profile_data.get("fiscal_year_end"),
+            "listed_in": profile_data.get("listed_in"),
+            "as_of": snapshot_date,
+            "source_url": f"https://dps.psx.com.pk/company/{symbol}",
+        }
+        # Remove None values
+        fundamentals = {k: v for k, v in fundamentals.items() if v is not None}
+        if len(fundamentals) > 3:  # symbol + at least some data
+            upsert_company_fundamentals(con, symbol, fundamentals)
+            result["fundamentals_saved"] = True
+    except Exception:
+        pass  # Non-critical — don't fail the whole scrape
+
     return result
+
+
+# ═══════════════════════════════════════════════════════════════════
+# COMPANY LISTING STATUS (SUSPENDED, WINDING-UP, DEFAULTER, etc.)
+# ═══════════════════════════════════════════════════════════════════
+
+# Statuses that mean the company should be marked inactive
+INACTIVE_LISTING_STATUSES = {"SUSPENDED", "WINDING-UP", "DELISTED"}
+
+
+def _ensure_listing_status_table(con: sqlite3.Connection) -> None:
+    """Create company_listing_status table if it doesn't exist."""
+    con.executescript("""
+        CREATE TABLE IF NOT EXISTS company_listing_status (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol      TEXT NOT NULL,
+            status      TEXT NOT NULL,
+            is_current  INTEGER DEFAULT 1,
+            first_seen  TEXT NOT NULL,
+            last_seen   TEXT NOT NULL,
+            removed_at  TEXT,
+            source      TEXT DEFAULT 'PSX_DPS',
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(symbol, status, first_seen)
+        );
+        CREATE INDEX IF NOT EXISTS idx_cls_symbol ON company_listing_status(symbol);
+        CREATE INDEX IF NOT EXISTS idx_cls_current ON company_listing_status(is_current) WHERE is_current = 1;
+        CREATE INDEX IF NOT EXISTS idx_cls_status ON company_listing_status(status);
+    """)
+    # Add listing_status column to company_profile if missing
+    try:
+        con.execute("SELECT listing_status FROM company_profile LIMIT 1")
+    except sqlite3.OperationalError:
+        con.execute("ALTER TABLE company_profile ADD COLUMN listing_status TEXT")
+
+
+def _save_listing_status(
+    con: sqlite3.Connection,
+    symbol: str,
+    listing_status: str | None,
+    check_date: str,
+) -> None:
+    """
+    Persist company listing status tags to DB.
+
+    - Upserts into company_listing_status (SCD-style tracking).
+    - Updates company_profile.listing_status.
+    - Marks is_active=0 in symbols table for SUSPENDED/WINDING-UP/DELISTED.
+    """
+    _ensure_listing_status_table(con)
+    now = now_iso()
+    current_tags = set(listing_status.split(",")) if listing_status else set()
+
+    # Get existing current statuses for this symbol
+    existing = {
+        row[0]: row[1]
+        for row in con.execute(
+            "SELECT status, id FROM company_listing_status WHERE symbol = ? AND is_current = 1",
+            (symbol,),
+        ).fetchall()
+    }
+
+    # Close statuses that are no longer present
+    removed = set(existing.keys()) - current_tags
+    for status in removed:
+        con.execute(
+            """UPDATE company_listing_status
+               SET is_current = 0, removed_at = ?, updated_at = ?
+               WHERE id = ?""",
+            (check_date, now, existing[status]),
+        )
+
+    # Upsert current statuses
+    for status in current_tags:
+        if status in existing:
+            # Still active — update last_seen
+            con.execute(
+                "UPDATE company_listing_status SET last_seen = ?, updated_at = ? WHERE id = ?",
+                (check_date, now, existing[status]),
+            )
+        else:
+            # New status
+            con.execute(
+                """INSERT OR IGNORE INTO company_listing_status
+                   (symbol, status, is_current, first_seen, last_seen, source, created_at, updated_at)
+                   VALUES (?, ?, 1, ?, ?, 'PSX_DPS', ?, ?)""",
+                (symbol, status, check_date, check_date, now, now),
+            )
+
+    # Update company_profile.listing_status
+    ls_value = ",".join(sorted(current_tags)) if current_tags else None
+    try:
+        con.execute(
+            "UPDATE company_profile SET listing_status = ? WHERE symbol = ?",
+            (ls_value, symbol),
+        )
+    except sqlite3.OperationalError:
+        pass  # column might not exist yet
+
+    # Update is_active in symbols table
+    should_deactivate = bool(current_tags & INACTIVE_LISTING_STATUSES)
+    if should_deactivate:
+        con.execute("UPDATE symbols SET is_active = 0 WHERE symbol = ?", (symbol,))
+        try:
+            con.execute(
+                "UPDATE instrument_registry SET is_active = 0 WHERE symbol = ?",
+                (symbol,),
+            )
+        except sqlite3.OperationalError:
+            pass
+    else:
+        # Re-activate if no blocking statuses (company may have been unsuspended)
+        if not current_tags or not (current_tags & INACTIVE_LISTING_STATUSES):
+            con.execute(
+                "UPDATE symbols SET is_active = 1 WHERE symbol = ? AND is_active = 0",
+                (symbol,),
+            )
+
+    con.commit()
+
+
+_listing_session: requests.Session | None = None
+
+
+def _get_listing_session() -> requests.Session:
+    global _listing_session
+    if _listing_session is None:
+        _listing_session = requests.Session()
+        _listing_session.headers.update(HEADERS)
+        _listing_session.verify = False
+    return _listing_session
+
+
+def check_listing_status_single(symbol: str) -> list[str]:
+    """
+    Quick check: fetch a single symbol's company-level listing tags from PSX.
+    Returns list of statuses, e.g. ['SUSPENDED', 'WINDING-UP'] or [].
+    """
+    try:
+        s = _get_listing_session()
+        r = s.get(DPS_COMPANY_URL.format(symbol=symbol), timeout=15)
+        if r.status_code != 200:
+            return []
+        tree = html.fromstring(r.text)
+        tags = tree.xpath(
+            '//div[contains(@class, "quote__name")]//div[contains(@class, "tag")]/text()'
+        )
+        trading = {"XD", "XB", "XR", "NC", "XA", "XI", "XW"}
+        return [t.strip() for t in tags if t.strip() and t.strip() not in trading]
+    except Exception:
+        return []
+
+
+# ── Bulk listing status checker (resumable) ─────────────────────────
+
+LISTING_STATUS_PROGRESS_FILE = DATA_ROOT / "listing_status_progress.json"
+
+
+def _write_listing_progress(data: dict) -> None:
+    tmp = LISTING_STATUS_PROGRESS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, default=str))
+    tmp.replace(LISTING_STATUS_PROGRESS_FILE)
+
+
+def read_listing_status_progress() -> dict | None:
+    if not LISTING_STATUS_PROGRESS_FILE.exists():
+        return None
+    try:
+        return json.loads(LISTING_STATUS_PROGRESS_FILE.read_text())
+    except Exception:
+        return None
+
+
+def check_all_listing_statuses(
+    con: sqlite3.Connection,
+    delay: float = 0.4,
+) -> dict:
+    """
+    Scan all symbols for company-level listing status tags.
+
+    Resumable: tracks progress in a JSON file so it can restart from
+    where it left off if interrupted. Only fully-processed symbols
+    are saved to state.
+
+    Returns summary dict.
+    """
+    _ensure_listing_status_table(con)
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # Get all symbols to check (exclude suffix duplicates)
+    all_symbols = [
+        r[0]
+        for r in con.execute(
+            """SELECT DISTINCT symbol FROM symbols
+               WHERE symbol NOT LIKE '%XD' AND symbol NOT LIKE '%XB'
+                 AND symbol NOT LIKE '%XR' AND symbol NOT LIKE '%NC'
+                 AND symbol NOT LIKE '%XA'
+               ORDER BY symbol"""
+        ).fetchall()
+    ]
+
+    # Load resume state
+    progress = read_listing_status_progress() or {}
+    completed_today = set(progress.get("completed", {}).get(today, []))
+
+    pending = [s for s in all_symbols if s not in completed_today]
+
+    summary = {
+        "total": len(all_symbols),
+        "already_done": len(completed_today),
+        "pending": len(pending),
+        "found": {},
+        "errors": [],
+        "status": "running",
+        "started_at": now_iso(),
+    }
+
+    # Write initial progress
+    _write_listing_progress({
+        "status": "running",
+        "date": today,
+        "total": len(all_symbols),
+        "processed": len(completed_today),
+        "pending": len(pending),
+        "found": progress.get("found", {}),
+        "completed": progress.get("completed", {}),
+    })
+
+    for i, symbol in enumerate(pending):
+        try:
+            tags = check_listing_status_single(symbol)
+            listing_status = ",".join(tags) if tags else None
+
+            # Save to DB (atomic per symbol)
+            _save_listing_status(con, symbol, listing_status, today)
+
+            # Mark as completed in progress file
+            completed_today.add(symbol)
+
+            if tags:
+                summary["found"][symbol] = tags
+
+            # Update progress file after each successful symbol
+            prog = read_listing_status_progress() or {}
+            prog_completed = prog.get("completed", {})
+            prog_completed[today] = list(completed_today)
+            found = prog.get("found", {})
+            if tags:
+                found[symbol] = tags
+            _write_listing_progress({
+                "status": "running",
+                "date": today,
+                "total": len(all_symbols),
+                "processed": len(completed_today),
+                "pending": len(pending) - i - 1,
+                "found": found,
+                "completed": prog_completed,
+            })
+
+            time.sleep(delay)
+
+        except Exception as e:
+            summary["errors"].append({"symbol": symbol, "error": str(e)})
+
+    # Final progress
+    prog = read_listing_status_progress() or {}
+    prog["status"] = "completed"
+    prog["completed_at"] = now_iso()
+    prog["pending"] = 0
+    _write_listing_progress(prog)
+
+    summary["status"] = "completed"
+    return summary
+
+
+_listing_status_thread: threading.Thread | None = None
+
+
+def start_listing_status_check_background(con_path: str | Path) -> bool:
+    """
+    Launch listing status check in a background thread.
+    Independent of Streamlit — survives reruns.
+    """
+    global _listing_status_thread
+
+    if _listing_status_thread and _listing_status_thread.is_alive():
+        return False  # Already running
+
+    def _run():
+        bg_con = sqlite3.connect(str(con_path), check_same_thread=False)
+        bg_con.execute("PRAGMA journal_mode=WAL")
+        bg_con.execute("PRAGMA busy_timeout=30000")
+        try:
+            check_all_listing_statuses(bg_con)
+        finally:
+            bg_con.close()
+
+    _listing_status_thread = threading.Thread(target=_run, daemon=True, name="listing-status-check")
+    _listing_status_thread.start()
+    return True
+
+
+def is_listing_status_check_running() -> bool:
+    return _listing_status_thread is not None and _listing_status_thread.is_alive()
 
 
 def deep_scrape_symbol(
@@ -910,6 +1529,21 @@ def deep_scrape_batch(
         Summary dict with results
     """
     from ..db import create_scrape_job, update_scrape_job
+    from ..db.repositories.symbols import get_scrapable_symbols, normalize_symbol
+
+    # Normalize symbols to base form (strip XD/XB/XR/NC/WU suffixes)
+    master_rows = con.execute(
+        "SELECT symbol FROM symbols WHERE source = 'LISTED_CMP' AND is_active = 1"
+    ).fetchall()
+    master_set = {r[0] if isinstance(r, (tuple, list)) else r["symbol"] for r in master_rows}
+    seen: set[str] = set()
+    clean_symbols: list[str] = []
+    for sym in symbols:
+        base, _ = normalize_symbol(sym, master_set if master_set else None)
+        if base not in seen:
+            seen.add(base)
+            clean_symbols.append(base)
+    symbols = clean_symbols
 
     # Create job
     job_id = create_scrape_job(con, "company_snapshot", {
@@ -975,12 +1609,7 @@ def deep_scrape_batch(
 # Background Deep Scrape (thread-based, progress via JSON file)
 # =============================================================================
 
-import json
 import logging
-import threading
-from pathlib import Path
-
-from ..config import DATA_ROOT
 
 _log = logging.getLogger("pakfindata.deep_scraper")
 

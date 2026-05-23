@@ -1,27 +1,54 @@
-"""Global Reference Rates — SOFR, EFFR, SONIA, EUSTR, TONA + SOFR-KIBOR Spread."""
+"""Global Reference Rates — SOFR, EFFR, SONIA, EUSTR, TONA + SOFR-KIBOR Spread.
 
-import streamlit as st
+Reads through the /v1 API client (Phase 1.7.B.3). The sync button still
+calls the scraper directly because Phase 1.7 migrates reads only —
+sync paths follow the Phase 1.6 worker-or-inline pattern unchanged.
+"""
+
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+import streamlit as st
 from datetime import datetime, timedelta
+from plotly.subplots import make_subplots
+
+from pakfindata.ui.api import client as api_client
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_rate_comparison() -> dict:
+    return api_client.get_rate_comparison() or {}
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_all_latest_rates() -> pd.DataFrame:
+    rows = api_client.get_global_rates_latest() or []
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_rate_history(rate_name, tenor, start_date, limit) -> pd.DataFrame:
+    rows = api_client.get_global_rate_history(
+        rate_name=rate_name, tenor=tenor,
+        from_=start_date, limit=limit,
+    ) or []
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_sofr_kibor_spread(start_date) -> pd.DataFrame:
+    rows = api_client.get_sofr_kibor_spread(from_=start_date) or []
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
 def render_global_rates():
     """Main entry point for global reference rates page."""
+    api_client.render_api_status_banner_if_down()
+
     st.title("Global Reference Rates")
     st.caption("Post-LIBOR alternative reference rates (ARRs) — SOFR, EFFR, SONIA, EUSTR, TONA")
 
-    from pakfindata.db.connection import connect
-    from pakfindata.db import init_schema
-    from pakfindata.db.repositories.global_rates import ensure_tables
-
-    con = connect()
-    init_schema(con)
-    ensure_tables(con)
-
-    # Sync button
-    _render_sync_controls(con)
+    # Sync button (write path — uses local connection)
+    _render_sync_controls()
 
     st.markdown("---")
 
@@ -33,16 +60,16 @@ def render_global_rates():
     ])
 
     with tab1:
-        _render_rate_dashboard(con)
+        _render_rate_dashboard()
 
     with tab2:
-        _render_sofr_history(con)
+        _render_sofr_history()
 
     with tab3:
-        _render_sofr_kibor_spread(con)
+        _render_sofr_kibor_spread_tab()
 
     with tab4:
-        _render_fcy_instruments(con)
+        _render_fcy_instruments()
 
     # Footer
     st.markdown("---")
@@ -55,12 +82,12 @@ def render_global_rates():
     )
 
 
-def _render_sync_controls(con):
+def _render_sync_controls():
     """Sync buttons for global rates."""
     with st.expander("Sync Global Rates"):
         col1, col2 = st.columns(2)
         with col1:
-            count = st.number_input(
+            st.number_input(
                 "Days to fetch", min_value=5, max_value=1000, value=100,
                 key="gr_sync_count"
             )
@@ -68,9 +95,12 @@ def _render_sync_controls(con):
             if st.button("Sync All Global Rates", type="primary", key="gr_sync_btn"):
                 with st.spinner("Fetching from NY Fed, BoE, ECB, BoJ..."):
                     try:
+                        from pakfindata.db.connection import connect
                         from pakfindata.sources.global_rates_scraper import GlobalRatesScraper
+                        con = connect()
                         scraper = GlobalRatesScraper()
                         stats = scraper.sync_all(con)
+                        st.cache_data.clear()
                         parts = [f"{k}: {v}" for k, v in stats.items()]
                         st.success(" | ".join(parts))
                         st.rerun()
@@ -78,16 +108,11 @@ def _render_sync_controls(con):
                         st.error(f"Sync failed: {e}")
 
 
-def _render_rate_dashboard(con):
+def _render_rate_dashboard():
     """Tab 1: Rate comparison dashboard."""
-    from pakfindata.db.repositories.global_rates import (
-        get_all_latest_rates,
-        get_rate_comparison,
-    )
-
     st.markdown("### Global Rate Comparison")
 
-    comparison = get_rate_comparison(con)
+    comparison = _cached_rate_comparison()
 
     # Summary metrics row
     cols = st.columns(7)
@@ -103,16 +128,18 @@ def _render_rate_dashboard(con):
 
     for col, (name, ccy, val) in zip(cols, rate_labels):
         with col:
-            if val is not None:
-                st.metric(label=f"{name} ({ccy})", value=f"{val:.4f}%")
-            else:
-                st.metric(label=f"{name} ({ccy})", value="N/A")
+            # KONIA defense (Group C corruption pattern) — only show
+            # values inside a plausible 0..50% band.
+            display = (
+                f"{val:.4f}%" if val is not None and 0 < val < 50 else "N/A"
+            )
+            st.metric(label=f"{name} ({ccy})", value=display)
 
     # Detailed table
     st.markdown("### All Latest Rates")
-    df = get_all_latest_rates(con)
+    df = _cached_all_latest_rates()
     if df.empty:
-        st.info("No global rate data. Click **Sync SOFR/EFFR (NY Fed)** above.")
+        st.info("No global rate data. Click **Sync All Global Rates** above.")
         return
 
     # Show with change vs previous
@@ -120,7 +147,7 @@ def _render_rate_dashboard(con):
     available_cols = [c for c in display_cols if c in df.columns]
     st.dataframe(
         df[available_cols],
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
         column_config={
             "rate": st.column_config.NumberColumn("Rate (%)", format="%.4f"),
@@ -129,17 +156,15 @@ def _render_rate_dashboard(con):
     )
 
 
-def _render_sofr_history(con):
+def _render_sofr_history():
     """Tab 2: SOFR + EFFR history chart."""
-    from pakfindata.db.repositories.global_rates import get_rate_history
-
     st.markdown("### SOFR & EFFR History")
 
     days = st.selectbox("Period", [30, 60, 90, 180, 365], index=2, key="sofr_hist_days")
     start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
-    sofr_df = get_rate_history(con, rate_name="SOFR", tenor="ON", start_date=start, limit=0)
-    effr_df = get_rate_history(con, rate_name="EFFR", tenor="ON", start_date=start, limit=0)
+    sofr_df = _cached_rate_history(rate_name="SOFR", tenor="ON", start_date=start, limit=0)
+    effr_df = _cached_rate_history(rate_name="EFFR", tenor="ON", start_date=start, limit=0)
 
     if sofr_df.empty and effr_df.empty:
         st.info("No SOFR/EFFR data. Sync global rates first.")
@@ -193,7 +218,7 @@ def _render_sofr_history(con):
     )
     fig.update_yaxes(title_text="Rate (%)", row=1, col=1)
     fig.update_yaxes(title_text="$B", row=2, col=1)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Percentile band info
     if not sofr_df.empty and "percentile_25" in sofr_df.columns:
@@ -208,17 +233,15 @@ def _render_sofr_history(con):
             )
 
 
-def _render_sofr_kibor_spread(con):
+def _render_sofr_kibor_spread_tab():
     """Tab 3: SOFR-KIBOR spread analysis."""
-    from pakfindata.db.repositories.global_rates import get_sofr_kibor_spread
-
     st.markdown("### SOFR-KIBOR Spread Analysis")
     st.caption("Key metric for FX swap pricing — higher spread = wider forward points")
 
     days = st.selectbox("Period", [30, 60, 90, 180, 365], index=2, key="spread_days")
     start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
-    df = get_sofr_kibor_spread(con, start_date=start)
+    df = _cached_sofr_kibor_spread(start_date=start)
 
     if df.empty:
         st.info("No spread data. Ensure both KIBOR and SOFR are synced.")
@@ -275,7 +298,7 @@ def _render_sofr_kibor_spread(con):
     )
     fig.update_yaxes(title_text="Rate (%)", secondary_y=False)
     fig.update_yaxes(title_text="Spread (ppts)", secondary_y=True)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Data table
     st.markdown("#### Spread Data")
@@ -283,7 +306,7 @@ def _render_sofr_kibor_spread(con):
     display_df.columns = ["Date", "KIBOR Bid", "KIBOR Offer", "SOFR", "Spread", "USD/PKR"]
     st.dataframe(
         display_df,
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
         column_config={
             "KIBOR Bid": st.column_config.NumberColumn(format="%.4f"),
@@ -295,60 +318,13 @@ def _render_sofr_kibor_spread(con):
     )
 
 
-def _render_fcy_instruments(con):
-    """Tab 4: FCY-denominated instrument browser."""
+def _render_fcy_instruments():
+    """Tab 4: FCY-denominated instrument browser via /v1/fi/fcy-instruments."""
     st.markdown("### FCY Instrument Browser")
     st.caption("Fixed income instruments denominated in foreign currencies")
 
-    # Query FCY instruments from all three tables
-    dfs = []
-
-    # fi_instruments
-    try:
-        fi = pd.read_sql_query(
-            """SELECT name, category, maturity_date, coupon_rate,
-                      denomination_currency, reference_rate, spread_bps
-               FROM fi_instruments
-               WHERE denomination_currency IS NOT NULL AND denomination_currency != 'PKR'""",
-            con,
-        )
-        if not fi.empty:
-            fi["source_table"] = "fi_instruments"
-            dfs.append(fi)
-    except Exception:
-        pass
-
-    # bonds_master
-    try:
-        bonds = pd.read_sql_query(
-            """SELECT symbol, issuer AS name, bond_type AS category, maturity_date, coupon_rate,
-                      denomination_currency, reference_rate, spread_bps
-               FROM bonds_master
-               WHERE denomination_currency IS NOT NULL AND denomination_currency != 'PKR'""",
-            con,
-        )
-        if not bonds.empty:
-            bonds["source_table"] = "bonds_master"
-            dfs.append(bonds)
-    except Exception:
-        pass
-
-    # sukuk_master
-    try:
-        sukuk = pd.read_sql_query(
-            """SELECT name, category, maturity_date, coupon_rate,
-                      denomination_currency, reference_rate, spread_bps
-               FROM sukuk_master
-               WHERE denomination_currency IS NOT NULL AND denomination_currency != 'PKR'""",
-            con,
-        )
-        if not sukuk.empty:
-            sukuk["source_table"] = "sukuk_master"
-            dfs.append(sukuk)
-    except Exception:
-        pass
-
-    if not dfs:
+    rows = api_client.get_fcy_instruments() or []
+    if not rows:
         st.info(
             "No FCY-denominated instruments found. "
             "Instruments default to PKR denomination. "
@@ -367,10 +343,10 @@ WHERE name LIKE '%Eurobond%';
         )
         return
 
-    combined = pd.concat(dfs, ignore_index=True)
+    combined = pd.DataFrame(rows)
     st.dataframe(
         combined,
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
         column_config={
             "coupon_rate": st.column_config.NumberColumn("Coupon (%)", format="%.2f"),

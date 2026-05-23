@@ -63,23 +63,23 @@ def classify_page(page_text: str) -> str:
     if is_notes:
         return NOTES
 
-    # Comprehensive income (must check before P&L)
+    # P&L / Income Statement (check BEFORE CI — "Profit or Loss and Other Comprehensive" is P&L)
+    is_pl = (
+        "PROFIT AND LOSS" in title
+        or "PROFIT OR LOSS" in title
+        or "INCOME STATEMENT" in title
+        or ("STATEMENT OF PROFIT" in title)
+    )
+    if is_pl:
+        return PL
+
+    # Comprehensive income (AFTER P&L check — standalone OCI statement only)
     if "COMPREHENSIVE" in title and ("INCOME" in title or "LOSS" in title):
         return CI
 
     # Cash flow
     if "CASH FLOW" in title:
         return CF
-
-    # P&L / Income Statement
-    is_pl = (
-        "PROFIT AND LOSS" in title
-        or "PROFIT OR LOSS" in title
-        or "INCOME STATEMENT" in title
-        or ("STATEMENT OF PROFIT" in title and "COMPREHENSIVE" not in title)
-    )
-    if is_pl:
-        return PL
 
     # Balance Sheet / Statement of Financial Position
     is_bs = (
@@ -109,7 +109,12 @@ PL_LABELS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"PROVISION\s+(?:AGAINST|FOR)\s+(?:ADVANCES|NON.?PERFORMING|LOANS|DIMINUTION)", re.I), "provisions"),
 
     # Non-bank P&L
-    (re.compile(r"(?:NET\s+)?(?:SALES|REVENUE)(?:\s+FROM\s+(?:OPERATIONS|CONTRACT))?|NET\s+REVENUE|TURNOVER", re.I), "sales"),
+    (re.compile(r"TURNOVER\s*[-–—]?\s*NET", re.I), "sales"),
+    (re.compile(r"TURNOVER\s*[-–—]?\s*GROSS", re.I), "gross_turnover"),
+    (re.compile(r"(?:NET\s+)?(?:SALES|REVENUE)(?:\s+FROM\s+(?:OPERATIONS|CONTRACT))?|NET\s+REVENUE", re.I), "sales"),
+    # Fallback for bare "TURNOVER" with no GROSS/NET qualifier — common in Pakistan IR PDFs.
+    # Placed after the more specific TURNOVER GROSS / TURNOVER NET patterns so those win.
+    (re.compile(r"\bTURNOVER\b", re.I), "sales"),
     (re.compile(r"COST\s+OF\s+(?:SALES|REVENUE|GOODS\s+(?:SOLD|MANUFACTURED))", re.I), "cost_of_sales"),
     (re.compile(r"GROSS\s+PROFIT", re.I), "gross_profit"),
     (re.compile(r"(?:ADMIN|GENERAL)\s*(?:&|AND)?\s*(?:ADMIN|GENERAL)?\s*EXPENS|SELLING\s*(?:&|AND)?\s*DISTRIBUT|DISTRIBUTION\s+COST|OPERATING\s+EXPENS", re.I), "operating_expenses"),
@@ -118,7 +123,7 @@ PL_LABELS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"OTHER\s+(?:OPERATING\s+)?INCOME|OTHER\s+CHARGES", re.I), "other_income"),
     (re.compile(r"PROFIT\s+BEFORE\s*\.?\s*TAX|PBT\b", re.I), "profit_before_tax"),
     (re.compile(r"(?:INCOME\s+)?TAX(?:ATION)(?:\s+(?:CHARGE|EXPENSE))?|^TAXATION\b", re.I), "taxation"),
-    (re.compile(r"PROFIT\s+(?:AFTER\s+TAX|FOR\s+THE\s+(?:YEAR|PERIOD|QUARTER|HALF))|NET\s+(?:INCOME|PROFIT)\b|(?<!\w)PAT(?!\w)", re.I), "profit_after_tax"),
+    (re.compile(r"(?:PROFIT|LOSS)\s+(?:AFTER\s+TAX(?:ATION)?|FOR\s+THE\s+(?:YEAR|PERIOD|QUARTER|HALF))|NET\s+(?:INCOME|PROFIT)\b|(?<!\w)PAT(?!\w)|(?:PROFIT|LOSS)\s+AFTER\s+TAXATION", re.I), "profit_after_tax"),
     (re.compile(r"(?:BASIC\s+)?EARNINGS?\s+PER\s+SHARE|(?:BASIC\s+)?EPS\b", re.I), "eps"),
 ]
 
@@ -290,7 +295,7 @@ def _extract_line_items(
                     continue
                 if field_name == "markup_expensed" and "NON" in line_upper:
                     continue
-                if field_name == "sales" and "COST" in line_upper:
+                if field_name == "sales" and ("COST" in line_upper or "SALES TAX" in line_upper):
                     continue
                 if field_name == "taxation" and (
                     "BEFORE" in line_upper or "AFTER" in line_upper

@@ -363,10 +363,11 @@ class TestSectorCodeNormalization:
 
     def test_sector_code_as_string(self, db_connection, sample_sectors_df):
         """Sector codes are stored as strings."""
+        import pandas as pd
         upsert_sectors(db_connection, sample_sectors_df)
 
         df = get_sectors(db_connection)
 
-        # All codes should be strings
-        assert df["sector_code"].dtype == object
+        # Pandas 2.x may use StringDtype; either object or string dtype is acceptable.
+        assert pd.api.types.is_object_dtype(df["sector_code"]) or pd.api.types.is_string_dtype(df["sector_code"])
         assert all(isinstance(code, str) for code in df["sector_code"])

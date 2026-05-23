@@ -309,6 +309,8 @@ def save_index_data(con: sqlite3.Connection, index_data: dict[str, Any]) -> bool
     """
     Save index data to database.
 
+    Caller commits via pakfindata.db.safe_writer.
+
     Args:
         con: Database connection
         index_data: Index data dict
@@ -344,7 +346,6 @@ def save_index_data(con: sqlite3.Connection, index_data: dict[str, Any]) -> bool
             index_data.get("week_52_low"),
             index_data.get("week_52_high"),
         ))
-        con.commit()
         return True
     except Exception as e:
         logger.error(f"Failed to save index data: {e}")
@@ -352,7 +353,10 @@ def save_index_data(con: sqlite3.Connection, index_data: dict[str, Any]) -> bool
 
 
 def save_market_stats(con: sqlite3.Connection, stats: dict[str, Any]) -> bool:
-    """Save market summary stats to database."""
+    """Save market summary stats to database.
+
+    Caller commits via pakfindata.db.safe_writer.
+    """
     try:
         con.execute("""
             INSERT OR REPLACE INTO psx_market_stats (
@@ -389,7 +393,6 @@ def save_market_stats(con: sqlite3.Connection, stats: dict[str, Any]) -> bool:
             stats.get("squareup_value"),
             stats.get("squareup_state"),
         ))
-        con.commit()
         return True
     except Exception as e:
         logger.error(f"Failed to save market stats: {e}")
@@ -489,3 +492,128 @@ def insert_kse100_manual(
         "week_52_low": week_52_low,
         "week_52_high": week_52_high,
     })
+
+
+def _fetch_index_history(index_code: str, timeout: int = 10) -> list[dict[str, Any]]:
+    """Fetch full historical data for a single index from PSX timeseries API."""
+    try:
+        url = f"{PSX_BASE_URL}/timeseries/eod/{index_code}"
+        resp = requests.get(url, timeout=timeout, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        })
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("status") != 1 or not data.get("data"):
+            return []
+
+        points = data["data"]
+        rows = []
+        for i, point in enumerate(points):
+            ts = int(point[0])
+            value = float(point[1])
+            volume = int(point[2]) if len(point) > 2 else None
+            index_date = datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+            index_time = datetime.fromtimestamp(ts).strftime("%H:%M:%S")
+
+            prev_value = float(points[i + 1][1]) if i + 1 < len(points) else None
+            change = value - prev_value if prev_value else None
+            change_pct = (change / prev_value) * 100 if prev_value and change else None
+
+            rows.append({
+                "index_code": index_code,
+                "index_date": index_date,
+                "index_time": index_time,
+                "value": value,
+                "change": change,
+                "change_pct": change_pct,
+                "open": None,
+                "high": None,
+                "low": None,
+                "volume": volume,
+                "previous_close": prev_value,
+            })
+
+        logger.info(f"Fetched {len(rows)} historical points for {index_code}")
+        return rows
+
+    except Exception as e:
+        logger.warning(f"Failed to fetch history for {index_code}: {e}")
+        return []
+
+
+def backfill_indices(index_codes: list[str] | None = None, max_workers: int = 8) -> dict:
+    """Backfill all historical index data from PSX timeseries API.
+
+    Fetches full history for all indices in parallel and saves to psx_indices.
+    Safe to run multiple times — uses INSERT OR REPLACE.
+
+    Args:
+        index_codes: List of index codes to backfill (default: all INDEX_CODES)
+        max_workers: Parallel download workers
+
+    Returns:
+        Dict with counts: total_rows, indices_ok, indices_failed
+    """
+    import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    codes = index_codes or INDEX_CODES
+    t0 = time.time()
+
+    # Fetch all histories in parallel (I/O bound — threads are fine)
+    all_rows: list[dict] = []
+    ok = 0
+    failed = 0
+
+    print(f"Backfilling {len(codes)} indices with {max_workers} workers...")
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_fetch_index_history, code): code for code in codes}
+        for fut in as_completed(futures):
+            code = futures[fut]
+            rows = fut.result()
+            if rows:
+                all_rows.extend(rows)
+                ok += 1
+                print(f"  {code}: {len(rows)} points")
+            else:
+                failed += 1
+                print(f"  {code}: FAILED")
+
+    # Write all to DB sequentially
+    # TODO(market-sync-v1): duplicates save_index_data() — refactor to call
+    # the canonical writer instead of this inline INSERT once Market Sync
+    # consolidation lands. Kept as-is to avoid breaking current callers.
+    from pakfindata.config import get_db_path
+    con = sqlite3.connect(str(get_db_path()))
+    inserted = 0
+    for row in all_rows:
+        try:
+            con.execute("""
+                INSERT OR REPLACE INTO psx_indices (
+                    index_code, index_date, index_time,
+                    value, change, change_pct,
+                    open, high, low, volume,
+                    previous_close, scraped_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            """, (
+                row["index_code"], row["index_date"], row["index_time"],
+                row["value"], row.get("change"), row.get("change_pct"),
+                row.get("open"), row.get("high"), row.get("low"),
+                row.get("volume"), row.get("previous_close"),
+            ))
+            inserted += 1
+        except Exception as e:
+            logger.warning(f"Insert failed for {row['index_code']} {row['index_date']}: {e}")
+
+    con.commit()
+    elapsed = time.time() - t0
+
+    print(f"\nBackfill done in {elapsed:.1f}s")
+    print(f"  Indices: {ok} ok, {failed} failed")
+    print(f"  Rows inserted: {inserted:,}")
+
+    total = con.execute("SELECT COUNT(*) FROM psx_indices").fetchone()[0]
+    print(f"  psx_indices total: {total:,} rows")
+    con.close()
+
+    return {"total_rows": inserted, "indices_ok": ok, "indices_failed": failed, "elapsed": elapsed}

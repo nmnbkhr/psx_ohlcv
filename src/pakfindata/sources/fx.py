@@ -55,6 +55,13 @@ DEFAULT_FX_PAIRS = [
         "source": "SBP",
         "description": "UAE Dirham to Pakistani Rupee",
     },
+    {
+        "pair": "CNY/PKR",
+        "base_currency": "CNY",
+        "quote_currency": "PKR",
+        "source": "SBP",
+        "description": "Chinese Yuan to Pakistani Rupee",
+    },
 ]
 
 # Sample FX config file location
@@ -220,6 +227,7 @@ def fetch_fx_sample_data(
         "GBP/PKR": 350.00,
         "SAR/PKR": 74.40,
         "AED/PKR": 76.00,
+        "CNY/PKR": 38.50,
     }
 
     base_rate = base_rates.get(pair, 100.0)
