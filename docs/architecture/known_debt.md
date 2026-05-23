@@ -165,7 +165,8 @@ view.
   the processor (Hard Rule 6). The original design intent is
   preserved here for future investigators.
 - **DEBT-PHASE2-FOLLOWUP-4: sbp_fx_interbank is sparse by upstream
-  design** (Milestone 2.A.3.3) — SBP publishes the daily interbank
+  design** (Milestone 2.A.3.3 — **DOCUMENT-PERMANENT confirmed
+  2026-05-23 via 2.A.5.1**) — SBP publishes the daily interbank
   series for USD only. Other currencies (EUR, GBP, JPY, etc.) are
   kerb-market only and live in `forex_kerb` with different
   semantics. The 127-row 2-month window prior CLAUDE.md notes
@@ -178,6 +179,53 @@ view.
   enforced by the check framework (no built-in recency check —
   would need `custom_sql`, deferred). Re-fetching multi-currency
   history (if SBP exposes it via EasyData) is a 2.A.5 question.
+
+  **CLOSURE (2.A.5.1, 2026-05-23):** Live read-only scrape of
+  `https://www.sbp.org.pk/dfmd/pma.asp` returned 1 USD row
+  (buying=278.2463, selling=278.6714 for 2026-05-22) and zero
+  rows for any other currency. `sources/sbp_fx.py` line ~78
+  hardcodes `"currency": "USD"`; module docstring states the WAR
+  page only shows USD/PKR rates. The upstream publishes USD only
+  as structural design — no scraper fix can produce additional
+  currencies from this source. Catalog `notes` updated from
+  `'empty table'` to `'USD-only by upstream design; see
+  DEBT-PHASE2-FOLLOWUP-4'` (committed as 2.A.5.1a via
+  `scripts/apply_catalog_corrections.py`). Status remains `'ok'`.
+  No fix possible at this layer; closes as
+  **DOCUMENT-PERMANENT**.
+
+- **DEBT-PHASE2-FOLLOWUP-6: cron-driven sbp_fx writes silently
+  diverge from successful HTTP fetches** (Milestone 2.A.5.1
+  side-finding, 2026-05-23) — The SBP PMA scraper succeeds when
+  invoked manually (live test 2026-05-23 returned the 2026-05-22
+  USD rate), but `data_freshness.fx_interbank.last_sync_at` shows
+  `2026-05-18 14:30:20`, five days stale despite the daily cron at
+  03:45 PKT. Something between the successful HTTP fetch and the
+  DB write is failing silently — neither the cron run nor the
+  worker job emits a visible error, and the catalog freshness
+  badge stays green because `status='ok'` reflects "the latest row
+  exists" rather than "today's expected fetch wrote a row".
+  Forward reference: Phase 2.B daily digest should detect this
+  class automatically — when `data_freshness.last_sync_at` lags
+  N days beyond a successful upstream availability check, fire an
+  alert. The 2.A.5.1 investigation is the first concrete test
+  case for the freshness-vs-staleness detector.
+
+- **DEBT-PHASE2-FOLLOWUP-7: FX microservice sync_runs stuck in
+  'running' since 2026-04-19** (Milestone 2.A.5.1 side-finding,
+  2026-05-23) — `sources/fx_sync.py` integrates with a separate
+  FX microservice on `localhost:8100` that maintains its own
+  `sync_runs` table (distinct from the Phase 1.4 jobs table the
+  worker queue uses). The most recent successful run completed
+  `2026-04-15`; subsequent runs are in `running` state with no
+  completion or failure timestamp, going back 34 days. The Phase
+  1.4.4 stale-job sweep covers the worker queue but does not
+  inspect the microservice's own sync_runs table. Investigation
+  options: (a) extend the worker sweep to also reconcile the
+  microservice's sync_runs table, treating runs older than N
+  hours as stale, OR (b) add stale-detection to the microservice
+  itself so it reaps abandoned runs on its own schedule. Phase
+  2.B observability work.
 - **DEBT-PHASE2-FOLLOWUP-3: pkisrv_daily sync path broken — 1,049
   files unloaded** (Milestone 2.A.3.2) — `pkisrv_daily` is empty
   in current DB and all four backups (May 11/14/15 + the 2.A.2
