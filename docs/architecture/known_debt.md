@@ -147,16 +147,17 @@ view.
   the underlying primitive is insufficient. Apply this discipline at
   every future helper introduction.
 - **DEBT-PHASE2-FOLLOWUP-5: sovereign_curve multi-source
-  consolidation broken since pre-backup era** (Milestone 2.A.3.3b)
-  — `pakfindata/CLAUDE.md` and project memory document the
-  `sovereign_curve` table as a 67K-row consolidation of PKRV +
-  PKISRV + MTB + PIB + KIBOR (the original design intent). 2.A.3
-  Step 0 bisect shows the actual state across all four extant
-  backups (May 11/14/15 + 2.A.2 pre-cleanup snapshot) is
-  **single-source KIBOR only, 41,747 rows**. The other source
-  feeds (`sources/sbp_rates_processor.py` per the canonical-EOD-
-  path memory) either never ran post-2026-05-09 NTFS corruption
-  or never ran at all — there's no extant backup state where they
+  consolidation broken since pre-backup era** (Milestone 2.A.3.3b
+  — **CLOSED via 2.A.5.3, 2026-05-24**) — `pakfindata/CLAUDE.md`
+  and project memory document the `sovereign_curve` table as a
+  67K-row consolidation of PKRV + PKISRV + MTB + PIB + KIBOR (the
+  original design intent). 2.A.3 Step 0 bisect shows the actual
+  state across all four extant backups (May 11/14/15 + 2.A.2
+  pre-cleanup snapshot) is **single-source KIBOR only, 41,747
+  rows**. The other source feeds
+  (`sources/sbp_rates_processor.py` per the canonical-EOD-path
+  memory) either never ran post-2026-05-09 NTFS corruption or
+  never ran at all — there's no extant backup state where they
   did. Downstream effect: `curve_analytics.py`,
   `debt_terminal.py`, and other `sovereign_curve` readers see only
   the KIBOR slice of what they were designed against. Phase 2.A.5
@@ -164,6 +165,110 @@ view.
   the FOLLOWUP-2/3 scraper work. 2.A.3 explicitly does not touch
   the processor (Hard Rule 6). The original design intent is
   preserved here for future investigators.
+
+  **CLOSURE (2.A.5.3, 2026-05-24):**
+
+  Outcome: FIX-partial-with-documented-gaps. Consolidation logic
+  existed at `sources/sbp_rates_processor.py::process_all()` and
+  worked structurally; never invoked outside its in-module CLI
+  since `9dddd14` (Jan 2026). Same case-B-variant as FOLLOWUP-3
+  (pkisrv loader).
+
+  Ran `process_all()` end-to-end. Produced **67,498 rows across
+  6 sources** (KIBOR / PKRV / PKISRV / MTB / PIB / POLICY) spanning
+  2005-06-09 → 2026-05-24 (5,482 dates). 67K-row CLAUDE.md
+  recollection confirmed within rounding.
+
+  Documented gaps in the consolidated curve:
+    - **PKISRV pre-2025: empty.** FOLLOWUP-3 closure documents the
+      upstream format break — pre-2025 MUFAP files contain bond
+      prices not yield-curve tenors; not recoverable as PKISRV
+      from this source.
+    - **PIB sparse: 84 rows only.** Pakinvestbonds.xlsx archive
+      "New Format" sheet contains limited PIB cutoff coverage
+      (2024-07-09 → 2026-03-26). Archive may need refresh in a
+      later wave; separate concern, not blocking.
+    - **POLICY single-row.** `page_snapshot.json` is stale
+      (2026-04-16) and effectively empty (only `policy_rate=10.5`,
+      no KIBOR/MTB/PIB tenor data). Snapshot refresh is a
+      separate scraper concern.
+
+  **Case-C surfaced during smoke test:** `kibor_daily` contains
+  rows that violate the consolidator's input contract.
+  `sources/fx_sync.py:87` inserts FX rates with currency codes
+  (USD/EUR/GBP/JPY/...) as `tenor`; `sources/sbp_easydata.py:864`
+  inserts balance-sheet aggregates (`bank_nonbank`, `grand_total`,
+  `interbank`) as `tenor`. Resolved via consolidator-side
+  whitelist (Option A) rather than source-side cleanup (Option B):
+    - `process_kibor_from_db` now rejects any `tenor` not in
+      `TENOR_DAYS` (622 rows rejected against current kibor_daily
+      content).
+    - `1Y → 365` added to `TENOR_DAYS` so 2,730 historic 1Y KIBOR
+      rows get correct days value.
+    - The filter is documented in the function docstring with a
+      pointer to FOLLOWUP-9, NOT silent.
+  Architectural fix (stopping the upstream writes) is Phase 2.B
+  scope and is filed as FOLLOWUP-9 below.
+
+  Catalog row recomputed: `status='ok'`,
+  `last_row_date='2026-05-24'`, `row_count=67498`, notes describe
+  the multi-source nature + forward refs to FOLLOWUP-3 and -9.
+
+  No validators seeded (recency check requires `custom_sql`;
+  deferred per 2.A.3.3 PKISRV decision).
+
+  Cross-references:
+    - FOLLOWUP-3 closure (pre-2025 PKISRV gap) is the binding
+      constraint on this sub-wave's PKISRV slice.
+    - FOLLOWUP-9 (kibor_daily content contract violation) is the
+      new architectural debt surfaced; the whitelist guard is
+      a defensive primitive that remains correct even after -9
+      lands.
+
+- **DEBT-PHASE2-FOLLOWUP-9: kibor_daily content contract violated
+  by FX + balance-sheet writes** (Milestone 2.A.5.3 side-finding,
+  2026-05-24) — `kibor_daily` is documented as the KIBOR rates
+  table with `(date, tenor) PK` where `tenor` is a KIBOR maturity
+  string (`1W`, `3M`, `6M`, ...). Two upstream paths now write
+  rows that violate that contract:
+
+  - `sources/fx_sync.py:87` — the FX microservice integration
+    (see [[project-canonical-db-state-2026-04-28]] +
+    FOLLOWUP-7) writes interbank FX rates into `kibor_daily`
+    with currency codes (`USD`, `EUR`, `GBP`, `JPY`, `AED`,
+    `KWD`, ~24 currencies total) as `tenor` and the FX bid/ask
+    as `bid`/`offer`. ~600 rows currently in this shape, 2026-
+    02-25 → 2026-05-07.
+  - `sources/sbp_easydata.py:864` — SBP EasyData balance-sheet
+    sync writes aggregate values into `kibor_daily` with labels
+    (`bank_nonbank`, `grand_total`, `interbank`) as `tenor` and
+    rupee amounts as `bid`/`offer`. ~80 rows currently in this
+    shape, 2026-02-25 → 2026-05-05.
+
+  Downstream impact: any `kibor_daily` reader that does not
+  whitelist tenor values would propagate FX rates and balance-
+  sheet figures into rate-curve analytics. The 2.A.5.3a
+  whitelist guard in `process_kibor_from_db` prevents propagation
+  into `sovereign_curve`, but other readers may exist (audit
+  during 2.B observability work).
+
+  Fix candidates (architectural choice, Phase 2.B work):
+    (a) introduce a dedicated `fx_rates_daily` table for the
+        microservice path; route FX rates there instead of
+        `kibor_daily`. Cleanup existing rows.
+    (b) route SBP EasyData balance-sheet aggregates to a
+        separate `sbp_balance_sheet_daily` table; remove from
+        `kibor_daily`.
+    (c) leave the consolidator-side whitelist as the canonical
+        defence; accept that `kibor_daily` is now de-facto
+        polymorphic.
+
+  (a) and (b) are the architecturally correct fixes. (c) is the
+  current state after 2.A.5.3a. Forward reference: Phase 2.B
+  daily digest should add an alert for "table reader expects
+  tenor type X but encounters values outside X" as a generic
+  contract-violation detector. Same class as FOLLOWUP-6 / -8
+  observability gaps.
 - **DEBT-PHASE2-FOLLOWUP-4: sbp_fx_interbank is sparse by upstream
   design** (Milestone 2.A.3.3 — **DOCUMENT-PERMANENT confirmed
   2026-05-23 via 2.A.5.1**) — SBP publishes the daily interbank
