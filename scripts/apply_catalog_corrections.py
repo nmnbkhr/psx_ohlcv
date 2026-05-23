@@ -52,6 +52,26 @@ CORRECTIONS: list[dict[str, Any]] = [
             "design). Status remains 'ok'."
         ),
     },
+    {
+        "id": "2.A.5.2a",
+        "domain": "pkisrv",
+        "kind": "recompute",
+        "notes": (
+            "Yield-curve tenors 2025-02-03+; pre-2025 MUFAP files contain "
+            "bond prices not tenors (closed FOLLOWUP-3)"
+        ),
+        "reason": (
+            "2.A.5.2 investigation found parse_pkisrv_csv + backfill_to_db_fast "
+            "fully wired; pkisrv_daily empty post-recovery only because the "
+            "MUFAP backfill CLI had not been invoked. Running "
+            "`mufap backfill-db` populated pkisrv_daily with 1,530 records "
+            "across 306 dates (2025-02-03 → 2026-05-06). Pre-2025 files "
+            "structurally unrecoverable as yield-curve data (upstream "
+            "format break in 2025). Recompute flips status from 'failed' "
+            "(set by 2.A.3.2) to 'ok' and replaces FOLLOWUP-3 pointer "
+            "notes with closure narrative."
+        ),
+    },
 ]
 
 
@@ -110,13 +130,21 @@ def _preview_recompute(c: dict[str, Any], current: dict[str, Any] | None,
         f"SELECT MAX({dcol}), COUNT(*) FROM {src}"
     ).fetchone()
     new_date, new_count = fresh[0], fresh[1]
-    return (
-        f"  [{c['id']}] {c['domain']} — would recompute from {src}.{dcol}\n"
-        f"        current: last_row_date={current['last_row_date']!r} "
-        f"row_count={current['row_count']}\n"
-        f"        target:  last_row_date={new_date!r} "
-        f"row_count={new_count}"
-    )
+    lines = [
+        f"  [{c['id']}] {c['domain']} — would recompute from {src}.{dcol}",
+        (
+            f"        current: status={current['status']!r} "
+            f"last_row_date={current['last_row_date']!r} "
+            f"row_count={current['row_count']}"
+        ),
+        (
+            f"        target:  status='ok' "
+            f"last_row_date={new_date!r} row_count={new_count}"
+        ),
+    ]
+    if "notes" in c:
+        lines.append(f"        notes:   → {c['notes']!r}")
+    return "\n".join(lines)
 
 
 def _apply_set(con: sqlite3.Connection, c: dict[str, Any]) -> str:
@@ -139,15 +167,17 @@ def _apply_recompute(con: sqlite3.Connection, c: dict[str, Any]) -> str:
         con,
         c["domain"],
         source=f"catalog_correction_{c['id'].replace('.', '_')}",
+        notes=c.get("notes"),
     )
     row = con.execute(
-        "SELECT status, last_row_date, row_count FROM data_freshness "
+        "SELECT status, last_row_date, row_count, notes FROM data_freshness "
         "WHERE domain = ?",
         (c["domain"],),
     ).fetchone()
     return (
         f"  [{c['id']}] {c['domain']} — APPLIED: "
-        f"status={row[0]!r} last_row_date={row[1]!r} row_count={row[2]}"
+        f"status={row[0]!r} last_row_date={row[1]!r} "
+        f"row_count={row[2]} notes={row[3]!r}"
     )
 
 
