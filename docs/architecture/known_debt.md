@@ -146,6 +146,24 @@ view.
   helper. Lesson: helper functions need their own coverage; testing
   the underlying primitive is insufficient. Apply this discipline at
   every future helper introduction.
+- **DEBT-PHASE2-FOLLOWUP-5: sovereign_curve multi-source
+  consolidation broken since pre-backup era** (Milestone 2.A.3.3b)
+  — `pakfindata/CLAUDE.md` and project memory document the
+  `sovereign_curve` table as a 67K-row consolidation of PKRV +
+  PKISRV + MTB + PIB + KIBOR (the original design intent). 2.A.3
+  Step 0 bisect shows the actual state across all four extant
+  backups (May 11/14/15 + 2.A.2 pre-cleanup snapshot) is
+  **single-source KIBOR only, 41,747 rows**. The other source
+  feeds (`sources/sbp_rates_processor.py` per the canonical-EOD-
+  path memory) either never ran post-2026-05-09 NTFS corruption
+  or never ran at all — there's no extant backup state where they
+  did. Downstream effect: `curve_analytics.py`,
+  `debt_terminal.py`, and other `sovereign_curve` readers see only
+  the KIBOR slice of what they were designed against. Phase 2.A.5
+  investigates the processor + runs the consolidation alongside
+  the FOLLOWUP-2/3 scraper work. 2.A.3 explicitly does not touch
+  the processor (Hard Rule 6). The original design intent is
+  preserved here for future investigators.
 - **DEBT-PHASE2-FOLLOWUP-4: sbp_fx_interbank is sparse by upstream
   design** (Milestone 2.A.3.3) — SBP publishes the daily interbank
   series for USD only. Other currencies (EUR, GBP, JPY, etc.) are
