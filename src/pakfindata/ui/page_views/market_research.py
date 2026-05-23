@@ -17,6 +17,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from pakfindata.ui.api import client
 from pakfindata.ui.components.helpers import (
     get_connection,
     render_footer,
@@ -133,92 +134,29 @@ def _load_sector_performance() -> pd.DataFrame:
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+# Top Picks (Momentum / Value / Volume) now read /v1/research/movers-enriched.
+# Phase 2.A.4.5 migration — composite-aggregator pattern. The endpoint's
+# `data_quality.trading_sessions` field surfaces the 55-day staleness of
+# the P/E enrichment join; UI renders a banner near the picks tabs.
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _load_movers_enriched(direction: str, n: int) -> dict:
+    """Full /v1/research/movers-enriched response (rows + data_quality)."""
+    resp = client.get_research_movers_enriched(direction=direction, top_n=n)
+    return resp or {"rows": [], "data_quality": {}}
+
+
 def _load_momentum_picks(n: int = 15) -> pd.DataFrame:
-    """Top momentum stocks — highest daily change % with decent volume."""
-    try:
-        con = get_connection()
-        return pd.read_sql_query("""
-            SELECT e.symbol,
-                   e.close,
-                   ROUND(CASE WHEN e.prev_close > 0 THEN (e.close - e.prev_close) / e.prev_close * 100
-                              WHEN e.open > 0 THEN (e.close - e.open) / e.open * 100
-                              ELSE NULL END, 2) AS change_pct,
-                   e.volume,
-                   e.turnover,
-                   ts.ytd_change,
-                   ts.pe_ratio_ttm,
-                   s.sector_name
-            FROM eod_ohlcv e
-            LEFT JOIN sectors s ON '0' || e.sector_code = s.sector_code
-            LEFT JOIN trading_sessions ts
-                ON e.symbol = ts.symbol AND ts.market_type = 'REG'
-                AND ts.session_date = (SELECT MAX(session_date) FROM trading_sessions WHERE market_type='REG')
-            WHERE e.date = (SELECT MAX(date) FROM eod_ohlcv)
-              AND e.volume > 50000
-              AND e.close > 0
-            ORDER BY change_pct DESC
-            LIMIT ?
-        """, con, params=[n])
-    except Exception:
-        return pd.DataFrame()
+    return pd.DataFrame(_load_movers_enriched("gainers", n).get("rows", []))
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
 def _load_value_picks(n: int = 15) -> pd.DataFrame:
-    """Value / investment picks — low P/E, decent liquidity."""
-    try:
-        con = get_connection()
-        return pd.read_sql_query("""
-            SELECT e.symbol,
-                   e.close,
-                   ROUND(CASE WHEN e.prev_close > 0 THEN (e.close - e.prev_close) / e.prev_close * 100
-                              WHEN e.open > 0 THEN (e.close - e.open) / e.open * 100
-                              ELSE NULL END, 2) AS change_pct,
-                   e.volume,
-                   ts.pe_ratio_ttm,
-                   ts.ytd_change,
-                   ts.year_1_change,
-                   s.sector_name
-            FROM eod_ohlcv e
-            LEFT JOIN sectors s ON '0' || e.sector_code = s.sector_code
-            LEFT JOIN trading_sessions ts
-                ON e.symbol = ts.symbol AND ts.market_type = 'REG'
-                AND ts.session_date = (SELECT MAX(session_date) FROM trading_sessions WHERE market_type='REG')
-            WHERE e.date = (SELECT MAX(date) FROM eod_ohlcv)
-              AND ts.pe_ratio_ttm > 0 AND ts.pe_ratio_ttm < 15
-              AND e.volume > 10000
-              AND e.close > 5
-            ORDER BY ts.pe_ratio_ttm ASC
-            LIMIT ?
-        """, con, params=[n])
-    except Exception:
-        return pd.DataFrame()
+    return pd.DataFrame(_load_movers_enriched("value", n).get("rows", []))
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
 def _load_volume_leaders(n: int = 10) -> pd.DataFrame:
-    """Highest volume traded stocks."""
-    try:
-        con = get_connection()
-        return pd.read_sql_query("""
-            SELECT e.symbol,
-                   e.close,
-                   ROUND(CASE WHEN e.prev_close > 0 THEN (e.close - e.prev_close) / e.prev_close * 100
-                              WHEN e.open > 0 THEN (e.close - e.open) / e.open * 100
-                              ELSE NULL END, 2) AS change_pct,
-                   e.volume,
-                   e.turnover,
-                   s.sector_name
-            FROM eod_ohlcv e
-            LEFT JOIN sectors s ON '0' || e.sector_code = s.sector_code
-            WHERE e.date = (SELECT MAX(date) FROM eod_ohlcv)
-              AND e.volume > 0
-            ORDER BY e.volume DESC
-            LIMIT ?
-        """, con, params=[n])
-    except Exception:
-        return pd.DataFrame()
+    return pd.DataFrame(_load_movers_enriched("volume", n).get("rows", []))
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -368,49 +306,12 @@ def _load_funds_snapshot() -> pd.DataFrame:
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+# Fund category summary now reads /v1/funds/category-summary
+# (Phase-1.2-shaped single-domain endpoint added in 2.A.4.3b).
+@st.cache_data(ttl=300, show_spinner=False)
 def _load_fund_category_summary() -> pd.DataFrame:
-    """Average returns by fund category — computes daily change from consecutive NAVs."""
-    try:
-        con = get_connection()
-        return pd.read_sql_query("""
-            WITH date_counts AS (
-                SELECT date, COUNT(*) AS cnt FROM mutual_fund_nav
-                WHERE nav > 0 GROUP BY date ORDER BY date DESC LIMIT 10
-            ),
-            latest_dates AS (
-                SELECT date FROM date_counts WHERE cnt >= 100
-                ORDER BY date DESC LIMIT 2
-            ),
-            ranked AS (
-                SELECT date, MAX(date) AS d1, MIN(date) AS d0
-                FROM latest_dates
-            ),
-            changes AS (
-                SELECT
-                    n1.fund_id,
-                    ROUND((n1.nav - n0.nav) / n0.nav * 100, 2) AS daily_chg,
-                    n1.aum
-                FROM mutual_fund_nav n1
-                JOIN ranked r ON n1.date = r.d1
-                JOIN mutual_fund_nav n0
-                    ON n0.fund_id = n1.fund_id AND n0.date = r.d0
-                WHERE n1.nav > 0 AND n0.nav > 0
-            )
-            SELECT
-                mf.category,
-                COUNT(*) AS funds,
-                ROUND(AVG(c.daily_chg), 2) AS avg_daily_chg,
-                ROUND(SUM(c.aum) / 1e6, 0) AS total_aum_m
-            FROM changes c
-            JOIN mutual_funds mf ON c.fund_id = mf.fund_id
-            WHERE mf.is_active = 1
-              AND mf.category IS NOT NULL
-            GROUP BY mf.category
-            ORDER BY avg_daily_chg DESC
-        """, con)
-    except Exception:
-        return pd.DataFrame()
+    rows = client.get_funds_category_summary()
+    return pd.DataFrame(rows or [])
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -783,9 +684,28 @@ def _render_sector_heatmap(sectors: pd.DataFrame):
         )
 
 
+def _render_picks_staleness_banner() -> None:
+    """Render a warning if the P/E enrichment data is stale.
+
+    Reads `data_quality.trading_sessions` from /v1/research/movers-enriched.
+    Surfaced per composite_aggregator_pattern §7.
+    """
+    resp = _load_movers_enriched("gainers", 1)
+    ts = (resp.get("data_quality") or {}).get("trading_sessions") or {}
+    if ts.get("status") == "stale":
+        days = ts.get("days_stale")
+        last = ts.get("last_row_date")
+        st.warning(
+            f"P/E and YTD change columns are {days} days stale "
+            f"(latest trading_sessions data: {last}). "
+            f"See DEBT-PHASE2-FOLLOWUP-2 / 2.A.5 for the upstream fix."
+        )
+
+
 def _render_top_picks(momentum: pd.DataFrame, value: pd.DataFrame, volume: pd.DataFrame):
     """Section 3: trading + investing picks."""
     st.markdown("### Top Picks")
+    _render_picks_staleness_banner()
 
     tab_trade, tab_invest, tab_volume = st.tabs(["Momentum (Trade)", "Value (Invest)", "Volume Leaders"])
 
@@ -1012,6 +932,9 @@ def _render_ai_commentary(prompt: str):
 
 def render_market_research():
     """Main page renderer."""
+    if client.render_api_status_banner_if_down():
+        return
+
     st.markdown(
         '<div style="background:linear-gradient(135deg,#1a237e 0%,#0d47a1 50%,#01579b 100%);'
         'border-radius:12px;padding:24px;margin-bottom:20px;text-align:center;">'

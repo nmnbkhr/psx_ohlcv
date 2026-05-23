@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
+from pakfindata.ui.api import client
 from pakfindata.ui.components.helpers import get_connection, render_footer
 
 # ---------------------------------------------------------------------------
@@ -69,6 +70,8 @@ def _clear_futures_cache():
 
 def render_futures():
     """Futures & Contracts dashboard with OHLCV data from daily market summary."""
+    if client.render_api_status_banner_if_down():
+        return
     try:
         _render_futures_impl()
     except Exception as e:
@@ -795,37 +798,53 @@ def _render_derivatives_analytics(con, dates):
     st.markdown("---")
 
     # ── Section 2: Basis Analysis ──
+    # Migrated to /v1/derivatives/overview in Phase 2.A.4.5. The composite
+    # returns summary (counts + avg_basis_pct) + basis_premium / basis_discount
+    # already ranked. OI is NOT in the composite — see
+    # composite_aggregator_pattern §8; the OI block above stays direct.
     st.markdown("### Futures Basis Analysis")
     st.caption("Premium (+) = bullish positioning · Discount (−) = bearish")
 
-    basis_df = df[df["spot_close"].notna() & (df["spot_close"] > 0)].copy()
-    if not basis_df.empty:
-        basis_df = basis_df.sort_values("basis_pct", ascending=False)
+    overview = client.get_derivatives_overview(date=sel_date, top_n=10) or {}
+    summary = overview.get("summary") or {}
+    premium_rows = overview.get("basis_premium") or []
+    discount_rows = overview.get("basis_discount") or []
 
+    if summary.get("futures_count"):
         c1, c2, c3 = st.columns(3)
-        premium = (basis_df["basis_pct"] > 0).sum()
-        discount = (basis_df["basis_pct"] < 0).sum()
-        avg_basis = basis_df["basis_pct"].mean()
-        c1.metric("Premium (Bullish)", premium)
-        c2.metric("Discount (Bearish)", discount)
-        c3.metric("Avg Basis %", f"{avg_basis:.3f}%")
+        c1.metric("Premium (Bullish)", summary.get("premium_count", 0))
+        c2.metric("Discount (Bearish)", summary.get("discount_count", 0))
+        avg_basis = summary.get("avg_basis_pct")
+        c3.metric(
+            "Avg Basis %",
+            f"{avg_basis:.3f}%" if avg_basis is not None else "—",
+        )
 
-        # Top premium / discount
         col_prem, col_disc = st.columns(2)
+
+        def _to_display(rows):
+            d = pd.DataFrame(rows)
+            if d.empty:
+                return d
+            keep = ["base_symbol", "spot_close", "fut_close", "basis", "basis_pct"]
+            d = d[[c for c in keep if c in d.columns]].copy()
+            d.columns = ["Symbol", "Spot", "Futures", "Basis", "Basis %"][: len(d.columns)]
+            return d
+
         with col_prem:
             st.markdown("**Top Premium (Bullish)**")
-            top_prem = basis_df.nlargest(10, "basis_pct")[
-                ["base_symbol", "spot_close", "fut_close", "basis", "basis_pct"]
-            ].copy()
-            top_prem.columns = ["Symbol", "Spot", "Futures", "Basis", "Basis %"]
-            st.dataframe(top_prem, hide_index=True, width='stretch')
+            disp = _to_display(premium_rows)
+            if disp.empty:
+                st.caption("No premium contracts today.")
+            else:
+                st.dataframe(disp, hide_index=True, width="stretch")
         with col_disc:
             st.markdown("**Top Discount (Bearish)**")
-            top_disc = basis_df.nsmallest(10, "basis_pct")[
-                ["base_symbol", "spot_close", "fut_close", "basis", "basis_pct"]
-            ].copy()
-            top_disc.columns = ["Symbol", "Spot", "Futures", "Basis", "Basis %"]
-            st.dataframe(top_disc, hide_index=True, width='stretch')
+            disp = _to_display(discount_rows)
+            if disp.empty:
+                st.caption("No discount contracts today.")
+            else:
+                st.dataframe(disp, hide_index=True, width="stretch")
 
     st.markdown("---")
 

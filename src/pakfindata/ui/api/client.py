@@ -256,6 +256,61 @@ def get_market_analytics() -> Optional[dict]:
     return _safe_get("/v1/market/analytics")
 
 
+# ── Composites (Phase 2.A.4) ───────────────────────────────────────────────
+
+
+@st.cache_data(ttl=120)
+def get_research_movers_enriched(
+    direction: str = "gainers",
+    top_n: int = 15,
+    sector: Optional[str] = None,
+    pe_max: Optional[float] = None,
+    min_volume: int = 50_000,
+) -> Optional[dict]:
+    """Composite: movers + sector + P/E + YTD + 1y-change.
+
+    Surfaces `data_quality.trading_sessions` staleness so the page can
+    render a banner. See composite_aggregator_pattern.md §7.
+    """
+    params: dict = {
+        "direction": direction,
+        "top_n": top_n,
+        "min_volume": min_volume,
+    }
+    if sector is not None:
+        params["sector"] = sector
+    if pe_max is not None:
+        params["pe_max"] = pe_max
+    return _safe_get("/v1/research/movers-enriched", params=params)
+
+
+@st.cache_data(ttl=120)
+def get_derivatives_overview(
+    date: Optional[str] = None,
+    top_n: int = 10,
+) -> Optional[dict]:
+    """Composite: futures basis premium / discount + summary.
+
+    OI section is NOT in the response — `data_quality.oi.status` is
+    `not_available` because OI lives only in disk XLS.
+    """
+    params: dict = {"top_n": top_n}
+    if date:
+        params["date"] = date
+    return _safe_get("/v1/derivatives/overview", params=params)
+
+
+@st.cache_data(ttl=300)
+def get_funds_category_summary(
+    min_daily_count: int = 100,
+) -> Optional[list[dict]]:
+    """Per-category daily change + AUM (Phase-1.2-shaped, single-domain)."""
+    return _safe_get(
+        "/v1/funds/category-summary",
+        params={"min_daily_count": min_daily_count},
+    )
+
+
 # ── Rates ──────────────────────────────────────────────────────────────────
 
 
