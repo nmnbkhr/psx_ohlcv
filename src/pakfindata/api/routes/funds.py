@@ -24,6 +24,7 @@ from pakfindata.api.schemas.funds import (
     EtfNavRow,
     EtfRow,
     FundCalendarReturnRow,
+    FundCategorySummaryRow,
     FundNavLatestRow,
     FundNavRow,
     FundPerformanceRow,
@@ -38,6 +39,70 @@ etfs_router = APIRouter(prefix="/v1/etfs", tags=["etfs"])
 
 
 # ── /v1/funds (collection routes — registered before {fund_id}) ──
+
+
+@funds_router.get(
+    "/category-summary", response_model=list[FundCategorySummaryRow]
+)
+def list_fund_category_summary(
+    con: sqlite3.Connection = Depends(get_read_db),
+    min_daily_count: Annotated[int, Query(ge=10, le=10_000)] = 100,
+) -> list[dict]:
+    """Aggregate daily NAV change + AUM per category.
+
+    Phase-1.2-shaped, single-domain. NOT a composite endpoint —
+    reads only from `mutual_fund_nav` + `mutual_funds`. Came out of
+    the 2.A.4 audit because market_research.py's
+    `_load_fund_category_summary` had no existing equivalent. Added
+    here so the page's eventual migration to /v1 has a clean target.
+
+    The CTE identifies the two most recent dates with at least
+    `min_daily_count` NAVs each, computes per-fund daily change
+    between them, then averages by category and sums AUM.
+    """
+    cur = con.execute(
+        """
+        WITH date_counts AS (
+            SELECT date, COUNT(*) AS cnt
+              FROM mutual_fund_nav
+             WHERE nav > 0
+             GROUP BY date
+             ORDER BY date DESC
+             LIMIT 10
+        ),
+        latest_dates AS (
+            SELECT date FROM date_counts
+             WHERE cnt >= ?
+             ORDER BY date DESC
+             LIMIT 2
+        ),
+        ranked AS (
+            SELECT MAX(date) AS d1, MIN(date) AS d0 FROM latest_dates
+        ),
+        changes AS (
+            SELECT n1.fund_id,
+                   ROUND((n1.nav - n0.nav) / n0.nav * 100, 2) AS daily_chg,
+                   n1.aum
+              FROM mutual_fund_nav n1
+              JOIN ranked r ON n1.date = r.d1
+              JOIN mutual_fund_nav n0
+                ON n0.fund_id = n1.fund_id AND n0.date = r.d0
+             WHERE n1.nav > 0 AND n0.nav > 0
+        )
+        SELECT mf.category,
+               COUNT(*) AS funds,
+               ROUND(AVG(c.daily_chg), 2) AS avg_daily_chg,
+               ROUND(SUM(c.aum) / 1e6, 0) AS total_aum_m
+          FROM changes c
+          JOIN mutual_funds mf ON c.fund_id = mf.fund_id
+         WHERE mf.is_active = 1
+           AND mf.category IS NOT NULL
+         GROUP BY mf.category
+         ORDER BY avg_daily_chg DESC
+        """,
+        (min_daily_count,),
+    )
+    return [dict(r) for r in cur.fetchall()]
 
 
 @funds_router.get("/categories", response_model=list[str])

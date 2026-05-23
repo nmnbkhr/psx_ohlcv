@@ -13,6 +13,19 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict
 
 
+class FundCategorySummaryRow(BaseModel):
+    """Aggregate daily change + AUM per category, computed from the
+    two most recent mutual_fund_nav dates with ≥ 100 NAV rows each.
+    Backs market_research.py's _load_fund_category_summary section.
+    Phase-1.2-shaped (single-domain) endpoint added during 2.A.4.3b.
+    """
+
+    category: str
+    funds: int
+    avg_daily_chg: Optional[float] = None
+    total_aum_m: Optional[float] = None
+
+
 class FundRow(BaseModel):
     """One row from ``mutual_funds`` (fund master)."""
 
