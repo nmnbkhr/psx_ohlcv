@@ -146,6 +146,17 @@ view.
   helper. Lesson: helper functions need their own coverage; testing
   the underlying primitive is insufficient. Apply this discipline at
   every future helper introduction.
+- **`tbill_auctions` 175-row memory invalidated** (Milestone 2.A.3
+  Step 0 audit) — Prior CLAUDE.md / Phase 0 audit notes recorded
+  `tbill_auctions` as a 175-row table (2024-06 → 2026-04). Step 0
+  bisect across `/mnt/e/psxdata/backups/psx_2026051{1,4,5}.sqlite`
+  + `/tmp/psx_pre_2a2_cleanup_20260523_1725.sqlite` shows 4 / 4 / 4
+  / 12 rows respectively; current DB has 12. The 175-row state was
+  pre-2026-05-09 NTFS corruption and isn't in any extant backup. No
+  restoration path. Re-fetching from SBP EasyData (2024-06 → present)
+  is genuinely new fetch work and crosses 2.A.3 Hard Rule 6 ("no
+  scraper fixes in this milestone") — push to 2.A.5 alongside the
+  FOLLOWUP-2/3/5 scraper investigations.
 
 ## DEBT-PHASE3 — Postgres migration handles naturally
 

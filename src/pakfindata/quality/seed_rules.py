@@ -3,9 +3,10 @@
 Phase 2.A.1 seeds the ``indices`` domain only — proof of pattern.
 Phase 2.A.2 adds one defensive
 ``instrument_membership.effective_date`` rule pinned to the 1,530-row
-MUFAP cleanup. Phase 2.A.3 adds rules for the other ~38 registered
-domains as the backfill work surfaces "this should never happen"
-cases.
+MUFAP cleanup. Phase 2.A.3 starts coverage on populated-but-rule-less
+domains (``tbill_auctions`` first — sized to current floor, not the
+invalidated 175-row memory). Wider coverage continues as backfill
+work surfaces "this should never happen" cases.
 
 Idempotent: ``INSERT OR REPLACE`` on ``rule_id``. Run via::
 
@@ -88,6 +89,51 @@ INITIAL_RULES: list[dict[str, Any]] = [
             "instrument_membership.effective_date must contain "
             "YYYY-MM-DD values (catches MUFAP/symbol-code pollution "
             "at write time; 1,530 MUFAP rows cleaned in 2.A.2.2)"
+        ),
+    },
+    # Phase 2.A.3 tbill_auctions rules — populated domain (12 rows
+    # post-recovery, growing) that lacked coverage. The 175-row state
+    # referenced in CLAUDE.md / earlier memory was pre-2026-05-09 NTFS
+    # corruption and isn't in any extant backup; row_count_min is
+    # sized to the current floor (12), not the invalidated 175.
+    {
+        "rule_id": "tbill_auctions.date_format",
+        "domain": "tbill_auctions",
+        "check_type": "date_format",
+        "params": {
+            "table": "tbill_auctions",
+            "column": "auction_date",
+        },
+        "severity": "error",
+        "description": (
+            "tbill_auctions.auction_date must contain YYYY-MM-DD "
+            "values (defensive — same pollution class as ZUMA/MUFAP)"
+        ),
+    },
+    {
+        "rule_id": "tbill_auctions.row_count_min",
+        "domain": "tbill_auctions",
+        "check_type": "row_count_min",
+        "params": {"table": "tbill_auctions", "min": 12},
+        "severity": "warn",
+        "description": (
+            "tbill_auctions floor sized to post-recovery state "
+            "(2.A.3 audit). CLAUDE.md's 175-row figure was pre-"
+            "2026-05-09 NTFS corruption and not in any backup."
+        ),
+    },
+    {
+        "rule_id": "tbill_auctions.auction_date_not_null",
+        "domain": "tbill_auctions",
+        "check_type": "not_null",
+        "params": {
+            "table": "tbill_auctions",
+            "column": "auction_date",
+        },
+        "severity": "error",
+        "description": (
+            "every tbill_auctions row must have an auction_date "
+            "(PK column; defensive against future schema drift)"
         ),
     },
 ]
