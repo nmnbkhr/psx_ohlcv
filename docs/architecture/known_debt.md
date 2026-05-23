@@ -117,6 +117,12 @@ view.
     * **scraper-maintenance** (G.3 PMEX / G.1 SBP EasyData /
       G.4.9 market_summary — single-page domain owner of a tracking
       table or separate DB).
+- **`pakfindata-worker.service` has `PartOf=pakfindata-api.service`**:
+  stopping API stops worker, but restarting API does NOT restart worker.
+  Manual `systemctl --user restart pakfindata-worker` needed after API
+  redeploys. Surfaced during Milestone 1.8.2 fallback testing.
+  Fix: change `PartOf=` to `BindsTo=` + `Requires=` pattern, OR remove
+  the coupling and let them be independent. Phase 2 ops cleanup.
 
 ## DEBT-PHASE3 — Postgres migration handles naturally
 
