@@ -128,18 +128,22 @@ JSON-payload-to-client streaming model; not a fetch-and-render shape.
 | tick_replay | JSONL via DuckDB, 60fps client replay | 1.7.G.5 |
 | ws_relay_status | live WS operational diagnostic | pre-existing DEFER |
 
-### Deferred — broken-table dependency / operational (5 pages)
+### Deferred — broken-table dependency / operational
 
 Tables required don't exist or scraper broken; not safe to expose on /v1
 until upstream fix. See [known_debt.md](known_debt.md) Coverage Gaps.
 
-| Page | Reason |
-|---|---|
-| ftp_monitor | `ftp_rates` table missing |
-| website_scan | `sources/sectors.py` scraper broken |
-| advanced_gnn | needs torch_geometric (NOT installed) |
-| advanced_rl_exec | engine-only, future GNN-strategy |
-| instruments | Phase 1 instrument-universe page; rarely used; 5 reads direct |
+Disposition column updated by Milestone 2.A.3.5 after a Step 0 audit-
+naming error was caught (the 5 pages use different render-hook names —
+all 5 import and render successfully; none are dead code).
+
+| Page | Disposition | Reason |
+|---|---|---|
+| ftp_monitor | **KEEP — DATA-DEFERRED** | `ftp_rates` table never created — ALM engine documented writer, table init never wired. Page renders with empty data. Investigation deferred to Phase 2.A.5. Render hook: `render_ftp_monitor()`. |
+| website_scan | **KEEP — SCRAPER-DEFERRED** | `sources/sectors.py` scraper documented broken. Page renders empty until the scraper is fixed in Phase 2.A.5. Render hook: `render_website_scan()`. |
+| advanced_gnn | **DEFER-PERMANENT** | Real Python dep: `torch_geometric` not installed (Phase 3 ML stack). Page imports OK because the import is inside `render_page()` — would crash at first GNN call. Render hook: `render_page()`. |
+| advanced_rl_exec | **DEFER-PERMANENT** | Same shape — Phase 3 RL stack territory. Render hook: `render_page()`. (Note: the file name is `advanced_rl_exec.py`, not `rl_exec.py` — earlier Step 0 audits used the wrong stem.) |
+| instruments | **ENABLED-VERIFIED** | `instrument_registry` has 60 rows; no blocker. Page imports and renders. Render hook: `render_instruments()`. No action needed — recorded here to distinguish "known working" from "not yet audited". |
 
 ### Untouched in Phase 1.7 (3 pages)
 
