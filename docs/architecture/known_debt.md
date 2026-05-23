@@ -146,6 +146,20 @@ view.
   helper. Lesson: helper functions need their own coverage; testing
   the underlying primitive is insufficient. Apply this discipline at
   every future helper introduction.
+- **DEBT-PHASE2-FOLLOWUP-4: sbp_fx_interbank is sparse by upstream
+  design** (Milestone 2.A.3.3) — SBP publishes the daily interbank
+  series for USD only. Other currencies (EUR, GBP, JPY, etc.) are
+  kerb-market only and live in `forex_kerb` with different
+  semantics. The 127-row 2-month window prior CLAUDE.md notes
+  recorded was pre-2026-05-09 NTFS state and isn't in any extant
+  backup (May 11/14/15 all show 0 rows; May 23 + current show 1
+  USD row). Do NOT backfill from `forex_kerb` — different markets,
+  different price discovery. The `sbp_fx_interbank.usd_present`
+  validator seeded in 2.A.3.3 catches the case where USD silently
+  disappears from the publisher; recency-of-latest is not currently
+  enforced by the check framework (no built-in recency check —
+  would need `custom_sql`, deferred). Re-fetching multi-currency
+  history (if SBP exposes it via EasyData) is a 2.A.5 question.
 - **DEBT-PHASE2-FOLLOWUP-3: pkisrv_daily sync path broken — 1,049
   files unloaded** (Milestone 2.A.3.2) — `pkisrv_daily` is empty
   in current DB and all four backups (May 11/14/15 + the 2.A.2

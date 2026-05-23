@@ -136,6 +136,29 @@ INITIAL_RULES: list[dict[str, Any]] = [
             "(PK column; defensive against future schema drift)"
         ),
     },
+    # Phase 2.A.3 sbp_fx_interbank — Category 3 (sparse-by-upstream).
+    # SBP publishes interbank for USD only as an official daily series.
+    # Other currencies have 0 rows expected. The rule checks that USD
+    # appears at the latest date (i.e. USD doesn't silently disappear
+    # from the publisher). Recency-of-latest is not enforced by this
+    # check type — see DEBT-PHASE2-FOLLOWUP-4 for the structural note.
+    {
+        "rule_id": "sbp_fx_interbank.usd_present",
+        "domain": "sbp_fx_interbank",
+        "check_type": "source_coverage",
+        "params": {
+            "table": "sbp_fx_interbank",
+            "partition_column": "date",
+            "value_column": "currency",
+            "expected_values": ["USD"],
+        },
+        "severity": "warn",
+        "description": (
+            "USD must be present at the latest sbp_fx_interbank.date "
+            "(SBP publishes USD as the canonical interbank series; "
+            "other currencies are kerb-market only)"
+        ),
+    },
 ]
 
 
