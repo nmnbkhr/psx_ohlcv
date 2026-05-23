@@ -110,6 +110,9 @@ def update_catalog(
             status          = excluded.status,
             last_sync_error = excluded.last_sync_error,
             source          = excluded.source,
+            display_name    = excluded.display_name,
+            source_table    = excluded.source_table,
+            date_column     = excluded.date_column,
             notes           = COALESCE(excluded.notes, notes),
             updated_at      = datetime('now')
         """,
