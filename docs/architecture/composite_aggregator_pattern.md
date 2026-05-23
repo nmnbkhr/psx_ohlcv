@@ -157,9 +157,28 @@ source table the composite reads from. Each entry has:
   - `failed` — catalog says failed (e.g., 4 FOLLOWUP-2 rows)
   - `unknown` — catalog says unknown
   - `not_available` — source isn't in DB at all (e.g., disk XLS — see §8)
-- **`last_row_date`** — from `data_freshness.last_row_date` (or NULL)
-- Optional: **`days_stale`** for stale entries; **`source_path`** for
-  not_available entries pointing at disk
+
+Plus at least one field that supports the status — which one depends
+on the source. Treat `data_quality` entries as a small bag of optional
+keys (`last_row_date`, `days_stale`, `row_count`, `source_path_pattern`)
+where each composite picks the keys that make sense for the table.
+Pydantic schemas keep them all `Optional` so the response shape stays
+stable while the populated keys vary.
+
+Typical combinations seen in the 2.A.4 prototypes:
+
+- **Dated source with catalog row** (e.g. `eod_ohlcv` via the
+  `equity_eod` catalog row): `status` + `last_row_date`. The catalog
+  row is the source of truth; freshness is implicit.
+- **Dated source without a catalog row** (e.g. `trading_sessions`):
+  `status` + `last_row_date` + `days_stale`. Compute `days_stale`
+  against today; status flips to `stale` when it exceeds the per-domain
+  threshold (typical: 7 days).
+- **Date-less source** (e.g. `sectors`, which has no date column):
+  `status` + `row_count`. Use row count as the only available signal.
+- **Disk-only source** (e.g. OI XLS — see §8): `status='not_available'`
+  + `source_path_pattern` showing the file location. No date, no count
+  — the composite can't read the file at request time (§8).
 
 The UI uses `data_quality` to render per-section banners. If
 `data_quality.trading_sessions.status == 'stale'`, the page renders
