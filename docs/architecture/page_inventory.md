@@ -1,14 +1,187 @@
 # pakfindata Page Inventory
 
 **Generated:** 2026-05-20
+**Updated:** 2026-05-23 (Phase 1.7 close — post-1.7 disposition table added)
 **Purpose:** Phase 1 migration planning. Classifies every UI page for the
             API+UI separation work.
 
 The inventory was assembled by reading nav structure in
 [`src/pakfindata/ui/app.py`](../../src/pakfindata/ui/app.py), file sizes
 in `src/pakfindata/ui/page_views/`, last-edit dates from `git log`, and
-grep-spotting sync paths. No `.py` files were modified during this
-audit.
+grep-spotting sync paths.
+
+## Post-1.7 disposition (canonical)
+
+Final status for every page after Milestone 1.7 (Wave A through Group G).
+Legend:
+
+- ✅ **MIGRATED** — reads go through `/v1/*` via `pakfindata.ui.api.client`
+- ⏭️ **SKIPPED** — direct DB read retained; documented taxonomy reason
+- ⏸️ **DEFER** — file-fed real-time / broken-table dependency / pre-Phase-1 untouched
+- 🗑️ **DELETED 1.7.X.1** — file removed in Group G.6 cleanup wave
+- 🛠️ **PARTIAL** — some sub-features migrated, documented carve-out retained
+
+### Migrated (33 pages)
+
+| Page | Sub-wave | Notes |
+|---|---|---|
+| dashboard | 1.3 Wave A | First /v1 consumer |
+| market_pulse | 1.3 Wave A | |
+| fx_dashboard | 1.7.C | Group C close (FX) |
+| fx_interbank | 1.7.C | Group C close (FX) |
+| stock_screener | 1.7.D | Group D (Equities) |
+| sector_analysis | 1.7.D | Group D |
+| symbol_financials | 1.7.D | Group D |
+| factor_analysis | 1.7.D | Group D |
+| company_deep | 1.7.D | Group D (smart client retained) |
+| curve_analytics | 1.7.B | Group B (Fixed Income) |
+| debt_terminal | 1.7.B | Group B |
+| global_rates | 1.7.B | Group B |
+| bond_market | 1.7.B | Group B |
+| npc_rates | 1.7.B | Group B |
+| rates_overview | 1.7.B | Group B |
+| alm_dashboard | 1.7.B | Group B |
+| fixed_income | 1.7.B | Group B (2503 LOC, no split per Q3) |
+| treasury_dashboard | 1.7.B | Group B |
+| post_close | 1.7.E | Group E (Intraday) |
+| intraday | 1.7.E | Dashboard/Charts/Market Pulse tabs only |
+| microstructure | 1.7.F | Group F (Research) |
+| ml_predictions | 1.7.F | Group F |
+| signal_intelligence | 1.7.F | Group F |
+| strategy_oi | 1.7.F | Group F |
+| strategy_ofi | 1.7.F | Group F |
+| strategy_orderbook | 1.7.F | Group F |
+| signal_dashboard | 1.7.F | The dragon — 11 reads |
+| schema | 1.7.G.1 | Group G.1 (admin-meta) |
+| sync_monitor | 1.7.G.1 | Group G.1 |
+| data_quality | 1.7.G.1 | Group G.1 |
+| data_acquisition | 1.7.G.1 | Group G.1 |
+| app_lineage | 1.7.G.1 | Group G.1 |
+| psx_scraper | 1.7.G.1 | Group G.1 (partial — sync surface stays) |
+| jobs_monitor | 1.4 | Already API-routed (worker scaffold) |
+| funds | 1.7.G.2 | Group G.2 (Funds) |
+| fund_explorer | 1.7.G.2 | Group G.2 (engine-coupled risk-scatter retained) |
+| commodities | 1.7.G.3 | Group G.3 |
+| benchmark_monitor | 1.7.G.4.1 | Group G.4 |
+| fx_history | 1.7.G.4.2b | + 3 fx endpoints (G.4.2a) |
+| macro_cycles | 1.7.G.4.3 | + `limit` param on /v1/eod/{symbol} |
+| nccpl_flows | 1.7.G.4.5b | + 7 nccpl endpoints (G.4.5a) |
+| fx | 1.7.G.4.8 | + /v1/fx/adjusted-metrics |
+
+### Migrated partially (1 page)
+
+| Page | Sub-wave | Carve-out |
+|---|---|---|
+| 🛠️ research_terminal | 1.7.G.4.7 | AI Research + Schema Browser → /v1; **SQL Editor stays direct** (admin carve-out, documented in module docstring) |
+
+### Skipped — engine-call-only (F.6 precedent — 14 pages)
+
+| Page | Engine | Sub-wave verified |
+|---|---|---|
+| ai_insights | LLM agents | 1.7.F |
+| strategy_basis | basis arb engine | 1.7.F |
+| strategy_cvd | CVD engine | 1.7.F |
+| strategy_hmm | macro regime HMM | 1.7.F |
+| strategy_pairs | pairs trading engine | 1.7.F |
+| strategy_sector | sector rotation engine | 1.7.F |
+| strategy_sentiment | LLM sentiment engine | 1.7.F |
+| strategy_simulator | simulator engine | 1.7.F |
+| strategy_vpin | VPIN engine | 1.7.F |
+| strategy_vwap | VWAP engine | 1.7.F |
+| sector_breadth | FFT + VPIN engines | 1.7.G.4.10 |
+| advanced_hawkes | hawkes_process engine | 1.7.G.5 |
+| regular_market | engine-call + smart client | 1.7.G.4.4 |
+| indices | analytics_phase1 (instrument_id) | 1.7.G.4.6 |
+
+### Skipped — scraper-maintenance (4 pages)
+
+Single-page owner of a separate DB or tracking table; reads are an artifact
+of being a maintenance UI.
+
+| Page | Owns | Sub-wave verified |
+|---|---|---|
+| sbp_easydata | EasyData CSV download tracking | 1.7.G.1 |
+| pmex | `commod.db` (pmex_ohlc, pmex_margins) | 1.7.G.3 |
+| pmex_analytics_page | `commod.db` + psx.sqlite engine-coupled | 1.7.G.3 |
+| market_summary | `downloaded_market_summary_dates` | 1.7.G.4.9 |
+| tick_analytics | `/home/smnb/psxdata_rescue/tick_bars.db` | 1.7.G.5 |
+
+### Skipped — composite-aggregator (2 pages)
+
+Cross-domain custom analytical queries that don't compose from per-domain
+/v1 endpoints. Phase 2 work: domain-scoped composite endpoints. See
+[known_debt.md](known_debt.md) DEBT-PHASE2.
+
+| Page | Reads | Sub-wave verified |
+|---|---|---|
+| market_research | 39 reads, 13 `_load_*` (trading_sessions JOINs, fundamentals GROUP BY) | 1.7.G.4.11 |
+| futures | 22+ reads (futures_eod, post_close, ODL, OI, auction-yield maps) | 1.7.G.4.12 |
+
+### Deferred — file-fed real-time (4 pages)
+
+JSON-payload-to-client streaming model; not a fetch-and-render shape.
+
+| Page | Source | Original DEFER |
+|---|---|---|
+| live_ticker | JSONL via DuckDB | 1.3 Wave A (deferred) |
+| intraday_quant_lab | CSV file artifacts | 1.7.E (deferred) |
+| tick_replay | JSONL via DuckDB, 60fps client replay | 1.7.G.5 |
+| ws_relay_status | live WS operational diagnostic | pre-existing DEFER |
+
+### Deferred — broken-table dependency / operational (5 pages)
+
+Tables required don't exist or scraper broken; not safe to expose on /v1
+until upstream fix. See [known_debt.md](known_debt.md) Coverage Gaps.
+
+| Page | Reason |
+|---|---|
+| ftp_monitor | `ftp_rates` table missing |
+| website_scan | `sources/sectors.py` scraper broken |
+| advanced_gnn | needs torch_geometric (NOT installed) |
+| advanced_rl_exec | engine-only, future GNN-strategy |
+| instruments | Phase 1 instrument-universe page; rarely used; 5 reads direct |
+
+### Untouched in Phase 1.7 (3 pages)
+
+Not in migration scope; remain on direct-DB pattern. Phase 2 candidates.
+
+| Page | Reason |
+|---|---|
+| portfolio_scanner | KEEP-class but never reached in any 1.7 wave; small read surface |
+
+### Deleted in 1.7.X.1 (9 pages)
+
+| Page | Was | Why deleted |
+|---|---|---|
+| 🗑️ live_market | 282 LOC | Superseded by Live Ticker |
+| 🗑️ live_ohlcv | 571 LOC | Deprecated tick→eod promotion |
+| 🗑️ live_indices | 560 LOC | Moved into Index Monitor + Dashboard |
+| 🗑️ symbols | 137 LOC | `pfsync symbols list` covers |
+| 🗑️ candlestick | 202 LOC | G.D Stock Screener |
+| 🗑️ rankings | 217 LOC | G.F top-by-volume + G.D Screener |
+| 🗑️ eod_loader | 706 LOC | `pfsync sync` |
+| 🗑️ history | 407 LOC | Per-page history tabs |
+| 🗑️ settings | 112 LOC | Feb stub |
+
+### Phase 1.7 totals
+
+| Category | Count |
+|---|---:|
+| ✅ MIGRATED | 42 (41 full + 1 partial) |
+| ⏭️ SKIPPED — engine-call | 14 |
+| ⏭️ SKIPPED — scraper-maintenance | 5 |
+| ⏭️ SKIPPED — composite-aggregator | 2 |
+| ⏸️ DEFER — file-fed real-time | 4 |
+| ⏸️ DEFER — broken-dep / operational | 5 |
+| ⏸️ UNTOUCHED | 1 |
+| 🗑️ DELETED 1.7.X.1 | 9 |
+| **Total page entries** | **82** |
+
+Original detailed per-page sections below remain for the source-of-truth
+read/write/sync columns. The disposition table above is canonical for
+"what state is this page in?" queries.
+
+---
 
 ## Summary
 
