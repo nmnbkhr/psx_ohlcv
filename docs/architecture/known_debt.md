@@ -124,7 +124,8 @@ view.
   Fix: change `PartOf=` to `BindsTo=` + `Requires=` pattern, OR remove
   the coupling and let them be independent. Phase 2 ops cleanup.
 - **DEBT-PHASE2-FOLLOWUP-2: wider scraper pollution beyond the
-  ZUMA/MUFAP sentinels** (Milestone 2.A.2 cleanup recompute) —
+  ZUMA/MUFAP sentinels** (Milestone 2.A.2 cleanup recompute —
+  **FULLY CLOSED via 2.A.5.4-2.A.5.6, 2026-05-24**) —
   `scripts/cleanup_catalog_pollution.py` removed 1,720 sentinel-string
   rows (ZUMA/TBILL/MUFAP/WTL) but the recompute step revealed an
   additional ~241K rows where SYMBOL CODES (BOP/UBL/MLCF/ZTL/PIB/
@@ -186,13 +187,58 @@ view.
   eod_invariance / futures_invariance) all matched predictions
   exactly.
 
-  **Still open under FOLLOWUP-2 (deferred to 2.A.5.6):**
-    - `forex_kerb.date` symbol-code pollution (~60 rows) — sub-wave 2.A.5.6
-    - `regular_market_current.ts` symbol-code pollution (~50 rows) — sub-wave 2.A.5.6
+  **Partially closed (2.A.5.6a, 2026-05-24) — forex_kerb portion:**
+  60 rows removed via `scripts/cleanup_forex_kerb_pollution.py`.
+  Triple-convergent predicate (`source='SAMPLE'`, `date IN
+  ('PIB','GOP_SUKUK')`, `buying=30.0` — each criterion alone and
+  the AND-triple all match exactly 60). Root cause distinct from
+  pib_auctions / konia_daily: synthetic test seed written in a
+  single 5-second burst on 2026-01-29 12:39, NOT a scraper
+  misroute. No cross-table dedup needed — the data was never
+  canonical anywhere. Catalog `fx_kerb` row recovered to
+  `last_row_date='2026-05-18'`, `row_count=713`. Five gates
+  (pre_total / match / post_total / post_currencies / post_dates)
+  all matched predictions exactly.
 
-  Each remaining sub-wave will apply the same recovery-audit-then-cleanup
-  discipline. forex_kerb may differ from konia / pib_auctions since FX
-  feeds don't share a canonical-tick table the way equity feeds do.
+  **FINAL CLOSURE (2.A.5.6b, 2026-05-24) — regular_market_current portion:**
+  46 rows removed via
+  `scripts/cleanup_regular_market_current_pollution.py`.
+  Double-convergent predicate (`ts NOT GLOB ISO-date`,
+  `symbol GLOB ISO-date` — both match exactly 46). Root cause is
+  a column-swap bug in a defunct ingestion path: `symbol` (PK)
+  held an ISO timestamp, `ts` held a real symbol code. The 9
+  distinct ts-symbols all have separate canonical (PK=symbol)
+  rows that survived the cleanup intact. Per-row classification
+  cross-checked against eod_ohlcv: 24 exact duplicates, 15
+  intraday-snapshot value-diffs, 4 Sunday off-hours snapshots,
+  2 NC-suffix special-class rows, 1 phantom (WASLR 2026-03-20,
+  one day past last eod). Catalog `regular_market_current` row
+  recovered to `last_row_date='2026-05-23T15:53:47.401556+05:00'`,
+  `row_count=649`. Six gates (pre_total / match / post_total /
+  post_distinct / canonical_9_survive / eod_ohlcv_invariance) all
+  matched predictions exactly.
+
+  **Four root causes, four tables — architectural finding:**
+
+  The original FOLLOWUP-2 entry hypothesized "PSX symbol codes in
+  date columns across 4 tables" as a single bug class. Investigation
+  proved that surface pattern hid FOUR genuinely different bugs:
+
+  | Sub-wave  | Table                     | Rows    | Root cause |
+  |-----------|---------------------------|---------|-----------|
+  | 2.A.5.4a  | `pib_auctions`            | 240,872 | **Misrouted ticks** — bulk-load script with positional column alignment hit the wrong table; PKT-display-string timestamps written into `pib_type` while UTC-epoch canonical lives in `tick_data` |
+  | 2.A.5.5a  | `konia_daily`             |     633 | **Column-shifted equity OHLCV** — defunct ingestion path with whole-row column shift: (date←symbol, rate_pct←ts_ms, volume_billions←open, high←close, low←volume); canonical OHLCV lives in `eod_ohlcv`/`futures_eod` |
+  | 2.A.5.6a  | `forex_kerb`              |      60 | **Synthetic test seed** — developer/demo data left in production DB; `source='SAMPLE'` literal, single 5-second burst, mock yield-like values for two fixed-income "currencies" (PIB / GOP_SUKUK) that aren't FX codes |
+  | 2.A.5.6b  | `regular_market_current`  |      46 | **Column-swap bug** — runtime bug swapping the PK column (`symbol`) with the timestamp column (`ts`); canonical PK=symbol rows still exist with the correct shape |
+
+  Total pollution removed: **241,611 rows** (240,872 + 633 + 60 + 46).
+  Total useful data lost: **0** — every cleanup was verified against
+  canonical state (tick_data / eod_ohlcv / futures_eod) or against
+  test-data provenance markers before deletion. The four root causes
+  did not share a single upstream fix — each was its own debt.
+
+  See the new audit pattern below ("Surface-similarity ≠ root-cause
+  similarity") for the lesson this investigation produced.
 - **Helper-function test coverage gap caught by 2.A.2.1b** (Milestone
   2.A.2 follow-up) — Reproducer in `test_catalog_conflict_repro.py`
   was extended in 2.A.2.1b after discovering the original tests
@@ -574,6 +620,54 @@ view.
   REFERENCE only — do not expand FOLLOWUP-2 / 2.A.5 scope to
   fix the scrapers; document the pattern, file the candidate
   primitive, and let Phase 2.B own the architectural work.
+- **Audit pattern: surface-similarity ≠ root-cause similarity**
+  (Milestone 2.A.5.6 full FOLLOWUP-2 closure, 2026-05-24) —
+  When multiple tables exhibit the same pollution shape (e.g.
+  "symbol codes appearing in date columns across N tables"),
+  treat the shape as a side effect of "data ended up where it
+  shouldn't be," NOT as evidence that one upstream bug
+  produced all of them. Each affected table requires
+  independent diagnosis. FOLLOWUP-2 is the existence proof:
+  four tables all exhibited "symbol code in date column"
+  pollution; investigation revealed four genuinely different
+  root causes (misrouted ticks via bulk-load positional
+  alignment; whole-row column shift in a defunct ingestion;
+  synthetic test seed left in prod; column-swap PK/timestamp
+  bug). The four needed four different cleanup scripts, four
+  different predicates, four different cross-table checks, and
+  four different narratives.
+
+  **How to apply**:
+
+  1. When multiple tables show the same pollution shape, start
+     each table's Step 0 audit independently. Don't write a
+     combined script before diagnoses converge.
+  2. The shape-similarity is the surface; the root cause is
+     what writes there. Map each polluted table to its
+     suspected writer separately. If the writers turn out to be
+     the same path, combining is allowed; if they're different
+     paths, the cleanup MUST split.
+  3. Predicate tightness can independently converge per table
+     and still cover different root causes. Triple-convergent
+     predicates per table (one shape marker + one source marker
+     + one value marker) are a strong signal that the
+     within-table diagnosis is firm — but they say nothing
+     about whether the *across-tables* root cause is shared.
+  4. The disposition (CLEANUP vs RECOVERY-then-CLEANUP) can
+     converge across tables even when root causes don't.
+     Same outcome ≠ same cause; don't let outcome-similarity
+     mask root-cause differences in the commit narrative or
+     the architectural debt entry.
+
+  **Why this matters for Phase 2.B observability**: anomaly
+  detectors that group tables by pollution shape will collapse
+  distinct root causes into a single alert and obscure the
+  underlying scraper-class bugs. Daily-digest design should
+  classify by **(table, writer-path)** not by surface-shape
+  pattern alone. The phantom-row check (FOLLOWUP-2.A.5.5b)
+  and the DATE-on-epoch check (FOLLOWUP-2.A.5.4b) are
+  table-shape primitives; the writer-path primitive is the
+  missing peer.
 
 ## DEBT-PHASE3 — Postgres migration handles naturally
 
