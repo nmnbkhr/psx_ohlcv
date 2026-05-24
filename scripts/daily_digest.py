@@ -1,11 +1,19 @@
-"""scripts/daily_digest.py — Phase 2.B.1
+"""scripts/daily_digest.py — Phase 2.B.1 + 2.B.2
 
 Daily observability digest. Reads canonical DB and writes a markdown summary
 of what needs human attention to a date-stamped file under
 `/mnt/e/psxdata/digest/digest_YYYYMMDD.md`.
 
-Read-only. No DB writes. Idempotent — re-runnable on demand without
-side effects beyond overwriting the day's digest file.
+Phase 2.B.2 adds differential-delivery alerting (no SMTP — local alert
+files only). On each run, per-section counts are compared against the
+prior run's snapshot in `state.json`. If any section count differs (or
+no prior state exists), a focused alert file is written to
+`/mnt/e/psxdata/digest/alerts/alert_YYYYMMDD_HHMM.md` containing the
+critical+warning sections and a state-delta summary.
+
+Read-only on canonical DB. Writes to: digest file, alert file
+(conditionally), state.json. Idempotent — re-runnable on demand;
+re-running with the same state will not produce a new alert.
 
 Sections (priority-ordered):
 
@@ -40,18 +48,32 @@ Scope (Phase 2.B.1):
 
 Usage:
 
-  python scripts/daily_digest.py              # write today's digest
+  python scripts/daily_digest.py              # write today's digest + alert if state changed
   python scripts/daily_digest.py --quiet      # no stdout (for cron)
+  python scripts/daily_digest.py --no-alert   # write digest only; skip alert/state logic
 
 Cron-friendly: exits 0 on success even when the digest contains
 findings. The presence/absence of findings is the meaningful signal,
-not the exit code; the 2.B.2 sub-wave wires MAILTO delivery so a
-non-empty critical section triggers email.
+not the exit code.
+
+Why a local alert file instead of cron MAILTO: the host has no SMTP
+infrastructure (no sendmail/msmtp/postfix/mailx). Adding one creates
+a system-level dependency that Phase 2.B is explicitly designed to
+avoid. A local file in a known directory satisfies the "operators
+are guaranteed to see findings" intent without SMTP setup. Layering
+real email delivery on top is a 2-line msmtp config (out of scope).
+
+Why differential delivery instead of any-non-empty: same findings
+every day until FOLLOWUPs resolve = alert fatigue. State-change-only
+delivery means each alert means "today differs from yesterday" which
+is structurally more useful than "things are still bad." Also catches
+RESOLUTIONS (when counts go down), which a strict threshold misses.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
@@ -61,6 +83,8 @@ from pakfindata.config import get_db_path
 
 
 DIGEST_DIR = Path("/mnt/e/psxdata/digest")
+ALERTS_DIR = DIGEST_DIR / "alerts"
+STATE_PATH = DIGEST_DIR / "state.json"
 LOG_DIR = Path.home() / ".local/share/pakfindata/logs"
 PKT_OFFSET = timedelta(hours=5)
 
@@ -245,6 +269,102 @@ def _unknown_catalog_rows(con: sqlite3.Connection) -> list[str]:
     ]
 
 
+# --- Alert delivery (differential, no SMTP) ---------------------------------
+
+
+def _section_counts(sections: dict) -> dict[str, int]:
+    """Flatten the three-tier section dict to a flat name->count map.
+
+    Used for state comparison. Names are stable across runs (they're
+    hardcoded in main()) so JSON dict-equality is the diff test.
+    """
+    counts: dict[str, int] = {}
+    for tier in ("critical", "warning", "info"):
+        for title, findings in sections[tier]:
+            counts[title] = len(findings)
+    return counts
+
+
+def _load_prior_state(state_path: Path) -> dict | None:
+    if not state_path.exists():
+        return None
+    try:
+        return json.loads(state_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        # Corrupt state file — treat as no prior state. Don't crash the
+        # digest; the alert will fire as if first run.
+        return None
+
+
+def _state_changed(prior: dict | None, current_counts: dict[str, int]) -> tuple[bool, list[str]]:
+    """Compare prior state vs current counts. Returns (changed, delta_lines).
+
+    delta_lines describes the change in human-readable form, one line
+    per section that moved.
+    """
+    if prior is None:
+        return True, ["first run — no prior state on file"]
+
+    prior_counts: dict[str, int] = prior.get("section_counts", {})
+    delta_lines: list[str] = []
+    # All section names from current run
+    for name, cur_n in current_counts.items():
+        prev_n = prior_counts.get(name, 0)
+        if cur_n != prev_n:
+            arrow = "↑" if cur_n > prev_n else "↓"
+            delta_lines.append(f"{name}: {prev_n} {arrow} {cur_n}")
+    # Sections present in prior but not current (removed sections)
+    for name, prev_n in prior_counts.items():
+        if name not in current_counts and prev_n != 0:
+            delta_lines.append(f"{name}: {prev_n} → 0 (section removed)")
+
+    return (len(delta_lines) > 0), delta_lines
+
+
+def _render_alert(
+    today_pkt: datetime,
+    db_path: str,
+    sections: dict,
+    delta_lines: list[str],
+    digest_path: Path,
+) -> str:
+    """Focused alert markdown: state delta + critical+warning sections only.
+
+    Skips info tier (alerts are about things that need attention, not
+    background-context info).
+    """
+    md: list[str] = []
+    md.append(f"# pakfindata alert — {today_pkt.isoformat(timespec='minutes')}\n\n")
+    md.append(f"**Triggered:** state changed vs prior run\n")
+    md.append(f"**Full digest:** `{digest_path}`\n")
+    md.append(f"**DB:** `{db_path}`\n\n")
+
+    md.append("## State delta\n\n")
+    for line in delta_lines:
+        md.append(f"- {line}\n")
+    md.append("\n")
+
+    md.append("## Critical\n\n")
+    for title, findings in sections["critical"]:
+        md.append(_render_section(title, findings))
+
+    md.append("## Warning\n\n")
+    for title, findings in sections["warning"]:
+        md.append(_render_section(title, findings))
+
+    md.append("---\n\n")
+    md.append("Info-tier findings are in the full digest, not this alert.\n")
+    md.append("Alert mechanism: local file, no SMTP. Differential delivery: ")
+    md.append("a fresh alert is written only when section counts change vs the prior run.\n")
+    return "".join(md)
+
+
+def _save_state(state_path: Path, run_at_iso: str, counts: dict[str, int]) -> None:
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"last_run": run_at_iso, "section_counts": counts}
+    state_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+
+
 # --- Markdown rendering ------------------------------------------------------
 
 
@@ -290,6 +410,10 @@ def main(argv: list[str] | None = None) -> int:
         "--output-dir", type=Path, default=DIGEST_DIR,
         help=f"override output directory (default: {DIGEST_DIR})",
     )
+    p.add_argument(
+        "--no-alert", action="store_true",
+        help="write digest only; skip alert + state comparison",
+    )
     args = p.parse_args(argv)
 
     db_path = get_db_path()
@@ -320,13 +444,37 @@ def main(argv: list[str] | None = None) -> int:
     out_path = args.output_dir / f"digest_{today_pkt.date().isoformat().replace('-', '')}.md"
     out_path.write_text(_render_digest(today_pkt, db_path, sections))
 
-    # Findings summary on stdout (helpful in cron MAILTO; suppressed with --quiet)
+    # Differential-delivery alert + state update
+    alert_path: Path | None = None
+    delta_lines: list[str] = []
+    if not args.no_alert:
+        alerts_dir = args.output_dir / "alerts"
+        state_path = args.output_dir / "state.json"
+        current_counts = _section_counts(sections)
+        prior_state = _load_prior_state(state_path)
+        changed, delta_lines = _state_changed(prior_state, current_counts)
+        run_at_iso = datetime.now().isoformat(timespec="seconds")
+        if changed:
+            alerts_dir.mkdir(parents=True, exist_ok=True)
+            alert_path = alerts_dir / f"alert_{today_pkt.strftime('%Y%m%d_%H%M')}.md"
+            alert_path.write_text(
+                _render_alert(today_pkt, db_path, sections, delta_lines, out_path)
+            )
+        _save_state(state_path, run_at_iso, current_counts)
+
     if not args.quiet:
         total_crit  = sum(len(f) for _, f in sections["critical"])
         total_warn  = sum(len(f) for _, f in sections["warning"])
         total_info  = sum(len(f) for _, f in sections["info"])
         print(f"digest written: {out_path}")
         print(f"  critical: {total_crit}  warning: {total_warn}  info: {total_info}")
+        if not args.no_alert:
+            if alert_path is not None:
+                print(f"alert written: {alert_path}")
+                for line in delta_lines:
+                    print(f"  delta: {line}")
+            else:
+                print("no alert: state unchanged vs prior run")
     return 0
 
 
