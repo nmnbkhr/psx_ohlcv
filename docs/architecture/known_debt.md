@@ -544,6 +544,43 @@ view.
 
   Memory cross-reference: `project_dup_dbs_cleanup.md`
   (originally filed during NTFS-recovery soak window).
+- **DEBT-PHASE2-FOLLOWUP-12: `update_catalog_from_table` doesn't
+  handle INTEGER epoch timestamp columns** (Milestone 2.A.5.7
+  verification side-finding, 2026-05-24) —
+  `db/catalog.py::update_catalog_from_table` runs
+  `SELECT MAX(<date_column>) FROM <source_table>` and stores the
+  raw scalar as `last_row_date`. For tables where the configured
+  `date_column` is an INTEGER unix epoch (e.g. `tick_data.timestamp`),
+  this stores `1776250199` instead of `'2026-04-15'` — the same
+  DATE-on-INTEGER-epoch class surfaced as an audit pattern in
+  2.A.5.4b. The catalog row's `status` becomes `'ok'` but the
+  human-readable `last_row_date` displays the raw integer in any
+  UI / digest / freshness check that reads the row.
+
+  **Reproducer**: 2.A.5.7 ran a verification recompute against the
+  three remaining `catalog_flagged` domains (announcements,
+  tick_data, indices). announcements and indices recovered to
+  clean ISO dates; tick_data recovered to `'1776250199'` raw
+  epoch (= 2026-04-15 10:49:59 UTC). The 2.A.5.7 close manually
+  patched the row with
+  `UPDATE data_freshness SET last_row_date = DATE(MAX(timestamp),
+  'unixepoch') WHERE domain='tick_data'`. The manual patch is a
+  point fix; the helper still has the bug.
+
+  **Fix**: extend `catalog.py` to read a per-domain `value_type`
+  hint (one of `'iso_date'`, `'iso_timestamp'`, `'epoch_seconds'`,
+  `'epoch_millis'`) and apply the appropriate
+  `DATE(<col>, 'unixepoch')` / `DATE(<col>/1000, 'unixepoch')`
+  / pass-through conversion during MAX(). Alternative: add a
+  type-detection step that runs `SELECT typeof(<col>)` once and
+  branches on result. Phase 2.B observability work.
+
+  **Cross-references**:
+    - Audit pattern that predicted this: "DATE() on INTEGER epoch
+      timestamps" (filed 2.A.5.4b).
+    - The pattern is now both descriptive (it explains the bug) and
+      prescriptive (the fix shape is documented).
+
 - **Audit pattern: DATE() on INTEGER epoch timestamps**
   (Milestone 2.A.5.4 recovery audit, 2026-05-24) — When auditing
   tables whose `timestamp` column is INTEGER unix epoch (e.g.
