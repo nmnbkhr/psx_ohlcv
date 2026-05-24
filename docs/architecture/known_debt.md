@@ -552,6 +552,50 @@ view.
 
   Memory cross-reference: `project_dup_dbs_cleanup.md`
   (originally filed during NTFS-recovery soak window).
+
+  **CLOSED 2026-05-24 by 2.B.7**. 30 files / ~135 GB moved to
+  `/mnt/e/psxdata/_to_delete_2b7_20260524/` via atomic
+  same-filesystem `mv` (no data copy). Cooling period: 7 days;
+  manual operator deletion on or after **2026-05-31**.
+
+  **Scope expansion within approved class** (see methodology note
+  below, third case). Original FOLLOWUP-11 enumerated 11 files;
+  Step 0 found 13 additional files matching the same
+  "post-incident insurance, soak expired" predicate:
+
+  - Recovery artifacts (`recovery_20260509/` directory: 11 items
+    including `psx.HEXPATCHED.sqlite` + companions,
+    `psx.RECOVERED.sqlite`, logs, JSON reports — ~40 GB);
+    superseded by NVMe canonical, no code reference.
+  - Dated daily backups (`backups/psx_20260{511,514,515,524}.sqlite`
+    — 4 files, ~41 GB); the `backup_psx_sqlite.sh` script's own
+    7-day retention should have pruned these, but cron has been
+    failing (May 24 backup wrote 0 bytes).
+  - Dated tickbardb variants (`tickbardb/tick_bars{,1,3rdapr,8thapr}.db`
+    — 4 files, ~9.6 GB); no consumer references in src/ or scripts/.
+  - DR drill 2026-05-18 directory (`dr_drill_20260518/`, ~7.1 GB);
+    NOT in `dr_drill_log.md` — almost certainly an unlogged
+    pre-rehearsal superseded by the formal 2026-05-20 drill.
+    Operator can reverse-move during cooling if needed.
+
+  **Retained** (in place):
+  - `dr_drill_20260520/` (~30.6 GB) — explicit "keep through Q3 2026
+    drill" per known_debt note above.
+  - `backups/phase2b/` (~95 GB across 8 active-session backups +
+    1 worker service file) — Phase 2.B in progress.
+  - Live auxiliary DBs: `tick_logs_cloud/tick_bars.db` (462 MB),
+    `commod/commod.db` (5.3 MB) — canonical paths per CLAUDE.md.
+
+  **Post-move verification**:
+  - Canonical query unchanged: 39 catalog rows,
+    MAX(last_sync_at)='2026-05-24 18:15:47', 10,048,488 tick_data rows.
+  - `find /mnt/e/psxdata/ -maxdepth 1 (-name "*.sqlite" -o -name "*.db")`
+    returns empty (no stragglers at root).
+
+  Pre-2.B.7 canonical backup at
+  `/mnt/e/psxdata/backups/phase2b/psx_pre_2b7_20260524_232346.sqlite`
+  (14 GB) — protects against the unlikely "moved a load-bearing file"
+  case during the 7-day cooling window.
 - **DEBT-PHASE2-FOLLOWUP-12: `update_catalog_from_table` doesn't
   handle INTEGER epoch timestamp columns** (Milestone 2.A.5.7
   verification side-finding, 2026-05-24) —
@@ -814,6 +858,51 @@ view.
   3. The cost of being wrong about magnitude is a stricter future
      prediction; the cost of being wrong about scope is a wasted
      commit. The gate optimizes against the second, not the first.
+
+  **Third case identified in 2.B.7 Step 0**:
+
+  - **Magnitude divergence + scope expansion within approved
+    class**: predicate-match between predicted and actual scope;
+    file list (or call list, or row list) differs because new
+    instances of the predicate accumulated since the original
+    audit, OR because the original audit's enumeration was
+    incomplete.
+
+    Test: does the actual scope satisfy the approved predicate?
+    If yes, the expansion is **scope completion**, not scope
+    drift. Disposition: surface the expansion explicitly; commit
+    if the predicate match is clean.
+
+    Distinct from scope drift: drift means the actual work is in
+    a class that wasn't approved. Expansion means more instances
+    of the approved class than originally enumerated.
+
+    **Existence proof**: the 2.B.7 disk sweep. FOLLOWUP-11 named
+    "/mnt/e stale DB sweep" as the class; 8 files were explicitly
+    enumerated. Step 0 found 13 additional files matching the
+    same "post-incident insurance with soak expired" predicate
+    (recovery artifacts, expired dated daily backups, dated
+    tickbardb variants, unlogged DR-drill pre-rehearsal). Path 2
+    (expanded scope, surface and commit) was the correct
+    disposition; Path 3 (defer expansion to a follow-up
+    sub-wave) would have split one operational sweep into two
+    nearly-identical commits with arbitrarily-different file
+    lists. Final move: 30 files / ~135 GB.
+
+    The deciding factor is **predicate-match**, not
+    **file-list-match**. If the original FOLLOWUP entry had
+    enumerated a frozen list with no class definition, strict
+    list adherence would be correct. When the entry defines a
+    class, new instances of the class belong in the same
+    cleanup pass.
+
+  **Three-case summary** (for future overshoot triage):
+
+  | actual vs predicted | scope check | disposition |
+  |---|---|---|
+  | magnitude divergence | scope matches predicate | commit (surface why) |
+  | magnitude matches | scope drifted from approval | halt, revert, replan |
+  | magnitude divergence | scope expanded within approved class | commit (surface expansion as predicate-match) |
 
 ## DEBT-PHASE3 — Postgres migration handles naturally
 
