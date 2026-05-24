@@ -2645,6 +2645,24 @@ def main(argv: list[str] | None = None) -> int:
         "status", help="Show parquet store status (files + size + date range)"
     )
 
+    # stale-sync-sweep command (Phase 2.B.3a — read-only stuck-job detection
+    # across worker queues and *_sync_runs tables)
+    stale_parser = subparsers.add_parser(
+        "stale-sync-sweep",
+        help="Detect stuck rows across worker queues and *_sync_runs tables (read-only)",
+    )
+    stale_parser.add_argument(
+        "--threshold",
+        type=float,
+        default=24.0,
+        help="age threshold in hours (default: 24)",
+    )
+    stale_parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="suppress header; print stuck rows only (script-friendly)",
+    )
+
     args = parser.parse_args(argv)
 
     try:
@@ -2727,6 +2745,8 @@ def main(argv: list[str] | None = None) -> int:
             return handle_summary(args)
         elif args.command == "parquet":
             return handle_parquet(args)
+        elif args.command == "stale-sync-sweep":
+            return handle_stale_sync_sweep(args)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         return 130
@@ -9594,6 +9614,15 @@ def handle_parquet_status(args: argparse.Namespace) -> int:
         dmax = d.get("newest") or "—"
         print(f"{table:<32}{files:>8}{size:>10.1f}  {dmin} → {dmax}")
     return EXIT_SUCCESS
+
+
+def handle_stale_sync_sweep(args: argparse.Namespace) -> int:
+    """Delegate to pakfindata.observability.stuck_jobs.main with the parsed args."""
+    from .observability.stuck_jobs import main as stuck_main
+    argv: list[str] = ["--threshold", str(args.threshold)]
+    if getattr(args, "quiet", False):
+        argv.append("--quiet")
+    return stuck_main(argv)
 
 
 if __name__ == "__main__":
