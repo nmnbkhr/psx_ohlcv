@@ -424,6 +424,19 @@ view.
   alert. The 2.A.5.1 investigation is the first concrete test
   case for the freshness-vs-staleness detector.
 
+  **DETECTION CLOSED 2026-05-24 by 2.B.1 + 2.B.2**. The daily
+  digest's "Sync staleness" section flags any `data_freshness`
+  row with `status='ok'` whose `last_sync_at` is older than 36h —
+  exactly the silent-divergence class this FOLLOWUP described.
+  Current digest run (2026-05-24) lists 15 such rows including
+  `fx_interbank` itself, and 2.B.2's differential-delivery alert
+  fires when the count changes. The upstream-availability cross-
+  check (live HTTP probe vs catalog freshness) is NOT implemented —
+  the digest detects staleness against wall-clock time, not against
+  upstream readiness. Root-cause fix for *why* the cron write
+  silently fails remains open; the detection layer asked for in
+  the forward reference is in place.
+
 - **DEBT-PHASE2-FOLLOWUP-7: FX microservice sync_runs stuck in
   'running' since 2026-04-19** (Milestone 2.A.5.1 side-finding,
   2026-05-23) — `sources/fx_sync.py` integrates with a separate
@@ -439,6 +452,24 @@ view.
   hours as stale, OR (b) add stale-detection to the microservice
   itself so it reaps abandoned runs on its own schedule. Phase
   2.B observability work.
+
+  **DETECTION CLOSED 2026-05-24 by 2.B.3a**. The `stuck_jobs`
+  abstraction's `SYNC_TABLES` predicate dict includes
+  `sync_runs` with predicate `ended_at IS NULL` (the
+  microservice convention) alongside the worker queue's `jobs`
+  table with `status = 'running'`. `find_stuck_jobs(24h)` and
+  `pfsync stale-sync-sweep --threshold 24` both surface the
+  microservice rows — current run shows 3 `sync_runs` rows from
+  2026-01-21 (over 2900h stale) plus 8 `fx_sync_runs` rows
+  going back to 2026-04-19. Both option (a) [extend the worker
+  sweep to reconcile microservice tables] and option (b) [add
+  stale-detection to the microservice itself] from the original
+  FOLLOWUP have been partly addressed: option (a) is implemented
+  as a read-only sweep that LISTS stuck rows but does not REAP
+  them. Reaping decisions belong with the microservice owner;
+  the observability layer surfaces the state, the operator
+  decides the action. Root-cause fix for *why* the microservice
+  abandons runs in the running state remains open.
 - **DEBT-PHASE2-FOLLOWUP-3: pkisrv_daily sync path broken — 1,049
   files unloaded** (Milestone 2.A.3.2 — **CLOSED via 2.A.5.2,
   2026-05-23**) — `pkisrv_daily` is empty in current DB and all four
@@ -818,6 +849,18 @@ view.
   that nearly produced a wrong-direction commit. Each names the
   blind spot, gives the corrective check, and points to the
   audit where it appeared.
+
+  **Related Step 0 enumeration miss (2.B.7, 2026-05-24)**: when
+  planning to move directories wholesale, Step 0 inventory must
+  use `find <dir> -type f` rather than `find ... -name "*.sqlite"`.
+  Filter-by-extension undercounts inside subdirs that will travel
+  with the parent move (recovery_20260509/ had 7 ancillary
+  files — .log, .json, .pid, .stdout, dissect_out — that were
+  invisible to the extension filter but moved correctly because
+  execution used directory-level `mv`). Same enumeration-vs-
+  parameterized-context class as the function-caller version
+  of this primitive: the explicit pattern misses things that
+  travel with surrounding context.
 - **Methodology note: prediction gate semantics**
   (Milestone 2.B.6 net-diff overshoot, 2026-05-24) — Prediction
   gates halt on numerical divergence to surface findings, not to
@@ -903,6 +946,18 @@ view.
   | magnitude divergence | scope matches predicate | commit (surface why) |
   | magnitude matches | scope drifted from approval | halt, revert, replan |
   | magnitude divergence | scope expanded within approved class | commit (surface expansion as predicate-match) |
+
+  **Note on case-2 absence** (Phase 2.B close, 2026-05-24): of
+  the three named cases, only cases 1 and 3 have been tested
+  under real overshoot — both committed correctly. Case 2
+  ("magnitude matches + scope drift") has not surfaced across
+  Phase 2.A + 2.B's combined 14 sub-waves. The absence is
+  itself evidence the methodology works: the gate's surface-
+  before-commit step keeps drift visible, and the predict-then-
+  approve cadence prevents drift from accumulating quietly.
+  When case 2 eventually surfaces, it will be the truly
+  dangerous failure — magnitude masking scope drift — and the
+  methodology's halt-revert-replan disposition is the response.
 
 ## DEBT-PHASE3 — Postgres migration handles naturally
 
