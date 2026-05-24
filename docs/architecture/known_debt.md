@@ -139,6 +139,48 @@ view.
   warning instead of a false-positive garbage date. Phase 2.A.3
   investigates the upstream scrapers, decides recoverable vs delete,
   and runs the deeper cleanup.
+
+  **PARTIAL CLOSURE (2.A.5.4a, 2026-05-24) — pib_auctions portion only:**
+
+  `scripts/cleanup_pib_auctions_pollution.py` removed 240,872
+  misrouted rows from `pib_auctions`. The disposition is
+  CLEANUP-as-DEDUPLICATION (not destructive): the read-only
+  recovery audit (2.A.5.4) joined the polluted rows against
+  `tick_data` with PKT→UTC offset correction and found a 100%
+  match — every polluted row exists as a canonical tick in
+  `tick_data` already. The misroute appears to have recorded
+  the same intraday feed into `pib_auctions` with
+  PKT-display-string timestamps instead of UTC epoch.
+
+  Five row-count gates (pre_total / match / post_total /
+  post_dates / tick_data_invariance) all matched predictions
+  exactly. Predicate (verified tight, replaces the original
+  3-criterion defense-in-depth):
+
+      maturity_date='insert'
+      AND auction_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+
+  Post-cleanup: `pib_auctions` = 963 rows / 270 distinct dates;
+  catalog `pib` row recomputed to `last_row_date='2026-05-20'`,
+  `row_count=963`. tick_data unchanged (10,048,488 rows).
+
+  **Sub-wave note**: The recovery audit was protective overhead
+  for this sub-wave; the pattern stays for future ones. Treat
+  "polluted rows" as possibly-canonical until cross-table
+  verification rules that out. Right answer (cleanup is safe)
+  came from the audit, not from the original framing being
+  right by accident.
+
+  **Still open under FOLLOWUP-2 (deferred to 2.A.5.5 / .5.6):**
+    - `konia_daily.date` symbol-code pollution (~600 rows) — sub-wave 2.A.5.5
+    - `forex_kerb.date` symbol-code pollution (~60 rows) — sub-wave 2.A.5.6
+    - `regular_market_current.ts` symbol-code pollution (~50 rows) — sub-wave 2.A.5.6
+
+  Each sub-wave will apply the same recovery-audit-then-cleanup
+  discipline. The pib_auctions outcome (canonical copy in
+  tick_data) is the strongest hypothesis for konia and
+  regular_market_current; forex_kerb may differ since FX feeds
+  don't share a canonical-tick table.
 - **Helper-function test coverage gap caught by 2.A.2.1b** (Milestone
   2.A.2 follow-up) — Reproducer in `test_catalog_conflict_repro.py`
   was extended in 2.A.2.1b after discovering the original tests
@@ -409,6 +451,68 @@ view.
   is genuinely new fetch work and crosses 2.A.3 Hard Rule 6 ("no
   scraper fixes in this milestone") — push to 2.A.5 alongside the
   FOLLOWUP-2/3/5 scraper investigations.
+- **DEBT-PHASE2-FOLLOWUP-11: stale DB copies on /mnt/e/psxdata/
+  pending reclaim** (Milestone 2.A.5.4a side-finding, 2026-05-24) —
+  Canonical DB is `~/psxdata_rescue/psx.sqlite` on NVMe (post
+  2026-04-21 NTFS corruption + chkdsk recovery). The /mnt/e copies
+  remain as insurance during the post-incident soak window. Soak
+  window long expired (>1 month past chkdsk on 2026-04-23), but
+  the cleanup has not been scheduled. Total reclaimable: ~52 GB.
+
+  Files on `/mnt/e/psxdata/` as of 2026-05-24:
+
+  | File | Size | Date | Status |
+  |---|---|---|---|
+  | `psx.sqlite.bak.20260421` | 22 GB | 2026-04-21 | **KEEP** (explicit cold backup, the one resurrected by chkdsk) |
+  | `psx.sqlite` (+ `-shm`, `-wal`) | 23 GB | 2026-05-14 | Verify no live writers, then DELETE — pre-corruption snapshot |
+  | `tick_bars_cloud_2026-05-08.db` | 6.9 GB | 2026-05-08 | Old snapshot — DELETE if no rsync consumer points to it |
+  | `tick_bars.db` | 6.2 GB | 2026-04-23 | Old snapshot — DELETE |
+  | `psx.sqlite.migration_backup` | 5.6 GB | 2026-04-19 | One-off migration backup — DELETE |
+  | `psx_corrupt.sqlite` | 5.1 GB | 2026-04-11 | Old corruption corpse — DELETE |
+  | `pakfindata.duckdb.DEAD` | 3.2 GB | 2026-04-06 | DEAD-suffix archive — DELETE |
+  | `pakfindata.duckdb.archive.DEAD` | 1.8 GB | 2026-03-31 | Same — DELETE |
+  | `psx.sqlite.bad`, `.corrupted` | ~200 MB | 2026-01-30 | Old corruption corpses — DELETE |
+  | `pakfindata.duckdb.empty_schema.DEAD`, `pakfindata.db`, `psx_ohlcv.db`, `psx.db` | <1 MB total | various | Tiny historical artifacts — DELETE |
+
+  **Pre-deletion verification required**:
+  - `psx.sqlite` on /mnt/e has `-shm` and `-wal` companion files
+    (mtime 2026-05-24 01:39) — confirm no live process holds an
+    fd against it before delete (`lsof` or `fuser`).
+  - `tick_bars_cloud_2026-05-08.db` — confirm
+    `~/sync_psx_cloud.sh` and downstream readers (tick_replay,
+    cloud-tick analytics) point at the canonical path
+    `/mnt/e/psxdata/tick_bars_cloud.db` (no dated suffix) or
+    NVMe equivalent.
+
+  Memory cross-reference: `project_dup_dbs_cleanup.md`
+  (originally filed during NTFS-recovery soak window).
+- **Audit pattern: DATE() on INTEGER epoch timestamps**
+  (Milestone 2.A.5.4 recovery audit, 2026-05-24) — When auditing
+  tables whose `timestamp` column is INTEGER unix epoch (e.g.
+  `tick_data.timestamp`), the bare SQL function `DATE(timestamp)`
+  returns empty string because `DATE()` expects an ISO-8601 string,
+  not a raw integer. The query silently returns 0 rows where it
+  should return all rows for the given date — a false negative that
+  looks like data loss. The 2.A.5.4 recovery audit nearly committed
+  a recovery script on this footing before catching the bug.
+
+  Correct forms (always specify the storage unit):
+
+  ```sql
+  DATE(timestamp,       'unixepoch')   -- second epochs (tick_data)
+  DATE(timestamp/1000,  'unixepoch')   -- millisecond epochs
+  datetime(timestamp,   'unixepoch')   -- for timestamp comparison
+  -- or compare epoch ranges directly:
+  WHERE timestamp >= strftime('%s', '2026-04-15 00:00:00')
+    AND timestamp <  strftime('%s', '2026-04-16 00:00:00')
+  ```
+
+  Apply this discipline at every audit of a timestamp-typed table:
+  before writing the date filter, verify the column's storage unit
+  (`SELECT typeof(timestamp), MIN(timestamp), MAX(timestamp) FROM
+  <table>;`). If `typeof` is `integer` and `MIN` looks like an
+  epoch (>1e9, <2e10), use the `'unixepoch'` modifier or
+  range-on-epoch form. Wrong query produces silent false negatives.
 
 ## DEBT-PHASE3 — Postgres migration handles naturally
 
