@@ -80,6 +80,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from pakfindata.config import get_db_path
+from pakfindata.observability.stuck_jobs import find_stuck_jobs
 
 
 DIGEST_DIR = Path("/mnt/e/psxdata/digest")
@@ -87,18 +88,6 @@ ALERTS_DIR = DIGEST_DIR / "alerts"
 STATE_PATH = DIGEST_DIR / "state.json"
 LOG_DIR = Path.home() / ".local/share/pakfindata/logs"
 PKT_OFFSET = timedelta(hours=5)
-
-# *_sync_runs tables that have an explicit `status` column (covered in 2.B.1).
-# The other three tables — commodity_sync_runs, instruments_sync_runs,
-# sync_runs — use `ended_at IS NULL` semantics; deferred to 2.B.3 sweep
-# abstraction.
-SYNC_RUNS_WITH_STATUS: tuple[str, ...] = (
-    "bond_sync_runs",
-    "fi_sync_runs",
-    "fx_sync_runs",
-    "mutual_fund_sync_runs",
-    "sukuk_sync_runs",
-)
 
 STUCK_WARN_HOURS = 2
 STUCK_CRITICAL_HOURS = 24
@@ -147,52 +136,18 @@ def _failed_catalog_rows(con: sqlite3.Connection) -> list[str]:
 
 
 def _stuck_jobs(con: sqlite3.Connection, min_hours: int, max_hours: int | None) -> list[str]:
-    """Stuck-row finder over `jobs` + the 5 status='running' sync_runs tables.
+    """Stuck-row finder. Delegates to `observability.stuck_jobs.find_stuck_jobs`
+    (Phase 2.B.3a). Covers 10 tables across two predicate conventions —
+    a strict superset of the original 6-table embedded query that lived
+    here pre-2.B.3b.
 
-    min_hours: lower bound (rows must be running >= this long).
-    max_hours: upper bound (rows must be running < this long). None = no upper bound.
+    Returns formatted strings consistent with the StuckJob.__str__
+    convention: `<table>.<id> running since <started_at> (<age>h)`.
     """
-    out: list[str] = []
-
-    where_upper = (
-        f"AND enqueued_at > datetime('now', '-{max_hours} hours')"
-        if max_hours is not None
-        else ""
-    )
-    rows = con.execute(
-        f"""
-        SELECT id, job_type, enqueued_at FROM jobs
-        WHERE status = 'running'
-          AND enqueued_at < datetime('now', '-{min_hours} hours')
-          {where_upper}
-        ORDER BY enqueued_at
-        """
-    ).fetchall()
-    out.extend(
-        f"jobs.id={r['id']} ({r['job_type']}) running since {r['enqueued_at']}"
-        for r in rows
-    )
-
-    for tbl in SYNC_RUNS_WITH_STATUS:
-        where_upper_t = (
-            f"AND started_at > datetime('now', '-{max_hours} hours')"
-            if max_hours is not None
-            else ""
-        )
-        rows = con.execute(
-            f"""
-            SELECT run_id, started_at FROM {tbl}
-            WHERE status = 'running'
-              AND started_at < datetime('now', '-{min_hours} hours')
-              {where_upper_t}
-            ORDER BY started_at
-            """
-        ).fetchall()
-        out.extend(
-            f"{tbl}.run_id={r['run_id']} running since {r['started_at']}"
-            for r in rows
-        )
-    return out
+    rows = find_stuck_jobs(threshold_hours=min_hours, con=con)
+    if max_hours is not None:
+        rows = [r for r in rows if r.age_hours < max_hours]
+    return [str(r) for r in rows]
 
 
 def _sync_staleness(con: sqlite3.Connection) -> list[str]:
