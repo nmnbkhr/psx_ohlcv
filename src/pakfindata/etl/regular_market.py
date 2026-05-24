@@ -37,9 +37,13 @@ from pakfindata.sources.regular_market import (
     upsert_current,
 )
 
-DATASETS: tuple[tuple[str, str], ...] = (
-    ("regular_market_current", "psx_api"),
-    ("regular_market_snapshots", "psx_api"),
+# (dataset_id, source, value_type) — value_type added in 2.B.6 so the helper
+# truncates the .ts column's 'YYYY-MM-DDTHH:MM:SS+05:00' value before
+# writing last_row_date. Without it, last_row_date held the full timestamp
+# and downstream days_old computation broke.
+DATASETS: tuple[tuple[str, str, str], ...] = (
+    ("regular_market_current", "psx_api", "iso_timestamp"),
+    ("regular_market_snapshots", "psx_api", "iso_timestamp"),
 )
 
 
@@ -109,10 +113,12 @@ def sync_snapshot(save_unchanged: bool = False) -> dict:
 
             analytics = compute_all_analytics(con, snapshot_ts) if snapshot_ts else None
 
-            for dataset, source in DATASETS:
-                update_catalog_from_table(con, dataset, source=source)
+            for dataset, source, value_type in DATASETS:
+                update_catalog_from_table(
+                    con, dataset, source=source, value_type=value_type,
+                )
     except Exception as exc:
-        for dataset, source in DATASETS:
+        for dataset, source, _value_type in DATASETS:
             record_catalog_failure(dataset, source=source, error=exc)
         raise
 

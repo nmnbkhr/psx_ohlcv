@@ -253,3 +253,137 @@ def test_update_catalog_from_table_failed_branch_preserves_metadata(con):
     assert row[2] == "Empty Source", (
         f"Helper failed-branch clobbered display_name: {row[2]!r}."
     )
+
+
+# --- FOLLOWUP-12: value_type conversion (lands in 2.B.6) --------------------
+
+
+def test_update_catalog_from_table_epoch_seconds_converts_to_iso_date(con):
+    """`value_type='epoch_seconds'` converts INTEGER epoch → 'YYYY-MM-DD'.
+
+    Caught by 2.A.5.7: tick_data.timestamp is INTEGER seconds; the
+    helper was writing the raw integer as a string into last_row_date.
+    FOLLOWUP-12: the helper now coerces.
+    """
+    domain = "test_epoch_seconds"
+    update_catalog(
+        con, domain, source="seed",
+        source_table="ticks_s", date_column="ts", display_name="Ticks s",
+    )
+    con.executescript(
+        "CREATE TABLE ticks_s (ts INTEGER, sym TEXT);"
+        # 1716508800 = 2024-05-23 22:40:00 UTC = 2024-05-24 03:40:00 PKT
+        # PKT-anchored conversion yields '2024-05-24'.
+        "INSERT INTO ticks_s VALUES (1716508800, 'X');"
+    )
+
+    update_catalog_from_table(con, domain, source="test", value_type="epoch_seconds")
+
+    row = con.execute(
+        "SELECT last_row_date FROM data_freshness WHERE domain = ?", (domain,)
+    ).fetchone()
+    assert row[0] == "2024-05-24", (
+        f"epoch_seconds conversion wrong: {row[0]!r} (expected '2024-05-24', "
+        f"PKT-anchored)"
+    )
+
+
+def test_update_catalog_from_table_epoch_millis_converts_to_iso_date(con):
+    """`value_type='epoch_millis'` converts INTEGER millis-epoch → 'YYYY-MM-DD'."""
+    domain = "test_epoch_millis"
+    update_catalog(
+        con, domain, source="seed",
+        source_table="ticks_ms", date_column="ts_ms", display_name="Ticks ms",
+    )
+    con.executescript(
+        "CREATE TABLE ticks_ms (ts_ms INTEGER, sym TEXT);"
+        # Same instant as the seconds test, but in millis.
+        "INSERT INTO ticks_ms VALUES (1716508800000, 'X');"
+    )
+
+    update_catalog_from_table(con, domain, source="test", value_type="epoch_millis")
+
+    row = con.execute(
+        "SELECT last_row_date FROM data_freshness WHERE domain = ?", (domain,)
+    ).fetchone()
+    assert row[0] == "2024-05-24", (
+        f"epoch_millis conversion wrong: {row[0]!r} (expected '2024-05-24', "
+        f"PKT-anchored)"
+    )
+
+
+def test_update_catalog_from_table_iso_timestamp_truncates_to_iso_date(con):
+    """`value_type='iso_timestamp'` truncates 'YYYY-MM-DDTHH:MM:SS...' to date.
+
+    Real caller: regular_market_current.ts holds
+    '2026-05-23T15:53:47.401556+05:00'. Before 2.B.6 the full timestamp
+    landed in last_row_date, breaking days_old downstream.
+    """
+    domain = "test_iso_ts"
+    update_catalog(
+        con, domain, source="seed",
+        source_table="rm_curr", date_column="ts", display_name="RM Curr",
+    )
+    con.executescript(
+        "CREATE TABLE rm_curr (ts TEXT, sym TEXT);"
+        "INSERT INTO rm_curr VALUES ('2026-05-23T15:53:47.401556+05:00', 'X');"
+    )
+
+    update_catalog_from_table(con, domain, source="test", value_type="iso_timestamp")
+
+    row = con.execute(
+        "SELECT last_row_date FROM data_freshness WHERE domain = ?", (domain,)
+    ).fetchone()
+    assert row[0] == "2026-05-23", (
+        f"iso_timestamp truncation wrong: {row[0]!r} (expected '2026-05-23')"
+    )
+
+
+def test_update_catalog_from_table_iso_date_default_unchanged(con):
+    """`value_type='iso_date'` (default) is a no-op pass-through.
+
+    Regression guard for the ~20 default callers — none of them pass
+    `value_type=`, so this code path MUST preserve pre-2.B.6 behavior.
+    """
+    domain = "test_iso_date_default"
+    update_catalog(
+        con, domain, source="seed",
+        source_table="daily_bars", date_column="date", display_name="Daily Bars",
+    )
+    con.executescript(
+        "CREATE TABLE daily_bars (date TEXT, sym TEXT);"
+        "INSERT INTO daily_bars VALUES ('2026-05-23', 'X');"
+    )
+
+    # No value_type kwarg — exercises the default code path.
+    update_catalog_from_table(con, domain, source="test")
+
+    row = con.execute(
+        "SELECT last_row_date FROM data_freshness WHERE domain = ?", (domain,)
+    ).fetchone()
+    assert row[0] == "2026-05-23", (
+        f"Default (iso_date) path changed behavior: {row[0]!r} != '2026-05-23'"
+    )
+
+
+def test_update_catalog_from_table_value_type_mismatch_raises(con):
+    """Declaring `value_type='epoch_seconds'` over an ISO-date column raises.
+
+    Defense-in-depth: catches schema drift (column re-typed) and caller
+    error (wrong value_type declared in a DATASETS tuple) before the
+    garbage lands in last_row_date.
+    """
+    domain = "test_mismatch"
+    update_catalog(
+        con, domain, source="seed",
+        source_table="iso_table", date_column="date", display_name="ISO Table",
+    )
+    con.executescript(
+        "CREATE TABLE iso_table (date TEXT, sym TEXT);"
+        "INSERT INTO iso_table VALUES ('2026-05-23', 'X');"
+    )
+
+    with pytest.raises(ValueError, match="epoch_seconds"):
+        update_catalog_from_table(
+            con, domain, source="test", value_type="epoch_seconds",
+        )

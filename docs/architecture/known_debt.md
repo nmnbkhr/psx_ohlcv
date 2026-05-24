@@ -589,6 +589,23 @@ view.
     - The pattern is now both descriptive (it explains the bug) and
       prescriptive (the fix shape is documented).
 
+  **CLOSED 2026-05-24 by 2.B.6**. Added explicit `value_type` kwarg
+  to `update_catalog_from_table` with four valid values
+  (`iso_date` default / `iso_timestamp` / `epoch_seconds` /
+  `epoch_millis`), each branch validating shape vs declared type
+  and raising on mismatch (defense-in-depth). Three live callers
+  migrated: `cli.py` tick_data → `epoch_seconds`;
+  `etl/regular_market.py` DATASETS tuple expanded to 3-tuple with
+  `iso_timestamp` for both regular_market_current and
+  regular_market_snapshots; `scripts/cleanup_regular_market_current_pollution.py`
+  updated for re-run hygiene. 5 reproducer tests added. Helper's
+  docstring was the bug (it pushed type-handling onto callers and
+  3 of 3 live callers ignored that advice) — now the helper does
+  the work. See also: "parameterized caller invisibility" audit
+  primitive below — `regular_market_snapshots` surfaces only
+  through `DATASETS` iteration and was not visible to grep for
+  literal-argument calls; reading the ETL module caught it.
+
 - **Audit pattern: DATE() on INTEGER epoch timestamps**
   (Milestone 2.A.5.4 recovery audit, 2026-05-24) — When auditing
   tables whose `timestamp` column is INTEGER unix epoch (e.g.
@@ -713,6 +730,90 @@ view.
   and the DATE-on-epoch check (FOLLOWUP-2.A.5.4b) are
   table-shape primitives; the writer-path primitive is the
   missing peer.
+- **Audit pattern: parameterized caller invisibility**
+  (Milestone 2.B.6 Step 0, 2026-05-24) — Grep for
+  `function_name(literal_argument, ...)` misses callers that
+  iterate parameter tuples, read from config dicts, or otherwise
+  pass the argument indirectly. The audit shows the function being
+  used N times in M places by literal-name search, but the live
+  call count is N+K — the K hidden callers route the same
+  argument through one extra layer of indirection.
+
+  **Existence proofs from real audits**:
+
+  - 2.B.0 stuck-job sweep: searched `*_runs` suffix and missed
+    `scrape_jobs` (no `_runs` suffix, different naming convention
+    within the same table family).
+  - 2.B.6 helper migration: grep for
+    `update_catalog_from_table.*regular_market_snapshots` returned
+    zero matches; the dataset is touched only by
+    `etl/regular_market.py`'s `for dataset, source in DATASETS`
+    iteration over a (`regular_market_current`,
+    `regular_market_snapshots`) tuple. Grep saw the call against
+    `DATASETS[i][0]` but not against the literal dataset id.
+
+  **How to apply**:
+
+  1. Step 0 audits MUST sweep both `grep "function_name(\"<arg>"`
+    AND read the dispatch/ETL modules that the function lives
+    near. Parameterized iteration over `(name, ...)` tuples is
+    common in this codebase's ETL layer (`DATASETS = (...)` is
+    the idiomatic pattern).
+  2. When migrating a function signature, run a final pass:
+    `grep "function_name(" --include="*.py" | head -50` and
+    eyeball each call site. Calls where the first positional
+    argument is a *variable* (not a string literal) are exactly
+    the invisible callers.
+  3. Surface the miss in the disposition summary even when it
+    didn't slip through — surfacing strengthens the primitive
+    for the next audit.
+
+  **Cross-references**: same class as the phantom-row primitive
+  (FOLLOWUP-2.A.5.5b) and the DATE-on-epoch primitive
+  (FOLLOWUP-2.A.5.4b) — each surfaced from a real audit miss
+  that nearly produced a wrong-direction commit. Each names the
+  blind spot, gives the corrective check, and points to the
+  audit where it appeared.
+- **Methodology note: prediction gate semantics**
+  (Milestone 2.B.6 net-diff overshoot, 2026-05-24) — Prediction
+  gates halt on numerical divergence to surface findings, not to
+  enforce a magnitude. Two interpretations of "diverged":
+
+  - **Magnitude divergence + scope match**: content matches what
+    was approved; line count was estimated low.
+    Disposition: surface the analysis; commit if all overshoot
+    maps to explicit scope. Adjust future predictions to account
+    for the content cost of similar features.
+  - **Magnitude match + scope drift**: numerical prediction met
+    but content diverged from approval.
+    Disposition: halt; revert; replan.
+
+  **Existence proof**: the 2.B.6 +307/-13 net diff vs predicted
+  70-135 was the first explicit test of this distinction. Every
+  line over budget mapped to user-approved scope expansions
+  (docstring rewrite-not-delete, the 4th audit primitive,
+  DATASETS 3-tuple expansion, validation-with-raise). All four
+  were explicit asks in the approval round; their line cost was
+  approved alongside the content. The disposition surfaced the
+  overshoot, mapped each over-budget line to its approval, and
+  committed — magnitude divergence with scope match.
+
+  **How to apply**: a prediction gate's primary function is
+  *"did I implement what was approved?"* not *"did I implement
+  it in the predicted lines?"* The gate is a forcing function
+  for the surface-before-commit step, not a hard line-count
+  budget. When predicted N±X overshoots into actual N+kX:
+
+  1. Re-derive the prediction from the approved-content checklist
+     (docstring scope, test boilerplate cost, audit-artifact form,
+     etc.). If the re-derivation matches the actual, the original
+     prediction was the gap, not the implementation.
+  2. Surface the re-derivation alongside the disposition. Commit
+     when over-budget lines map to explicit scope; halt only when
+     a line cannot be traced to an approval.
+  3. The cost of being wrong about magnitude is a stricter future
+     prediction; the cost of being wrong about scope is a wasted
+     commit. The gate optimizes against the second, not the first.
 
 ## DEBT-PHASE3 — Postgres migration handles naturally
 

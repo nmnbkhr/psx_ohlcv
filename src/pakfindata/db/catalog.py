@@ -39,7 +39,7 @@ Design rules
 """
 
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from pakfindata.config import get_db_path
@@ -54,6 +54,61 @@ __all__ = [
 
 
 _VALID_STATUSES = {"ok", "partial", "failed", "unknown"}
+_VALID_VALUE_TYPES = {"iso_date", "iso_timestamp", "epoch_seconds", "epoch_millis"}
+
+# PSX trading dates are PKT-anchored — converting an epoch-typed
+# MAX(date_column) to the trading day uses the local (PKT) calendar.
+_PKT = timezone(timedelta(hours=5))
+
+# Sanity bounds for the epoch validators: [2000-01-01, 2100-01-01).
+# Wide enough that all legitimate live data passes; tight enough to catch
+# the "wrong value_type declared" case (e.g. millis claimed where seconds
+# live, or vice versa). Mirrors the _VALID_STATUSES defense-in-depth.
+_EPOCH_SECONDS_MIN = 946_684_800
+_EPOCH_SECONDS_MAX = 4_102_444_800
+_EPOCH_MILLIS_MIN = _EPOCH_SECONDS_MIN * 1000
+_EPOCH_MILLIS_MAX = _EPOCH_SECONDS_MAX * 1000
+
+
+def _coerce_max_to_iso_date(max_val: Any, value_type: str) -> str | None:
+    """Convert a `MAX(<date_column>)` result to an ISO date string per `value_type`.
+
+    Returns None when the source query produced no rows (MAX returns NULL).
+    Raises ValueError when the shape of `max_val` contradicts the declared
+    `value_type` — failing loud beats writing garbage into last_row_date.
+    """
+    if max_val is None:
+        return None
+    if value_type == "iso_date":
+        return str(max_val)
+    if value_type == "iso_timestamp":
+        if not isinstance(max_val, str) or len(max_val) < 10 or max_val[4] != "-":
+            raise ValueError(
+                f"value_type='iso_timestamp' but MAX={max_val!r} doesn't look "
+                f"like an ISO timestamp (expected 'YYYY-MM-DD...')"
+            )
+        return max_val[:10]
+    if value_type == "epoch_seconds":
+        if not isinstance(max_val, (int, float)) or not (
+            _EPOCH_SECONDS_MIN <= max_val <= _EPOCH_SECONDS_MAX
+        ):
+            raise ValueError(
+                f"value_type='epoch_seconds' but MAX={max_val!r} doesn't look "
+                f"like a seconds-epoch in [2000-01-01, 2100-01-01)"
+            )
+        return datetime.fromtimestamp(max_val, tz=_PKT).strftime("%Y-%m-%d")
+    if value_type == "epoch_millis":
+        if not isinstance(max_val, (int, float)) or not (
+            _EPOCH_MILLIS_MIN <= max_val <= _EPOCH_MILLIS_MAX
+        ):
+            raise ValueError(
+                f"value_type='epoch_millis' but MAX={max_val!r} doesn't look "
+                f"like a millis-epoch in [2000-01-01, 2100-01-01)"
+            )
+        return datetime.fromtimestamp(max_val / 1000, tz=_PKT).strftime("%Y-%m-%d")
+    raise ValueError(
+        f"value_type must be one of {_VALID_VALUE_TYPES}; got {value_type!r}"
+    )
 
 
 def update_catalog(
@@ -139,6 +194,7 @@ def update_catalog_from_table(
     status: str = "ok",
     error: str | None = None,
     notes: str | None = None,
+    value_type: str = "iso_date",
 ) -> None:
     """Update the catalog by re-reading MAX(date_column) + COUNT(*) from
     the source_table registered for this dataset_id.
@@ -149,10 +205,38 @@ def update_catalog_from_table(
     affected dataset.
 
     Requires the dataset to be pre-registered (run
-    `scripts/backfill_data_catalog.py` once on a new DB). For special
-    date columns (TEXT timestamps, unix epoch integers) call
-    `update_catalog()` directly with an explicit `latest_date` instead.
+    `scripts/backfill_data_catalog.py` once on a new DB).
+
+    The `value_type` parameter declares what kind of value the registered
+    `date_column` holds. The helper converts `MAX(date_column)` to an
+    ISO date string before writing `last_row_date` (which is contracted
+    to hold YYYY-MM-DD strings):
+
+      - 'iso_date' (default): pass through as str(max_val). Backward
+        compatible — existing callers need no migration.
+      - 'iso_timestamp': truncate to the first 10 chars (YYYY-MM-DD).
+        Use when the column stores 'YYYY-MM-DDTHH:MM:SS...' values.
+      - 'epoch_seconds': INTEGER seconds since 1970-01-01 UTC. Converted
+        through the PKT calendar (PSX trading days are PKT-anchored).
+      - 'epoch_millis': INTEGER milliseconds since 1970-01-01 UTC. Same
+        PKT conversion.
+
+    Validation: each branch verifies the shape of `MAX(date_column)`
+    matches the declared `value_type` and raises ValueError on mismatch.
+    Beats writing 'Tue' / raw-integer-as-string / similar garbage into
+    last_row_date when a caller's declared type drifts from the schema.
+
+    Closes FOLLOWUP-12 (2.A.5.7 caught update_catalog_from_table writing
+    a raw integer epoch into tick_data's last_row_date). The helper used
+    to advise callers to handle epoch/timestamp columns themselves via
+    update_catalog(); three of three live callers ignored that advice.
+    Encoding type-handling in the helper is the correct response.
     """
+    if value_type not in _VALID_VALUE_TYPES:
+        raise ValueError(
+            f"value_type must be one of {_VALID_VALUE_TYPES}; got {value_type!r}"
+        )
+
     row = con.execute(
         "SELECT source_table, date_column, display_name "
         "FROM data_freshness WHERE domain = ?",
@@ -174,7 +258,7 @@ def update_catalog_from_table(
         result = con.execute(
             f"SELECT MAX({date_column}), COUNT(*) FROM {source_table}"
         ).fetchone()
-        latest, count = result[0], int(result[1] or 0)
+        max_val, count = result[0], int(result[1] or 0)
     except sqlite3.OperationalError as exc:
         # Schema drift or similar — record as failed (preserves last-good
         # values via COALESCE in update_catalog).
@@ -189,6 +273,8 @@ def update_catalog_from_table(
             display_name=display_name,
         )
         return
+
+    latest = _coerce_max_to_iso_date(max_val, value_type)
 
     update_catalog(
         con,

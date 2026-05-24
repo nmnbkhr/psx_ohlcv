@@ -9415,7 +9415,10 @@ def handle_intraday_ticks_load(args: argparse.Namespace) -> int:
             result = load_ticks_from_disk(wcon, target_date=args.date)
             if result.get("rows_total", 0) > 0:
                 update_catalog_from_table(wcon, "intraday", source="psx_api")
-                update_catalog_from_table(wcon, "tick_data", source="psx_api")
+                update_catalog_from_table(
+                    wcon, "tick_data", source="psx_api",
+                    value_type="epoch_seconds",
+                )
         _emit_step(
             "intraday_ticks_load",
             "ok",

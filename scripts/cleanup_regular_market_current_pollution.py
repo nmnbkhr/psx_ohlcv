@@ -230,7 +230,11 @@ def main(dry_run: bool) -> int:
         _check_postflight(con, deleted)
         print()
         print("Step 4 — Catalog recompute for domain 'regular_market_current':")
-        update_catalog_from_table(con, "regular_market_current", source="cleanup_2a5_6b")
+        update_catalog_from_table(
+            con, "regular_market_current",
+            source="cleanup_2a5_6b",
+            value_type="iso_timestamp",
+        )
         row = con.execute(
             "SELECT last_row_date, row_count FROM data_freshness WHERE domain = 'regular_market_current'"
         ).fetchone()
