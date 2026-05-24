@@ -171,16 +171,28 @@ view.
   came from the audit, not from the original framing being
   right by accident.
 
-  **Still open under FOLLOWUP-2 (deferred to 2.A.5.5 / .5.6):**
-    - `konia_daily.date` symbol-code pollution (~600 rows) — sub-wave 2.A.5.5
+  **Partially closed (2.A.5.5a, 2026-05-24) — konia_daily portion:**
+  633 rows removed via `scripts/cleanup_konia_daily_pollution.py`.
+  Triple-convergent predicate (source marker `scraped_at='dps'`,
+  shape marker `date NOT GLOB ISO-date`, AND-intersection — all
+  three match exactly 633). Cross-table verification: 627 / 633
+  (99.05%) are duplicates of canonical eod_ohlcv / futures_eod
+  OHLCV with the column shift (date←symbol, rate_pct←ts_ms,
+  volume_billions←open, high←close, low←volume). 6 remaining
+  orphans are post-delisting phantom rows (delisted-symbol-polling
+  pattern — see new audit pattern below). Catalog 'konia' row
+  recovered to `last_row_date='2026-05-23'`, `row_count=2,701`.
+  Six gates (pre_total / match / post_total / post_dates /
+  eod_invariance / futures_invariance) all matched predictions
+  exactly.
+
+  **Still open under FOLLOWUP-2 (deferred to 2.A.5.6):**
     - `forex_kerb.date` symbol-code pollution (~60 rows) — sub-wave 2.A.5.6
     - `regular_market_current.ts` symbol-code pollution (~50 rows) — sub-wave 2.A.5.6
 
-  Each sub-wave will apply the same recovery-audit-then-cleanup
-  discipline. The pib_auctions outcome (canonical copy in
-  tick_data) is the strongest hypothesis for konia and
-  regular_market_current; forex_kerb may differ since FX feeds
-  don't share a canonical-tick table.
+  Each remaining sub-wave will apply the same recovery-audit-then-cleanup
+  discipline. forex_kerb may differ from konia / pib_auctions since FX
+  feeds don't share a canonical-tick table the way equity feeds do.
 - **Helper-function test coverage gap caught by 2.A.2.1b** (Milestone
   2.A.2 follow-up) — Reproducer in `test_catalog_conflict_repro.py`
   was extended in 2.A.2.1b after discovering the original tests
@@ -513,6 +525,55 @@ view.
   <table>;`). If `typeof` is `integer` and `MIN` looks like an
   epoch (>1e9, <2e10), use the `'unixepoch'` modifier or
   range-on-epoch form. Wrong query produces silent false negatives.
+- **Audit pattern: scrapers polling delisted symbols ("phantom row"
+  class)** (Milestone 2.A.5.5 cross-table audit, 2026-05-24) —
+  Two FOLLOWUP-2 sub-waves have now surfaced the same scraper-class
+  pattern: write paths that do NOT validate `symbol-was-listed-on-date`
+  before inserting. The pattern shows up as a small tail of rows
+  in the polluted set that have no canonical counterpart and date
+  positions that are POST-delisting or POST-suspension:
+
+  - **konia_daily, 2.A.5.5a**: 6 of 633 polluted rows are post-delisting
+    phantoms — BILF / DMTX / PMI / PMPK on dates 4-9 months after their
+    2025-01-20 delistings (eod_ohlcv coverage cleanly ends 2025-01-20);
+    CJPL on 2026-03-16, ten days after its 2026-03-06 suspension
+    (eod_ohlcv last date for CJPL); LIVENR has no eod_ohlcv row at
+    any date and is absent from the `symbols` table.
+  - **pib_auctions, 2.A.5.4a** (different mechanism but related class):
+    240,872 rows were intraday-tick duplicates of tick_data with PKT/UTC
+    offset — not phantoms, but they exhibited the same "scraper wrote
+    something the canonical path also wrote, with no listed-on-date
+    validation" anti-pattern.
+
+  **Class definition**: a row R(symbol, date, ...) is a "phantom"
+  when (a) the symbol has no listing in `symbols`, OR (b) the
+  symbol exists in `symbols` but `eod_ohlcv` / `futures_eod`
+  coverage for that symbol ends strictly before `R.date`. Phantom
+  rows are unrecoverable as canonical data because no legitimate
+  price feed would publish for them on those dates — the symbol
+  stopped trading first.
+
+  **Cleanup discipline for orphan rows**: when the cross-table
+  duplicate check leaves a tail of "unique to polluted table"
+  rows, classify each one. If they fit the phantom class (per
+  the above), document them in the closure as "uniqueness is
+  itself a sign of pollution, not a sign of recoverable data."
+  Only escalate to RECOVERY-then-cleanup if at least one orphan
+  row sits inside the symbol's canonical listing window AND no
+  canonical record exists for that (symbol, date).
+
+  **Forward reference to Phase 2.B (observability)**: a
+  listed-on-date validation rule belongs in the source-side
+  pre-write check (or as a `safe_writer` validator) for any
+  scraper that takes a symbol-keyed row. Candidate primitive:
+  `is_listed_on(symbol, date, con)` returning True iff
+  `eod_ohlcv` or `futures_eod` has a row for that (symbol,
+  date) OR the date is within ±5 trading days of an existing
+  row (slack for initial-listing race conditions). Block writes
+  outside that window with a clear error. This is FORWARD
+  REFERENCE only — do not expand FOLLOWUP-2 / 2.A.5 scope to
+  fix the scrapers; document the pattern, file the candidate
+  primitive, and let Phase 2.B own the architectural work.
 
 ## DEBT-PHASE3 — Postgres migration handles naturally
 
