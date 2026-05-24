@@ -2,7 +2,9 @@
 Description=pakfindata worker (job queue dispatcher)
 Documentation=file:%h/projects/pakfindata/docs/operations/worker_service.md
 After=network.target pakfindata-api.service
-PartOf=pakfindata-api.service
+# Phase 2.B.4 (2026-05-24): PartOf=pakfindata-api.service removed so
+# API restarts no longer cascade to the worker. After= stays for
+# startup-ordering only (worker waits for API when both start together).
 
 [Service]
 Type=exec

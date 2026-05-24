@@ -117,12 +117,20 @@ view.
     * **scraper-maintenance** (G.3 PMEX / G.1 SBP EasyData /
       G.4.9 market_summary — single-page domain owner of a tracking
       table or separate DB).
-- **`pakfindata-worker.service` has `PartOf=pakfindata-api.service`**:
-  stopping API stops worker, but restarting API does NOT restart worker.
-  Manual `systemctl --user restart pakfindata-worker` needed after API
-  redeploys. Surfaced during Milestone 1.8.2 fallback testing.
-  Fix: change `PartOf=` to `BindsTo=` + `Requires=` pattern, OR remove
-  the coupling and let them be independent. Phase 2 ops cleanup.
+- **`pakfindata-worker.service` has `PartOf=pakfindata-api.service`**
+  (Milestone 1.8.2 surface — **CLOSED via 2.B.4, 2026-05-24**):
+  stopping API stopped worker, but restarting API did NOT restart
+  worker, requiring manual `systemctl --user restart pakfindata-worker`
+  after API redeploys. Fix chosen (of the two candidates): remove
+  `PartOf=` entirely so API restarts don't cascade to the worker.
+  `After=` retained for startup ordering only (worker waits for API
+  when both start together, doesn't follow API lifecycle thereafter).
+  Decoupling test confirmed: stopping API leaves worker active;
+  restarting API leaves worker untouched. In-flight jobs now survive
+  API restarts. Edit landed in both
+  `/home/smnb/.config/systemd/user/pakfindata-worker.service`
+  (runtime) and `deploy/systemd/pakfindata-worker.service`
+  (repo copy).
 - **DEBT-PHASE2-FOLLOWUP-2: wider scraper pollution beyond the
   ZUMA/MUFAP sentinels** (Milestone 2.A.2 cleanup recompute —
   **FULLY CLOSED via 2.A.5.4-2.A.5.6, 2026-05-24**) —
